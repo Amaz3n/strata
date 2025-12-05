@@ -27,7 +27,6 @@ export function NavMain({
     title: string
     url: string
     icon?: LucideIcon
-    badge?: number
     isActive?: boolean
     items?: {
       title: string
@@ -54,11 +53,6 @@ export function NavMain({
                   <SidebarMenuButton tooltip={item.title}>
                     {item.icon && <item.icon />}
                     <span>{item.title}</span>
-                    {item.badge && (
-                      <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-sidebar-primary px-1.5 text-xs font-medium text-sidebar-primary-foreground">
-                        {item.badge}
-                      </span>
-                    )}
                     <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                   </SidebarMenuButton>
                 </CollapsibleTrigger>
@@ -67,11 +61,6 @@ export function NavMain({
                   <Link href={item.url}>
                     {item.icon && <item.icon />}
                     <span>{item.title}</span>
-                    {item.badge && (
-                      <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-sidebar-primary px-1.5 text-xs font-medium text-sidebar-primary-foreground">
-                        {item.badge}
-                      </span>
-                    )}
                   </Link>
                 </SidebarMenuButton>
               )}

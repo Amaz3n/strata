@@ -1,5 +1,6 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
+import { requireOrgMembership } from "@/lib/auth/context"
 
 interface NotificationInput {
   orgId: string

@@ -15,7 +15,7 @@ export default async function SchedulePage() {
 
   return (
     <AppShell title="Schedule" user={currentUser} badges={{ projects: activeProjects }}>
-      <div className="p-4 lg:p-6">
+      <div className="p-4 lg:p-6 h-full">
         <ScheduleClient scheduleItems={scheduleItems} projects={projects} />
       </div>
     </AppShell>

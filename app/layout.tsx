@@ -1,6 +1,7 @@
 import type React from "react"
 import type { Metadata, Viewport } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
+import Script from "next/script"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "@/components/ui/sonner"
@@ -40,6 +41,14 @@ export default function RootLayout({
         >
           {children}
           <Toaster />
+
+          {/* Google Maps JavaScript API Script */}
+          {process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY && (
+            <Script
+              src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=places`}
+              strategy="afterInteractive"
+            />
+          )}
         </ThemeProvider>
       </body>
     </html>

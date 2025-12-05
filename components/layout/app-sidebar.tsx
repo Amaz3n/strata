@@ -8,22 +8,13 @@ import { signOutAction } from "@/app/auth/actions"
 import {
   LayoutDashboard,
   FolderOpen,
-  CheckSquare,
   CalendarDays,
-  ClipboardList,
   FileText,
-  Image,
   MessageSquare,
   Users,
   Receipt,
-  Settings,
+  Share2,
   HardHat,
-  LogOut,
-  Plus,
-  BadgeCheck,
-  CreditCard,
-  Bell,
-  Sparkles,
 } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
@@ -39,13 +30,9 @@ import type { User } from "@/lib/types"
 
 interface AppSidebarProps {
   user?: User | null
-  badges?: {
-    projects?: number
-    tasks?: number
-  }
 }
 
-function buildNavigation(badges?: AppSidebarProps["badges"]) {
+function buildNavigation() {
   return [
     {
       title: "Dashboard",
@@ -57,25 +44,7 @@ function buildNavigation(badges?: AppSidebarProps["badges"]) {
       title: "Projects",
       url: "/projects",
       icon: FolderOpen,
-      badge: badges?.projects,
       isActive: false,
-    },
-    {
-      title: "Tasks",
-      url: "/tasks",
-      icon: CheckSquare,
-      badge: badges?.tasks,
-      isActive: false,
-      items: [
-        {
-          title: "All Tasks",
-          url: "/tasks",
-        },
-        {
-          title: "My Tasks",
-          url: "/tasks?filter=mine",
-        },
-      ],
     },
     {
       title: "Schedule",
@@ -84,59 +53,49 @@ function buildNavigation(badges?: AppSidebarProps["badges"]) {
       isActive: false,
     },
     {
-      title: "Daily Logs",
-      url: "/daily-logs",
-      icon: ClipboardList,
-      isActive: false,
-    },
-    {
-      title: "Photos",
-      url: "/photos",
-      icon: Image,
-      isActive: false,
-    },
-    {
-      title: "Files",
+      title: "Documents",
       url: "/files",
       icon: FileText,
       isActive: false,
+      items: [
+        { title: "Files", url: "/files" },
+        { title: "RFIs", url: "/rfis" },
+        { title: "Submittals", url: "/submittals" },
+      ],
     },
     {
-      title: "Portal",
-      url: "/portal",
-      icon: MessageSquare,
-      isActive: false,
-    },
-    {
-      title: "Change Orders",
+      title: "Financial",
       url: "/change-orders",
       icon: Receipt,
       isActive: false,
+      items: [
+        { title: "Change Orders", url: "/change-orders" },
+        { title: "Invoices", url: "/invoices" },
+      ],
     },
     {
-      title: "Budget",
-      url: "/budget",
-      icon: Receipt,
+      title: "Sharing",
+      url: "/sharing",
+      icon: Share2,
       isActive: false,
     },
     {
-      title: "Team",
+      title: "Directory",
       url: "/team",
       icon: Users,
       isActive: false,
-    },
-    {
-      title: "Contacts",
-      url: "/contacts",
-      icon: Users,
-      isActive: false,
+      items: [
+        { title: "Team", url: "/team" },
+        { title: "Contacts", url: "/contacts" },
+        { title: "Companies", url: "/companies" },
+      ],
     },
   ]
 }
 
-export function AppSidebar({ user, badges }: AppSidebarProps) {
+export function AppSidebar({ user }: AppSidebarProps) {
   const pathname = usePathname()
-  const navMain = buildNavigation(badges).map(item => ({
+  const navMain = buildNavigation().map(item => ({
     ...item,
     isActive: pathname === item.url || (item.items?.some(sub => pathname === sub.url) ?? false),
   }))
