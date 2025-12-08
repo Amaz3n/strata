@@ -160,7 +160,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
       {/* Command Dialog - appears centered on screen */}
       <CommandDialog open={open} onOpenChange={setOpen}>
         <CommandInput
-          placeholder="Search projects, tasks, files..."
+          placeholder=", files..."
           value={query}
           onValueChange={setQuery}
         />

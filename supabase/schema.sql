@@ -649,6 +649,11 @@ create table if not exists cost_codes (
   code text not null,
   name text not null,
   category text,
+  division text,
+  standard text,
+  unit text,
+  default_unit_cost_cents integer,
+  is_active boolean default true,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -698,6 +703,21 @@ create table if not exists estimate_items (
 create index if not exists estimate_items_org_idx on estimate_items (org_id);
 create index if not exists estimate_items_estimate_idx on estimate_items (estimate_id);
 
+-- Estimate templates
+create table if not exists estimate_templates (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  name text not null,
+  description text,
+  lines jsonb not null default '[]'::jsonb,
+  is_default boolean default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists estimate_templates_org_idx on estimate_templates (org_id);
+create trigger estimate_templates_set_updated_at before update on estimate_templates for each row execute function public.tg_set_updated_at();
+
 create table if not exists proposals (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references orgs(id) on delete cascade,
@@ -716,6 +736,45 @@ create table if not exists proposals (
 create index if not exists proposals_org_idx on proposals (org_id);
 create index if not exists proposals_project_idx on proposals (project_id);
 create trigger proposals_set_updated_at before update on proposals for each row execute function public.tg_set_updated_at();
+
+-- Phase 3: proposal enhancements
+alter table proposals add column if not exists number text;
+alter table proposals add column if not exists title text;
+alter table proposals add column if not exists summary text;
+alter table proposals add column if not exists terms text;
+alter table proposals add column if not exists valid_until date;
+alter table proposals add column if not exists total_cents integer;
+alter table proposals add column if not exists signature_required boolean default true;
+alter table proposals add column if not exists signature_data jsonb;
+alter table proposals add column if not exists token_hash text;
+alter table proposals add column if not exists viewed_at timestamptz;
+
+create unique index if not exists proposals_token_hash_idx on proposals (token_hash) where token_hash is not null;
+create unique index if not exists proposals_org_number_idx on proposals (org_id, number) where number is not null;
+
+-- Proposal line items
+create table if not exists proposal_lines (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  proposal_id uuid not null references proposals(id) on delete cascade,
+  cost_code_id uuid references cost_codes(id) on delete set null,
+  line_type text not null default 'item' check (line_type in ('item', 'section', 'allowance', 'option')),
+  description text not null,
+  quantity numeric not null default 1,
+  unit text,
+  unit_cost_cents integer,
+  markup_percent numeric,
+  is_optional boolean default false,
+  is_selected boolean default true,
+  allowance_cents integer,
+  notes text,
+  sort_order integer default 0,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists proposal_lines_org_idx on proposal_lines (org_id);
+create index if not exists proposal_lines_proposal_idx on proposal_lines (proposal_id);
 
 create table if not exists contracts (
   id uuid primary key default gen_random_uuid(),
@@ -737,6 +796,60 @@ create table if not exists contracts (
 create index if not exists contracts_org_idx on contracts (org_id);
 create index if not exists contracts_project_idx on contracts (project_id);
 create trigger contracts_set_updated_at before update on contracts for each row execute function public.tg_set_updated_at();
+
+-- Phase 3: contract enhancements
+alter table contracts add column if not exists number text;
+alter table contracts add column if not exists contract_type text default 'fixed' check (contract_type in ('fixed', 'cost_plus', 'time_materials'));
+alter table contracts add column if not exists markup_percent numeric;
+alter table contracts add column if not exists retainage_percent numeric default 0;
+alter table contracts add column if not exists retainage_release_trigger text;
+alter table contracts add column if not exists signature_data jsonb;
+
+create unique index if not exists contracts_org_number_idx on contracts (org_id, number) where number is not null;
+
+-- Retainage tracking
+create table if not exists retainage (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  contract_id uuid not null references contracts(id) on delete cascade,
+  invoice_id uuid references invoices(id) on delete set null,
+  amount_cents integer not null check (amount_cents >= 0),
+  status text not null default 'held' check (status in ('held', 'released', 'invoiced', 'paid')),
+  held_at timestamptz not null default now(),
+  released_at timestamptz,
+  release_invoice_id uuid references invoices(id) on delete set null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists retainage_org_idx on retainage (org_id);
+create index if not exists retainage_project_idx on retainage (project_id);
+create index if not exists retainage_contract_idx on retainage (contract_id);
+create index if not exists retainage_status_idx on retainage (status);
+create trigger retainage_set_updated_at before update on retainage for each row execute function public.tg_set_updated_at();
+
+-- Allowance tracking
+create table if not exists allowances (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  contract_id uuid references contracts(id) on delete set null,
+  selection_category_id uuid,
+  name text not null,
+  budget_cents integer not null check (budget_cents >= 0),
+  used_cents integer not null default 0 check (used_cents >= 0),
+  status text not null default 'open' check (status in ('open', 'at_budget', 'over', 'closed')),
+  overage_handling text default 'co' check (overage_handling in ('co', 'client_direct', 'absorb')),
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists allowances_org_idx on allowances (org_id);
+create index if not exists allowances_project_idx on allowances (project_id);
+create trigger allowances_set_updated_at before update on allowances for each row execute function public.tg_set_updated_at();
 
 create table if not exists change_orders (
   id uuid primary key default gen_random_uuid(),
@@ -777,6 +890,7 @@ create table if not exists change_order_lines (
 
 create index if not exists change_order_lines_org_idx on change_order_lines (org_id);
 create index if not exists change_order_lines_change_order_idx on change_order_lines (change_order_id);
+create index if not exists change_order_lines_cost_code_idx on change_order_lines (cost_code_id);
 
 create table if not exists budgets (
   id uuid primary key default gen_random_uuid(),
@@ -808,6 +922,91 @@ create table if not exists budget_lines (
 
 create index if not exists budget_lines_org_idx on budget_lines (org_id);
 create index if not exists budget_lines_budget_idx on budget_lines (budget_id);
+
+-- Guard against editing locked budgets
+create or replace function budget_lock_guard()
+returns trigger as $$
+begin
+  if old.status = 'locked' then
+    if new.status <> 'locked'
+      or new.total_cents is distinct from old.total_cents
+      or new.project_id is distinct from old.project_id
+      or new.metadata is distinct from old.metadata then
+      raise exception 'Budget is locked and cannot be edited';
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_budget_lock_guard on budgets;
+create trigger trg_budget_lock_guard
+  before update on budgets
+  for each row execute procedure budget_lock_guard();
+
+create or replace function budget_line_lock_guard()
+returns trigger as $$
+declare
+  status text;
+begin
+  select status into status from budgets where id = coalesce(new.budget_id, old.budget_id) limit 1;
+  if status = 'locked' then
+    raise exception 'Budget is locked and lines cannot be modified';
+  end if;
+  return coalesce(new, old);
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_budget_line_lock_guard on budget_lines;
+create trigger trg_budget_line_lock_guard
+  before insert or update or delete on budget_lines
+  for each row execute procedure budget_line_lock_guard();
+
+-- Budget snapshots for trend tracking
+create table if not exists budget_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  budget_id uuid not null references budgets(id) on delete cascade,
+  snapshot_date date not null,
+  total_budget_cents integer not null,
+  total_committed_cents integer not null,
+  total_actual_cents integer not null,
+  total_invoiced_cents integer not null,
+  variance_cents integer not null,
+  margin_percent numeric,
+  by_cost_code jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists budget_snapshots_org_idx on budget_snapshots (org_id);
+create index if not exists budget_snapshots_project_date_idx on budget_snapshots (project_id, snapshot_date);
+create unique index if not exists budget_snapshots_unique_idx on budget_snapshots (budget_id, snapshot_date);
+
+-- Variance alerts
+create table if not exists variance_alerts (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  budget_id uuid references budgets(id) on delete set null,
+  cost_code_id uuid references cost_codes(id) on delete set null,
+  alert_type text not null check (alert_type in ('threshold_exceeded', 'over_budget', 'margin_warning')),
+  threshold_percent integer,
+  current_percent integer,
+  budget_cents integer,
+  actual_cents integer,
+  variance_cents integer,
+  status text not null default 'active' check (status in ('active', 'acknowledged', 'resolved')),
+  acknowledged_by uuid references app_users(id),
+  acknowledged_at timestamptz,
+  notified_at timestamptz,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists variance_alerts_org_idx on variance_alerts (org_id);
+create index if not exists variance_alerts_project_idx on variance_alerts (project_id);
+create index if not exists variance_alerts_status_idx on variance_alerts (status) where status = 'active';
 
 create table if not exists commitments (
   id uuid primary key default gen_random_uuid(),
@@ -846,6 +1045,7 @@ create table if not exists commitment_lines (
 
 create index if not exists commitment_lines_org_idx on commitment_lines (org_id);
 create index if not exists commitment_lines_commitment_idx on commitment_lines (commitment_id);
+create index if not exists commitment_lines_cost_code_idx on commitment_lines (cost_code_id);
 
 create table if not exists vendor_bills (
   id uuid primary key default gen_random_uuid(),
@@ -884,6 +1084,7 @@ create table if not exists bill_lines (
 
 create index if not exists bill_lines_org_idx on bill_lines (org_id);
 create index if not exists bill_lines_bill_idx on bill_lines (bill_id);
+create index if not exists bill_lines_cost_code_idx on bill_lines (cost_code_id);
 
 create table if not exists invoices (
   id uuid primary key default gen_random_uuid(),
@@ -894,6 +1095,8 @@ create table if not exists invoices (
   issue_date date,
   due_date date,
   total_cents integer,
+  balance_due_cents integer,
+  tax_rate numeric,
   currency text not null default 'usd',
   recipient_contact_id uuid references contacts(id) on delete set null,
   file_id uuid references files(id) on delete set null,
@@ -905,6 +1108,9 @@ create table if not exists invoices (
 create index if not exists invoices_org_idx on invoices (org_id);
 create index if not exists invoices_project_idx on invoices (project_id);
 create trigger invoices_set_updated_at before update on invoices for each row execute function public.tg_set_updated_at();
+
+alter table if not exists invoices add column if not exists balance_due_cents integer;
+alter table if not exists invoices add column if not exists tax_rate numeric;
 
 create table if not exists invoice_lines (
   id uuid primary key default gen_random_uuid(),
@@ -921,6 +1127,7 @@ create table if not exists invoice_lines (
 
 create index if not exists invoice_lines_org_idx on invoice_lines (org_id);
 create index if not exists invoice_lines_invoice_idx on invoice_lines (invoice_id);
+create index if not exists invoice_lines_cost_code_idx on invoice_lines (cost_code_id);
 
 create table if not exists payments (
   id uuid primary key default gen_random_uuid(),
@@ -934,11 +1141,248 @@ create table if not exists payments (
   reference text,
   received_at timestamptz not null default now(),
   metadata jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  status text not null default 'pending',
+  provider text,
+  provider_payment_id text,
+  fee_cents integer default 0,
+  net_cents integer,
+  idempotency_key text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists payments_org_idx on payments (org_id);
 create index if not exists payments_project_idx on payments (project_id);
+create index if not exists payments_status_idx on payments (status);
+create index if not exists payments_provider_idx on payments (provider_payment_id);
+create unique index if not exists payments_idempotency_idx on payments (idempotency_key) where idempotency_key is not null;
+create trigger payments_set_updated_at before update on payments for each row execute function public.tg_set_updated_at();
+
+-- Payment intents (provider-facing pre-authorization records)
+create table if not exists payment_intents (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid references projects(id) on delete set null,
+  invoice_id uuid references invoices(id) on delete set null,
+  provider text not null default 'stripe',
+  provider_intent_id text,
+  status text not null default 'requires_payment_method',
+  amount_cents integer not null,
+  currency text not null default 'usd',
+  client_secret text,
+  idempotency_key text,
+  expires_at timestamptz,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists payment_intents_provider_intent_idx on payment_intents (provider_intent_id) where provider_intent_id is not null;
+create unique index if not exists payment_intents_idempotency_idx on payment_intents (idempotency_key) where idempotency_key is not null;
+create index if not exists payment_intents_org_idx on payment_intents (org_id);
+create index if not exists payment_intents_invoice_idx on payment_intents (invoice_id);
+create index if not exists payment_intents_status_idx on payment_intents (status);
+create trigger payment_intents_set_updated_at before update on payment_intents for each row execute function public.tg_set_updated_at();
+
+-- Payment methods (stored provider tokens)
+create table if not exists payment_methods (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  contact_id uuid references contacts(id) on delete set null,
+  provider text not null default 'stripe',
+  provider_method_id text,
+  type text not null default 'ach',
+  fingerprint text,
+  last4 text,
+  bank_brand text,
+  exp_last4 text,
+  status text not null default 'active',
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists payment_methods_provider_method_idx on payment_methods (provider, provider_method_id) where provider_method_id is not null;
+create index if not exists payment_methods_org_idx on payment_methods (org_id);
+create index if not exists payment_methods_contact_idx on payment_methods (contact_id);
+create trigger payment_methods_set_updated_at before update on payment_methods for each row execute function public.tg_set_updated_at();
+
+-- Payment links (signed link flow for portal payments)
+create table if not exists payment_links (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  invoice_id uuid not null references invoices(id) on delete cascade,
+  token_hash text not null,
+  nonce text not null,
+  expires_at timestamptz,
+  max_uses integer,
+  used_count integer not null default 0,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists payment_links_token_hash_idx on payment_links (token_hash);
+create index if not exists payment_links_org_idx on payment_links (org_id);
+create index if not exists payment_links_invoice_idx on payment_links (invoice_id);
+create trigger payment_links_set_updated_at before update on payment_links for each row execute function public.tg_set_updated_at();
+
+-- Late fees rules
+create table if not exists late_fees (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid references projects(id) on delete set null,
+  strategy text not null default 'fixed',
+  amount_cents integer,
+  percent_rate numeric,
+  grace_days integer default 0,
+  repeat_days integer,
+  max_applications integer,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists late_fees_org_idx on late_fees (org_id);
+create index if not exists late_fees_project_idx on late_fees (project_id);
+create trigger late_fees_set_updated_at before update on late_fees for each row execute function public.tg_set_updated_at();
+
+-- Reminders rules for invoices
+create table if not exists reminders (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  invoice_id uuid references invoices(id) on delete cascade,
+  channel text not null default 'email',
+  schedule text not null default 'before_due',
+  offset_days integer not null default 0,
+  template_id text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists reminders_org_idx on reminders (org_id);
+create index if not exists reminders_invoice_idx on reminders (invoice_id);
+create trigger reminders_set_updated_at before update on reminders for each row execute function public.tg_set_updated_at();
+
+create table if not exists draw_schedules (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  invoice_id uuid references invoices(id) on delete set null,
+  contract_id uuid references contracts(id) on delete set null,
+  draw_number integer not null,
+  title text not null,
+  description text,
+  amount_cents integer not null check (amount_cents >= 0),
+  percent_of_contract numeric,
+  due_date date,
+  due_trigger text,
+  milestone_id uuid references schedule_items(id) on delete set null,
+  status text not null default 'pending' check (status in ('pending', 'invoiced', 'partial', 'paid')),
+  invoiced_at timestamptz,
+  paid_at timestamptz,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists draw_schedules_org_idx on draw_schedules (org_id);
+create index if not exists draw_schedules_project_idx on draw_schedules (project_id);
+create index if not exists draw_schedules_status_idx on draw_schedules (status);
+create unique index if not exists draw_schedules_project_number_idx on draw_schedules (project_id, draw_number);
+create trigger draw_schedules_set_updated_at before update on draw_schedules for each row execute function public.tg_set_updated_at();
+
+create table if not exists lien_waivers (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  payment_id uuid references payments(id) on delete set null,
+  company_id uuid references companies(id) on delete set null,
+  contact_id uuid references contacts(id) on delete set null,
+  waiver_type text not null check (waiver_type in ('conditional', 'unconditional', 'final')),
+  status text not null default 'pending' check (status in ('pending', 'sent', 'signed', 'rejected', 'expired')),
+  amount_cents integer not null check (amount_cents >= 0),
+  through_date date not null,
+  claimant_name text not null,
+  property_description text,
+  document_file_id uuid references files(id) on delete set null,
+  signed_file_id uuid references files(id) on delete set null,
+  signature_data jsonb,
+  sent_at timestamptz,
+  signed_at timestamptz,
+  expires_at timestamptz,
+  token_hash text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists lien_waivers_org_idx on lien_waivers (org_id);
+create index if not exists lien_waivers_project_idx on lien_waivers (project_id);
+create index if not exists lien_waivers_payment_idx on lien_waivers (payment_id);
+create index if not exists lien_waivers_status_idx on lien_waivers (status);
+create unique index if not exists lien_waivers_token_idx on lien_waivers (token_hash) where token_hash is not null;
+create trigger lien_waivers_set_updated_at before update on lien_waivers for each row execute function public.tg_set_updated_at();
+
+create table if not exists payment_schedules (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  contact_id uuid references contacts(id) on delete set null,
+  payment_method_id uuid references payment_methods(id) on delete set null,
+  total_amount_cents integer not null check (total_amount_cents > 0),
+  installment_amount_cents integer not null check (installment_amount_cents > 0),
+  installments_total integer not null check (installments_total > 0),
+  installments_paid integer not null default 0,
+  frequency text not null default 'monthly' check (frequency in ('weekly', 'biweekly', 'monthly')),
+  next_charge_date date,
+  status text not null default 'active' check (status in ('active', 'paused', 'completed', 'canceled', 'failed')),
+  auto_charge boolean not null default false,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists payment_schedules_org_idx on payment_schedules (org_id);
+create index if not exists payment_schedules_next_charge_idx on payment_schedules (next_charge_date) where status = 'active';
+create trigger payment_schedules_set_updated_at before update on payment_schedules for each row execute function public.tg_set_updated_at();
+
+create table if not exists reminder_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  reminder_id uuid not null references reminders(id) on delete cascade,
+  invoice_id uuid not null references invoices(id) on delete cascade,
+  channel text not null,
+  status text not null default 'pending' check (status in ('pending', 'sent', 'delivered', 'failed', 'clicked')),
+  sent_at timestamptz,
+  delivered_at timestamptz,
+  clicked_at timestamptz,
+  error_message text,
+  provider_message_id text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists reminder_deliveries_org_idx on reminder_deliveries (org_id);
+create index if not exists reminder_deliveries_invoice_idx on reminder_deliveries (invoice_id);
+create unique index if not exists reminder_deliveries_unique_idx on reminder_deliveries (reminder_id, invoice_id, channel, date(created_at));
+
+create table if not exists late_fee_applications (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  invoice_id uuid not null references invoices(id) on delete cascade,
+  late_fee_rule_id uuid not null references late_fees(id) on delete cascade,
+  invoice_line_id uuid references invoice_lines(id) on delete set null,
+  amount_cents integer not null check (amount_cents > 0),
+  applied_at timestamptz not null default now(),
+  application_number integer not null,
+  metadata jsonb not null default '{}'::jsonb
+);
+
+create index if not exists late_fee_applications_org_idx on late_fee_applications (org_id);
+create index if not exists late_fee_applications_invoice_idx on late_fee_applications (invoice_id);
+create unique index if not exists late_fee_applications_unique_idx on late_fee_applications (invoice_id, late_fee_rule_id, application_number);
 
 create table if not exists receipts (
   id uuid primary key default gen_random_uuid(),
@@ -1220,19 +1664,35 @@ alter table approvals enable row level security;
 alter table cost_codes enable row level security;
 alter table estimates enable row level security;
 alter table estimate_items enable row level security;
+alter table estimate_templates enable row level security;
 alter table proposals enable row level security;
+alter table proposal_lines enable row level security;
 alter table contracts enable row level security;
+alter table retainage enable row level security;
 alter table change_orders enable row level security;
 alter table change_order_lines enable row level security;
+alter table allowances enable row level security;
 alter table budgets enable row level security;
 alter table budget_lines enable row level security;
+alter table budget_snapshots enable row level security;
+alter table variance_alerts enable row level security;
 alter table commitments enable row level security;
 alter table commitment_lines enable row level security;
 alter table vendor_bills enable row level security;
 alter table bill_lines enable row level security;
 alter table invoices enable row level security;
 alter table invoice_lines enable row level security;
+alter table draw_schedules enable row level security;
+alter table lien_waivers enable row level security;
 alter table payments enable row level security;
+alter table payment_intents enable row level security;
+alter table payment_methods enable row level security;
+alter table payment_schedules enable row level security;
+alter table payment_links enable row level security;
+alter table late_fees enable row level security;
+alter table late_fee_applications enable row level security;
+alter table reminders enable row level security;
+alter table reminder_deliveries enable row level security;
 alter table receipts enable row level security;
 alter table conversations enable row level security;
 alter table messages enable row level security;
@@ -1395,11 +1855,23 @@ create policy "estimate_items_access" on estimate_items
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
+create policy "estimate_templates_access" on estimate_templates
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
 create policy "proposals_access" on proposals
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
+create policy "proposal_lines_access" on proposal_lines
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
 create policy "contracts_access" on contracts
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "retainage_access" on retainage
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
@@ -1411,11 +1883,23 @@ create policy "change_order_lines_access" on change_order_lines
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
+create policy "allowances_access" on allowances
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
 create policy "budgets_access" on budgets
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
 create policy "budget_lines_access" on budget_lines
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "budget_snapshots_access" on budget_snapshots
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "variance_alerts_access" on variance_alerts
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
@@ -1443,7 +1927,47 @@ create policy "invoice_lines_access" on invoice_lines
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
+create policy "draw_schedules_access" on draw_schedules
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "lien_waivers_access" on lien_waivers
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
 create policy "payments_access" on payments
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "payment_intents_access" on payment_intents
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "payment_methods_access" on payment_methods
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "payment_schedules_access" on payment_schedules
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "payment_links_access" on payment_links
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "late_fees_access" on late_fees
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "late_fee_applications_access" on late_fee_applications
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "reminders_access" on reminders
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+create policy "reminder_deliveries_access" on reminder_deliveries
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
@@ -1511,6 +2035,49 @@ create policy "events_access" on events
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 
 create policy "outbox_access" on outbox
+  for all using (auth.role() = 'service_role' or is_org_member(org_id))
+  with check (auth.role() = 'service_role' or is_org_member(org_id));
+
+-- Portal access tokens
+create table if not exists portal_access_tokens (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  contact_id uuid references contacts(id) on delete set null,
+  company_id uuid references companies(id) on delete set null,
+  token text not null default encode(gen_random_bytes(32), 'hex'),
+  portal_type text not null check (portal_type in ('client', 'sub')),
+  created_by uuid references app_users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz,
+  last_accessed_at timestamptz,
+  revoked_at timestamptz,
+  access_count integer not null default 0,
+  max_access_count integer,
+  can_view_schedule boolean not null default true,
+  can_view_photos boolean not null default true,
+  can_view_documents boolean not null default true,
+  can_download_files boolean not null default true,
+  can_view_daily_logs boolean not null default false,
+  can_view_budget boolean not null default false,
+  can_approve_change_orders boolean not null default true,
+  can_submit_selections boolean not null default true,
+  can_create_punch_items boolean not null default false,
+  can_message boolean not null default true,
+  can_view_invoices boolean not null default true,
+  can_pay_invoices boolean not null default false,
+  can_view_rfis boolean not null default true,
+  can_view_submittals boolean not null default true,
+  can_respond_rfis boolean not null default true,
+  can_submit_submittals boolean not null default true
+);
+
+create index if not exists portal_access_tokens_org_idx on portal_access_tokens(org_id);
+create index if not exists portal_access_tokens_project_idx on portal_access_tokens(project_id);
+create index if not exists portal_access_tokens_token_idx on portal_access_tokens(token);
+alter table portal_access_tokens enable row level security;
+
+create policy "portal_tokens_access" on portal_access_tokens
   for all using (auth.role() = 'service_role' or is_org_member(org_id))
   with check (auth.role() = 'service_role' or is_org_member(org_id));
 

@@ -6,6 +6,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
   const { data, error } = await client.from("roles").select("id").eq("scope", "org").eq("key", role).maybeSingle()
@@ -59,7 +60,8 @@ function mapTeamMember(row: any, projectCounts: Record<string, number>): TeamMem
 }
 
 export async function listTeamMembers(orgId?: string): Promise<TeamMember[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
 
   const { data, error } = await supabase
@@ -67,8 +69,8 @@ export async function listTeamMembers(orgId?: string): Promise<TeamMember[]> {
     .select(
       `
       id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
-      user:app_users!inner(id, email, full_name, avatar_url),
-      role:roles!inner(key, label),
+      user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
+      role:roles!memberships_role_id_fkey(key, label),
       invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
     `,
     )
@@ -84,7 +86,8 @@ export async function listTeamMembers(orgId?: string): Promise<TeamMember[]> {
 
 export async function inviteTeamMember({ input, orgId }: { input: InviteMemberInput; orgId?: string }): Promise<TeamMember> {
   const parsed = inviteMemberSchema.parse(input)
-  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
+  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
   const serviceClient = createServiceSupabaseClient()
 
   const { data: existingUser } = await serviceClient
@@ -121,9 +124,9 @@ export async function inviteTeamMember({ input, orgId }: { input: InviteMemberIn
     .select(
       `
       id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
-      user:app_users(id, email, full_name, avatar_url),
-      role:roles(key, label),
-      invited_by_user:app_users(id, email, full_name, avatar_url)
+      user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
+      role:roles!memberships_role_id_fkey(key, label),
+      invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
     `,
     )
     .maybeSingle()
@@ -164,6 +167,7 @@ export async function updateMemberRole({
 }) {
   const parsed = updateMemberRoleSchema.parse({ role })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.admin", { supabase, orgId: resolvedOrgId, userId })
   const serviceClient = createServiceSupabaseClient()
   const roleId = await resolveRoleId(serviceClient, parsed.role)
 
@@ -186,8 +190,8 @@ export async function updateMemberRole({
     .select(
       `
       id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
-      user:app_users(id, email, full_name, avatar_url),
-      role:roles(key, label)
+      user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
+      role:roles!memberships_role_id_fkey(key, label)
     `,
     )
     .maybeSingle()
@@ -213,6 +217,7 @@ export async function updateMemberRole({
 async function updateMemberStatus(membershipId: string, status: "active" | "invited" | "suspended", orgId?: string) {
   memberStatusSchema.parse({ status })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("memberships")
@@ -233,8 +238,8 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     .select(
       `
       id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
-      user:app_users(id, email, full_name, avatar_url),
-      role:roles(key, label)
+      user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
+      role:roles!memberships_role_id_fkey(key, label)
     `,
     )
     .maybeSingle()
@@ -267,6 +272,7 @@ export function reactivateMember(membershipId: string, orgId?: string) {
 
 export async function removeMember(membershipId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: membership, error: fetchError } = await supabase
     .from("memberships")
@@ -311,7 +317,8 @@ export async function removeMember(membershipId: string, orgId?: string) {
 }
 
 export async function resendInvite(membershipId: string, orgId?: string) {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
   const serviceClient = createServiceSupabaseClient()
 
   const { data, error } = await serviceClient
@@ -337,3 +344,4 @@ export async function resendInvite(membershipId: string, orgId?: string) {
 
   return true
 }
+

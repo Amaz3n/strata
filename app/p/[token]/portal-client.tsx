@@ -137,7 +137,11 @@ export function PortalPublicClient({ data, token, portalType = "client", canMess
                 )}
                 <a
                   className="mt-2 inline-flex text-xs text-primary underline"
-                  href={`/${portalType === "client" ? "p" : "s"}/${token}/invoices/${inv.id}`}
+                  href={
+                    inv.token
+                      ? `/i/${inv.token}`
+                      : `/${portalType === "client" ? "p" : "s"}/${token}/invoices/${inv.id}`
+                  }
                 >
                   View invoice
                 </a>

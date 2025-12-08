@@ -25,6 +25,15 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@midday/ui/*": [
+        "./components/midday/ui/*"
+      ],
+      "@midday/invoice": [
+        "./packages/invoice/src"
+      ],
+      "@midday/invoice/*": [
+        "./packages/invoice/src/*"
       ]
     }
   },

@@ -36,3 +36,5 @@ export type ContactInput = z.infer<typeof contactInputSchema>
 export type ContactUpdateInput = z.infer<typeof contactUpdateSchema>
 export type ContactFilters = z.infer<typeof contactFiltersSchema>
 export type ContactCompanyLinkInput = z.infer<typeof contactCompanyLinkSchema>
+
+

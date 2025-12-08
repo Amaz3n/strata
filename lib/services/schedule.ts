@@ -396,6 +396,56 @@ export async function updateScheduleItem({
   return mapScheduleItem(data, dependencyMap)
 }
 
+// Set a single assignment (user/contact/company) for a schedule item.
+// Clears existing assignments for the item first.
+export async function setScheduleItemAssignee({
+  itemId,
+  projectId,
+  assignee,
+  orgId,
+}: {
+  itemId: string
+  projectId: string
+  assignee:
+    | { type: "user"; id: string; role?: string }
+    | { type: "contact"; id: string; role?: string }
+    | { type: "company"; id: string; role?: string }
+    | null
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  // Clear existing assignments for this item
+  await supabase.from("schedule_assignments").delete().eq("org_id", resolvedOrgId).eq("schedule_item_id", itemId)
+
+  if (!assignee) {
+    // Also clear assigned_to on schedule item
+    await supabase.from("schedule_items").update({ assigned_to: null }).eq("id", itemId).eq("org_id", resolvedOrgId)
+    return null
+  }
+
+  const assignmentInput: ScheduleAssignmentInput = {
+    schedule_item_id: itemId,
+    role: assignee.role ?? "assigned",
+  }
+
+  if (assignee.type === "user") {
+    assignmentInput.user_id = assignee.id
+    await supabase.from("schedule_items").update({ assigned_to: assignee.id }).eq("id", itemId).eq("org_id", resolvedOrgId)
+  } else {
+    // Ensure assigned_to is cleared for contact/company
+    await supabase.from("schedule_items").update({ assigned_to: null }).eq("id", itemId).eq("org_id", resolvedOrgId)
+    if (assignee.type === "contact") {
+      assignmentInput.contact_id = assignee.id
+    }
+    if (assignee.type === "company") {
+      assignmentInput.company_id = assignee.id
+    }
+  }
+
+  return createAssignment(assignmentInput, projectId, resolvedOrgId)
+}
+
 export async function deleteScheduleItem(itemId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 

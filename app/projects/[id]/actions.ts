@@ -11,6 +11,7 @@ import type { DailyLogInput } from "@/lib/validation/daily-logs"
 import { scheduleItemInputSchema } from "@/lib/validation/schedule"
 import { taskInputSchema } from "@/lib/validation/tasks"
 import { dailyLogInputSchema } from "@/lib/validation/daily-logs"
+import { getBudgetWithActuals } from "@/lib/services/budgets"
 
 export interface ProjectStats {
   totalTasks: number
@@ -27,6 +28,17 @@ export interface ProjectStats {
   upcomingMilestones: number
   recentPhotos: number
   openPunchItems: number
+  budgetSummary?: {
+    adjustedBudgetCents: number
+    totalCommittedCents: number
+    totalActualCents: number
+    totalInvoicedCents: number
+    varianceCents: number
+    variancePercent: number
+    grossMarginPercent: number
+    trendPercent?: number
+    status: "ok" | "warning" | "over"
+  }
 }
 
 export interface ProjectTeamMember {
@@ -180,22 +192,51 @@ export async function getProjectStatsAction(projectId: string): Promise<ProjectS
     .eq("project_id", projectId)
     .neq("status", "closed")
 
-  // Budget data (placeholder - would need budget tables populated)
-  const { data: budgetData } = await supabase
-    .from("budgets")
-    .select("total_cents")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("status", "active")
-    .single()
+  // Budget data with variance + trend
+  let budgetSummary: ProjectStats["budgetSummary"]
+  try {
+    const budgetData = await getBudgetWithActuals(projectId, orgId)
+    if (budgetData?.summary) {
+      const summary = budgetData.summary
+      budgetSummary = {
+        adjustedBudgetCents: summary.adjusted_budget_cents,
+        totalCommittedCents: summary.total_committed_cents,
+        totalActualCents: summary.total_actual_cents,
+        totalInvoicedCents: summary.total_invoiced_cents,
+        varianceCents: summary.total_variance_cents,
+        variancePercent: summary.variance_percent,
+        grossMarginPercent: summary.gross_margin_percent,
+        status: summary.variance_percent > 100 ? "over" : summary.variance_percent > 90 ? "warning" : "ok",
+      }
+
+      const { data: snapshots } = await supabase
+        .from("budget_snapshots")
+        .select("snapshot_date, total_actual_cents, adjusted_budget_cents")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .order("snapshot_date", { ascending: false })
+        .limit(2)
+
+      if (snapshots && snapshots.length === 2) {
+        const prev = snapshots[1]
+        const prevVariancePercent =
+          (prev?.adjusted_budget_cents ?? 0) > 0
+            ? Math.round(((prev?.total_actual_cents ?? 0) / (prev.adjusted_budget_cents ?? 1)) * 100)
+            : 0
+        budgetSummary.trendPercent = budgetSummary.variancePercent - prevVariancePercent
+      }
+    }
+  } catch (error) {
+    console.warn("Budget summary unavailable", error)
+  }
 
   return {
     totalTasks: taskList.length,
     completedTasks,
     overdueTasks,
     openTasks,
-    totalBudget: budgetData?.total_cents ? budgetData.total_cents / 100 : 0,
-    spentBudget: 0, // Would calculate from vendor_bills + payments
+    totalBudget: budgetSummary ? budgetSummary.adjustedBudgetCents / 100 : 0,
+    spentBudget: budgetSummary ? budgetSummary.totalActualCents / 100 : 0,
     daysRemaining,
     daysElapsed,
     totalDays,
@@ -204,6 +245,7 @@ export async function getProjectStatsAction(projectId: string): Promise<ProjectS
     upcomingMilestones,
     recentPhotos: photoCount ?? 0,
     openPunchItems: punchCount ?? 0,
+    budgetSummary,
   }
 }
 

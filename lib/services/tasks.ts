@@ -9,7 +9,7 @@ import { requireOrgContext } from "@/lib/services/context"
 
 function mapTask(row: any): Task {
   const assignments = Array.isArray(row.task_assignments) ? row.task_assignments : []
-  const assignee = assignments.find((assignment) => assignment?.user_id)
+  const assignee = assignments[0]
 
   return {
     id: row.id,
@@ -20,7 +20,25 @@ function mapTask(row: any): Task {
     status: row.status,
     priority: row.priority,
     due_date: row.due_date ?? undefined,
-    assignee_id: assignee?.user_id ?? undefined,
+    assignee_id: assignee?.user_id ?? assignee?.contact_id ?? assignee?.company_id ?? undefined,
+    assignee_kind: assignee?.user_id ? "user" : assignee?.contact_id ? "contact" : undefined,
+    assignee: assignee?.user
+      ? {
+          id: assignee.user.id,
+          full_name: assignee.user.full_name,
+          avatar_url: assignee.user.avatar_url ?? undefined,
+          email: assignee.user.email ?? undefined,
+        }
+      : undefined,
+    assignee_contact: assignee?.contact
+      ? {
+          id: assignee.contact.id,
+          full_name: assignee.contact.full_name,
+          email: assignee.contact.email ?? undefined,
+          company_name: (assignee.contact as any).primary_company?.name ?? undefined,
+        }
+      : undefined,
+    assignee_company: undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -34,7 +52,14 @@ export async function listTasks(orgId?: string): Promise<Task[]> {
 export async function listTasksWithClient(supabase: SupabaseClient, orgId: string): Promise<Task[]> {
   const { data, error } = await supabase
     .from("tasks")
-    .select("id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at, task_assignments(user_id)")
+    .select(`
+      id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
+      task_assignments (
+        id, user_id, contact_id, role,
+        user:app_users!task_assignments_user_id_fkey(id, full_name, avatar_url, email),
+        contact:contacts!task_assignments_contact_id_fkey(id, full_name, email, primary_company:companies!contacts_primary_company_id_fkey(name))
+      )
+    `)
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
 
@@ -60,22 +85,38 @@ export async function createTask({ input, orgId }: { input: TaskInput; orgId?: s
       due_date: input.due_date,
       created_by: userId,
     })
-    .select("id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at")
+    .select(`
+      id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
+      task_assignments (
+        id, user_id, contact_id, role,
+        user:app_users(id, full_name, avatar_url, email),
+        contact:contacts(id, full_name, email, primary_company:companies!contacts_primary_company_id_fkey(name))
+      )
+    `)
     .single()
 
   if (error) {
     throw new Error(`Failed to create task: ${error.message}`)
   }
 
-  if (input.assignee_id) {
-    const { error: assignmentError } = await supabase.from("task_assignments").upsert({
+  // Clear existing and set assignment
+  await supabase.from("task_assignments").delete().eq("org_id", resolvedOrgId).eq("task_id", data.id)
+  if (input.assignee_kind === "company") {
+    throw new Error("Company assignments are not supported for tasks (missing company_id column). Use a contact or user.")
+  }
+
+  if (input.assignee_id && input.assignee_kind) {
+    const assignmentPayload: any = {
       org_id: resolvedOrgId,
       task_id: data.id,
-      user_id: input.assignee_id,
       assigned_by: userId,
       due_date: input.due_date,
-    })
+      role: "assigned",
+    }
+    if (input.assignee_kind === "user") assignmentPayload.user_id = input.assignee_id
+    if (input.assignee_kind === "contact") assignmentPayload.contact_id = input.assignee_id
 
+    const { error: assignmentError } = await supabase.from("task_assignments").upsert(assignmentPayload)
     if (assignmentError) {
       console.error("Failed to assign task", assignmentError)
     }
@@ -115,7 +156,12 @@ export async function updateTask({
 
   const existing = await supabase
     .from("tasks")
-    .select("id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at, task_assignments(user_id)")
+    .select(
+      `
+      id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
+      task_assignments(id, user_id, contact_id)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("id", taskId)
     .single()
@@ -135,22 +181,37 @@ export async function updateTask({
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", taskId)
-    .select("id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at, task_assignments(user_id)")
+    .select(`
+      id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
+      task_assignments (
+        id, user_id, contact_id, role,
+        user:app_users(id, full_name, avatar_url, email),
+        contact:contacts(id, full_name, email, primary_company:companies!contacts_primary_company_id_fkey(name))
+      )
+    `)
     .single()
 
   if (error || !data) {
     throw new Error(`Failed to update task: ${error?.message}`)
   }
 
-  if (parsed.assignee_id) {
-    const { error: assignmentError } = await supabase.from("task_assignments").upsert({
+  await supabase.from("task_assignments").delete().eq("org_id", resolvedOrgId).eq("task_id", data.id)
+  if (parsed.assignee_kind === "company") {
+    throw new Error("Company assignments are not supported for tasks (missing company_id column). Use a contact or user.")
+  }
+
+  if (parsed.assignee_id && parsed.assignee_kind) {
+    const assignmentPayload: any = {
       org_id: resolvedOrgId,
       task_id: data.id,
-      user_id: parsed.assignee_id,
       assigned_by: userId,
       due_date: parsed.due_date ?? data.due_date,
-    })
+      role: "assigned",
+    }
+    if (parsed.assignee_kind === "user") assignmentPayload.user_id = parsed.assignee_id
+    if (parsed.assignee_kind === "contact") assignmentPayload.contact_id = parsed.assignee_id
 
+    const { error: assignmentError } = await supabase.from("task_assignments").upsert(assignmentPayload)
     if (assignmentError) {
       console.error("Failed to assign task", assignmentError)
     }

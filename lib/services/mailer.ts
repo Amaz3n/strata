@@ -53,3 +53,5 @@ export async function sendEmail(payload: EmailPayload): Promise<void> {
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
 }
+
+

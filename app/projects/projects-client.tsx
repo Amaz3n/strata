@@ -149,9 +149,6 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
         </div>
       </div>
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetTrigger asChild>
-          <span></span>
-        </SheetTrigger>
 
         <SheetContent
           side="right"

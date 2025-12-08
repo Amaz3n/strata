@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type {
   ChangeOrder,
@@ -15,6 +17,7 @@ import { listScheduleItemsWithClient } from "@/lib/services/schedule"
 import { listDailyLogs } from "@/lib/services/daily-logs"
 import { listFiles } from "@/lib/services/files"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 
 function mapPermissions(row: any): PortalPermissions {
   return {
@@ -74,8 +77,9 @@ export async function createPortalAccessToken({
   expiresAt?: string | null
   orgId?: string
 }): Promise<PortalAccessToken> {
-  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const supabase = createServiceSupabaseClient()
+  const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
 
   const payload = {
     org_id: resolvedOrgId,
@@ -88,7 +92,7 @@ export async function createPortalAccessToken({
     ...permissionsToColumns(permissions),
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await serviceClient
     .from("portal_access_tokens")
     .insert(payload)
     .select("*")
@@ -125,9 +129,10 @@ export async function validatePortalToken(token: string) {
 }
 
 export async function revokePortalToken(tokenId: string, orgId?: string) {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const supabase = createServiceSupabaseClient()
-  const { error } = await supabase
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+  const { error } = await serviceClient
     .from("portal_access_tokens")
     .update({ revoked_at: new Date().toISOString() })
     .eq("id", tokenId)
@@ -139,9 +144,10 @@ export async function revokePortalToken(tokenId: string, orgId?: string) {
 }
 
 export async function listPortalTokens(projectId: string, orgId?: string): Promise<PortalAccessToken[]> {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+  const { data, error } = await serviceClient
     .from("portal_access_tokens")
     .select("*")
     .eq("org_id", resolvedOrgId)
@@ -433,7 +439,9 @@ export async function loadClientPortalData({
     ? await fetchChangeOrders(supabase, orgId, projectId)
     : []
 
-  const invoices = permissions.can_view_invoices ? await fetchInvoices(supabase, orgId, projectId) : []
+  const invoices = permissions.can_view_invoices
+    ? await fetchInvoices(supabase, orgId, projectId, permissions.can_pay_invoices)
+    : []
   const rfis = permissions.can_view_rfis ? await fetchRfis(supabase, orgId, projectId) : []
   const submittals = permissions.can_view_submittals ? await fetchSubmittals(supabase, orgId, projectId) : []
 
@@ -550,22 +558,48 @@ async function fetchPunchItems(supabase: any, orgId: string, projectId: string):
   return data ?? []
 }
 
-async function fetchInvoices(supabase: any, orgId: string, projectId: string): Promise<Invoice[]> {
-  const { data, error } = await supabase
+async function fetchInvoices(
+  supabase: any,
+  orgId: string,
+  projectId: string,
+  includeAllForPayments: boolean,
+): Promise<Invoice[]> {
+  const query = supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata",
     )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .eq("client_visible", true)
     .order("issue_date", { ascending: false })
+
+  const { data, error } = await query
 
   if (error) {
     console.error("Failed to load invoices for portal", error)
     return []
   }
-  return data ?? []
+
+  const invoices = data ?? []
+
+  // Ensure each invoice has a public token; generate if missing.
+  for (const inv of invoices) {
+    if (!inv.token) {
+      const newToken = randomBytes(32).toString("hex")
+      const { error: updateError } = await supabase
+        .from("invoices")
+        .update({ token: newToken })
+        .eq("id", inv.id)
+        .eq("org_id", orgId)
+      if (!updateError) {
+        inv.token = newToken
+      } else {
+        console.error("Failed to set invoice token for portal", inv.id, updateError.message)
+      }
+    }
+  }
+
+  return invoices
 }
 
 async function fetchRfis(supabase: any, orgId: string, projectId: string): Promise<Rfi[]> {

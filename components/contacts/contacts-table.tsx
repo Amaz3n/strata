@@ -27,17 +27,32 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ContactForm } from "@/components/contacts/contact-form"
-import type { Company, Contact } from "@/lib/types"
+import type { Company, Contact, Project } from "@/lib/types"
 import { archiveContactAction } from "@/app/contacts/actions"
+import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet"
+import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog"
 import { Filter, MoreHorizontal, Plus, Search } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
 interface ContactsTableProps {
   contacts: Contact[]
   companies: Company[]
+  projects: Project[]
+  canCreate?: boolean
+  canEdit?: boolean
+  canArchive?: boolean
+  canInvitePortal?: boolean
 }
 
-export function ContactsTable({ contacts, companies }: ContactsTableProps) {
+export function ContactsTable({
+  contacts,
+  companies,
+  projects,
+  canCreate = false,
+  canEdit = false,
+  canArchive = false,
+  canInvitePortal = false,
+}: ContactsTableProps) {
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState<string | undefined>()
   const [companyFilter, setCompanyFilter] = useState<string | undefined>()
@@ -46,6 +61,10 @@ export function ContactsTable({ contacts, companies }: ContactsTableProps) {
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
+  const [detailId, setDetailId] = useState<string | undefined>()
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false)
+  const [inviteContact, setInviteContact] = useState<Contact | undefined>()
 
   const filtered = useMemo(() => {
     return contacts
@@ -72,9 +91,26 @@ export function ContactsTable({ contacts, companies }: ContactsTableProps) {
     setOpen(false)
   }
 
+  const openDetail = (contactId: string) => {
+    setDetailId(contactId)
+    setDetailOpen(true)
+  }
+
+  const openInvite = (contact: Contact) => {
+    setInviteContact(contact)
+    setInviteOpen(true)
+  }
+
   const handleArchive = (contactId: string) => {
     startTransition(async () => {
       try {
+        if (!canArchive) {
+          toast({
+            title: "Permission required",
+            description: "You need admin or member management access to archive contacts.",
+          })
+          return
+        }
         await archiveContactAction(contactId)
         router.refresh()
         toast({ title: "Contact archived" })
@@ -96,21 +132,23 @@ export function ContactsTable({ contacts, companies }: ContactsTableProps) {
           </div>
         </div>
 
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => openEditor(undefined)}>
-              <Plus className="h-4 w-4 mr-2" />
-              New contact
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{selectedContact ? "Edit contact" : "Create contact"}</DialogTitle>
-              <DialogDescription>Track people you collaborate with and grant portal access.</DialogDescription>
-            </DialogHeader>
-            <ContactForm contact={selectedContact} companies={companies} onSubmitted={resetDialog} />
-          </DialogContent>
-        </Dialog>
+        {canCreate && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button onClick={() => openEditor(undefined)} disabled={!canCreate}>
+                <Plus className="h-4 w-4 mr-2" />
+                New contact
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>{selectedContact ? "Edit contact" : "Create contact"}</DialogTitle>
+                <DialogDescription>Track people you collaborate with and grant portal access.</DialogDescription>
+              </DialogHeader>
+              <ContactForm contact={selectedContact} companies={companies} onSubmitted={resetDialog} />
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -199,11 +237,17 @@ export function ContactsTable({ contacts, companies }: ContactsTableProps) {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem onClick={() => openEditor(contact)}>Edit</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openDetail(contact.id)}>View details</DropdownMenuItem>
+                        <DropdownMenuItem disabled={!canEdit} onClick={() => openEditor(contact)}>
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={!canInvitePortal} onClick={() => openInvite(contact)}>
+                          Send portal invite
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-destructive"
-                          disabled={isPending}
+                          disabled={isPending || !canArchive}
                           onClick={() => handleArchive(contact.id)}
                         >
                           Archive
@@ -224,6 +268,10 @@ export function ContactsTable({ contacts, companies }: ContactsTableProps) {
           </Table>
         </CardContent>
       </Card>
+
+      <ContactDetailSheet contactId={detailId} open={detailOpen} onOpenChange={setDetailOpen} />
+      <PortalInviteDialog contact={inviteContact} projects={projects} open={inviteOpen} onOpenChange={setInviteOpen} />
     </div>
   )
 }
+

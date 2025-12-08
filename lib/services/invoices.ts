@@ -1,6 +1,7 @@
+import { randomUUID } from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import type { Invoice, InvoiceLine, InvoiceTotals } from "@/lib/types"
+import type { Invoice, InvoiceLine, InvoiceTotals, InvoiceView } from "@/lib/types"
 import type { InvoiceInput, InvoiceLineInput } from "@/lib/validation/invoices"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -11,7 +12,8 @@ import { sendEmail } from "@/lib/services/mailer"
 type InvoiceRow = {
   id: string
   org_id: string
-  project_id: string
+  project_id?: string | null
+  token?: string | null
   invoice_number: string
   title?: string | null
   status: string
@@ -26,10 +28,14 @@ type InvoiceRow = {
   metadata?: Record<string, any> | null
   created_at?: string
   updated_at?: string
+  viewed_at?: string | null
+  sent_at?: string | null
+  sent_to_emails?: string[] | null
 }
 
 function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
   return lines.map((line) => ({
+    cost_code_id: line.cost_code_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",
@@ -71,18 +77,19 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     totalsFromMetadata ??
     (row.total_cents != null
       ? {
-          subtotal_cents: row.subtotal_cents ?? row.total_cents,
-          tax_cents: row.tax_cents ?? 0,
-          total_cents: row.total_cents,
-          balance_due_cents: row.balance_due_cents ?? row.total_cents,
-          tax_rate: metadata.tax_rate,
-        }
+        subtotal_cents: row.subtotal_cents ?? row.total_cents,
+        tax_cents: row.tax_cents ?? 0,
+        total_cents: row.total_cents,
+        balance_due_cents: row.balance_due_cents ?? row.total_cents,
+        tax_rate: metadata.tax_rate,
+      }
       : undefined)
 
   return {
     id: row.id,
     org_id: row.org_id,
-    project_id: row.project_id,
+    project_id: row.project_id ?? undefined,
+    token: row.token ?? undefined,
     invoice_number: row.invoice_number,
     title: row.title ?? `Invoice ${row.invoice_number}`,
     status: (row.status as Invoice["status"]) ?? "draft",
@@ -99,6 +106,25 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     totals,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    viewed_at: row.viewed_at ?? undefined,
+    sent_at: row.sent_at ?? undefined,
+    sent_to_emails: row.sent_to_emails ?? undefined,
+  }
+}
+
+function mapInvoiceWithLines(row: any) {
+  const mapped = mapInvoiceRow(row as InvoiceRow)
+  const rawLines = (row as any).invoice_lines || []
+  const mappedLines = rawLines.map((l: any) => ({
+    ...l,
+    cost_code_id: l.cost_code_id ?? null,
+    unit_cost_cents: l.unit_price_cents,
+    taxable: (l.metadata as any)?.taxable ?? l.taxable ?? undefined,
+  }))
+
+  return {
+    ...mapped,
+    lines: mappedLines.length > 0 ? mappedLines : mapped.lines ?? [],
   }
 }
 
@@ -132,7 +158,7 @@ export async function listInvoices({
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
     )
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
@@ -148,10 +174,13 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
 
   const lines = normalizeLines(input.lines)
   const totals = calculateTotals(input.lines, input.tax_rate)
+  const shouldGenerateToken = input.client_visible === true || input.status === "sent"
+  const token = shouldGenerateToken ? randomUUID() : null
 
   const payload = {
     org_id: resolvedOrgId,
-    project_id: input.project_id,
+    project_id: input.project_id ?? null,
+    token,
     invoice_number: input.invoice_number,
     title: input.title,
     status: input.status ?? "draft",
@@ -168,14 +197,17 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       totals,
       tax_rate: input.tax_rate,
       created_by: userId,
+      payment_terms_days: input.payment_terms_days,
     },
+    sent_at: input.status === "sent" || input.client_visible ? new Date().toISOString() : null,
+    sent_to_emails: input.sent_to_emails ?? null,
   }
 
   const { data, error } = await supabase
     .from("invoices")
     .insert(payload)
     .select(
-      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at",
     )
     .single()
 
@@ -188,11 +220,12 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     lines.map((line) => ({
       org_id: resolvedOrgId,
       invoice_id: data.id,
+      cost_code_id: line.cost_code_id ?? null,
       description: line.description,
       quantity: line.quantity,
       unit: line.unit,
-      unit_cost_cents: line.unit_cost_cents,
-      taxable: line.taxable ?? true,
+      unit_price_cents: line.unit_cost_cents,
+      // taxable: line.taxable ?? true,
     })),
   )
 
@@ -235,7 +268,7 @@ export async function getInvoiceForPortal(invoiceId: string, orgId: string, proj
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, invoice_lines (id, description, quantity, unit, unit_cost_cents, taxable)",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -244,11 +277,135 @@ export async function getInvoiceForPortal(invoiceId: string, orgId: string, proj
 
   if (error) throw new Error(`Failed to load invoice: ${error.message}`)
   if (!data) return null
-  const mapped = mapInvoiceRow(data as InvoiceRow)
-  return {
-    ...mapped,
-    lines: (data as any).invoice_lines ?? mapped.lines ?? [],
+  return mapInvoiceWithLines(data)
+}
+
+export async function getInvoiceByToken(token: string) {
+  if (!token) return null
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("invoices")
+    .select(
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+    )
+    .eq("token", token)
+    .maybeSingle()
+
+  if (error) {
+    console.error("Failed to load invoice by token", error)
+    return null
   }
+
+  if (!data) return null
+  return mapInvoiceWithLines(data)
+}
+
+export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Promise<Invoice | null> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { data, error } = await supabase
+    .from("invoices")
+    .select(
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+    )
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (error) {
+    console.error("Failed to load invoice with lines", error)
+    return null
+  }
+
+  if (!data) return null
+  return mapInvoiceWithLines(data)
+}
+
+export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, token, client_visible")
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error(error?.message ?? "Invoice not found")
+  }
+
+  if (data.token) return data.token
+
+  const newToken = randomUUID()
+  const { data: updated, error: updateError } = await supabase
+    .from("invoices")
+    .update({ token: newToken, client_visible: data.client_visible ?? true })
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .select("token")
+    .single()
+
+  if (updateError || !updated) {
+    throw new Error(updateError?.message ?? "Failed to generate invoice link")
+  }
+
+  return updated.token
+}
+
+export async function recordInvoiceViewed({
+  invoiceId,
+  orgId,
+  token,
+  userAgent,
+  ipAddress,
+}: {
+  invoiceId: string
+  orgId: string
+  token?: string | null
+  userAgent?: string | null
+  ipAddress?: string | null
+}) {
+  if (!invoiceId || !orgId) return
+  const supabase = createServiceSupabaseClient()
+  try {
+    const viewedAt = new Date().toISOString()
+
+    await Promise.all([
+      supabase.from("invoices").update({ viewed_at: viewedAt }).eq("id", invoiceId).eq("org_id", orgId),
+      supabase
+        .from("invoice_views")
+        .insert({
+          invoice_id: invoiceId,
+          org_id: orgId,
+          token: token ?? null,
+          user_agent: userAgent ?? null,
+          ip_address: ipAddress ?? null,
+          viewed_at: viewedAt,
+        })
+        .select("id")
+        .maybeSingle(),
+    ])
+  } catch (err) {
+    console.warn("Failed to record invoice view", err)
+  }
+}
+
+export async function listInvoiceViews(invoiceId: string, orgId?: string): Promise<InvoiceView[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { data, error } = await supabase
+    .from("invoice_views")
+    .select("id, org_id, invoice_id, token, user_agent, ip_address, viewed_at, created_at")
+    .eq("invoice_id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .order("viewed_at", { ascending: false })
+    .limit(50)
+
+  if (error) {
+    console.error("Failed to list invoice views", error)
+    return []
+  }
+
+  return data ?? []
 }
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"

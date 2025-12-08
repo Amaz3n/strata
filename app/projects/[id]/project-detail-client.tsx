@@ -45,7 +45,7 @@ import {
 import { FilesManager } from "@/components/files"
 import { ScheduleView } from "@/components/schedule"
 import { DailyLogsTab } from "@/components/daily-logs"
-import { TasksTab } from "@/components/tasks"
+import { TasksTab } from "@/components/tasks/tasks-tab"
 import { scheduleItemInputSchema, type ScheduleItemInput } from "@/lib/validation/schedule"
 import { cn } from "@/lib/utils"
 
@@ -680,6 +680,121 @@ export function ProjectDetailClient({
               </div>
             </CardContent>
           </Card>
+
+          {stats.budgetSummary && (
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <div className="space-y-1">
+                  <CardTitle className="text-sm font-medium">Budget Summary</CardTitle>
+                  <CardDescription>Budget vs committed vs actual with variance.</CardDescription>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={
+                    stats.budgetSummary.variancePercent > 100
+                      ? "border-destructive/40 text-destructive"
+                      : stats.budgetSummary.variancePercent > 90
+                        ? "border-amber-500/50 text-amber-500"
+                        : "border-emerald-500/40 text-emerald-600 dark:text-emerald-300"
+                  }
+                >
+                  {stats.budgetSummary.variancePercent}% of budget
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-4">
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Adjusted budget</p>
+                    <p className="text-lg font-semibold">
+                      {(stats.budgetSummary.adjustedBudgetCents / 100).toLocaleString("en-US", {
+                        style: "currency",
+                        currency: "USD",
+                        maximumFractionDigits: 0,
+                      })}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Committed</p>
+                    <p className="text-lg font-semibold">
+                      {(stats.budgetSummary.totalCommittedCents / 100).toLocaleString("en-US", {
+                        style: "currency",
+                        currency: "USD",
+                        maximumFractionDigits: 0,
+                      })}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Actual</p>
+                    <p className="text-lg font-semibold">
+                      {(stats.budgetSummary.totalActualCents / 100).toLocaleString("en-US", {
+                        style: "currency",
+                        currency: "USD",
+                        maximumFractionDigits: 0,
+                      })}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Invoiced</p>
+                    <p className="text-lg font-semibold">
+                      {(stats.budgetSummary.totalInvoicedCents / 100).toLocaleString("en-US", {
+                        style: "currency",
+                        currency: "USD",
+                        maximumFractionDigits: 0,
+                      })}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-4 items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">Variance</span>
+                    <span
+                      className={
+                        stats.budgetSummary.variancePercent > 100
+                          ? "text-destructive font-semibold"
+                          : stats.budgetSummary.variancePercent > 90
+                            ? "text-amber-500 font-semibold"
+                            : "text-emerald-600 dark:text-emerald-300 font-semibold"
+                      }
+                    >
+                      {stats.budgetSummary.variancePercent}% (
+                      {(stats.budgetSummary.varianceCents / 100).toLocaleString("en-US", {
+                        style: "currency",
+                        currency: "USD",
+                        maximumFractionDigits: 0,
+                      })}
+                      )
+                    </span>
+                  </div>
+                  <Separator orientation="vertical" className="h-6" />
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">Gross margin</span>
+                    <span className="font-semibold">{stats.budgetSummary.grossMarginPercent}%</span>
+                  </div>
+                  {typeof stats.budgetSummary.trendPercent === "number" && (
+                    <>
+                      <Separator orientation="vertical" className="h-6" />
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Trend vs prior snapshot</span>
+                        <span
+                          className={
+                            stats.budgetSummary.trendPercent > 0
+                              ? "text-amber-500 font-semibold"
+                              : stats.budgetSummary.trendPercent < 0
+                                ? "text-emerald-600 dark:text-emerald-300 font-semibold"
+                                : "text-muted-foreground"
+                          }
+                        >
+                          {stats.budgetSummary.trendPercent > 0 ? "▲" : stats.budgetSummary.trendPercent < 0 ? "▼" : "→"}{" "}
+                          {Math.abs(Math.round(stats.budgetSummary.trendPercent))}%
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Stats Grid */}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

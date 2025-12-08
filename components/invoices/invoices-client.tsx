@@ -1,22 +1,37 @@
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
-import { format } from "date-fns"
+import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 
-import type { Invoice, Project } from "@/lib/types"
+import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
-import { createInvoiceAction } from "@/app/invoices/actions"
-import { InvoiceForm } from "@/components/invoices/invoice-form"
+import { createInvoiceAction, generateInvoiceLinkAction, getInvoiceDetailAction } from "@/app/invoices/actions"
+import { MiddayInvoiceSheet } from "@/components/invoices/midday/midday-invoice-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal } from "@/components/icons"
+import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Plus, Calendar, DollarSign, Building2 } from "@/components/icons"
 
 type StatusKey = "draft" | "sent" | "paid" | "overdue" | "void"
+type StatusFilter = StatusKey | "all"
+type DueFilter = "any" | "due_soon" | "overdue" | "no_due"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
@@ -48,26 +63,73 @@ function resolveStatusKey(status?: string | null): StatusKey {
 interface InvoicesClientProps {
   invoices: Invoice[]
   projects: Project[]
+  builderInfo?: {
+    name?: string | null
+    email?: string | null
+    address?: string | null
+  }
+  contacts?: Contact[]
+  costCodes?: CostCode[]
 }
 
-export function InvoicesClient({ invoices, projects }: InvoicesClientProps) {
+export function InvoicesClient({ invoices, projects, builderInfo, contacts, costCodes }: InvoicesClientProps) {
   const [items, setItems] = useState<Invoice[]>(invoices)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
+  const [dueFilter, setDueFilter] = useState<DueFilter>("any")
+  const [searchTerm, setSearchTerm] = useState("")
   const [sheetOpen, setSheetOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const [linkingId, setLinkingId] = useState<string | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null)
+  const [detailLink, setDetailLink] = useState<string | undefined>(undefined)
+  const [detailViews, setDetailViews] = useState<InvoiceView[] | undefined>(undefined)
+
+  const projectLookup = useMemo(() => {
+    return projects.reduce<Record<string, Project>>((acc, project) => {
+      acc[project.id] = project
+      return acc
+    }, {})
+  }, [projects])
 
   const filtered = useMemo(() => {
-    if (filterProjectId === "all") return items
-    return items.filter((item) => item.project_id === filterProjectId)
-  }, [filterProjectId, items])
+    const term = searchTerm.trim().toLowerCase()
+    const today = new Date()
+    const soon = addDays(today, 7)
 
-  const stats = useMemo(() => {
-    return {
-      total: items.length,
-      outstanding: items.filter((inv) => inv.status === "sent" || inv.status === "overdue").length,
-      paid: items.filter((inv) => inv.status === "paid").length,
-    }
-  }, [items])
+    return items.filter((item) => {
+      const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
+      const resolvedStatus = resolveStatusKey(item.status)
+      const matchesStatus = statusFilter === "all" || resolvedStatus === statusFilter
+
+      const dueDate = item.due_date ? new Date(item.due_date) : null
+      const matchesDue =
+        dueFilter === "any"
+          ? true
+          : dueFilter === "no_due"
+            ? !dueDate
+            : dueDate
+              ? dueFilter === "overdue"
+                ? dueDate < today
+                : dueDate >= today && dueDate <= soon
+              : false
+
+      const matchesSearch =
+        term.length === 0 ||
+        [item.title ?? "", item.invoice_number ?? "", projectLookup[item.project_id]?.name ?? ""].some((value) =>
+          value.toLowerCase().includes(term),
+        )
+
+      return matchesProject && matchesStatus && matchesDue && matchesSearch
+    })
+  }, [dueFilter, filterProjectId, items, projectLookup, searchTerm, statusFilter])
+
+  const visibleIds = useMemo(() => filtered.map((item) => item.id), [filtered])
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
+  const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id)) && !allVisibleSelected
 
   async function handleCreate(values: InvoiceInput, sendToClient: boolean) {
     startTransition(async () => {
@@ -85,151 +147,301 @@ export function InvoicesClient({ invoices, projects }: InvoicesClientProps) {
     })
   }
 
+  async function handleShare(invoiceId: string) {
+    setLinkingId(invoiceId)
+    try {
+      const result = await generateInvoiceLinkAction(invoiceId)
+      setItems((prev) => prev.map((inv) => (inv.id === invoiceId ? { ...inv, token: result.token } : inv)))
+
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(result.url)
+        toast.success("Share link copied", { description: result.url })
+      } else {
+        toast.success("Share link ready", { description: result.url })
+      }
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not generate link", { description: error?.message ?? "Please try again." })
+    } finally {
+      setLinkingId(null)
+    }
+  }
+
+  async function handleOpenDetail(invoiceId: string) {
+    setDetailOpen(true)
+    setDetailLoading(true)
+    try {
+      const result = await getInvoiceDetailAction(invoiceId)
+      setDetailInvoice(result.invoice)
+      setDetailLink(result.link)
+      setDetailViews(result.views as InvoiceView[])
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not load invoice", { description: error?.message ?? "Please try again." })
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  function toggleSelectAll(checked: boolean | "indeterminate") {
+    if (checked) {
+      const merged = Array.from(new Set([...selectedIds, ...visibleIds]))
+      setSelectedIds(merged)
+    } else {
+      setSelectedIds((prev) => prev.filter((id) => !visibleIds.includes(id)))
+    }
+  }
+
+  function toggleSelectOne(id: string, checked: boolean | "indeterminate") {
+    if (checked) {
+      setSelectedIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    } else {
+      setSelectedIds((prev) => prev.filter((itemId) => itemId !== id))
+    }
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Invoices</h1>
-          <p className="text-muted-foreground text-sm">Progress and final invoices with client visibility.</p>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <Badge variant="secondary" className="text-xs">
-              Total {stats.total}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Outstanding {stats.outstanding}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Paid {stats.paid}
-            </Badge>
+    <div className="space-y-4 lg:space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="w-full sm:max-w-xl">
+          <div className="relative">
+            <Input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search or filter"
+              className="pr-12"
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 h-8 w-8 border-0 shadow-none hover:bg-muted"
+                >
+                  <Filter className="h-4 w-4" />
+                  <span className="sr-only">Filters</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Building2 className="mr-2 h-4 w-4" />
+                    By project
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56" sideOffset={8} align="start">
+                    <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
+                      <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
+                      {projects.map((project) => (
+                        <DropdownMenuRadioItem key={project.id} value={project.id}>
+                          {project.name}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Calendar className="mr-2 h-4 w-4" />
+                    By due date
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56" sideOffset={8} align="start">
+                    <DropdownMenuRadioGroup value={dueFilter} onValueChange={(value) => setDueFilter(value as DueFilter)}>
+                      <DropdownMenuRadioItem value="any">Any due date</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="due_soon">Due in next 7 days</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="no_due">No due date</DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <List className="mr-2 h-4 w-4" />
+                    Status
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56" sideOffset={8} align="start">
+                    <DropdownMenuRadioGroup
+                      value={statusFilter}
+                      onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+                    >
+                      <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
+                      {(["draft", "sent", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
+                        <DropdownMenuRadioItem key={status} value={status}>
+                          {statusLabels[status]}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-full sm:w-[220px]">
-              <SelectValue placeholder="Filter by project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-2" />
-            New invoice
-          </Button>
-        </div>
+        <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+          <Plus className="h-4 w-4 mr-2" />
+          New invoice
+        </Button>
       </div>
 
-      <InvoiceForm
+      <MiddayInvoiceSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         projects={projects}
         defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
         onSubmit={handleCreate}
         isSubmitting={isPending}
+        builderInfo={builderInfo}
+        contacts={contacts}
+        costCodes={costCodes}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((invoice) => (
-          <Card key={invoice.id} className="h-full flex flex-col">
-            <CardHeader className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base font-semibold">
-                  {invoice.invoice_number} — {invoice.title}
-                </CardTitle>
-                <Badge
-                  variant="secondary"
-                  className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}
-                >
-                  {statusLabels[resolveStatusKey(invoice.status)]}
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Building2 className="h-4 w-4" />
-                  {projects.find((p) => p.id === invoice.project_id)?.name ?? "Unknown project"}
-                </span>
-                {invoice.due_date && (
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-4 w-4" />
-                    Due {format(new Date(invoice.due_date), "MMM d, yyyy")}
-                  </span>
-                )}
-                {invoice.client_visible && (
-                  <Badge variant="outline" className="text-[11px]">
-                    Client can view
-                  </Badge>
-                )}
-              </div>
-            </CardHeader>
-
-            <CardContent className="flex-1 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-muted-foreground">Total</div>
-                <div className="text-xl font-bold">{formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)}</div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span className="font-medium">
-                    {formatMoneyFromCents(invoice.totals?.subtotal_cents ?? invoice.subtotal_cents)}
-                  </span>
+      <div className="rounded-lg border overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="divide-x">
+              <TableHead className="w-12 px-4 py-4 text-center">
+                <div className="flex justify-center">
+                  <Checkbox
+                    checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
+                    onCheckedChange={toggleSelectAll}
+                    aria-label="Select all invoices"
+                  />
                 </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Tax</span>
-                  <span className="font-medium">{formatMoneyFromCents(invoice.totals?.tax_cents ?? invoice.tax_cents)}</span>
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Balance due</span>
-                  <span className="font-medium">
-                    {formatMoneyFromCents(invoice.balance_due_cents ?? invoice.totals?.balance_due_cents)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                <Badge variant="outline" className="text-xs">
-                  {invoice.lines?.length ?? 0} line items
-                </Badge>
-                <Badge variant="outline" className="text-xs">
-                  Tax {invoice.totals?.tax_rate ?? invoice.metadata?.tax_rate ?? 0}%
-                </Badge>
-                {invoice.issue_date && (
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-3 w-3" />
-                    Issued {format(new Date(invoice.issue_date), "MMM d, yyyy")}
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-
-        {filtered.length === 0 && (
-          <div className="col-span-full rounded-lg border border-dashed p-8 text-center">
-            <p className="text-sm text-muted-foreground">No invoices yet.</p>
-            <Button className="mt-3" onClick={() => setSheetOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create your first invoice
-            </Button>
-          </div>
-        )}
-
-        {isPending && filtered.length === 0 && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {[...Array(3)].map((_, idx) => (
-              <Skeleton key={idx} className="h-44 w-full rounded-lg" />
-            ))}
-          </div>
-        )}
+              </TableHead>
+              <TableHead className="min-w-[260px] px-4 py-4">Invoice No.</TableHead>
+              <TableHead className="px-4 py-4">Project</TableHead>
+              <TableHead className="px-4 py-4 text-center">Issue date</TableHead>
+              <TableHead className="px-4 py-4 text-center">Due date</TableHead>
+              <TableHead className="text-right px-4 py-4">Amount</TableHead>
+              <TableHead className="px-4 py-4 text-center">Status</TableHead>
+              <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.map((invoice) => {
+              const projectName = projectLookup[invoice.project_id]?.name ?? "Unknown project"
+              const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
+              const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
+              return (
+                <TableRow key={invoice.id} className="align-top divide-x">
+                  <TableCell className="w-12 text-center align-middle px-4 py-4">
+                    <div className="flex justify-center">
+                      <Checkbox
+                        checked={selectedIds.includes(invoice.id)}
+                        onCheckedChange={(checked) => toggleSelectOne(invoice.id, checked)}
+                        aria-label={`Select invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
+                      />
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4">
+                    <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDetail(invoice.id)}
+                        className="font-semibold text-left hover:text-primary transition-colors"
+                        aria-label={`View invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
+                      >
+                        {invoiceLabel}
+                      </button>
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground">
+                    {projectName}
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                    {invoice.issue_date ? format(new Date(invoice.issue_date), "MMM d, yyyy") : "—"}
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                    {invoice.due_date ? format(new Date(invoice.due_date), "MMM d, yyyy") : "—"}
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-right">
+                    <div className="font-semibold">{total}</div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    <Badge
+                      variant="secondary"
+                      className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}
+                    >
+                      {statusLabels[resolveStatusKey(invoice.status)]}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-center w-12 px-4 py-4">
+                    <div className="flex justify-center">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreHorizontal className="h-4 w-4" />
+                            <span className="sr-only">Invoice actions</span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            disabled={linkingId === invoice.id}
+                            onSelect={(event) => {
+                              event.preventDefault()
+                              handleShare(invoice.id)
+                            }}
+                          >
+                            {linkingId === invoice.id ? "Copying…" : "Copy link"}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+            {filtered.length === 0 && !isPending && (
+              <TableRow className="divide-x">
+                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                      <FolderOpen className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="font-medium">No invoices yet</p>
+                      <p className="text-sm">Create your first invoice to get started.</p>
+                    </div>
+                    <Button onClick={() => setSheetOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Create invoice
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            )}
+            {isPending && filtered.length === 0 && (
+              <TableRow className="divide-x">
+                <TableCell colSpan={7}>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {[...Array(3)].map((_, idx) => (
+                      <Skeleton key={idx} className="h-24 w-full rounded-md" />
+                    ))}
+                  </div>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
       </div>
+
+      <InvoiceDetailSheet
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        invoice={detailInvoice}
+        link={detailLink}
+        views={detailViews}
+        loading={detailLoading}
+        onCopyLink={async () => {
+          if (detailLink && typeof navigator !== "undefined" && navigator.clipboard) {
+            await navigator.clipboard.writeText(detailLink)
+            toast.success("Link copied")
+          }
+        }}
+      />
     </div>
   )
 }
+

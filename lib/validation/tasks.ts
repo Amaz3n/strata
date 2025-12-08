@@ -27,7 +27,7 @@ export const taskTradeSchema = z.enum([
   "other",
 ])
 
-export const taskInputSchema = z.object({
+const baseTaskSchema = z.object({
   project_id: z.string().uuid("Project is required"),
   title: z.string().min(2, "Title is required"),
   description: z.string().optional(),
@@ -36,6 +36,7 @@ export const taskInputSchema = z.object({
   start_date: z.string().optional(),
   due_date: z.string().optional(),
   assignee_id: z.string().uuid().optional(),
+  assignee_kind: z.enum(["user", "contact", "company"]).optional(),
   // Construction-specific
   location: z.string().optional(),
   trade: taskTradeSchema.optional(),
@@ -44,11 +45,29 @@ export const taskInputSchema = z.object({
   checklist: z.array(taskChecklistItemSchema).optional(),
 })
 
-export const taskUpdateSchema = taskInputSchema.partial().extend({
-  status: z.enum(["todo", "in_progress", "blocked", "done"]).optional(),
-  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-  actual_hours: z.number().min(0).optional(),
+const assigneeRefinement = (data: { assignee_id?: string; assignee_kind?: string }) => {
+  if (data.assignee_kind) {
+    return !!data.assignee_id
+  }
+  return true
+}
+
+export const taskInputSchema = baseTaskSchema.refine(assigneeRefinement, {
+  message: "Assignee id is required when assignee type is set",
+  path: ["assignee_id"],
 })
+
+export const taskUpdateSchema = baseTaskSchema
+  .partial()
+  .extend({
+    status: z.enum(["todo", "in_progress", "blocked", "done"]).optional(),
+    priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+    actual_hours: z.number().min(0).optional(),
+  })
+  .refine(assigneeRefinement, {
+    message: "Assignee id is required when assignee type is set",
+    path: ["assignee_id"],
+  })
 
 export type TaskInput = z.infer<typeof taskInputSchema>
 export type TaskUpdate = z.infer<typeof taskUpdateSchema>

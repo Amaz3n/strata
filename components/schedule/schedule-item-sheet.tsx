@@ -19,6 +19,7 @@ import {
 import { useSchedule } from "./schedule-context"
 import { PHASE_COLORS, parseDate, toDateString } from "./types"
 import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/projects/[id]/actions"
+import { setScheduleAssigneeAction } from "@/app/schedule/assignment-actions"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -153,9 +154,10 @@ export function ScheduleItemSheet({
   }
 
   // Get selected resource info for display
-  const getSelectedResource = (id: string | undefined) => {
-    if (!id) return null
-    return assignableResources.find(r => r.id === id)
+  const getSelectedResource = (value: string | undefined) => {
+    if (!value) return null
+    const [type, id] = value.split(":")
+    return assignableResources.find((r) => r.id === id && r.type === type)
   }
 
   // Get initials for avatar
@@ -194,7 +196,7 @@ export function ScheduleItemSheet({
         start_date: item.start_date || "",
         end_date: item.end_date || "",
         progress: item.progress || 0,
-        assigned_to: item.assigned_to,
+        assigned_to: item.assigned_to ? `user:${item.assigned_to}` : undefined,
         phase: item.phase || undefined,
         trade: item.trade || undefined,
         location: item.location || undefined,
@@ -249,10 +251,41 @@ export function ScheduleItemSheet({
         end_date: dateRange?.to ? toDateString(dateRange.to) : "",
       }
 
+      const assigneeValue = formattedValues.assigned_to as string | undefined
+      let assignee: { type: "user" | "contact" | "company"; id: string } | null = null
+      if (assigneeValue && assigneeValue !== "__none__") {
+        const [type, id] = assigneeValue.split(":")
+        if (type === "user" || type === "contact" || type === "company") {
+          assignee = { type, id }
+        }
+      }
+
+      // For contact/company, we can't set assigned_to FK. Strip it before sending to server.
+      const payload =
+        assignee?.type === "user"
+          ? { ...formattedValues, assigned_to: assignee.id }
+          : { ...formattedValues, assigned_to: undefined }
+
       if (isEditing && item) {
-        await onItemUpdate(item.id, formattedValues)
+        await onItemUpdate(item.id, payload)
+        if (assignee) {
+          await setScheduleAssigneeAction({
+            scheduleItemId: item.id,
+            projectId: item.project_id,
+            assignee,
+          })
+        } else {
+          await setScheduleAssigneeAction({ scheduleItemId: item.id, projectId: item.project_id, assignee: null })
+        }
       } else {
-        await onItemCreate(formattedValues)
+        const created = await onItemCreate(payload)
+        if (created && assignee) {
+          await setScheduleAssigneeAction({
+            scheduleItemId: created.id,
+            projectId: created.project_id,
+            assignee,
+          })
+        }
       }
       
       onOpenChange(false)
@@ -511,11 +544,11 @@ export function ScheduleItemSheet({
                       const selected = getSelectedResource(field.value)
                       return (
                         <FormItem>
-                          <FormLabel>Assign To</FormLabel>
-                          <Select
-                            onValueChange={(value) => field.onChange(value === "__none__" ? undefined : value)}
-                            value={field.value || "__none__"}
-                          >
+                        <FormLabel>Assign To</FormLabel>
+                        <Select
+                          onValueChange={(value) => field.onChange(value === "__none__" ? undefined : value)}
+                          value={field.value || "__none__"}
+                        >
                             <FormControl>
                               <SelectTrigger className="w-full">
                                 <SelectValue placeholder="Select assignee">
@@ -547,7 +580,7 @@ export function ScheduleItemSheet({
                                     Team Members
                                   </SelectLabel>
                                   {groupedResources.users.map((resource) => (
-                                    <SelectItem key={resource.id} value={resource.id}>
+                                    <SelectItem key={resource.id} value={`user:${resource.id}`}>
                                       <div className="flex items-center gap-2">
                                         <Avatar className="h-5 w-5">
                                           <AvatarImage src={resource.avatar_url} />
@@ -574,7 +607,7 @@ export function ScheduleItemSheet({
                                     Contacts / Subcontractors
                                   </SelectLabel>
                                   {groupedResources.contacts.map((resource) => (
-                                    <SelectItem key={resource.id} value={resource.id}>
+                                    <SelectItem key={resource.id} value={`contact:${resource.id}`}>
                                       <div className="flex items-center gap-2">
                                         <Avatar className="h-5 w-5">
                                           <AvatarFallback className="text-[10px]">
@@ -600,7 +633,7 @@ export function ScheduleItemSheet({
                                     Companies / Crews
                                   </SelectLabel>
                                   {groupedResources.companies.map((resource) => (
-                                    <SelectItem key={resource.id} value={resource.id}>
+                                    <SelectItem key={resource.id} value={`company:${resource.id}`}>
                                       <div className="flex items-center gap-2">
                                         <Avatar className="h-5 w-5">
                                           <AvatarFallback className="text-[10px] bg-primary/10">

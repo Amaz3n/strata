@@ -2,6 +2,7 @@ import { notFound } from "next/navigation"
 
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
+import { createPaymentIntent } from "@/lib/services/payments"
 import { InvoicePortalClient } from "./portal-invoice-client"
 
 interface Params {
@@ -18,9 +19,43 @@ export default async function InvoicePortalPage({ params }: Params) {
   }
 
   const invoice = await getInvoiceForPortal(id, access.org_id, access.project_id)
-  if (!invoice || !invoice.client_visible) {
+  if (!invoice) {
     notFound()
   }
 
-  return <InvoicePortalClient invoice={invoice} portalType="client" />
+  const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+
+  let paymentProps:
+    | {
+        clientSecret: string
+        publishableKey: string
+        token: string
+      }
+    | null = null
+
+  if (publishableKey) {
+    try {
+      const intent = await createPaymentIntent(
+        {
+          invoice_id: invoice.id,
+        },
+        access.org_id,
+      )
+
+      if (intent?.client_secret) {
+        paymentProps = {
+          clientSecret: intent.client_secret,
+          publishableKey,
+          token,
+        }
+      }
+    } catch (err) {
+      // If invoice is already paid or payments are not configured (missing Stripe key), skip the payment panel.
+      console.warn("Payment intent not created for portal invoice:", err)
+    }
+  }
+
+  return <InvoicePortalClient invoice={invoice} portalType="client" payment={paymentProps} />
 }
+
+

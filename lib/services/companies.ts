@@ -5,6 +5,7 @@ import { companyFiltersSchema, companyInputSchema, companyUpdateSchema, type Com
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
+import { hasPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 function mapCompany(row: any): Company {
   const metadata = row?.metadata ?? {}
@@ -51,7 +52,8 @@ function mapContact(row: any): Contact {
 }
 
 export async function listCompanies(orgId?: string, filters?: CompanyFilters): Promise<Company[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
   return listCompaniesWithClient(supabase, resolvedOrgId, filters)
 }
 
@@ -93,7 +95,8 @@ export async function listCompaniesWithClient(
 }
 
 export async function getCompany(companyId: string, orgId?: string): Promise<Company & { contacts: Contact[] }> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("companies")
@@ -152,6 +155,7 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
 export async function createCompany({ input, orgId }: { input: CompanyInput; orgId?: string }): Promise<Company> {
   const parsed = companyInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("companies")
@@ -196,6 +200,7 @@ export async function updateCompany({
 }): Promise<Company> {
   const parsed = companyUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
@@ -262,6 +267,13 @@ export async function updateCompany({
 
 export async function archiveCompany(companyId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const canArchive =
+    (await hasPermission("org.admin", { supabase, orgId: resolvedOrgId, userId })) ||
+    (await hasPermission("members.manage", { supabase, orgId: resolvedOrgId, userId }))
+
+  if (!canArchive) {
+    throw new Error("Missing permission: org.admin")
+  }
 
   // Prevent archiving if there are assignments
   const { count, error: assignmentError } = await supabase
@@ -368,3 +380,4 @@ export async function getCompanyProjects(
 
   return projects ?? []
 }
+

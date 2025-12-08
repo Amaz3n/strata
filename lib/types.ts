@@ -6,6 +6,7 @@ export interface Org {
   id: string
   name: string
   slug: string
+  address?: Address
   created_at: string
   updated_at: string
 }
@@ -60,6 +61,7 @@ export interface Company {
   updated_at?: string
   contact_count?: number
   project_count?: number
+  contacts?: Contact[]
 }
 
 export type ContactType = "internal" | "subcontractor" | "client" | "vendor" | "consultant"
@@ -80,6 +82,7 @@ export interface Contact {
   created_at: string
   updated_at?: string
   companies?: ContactCompanyLink[]
+  company_details?: Company[]
 }
 
 export interface ContactCompanyLink {
@@ -166,11 +169,15 @@ export interface Task {
   status: TaskStatus
   priority: TaskPriority
   assignee_id?: string
+  assignee_kind?: "user" | "contact" | "company"
   assignee?: {
     id: string
     full_name: string
     avatar_url?: string
+    email?: string
   }
+  assignee_contact?: { id: string; full_name: string; email?: string; company_name?: string }
+  assignee_company?: { id: string; name: string; company_type?: string }
   start_date?: string
   due_date?: string
   completed_at?: string
@@ -416,6 +423,21 @@ export interface ChangeOrderTotals {
   markup_percent?: number | null
 }
 
+export interface CostCode {
+  id: string
+  org_id: string
+  parent_id?: string | null
+  code: string
+  name: string
+  division?: string | null
+  category?: string | null
+  standard?: string | null
+  unit?: string | null
+  default_unit_cost_cents?: number | null
+  is_active?: boolean | null
+  metadata?: Record<string, any>
+}
+
 export interface ChangeOrder {
   id: string
   org_id: string
@@ -440,6 +462,7 @@ export interface ChangeOrder {
 
 export interface InvoiceLine {
   id?: string
+  cost_code_id?: string | null
   description: string
   quantity: number
   unit?: string | null
@@ -458,7 +481,8 @@ export interface InvoiceTotals {
 export interface Invoice {
   id: string
   org_id: string
-  project_id: string
+  project_id?: string | null
+  token?: string | null
   invoice_number: string
   title: string
   status: "draft" | "sent" | "paid" | "overdue" | "void"
@@ -475,6 +499,222 @@ export interface Invoice {
   totals?: InvoiceTotals
   created_at?: string
   updated_at?: string
+  viewed_at?: string | null
+  sent_at?: string | null
+  sent_to_emails?: string[] | null
+}
+
+export type PaymentStatus = "pending" | "processing" | "succeeded" | "failed" | "canceled" | "refunded"
+export type PaymentMethodType = "ach" | "card" | "wire" | "check"
+
+export interface Payment {
+  id: string
+  org_id: string
+  project_id?: string | null
+  invoice_id?: string | null
+  bill_id?: string | null
+  amount_cents: number
+  currency: string
+  method?: PaymentMethodType | string | null
+  provider?: string | null
+  provider_payment_id?: string | null
+  status: PaymentStatus
+  reference?: string | null
+  fee_cents?: number | null
+  net_cents?: number | null
+  metadata?: Record<string, any>
+  received_at: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface PaymentIntent {
+  id: string
+  org_id: string
+  project_id?: string | null
+  invoice_id?: string | null
+  provider: string
+  provider_intent_id?: string | null
+  status: string
+  amount_cents: number
+  currency: string
+  client_secret?: string | null
+  idempotency_key?: string | null
+  expires_at?: string | null
+  metadata?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface PaymentLink {
+  id: string
+  org_id: string
+  invoice_id: string
+  token_hash?: string
+  nonce?: string
+  expires_at?: string | null
+  max_uses?: number | null
+  used_count?: number
+  metadata?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface InvoiceView {
+  id: string
+  org_id: string
+  invoice_id: string
+  token?: string | null
+  user_agent?: string | null
+  ip_address?: string | null
+  viewed_at: string
+  created_at?: string
+}
+
+export interface EstimateItem {
+  id?: string
+  org_id?: string
+  estimate_id?: string
+  cost_code_id?: string | null
+  item_type?: "line" | "group"
+  description: string
+  quantity?: number
+  unit?: string | null
+  unit_cost_cents?: number | null
+  markup_pct?: number | null
+  sort_order?: number | null
+  metadata?: Record<string, any>
+}
+
+export interface Estimate {
+  id: string
+  org_id: string
+  project_id: string
+  title: string
+  status: string
+  version: number
+  subtotal_cents?: number | null
+  tax_cents?: number | null
+  total_cents?: number | null
+  currency?: string | null
+  metadata?: Record<string, any>
+  created_by?: string | null
+  created_at?: string
+  updated_at?: string
+  items?: EstimateItem[]
+}
+
+export interface EstimateTemplate {
+  id: string
+  org_id: string
+  name: string
+  description?: string | null
+  lines: EstimateItem[]
+  is_default?: boolean | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface DrawSchedule {
+  id: string
+  org_id: string
+  project_id: string
+  invoice_id?: string | null
+  contract_id?: string | null
+  draw_number: number
+  title: string
+  description?: string | null
+  amount_cents: number
+  percent_of_contract?: number | null
+  due_date?: string | null
+  due_trigger?: "date" | "milestone" | "approval" | null
+  milestone_id?: string | null
+  status: "pending" | "invoiced" | "partial" | "paid"
+  invoiced_at?: string | null
+  paid_at?: string | null
+  metadata?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface Retainage {
+  id: string
+  org_id: string
+  project_id: string
+  contract_id: string
+  invoice_id?: string | null
+  amount_cents: number
+  status: "held" | "released" | "invoiced" | "paid"
+  held_at: string
+  released_at?: string | null
+  release_invoice_id?: string | null
+  metadata?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface LienWaiver {
+  id: string
+  org_id: string
+  project_id: string
+  payment_id?: string | null
+  company_id?: string | null
+  contact_id?: string | null
+  waiver_type: "conditional" | "unconditional" | "final"
+  status: "pending" | "sent" | "signed" | "rejected" | "expired"
+  amount_cents: number
+  through_date: string
+  claimant_name: string
+  property_description?: string | null
+  document_file_id?: string | null
+  signed_file_id?: string | null
+  signature_data?: {
+    signature_svg?: string
+    signed_at?: string
+    signer_name?: string
+    signer_ip?: string
+  }
+  sent_at?: string | null
+  signed_at?: string | null
+  expires_at?: string | null
+  metadata?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface PaymentSchedule {
+  id: string
+  org_id: string
+  project_id: string
+  contact_id?: string | null
+  payment_method_id?: string | null
+  total_amount_cents: number
+  installment_amount_cents: number
+  installments_total: number
+  installments_paid: number
+  frequency: "weekly" | "biweekly" | "monthly"
+  next_charge_date?: string | null
+  status: "active" | "paused" | "completed" | "canceled" | "failed"
+  auto_charge: boolean
+  metadata?: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ReminderDelivery {
+  id: string
+  org_id: string
+  reminder_id: string
+  invoice_id: string
+  channel: "email" | "sms"
+  status: "pending" | "sent" | "delivered" | "failed" | "clicked"
+  sent_at?: string | null
+  delivered_at?: string | null
+  clicked_at?: string | null
+  error_message?: string | null
+  provider_message_id?: string | null
+  metadata?: Record<string, any>
+  created_at?: string
 }
 
 export interface Selection {

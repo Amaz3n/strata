@@ -20,3 +20,5 @@ export function TradeBadge({ trade }: { trade?: string }) {
     </Badge>
   )
 }
+
+

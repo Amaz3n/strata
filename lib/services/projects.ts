@@ -6,6 +6,7 @@ import { projectUpdateSchema } from "@/lib/validation/projects"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 
 function mapProject(row: any): Project {
   const location = (row.location ?? {}) as Record<string, unknown>
@@ -45,6 +46,7 @@ export async function listProjectsWithClient(supabase: SupabaseClient, orgId: st
 
 export async function createProject({ input, orgId }: { input: ProjectInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const payload = {
     org_id: resolvedOrgId,
@@ -97,6 +99,7 @@ export async function updateProject({
 }) {
   const parsed = projectUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const existing = await supabase
     .from("projects")

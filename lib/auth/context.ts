@@ -1,6 +1,7 @@
 import { cookies } from "next/headers"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
+import { isPlatformAdminUser } from "@/lib/auth/platform"
 
 export interface OrgMembership {
   id: string
@@ -127,6 +128,56 @@ export async function requireOrgMembership(
   orgId?: string,
 ): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> {
   const context = await requireAuth()
+  const isPlatformAdmin = isPlatformAdminUser(context.user)
+
+  // Platform admin: allow bypassing membership, use service client, and pick any org.
+  if (isPlatformAdmin) {
+    let resolvedOrgId =
+      orgId ??
+      context.orgId ??
+      (await (async () => {
+        const cookieStore = await cookies()
+        return cookieStore.get("org_id")?.value ?? null
+      })()) ??
+      (await (async () => {
+        const svc = createServiceSupabaseClient()
+        const { data } = await svc.from("orgs").select("id").order("created_at", { ascending: true }).limit(1)
+        return data?.[0]?.id ?? null
+      })())
+
+    if (!resolvedOrgId) {
+      throw new Error("No organizations available for platform admin")
+    }
+
+    const cookieStore = await cookies()
+    const cookieOrgId = cookieStore.get("org_id")?.value
+    if (!cookieOrgId || cookieOrgId !== resolvedOrgId) {
+      cookieStore.set({
+        name: "org_id",
+        value: resolvedOrgId,
+        path: "/",
+        httpOnly: false,
+        sameSite: "lax",
+        maxAge: 60 * 60 * 24 * 30,
+      })
+    }
+
+    const pseudoMembership: OrgMembership = {
+      id: "platform-admin",
+      org_id: resolvedOrgId,
+      role_id: "platform-admin",
+      status: "active",
+      role_key: "owner",
+    }
+
+    return {
+      ...context,
+      supabase: createServiceSupabaseClient(),
+      orgId: resolvedOrgId,
+      membership: pseudoMembership,
+    }
+  }
+
   let resolvedOrgId =
     orgId ?? context.orgId ?? (await getPreferredOrgId(context.supabase, context.user.id))
 

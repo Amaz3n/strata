@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast"
 import type { OrgRole } from "@/lib/types"
 import { UserPlus } from "@/components/icons"
 
-export function InviteMemberDialog() {
+export function InviteMemberDialog({ canInvite = false }: { canInvite?: boolean }) {
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState("")
   const [role, setRole] = useState<OrgRole>("staff")
@@ -22,6 +22,11 @@ export function InviteMemberDialog() {
   const router = useRouter()
 
   const submit = () => {
+    if (!canInvite) {
+      toast({ title: "Permission required", description: "You need member management access to invite teammates." })
+      return
+    }
+
     startTransition(async () => {
       try {
         await inviteTeamMemberAction({ email, role })
@@ -39,7 +44,7 @@ export function InviteMemberDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>
+        <Button disabled={!canInvite}>
           <UserPlus className="h-4 w-4 mr-2" />
           Invite member
         </Button>
@@ -81,3 +86,4 @@ export function InviteMemberDialog() {
     </Dialog>
   )
 }
+

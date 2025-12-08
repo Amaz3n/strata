@@ -43,3 +43,5 @@ export const companyFiltersSchema = z
 export type CompanyInput = z.infer<typeof companyInputSchema>
 export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
+
+

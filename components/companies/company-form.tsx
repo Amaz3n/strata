@@ -226,3 +226,5 @@ export function CompanyForm({ company, onSubmitted }: CompanyFormProps) {
     </form>
   )
 }
+
+

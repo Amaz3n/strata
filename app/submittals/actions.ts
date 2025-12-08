@@ -15,3 +15,5 @@ export async function createSubmittalAction(input: unknown) {
   revalidatePath("/submittals")
   return submittal
 }
+
+

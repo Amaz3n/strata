@@ -45,6 +45,13 @@ export function SignUpForm() {
         <Input id="password" name="password" type="password" placeholder="At least 8 characters" required />
       </div>
 
+      <div className="space-y-2">
+        <Label htmlFor="inviteCode" className="text-sm text-muted-foreground">
+          Invite code (required if provided)
+        </Label>
+        <Input id="inviteCode" name="inviteCode" placeholder="Enter invite code" />
+      </div>
+
       {state.error && (
         <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4" />

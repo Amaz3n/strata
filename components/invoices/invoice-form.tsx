@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { useFieldArray, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
-import type { Project } from "@/lib/types"
+import type { CostCode, Project } from "@/lib/types"
 import { invoiceInputSchema, type InvoiceInput } from "@/lib/validation/invoices"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -27,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Plus, Trash2, Calendar, Building2 } from "@/components/icons"
 
@@ -38,11 +38,13 @@ interface InvoiceFormProps {
   onOpenChange: (open: boolean) => void
   projects: Project[]
   defaultProjectId?: string
+  costCodes: CostCode[]
   onSubmit: (values: InvoiceFormValues, sendToClient: boolean) => Promise<void>
   isSubmitting?: boolean
 }
 
 const defaultLine = {
+  cost_code_id: undefined as string | undefined,
   description: "",
   quantity: 1,
   unit: "item",
@@ -72,10 +74,16 @@ export function InvoiceForm({
   onOpenChange,
   projects,
   defaultProjectId,
+  costCodes,
   onSubmit,
   isSubmitting,
 }: InvoiceFormProps) {
   const [submitMode, setSubmitMode] = useState<"draft" | "send">("draft")
+
+  const costCodeOptions = useMemo(() => {
+    const activeCodes = (costCodes ?? []).filter((c) => c.is_active !== false)
+    return activeCodes.sort((a, b) => (a.code || "").localeCompare(b.code || ""))
+  }, [costCodes])
 
   const form = useForm<InvoiceFormValues>({
     resolver: zodResolver(invoiceInputSchema),
@@ -126,21 +134,21 @@ export function InvoiceForm({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="sm:max-w-xl w-full ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation"
+        className="sm:max-w-lg w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col fast-sheet-animation"
         style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
       >
-        <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
-          <SheetTitle className="flex items-center gap-2">
-            <Calendar className="h-4 w-4 text-primary" />
-            New Invoice
-          </SheetTitle>
-          <SheetDescription className="text-sm text-muted-foreground">
-            Create progress or final invoices with line items and tax.
-          </SheetDescription>
-        </SheetHeader>
-
         <Form {...form}>
-          <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
+          <form onSubmit={handleSubmit} className="flex h-full flex-col">
+            <div className="flex-shrink-0 border-b bg-muted/30 px-6 pt-6 pb-4">
+              <SheetTitle className="flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-primary" />
+                New Invoice
+              </SheetTitle>
+              <SheetDescription className="text-sm text-muted-foreground">
+                Create progress or final invoices with line items and tax.
+              </SheetDescription>
+            </div>
+
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField
@@ -332,6 +340,43 @@ export function InvoiceForm({
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                         <FormField
                           control={form.control}
+                          name={`lines.${index}.cost_code_id`}
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Cost code</FormLabel>
+                              <Select
+                                onValueChange={(val) => field.onChange(val === "none" ? undefined : val)}
+                                value={field.value ?? "none"}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Unassigned" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="none">Unassigned</SelectItem>
+                                  {costCodeOptions.map((code) => (
+                                    <SelectItem key={code.id} value={code.id}>
+                                      <div className="flex flex-col">
+                                        <span className="font-semibold text-xs">
+                                          {code.code} — {code.name}
+                                        </span>
+                                        <span className="text-[11px] text-muted-foreground">
+                                          {code.division ? `Div ${code.division}` : "General"}
+                                          {code.category ? ` • ${code.category}` : ""}
+                                        </span>
+                                      </div>
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        <FormField
+                          control={form.control}
                           name={`lines.${index}.quantity`}
                           render={({ field }) => (
                             <FormItem>
@@ -428,7 +473,7 @@ export function InvoiceForm({
               </div>
             </div>
 
-            <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-col gap-3">
+            <div className="flex-shrink-0 border-t bg-background/80 px-6 py-4 flex flex-col gap-3">
               <div className="flex flex-wrap gap-2">
                 <Badge variant="outline">USD only</Badge>
                 <Badge variant="outline">Progress or final invoices</Badge>
@@ -452,10 +497,12 @@ export function InvoiceForm({
                   Send to client
                 </Button>
               </div>
-            </SheetFooter>
+            </div>
           </form>
         </Form>
       </SheetContent>
     </Sheet>
   )
 }
+
+

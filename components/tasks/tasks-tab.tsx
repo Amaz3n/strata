@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, type CSSProperties } from "react"
+import { useState, useMemo, useEffect, type CSSProperties } from "react"
 import { format, parseISO, isPast, isToday, isTomorrow, differenceInDays } from "date-fns"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -24,6 +24,7 @@ import { CSS } from "@dnd-kit/utilities"
 import type { Task, TaskStatus, TaskPriority, TaskChecklistItem, TaskTrade } from "@/lib/types"
 import { taskInputSchema, type TaskInput } from "@/lib/validation/tasks"
 import { cn } from "@/lib/utils"
+import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/projects/[id]/actions"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -48,6 +49,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import {
   Select,
   SelectContent,
+  SelectGroup,
+  SelectLabel,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -195,6 +198,24 @@ function getInitials(name: string): string {
     .slice(0, 2)
 }
 
+function encodeAssignee(kind: "user" | "contact" | "company", id: string) {
+  return `${kind}:${id}`
+}
+
+function taskAssigneeValue(task: Task): string {
+  if (task.assignee_kind && task.assignee_id) return encodeAssignee(task.assignee_kind, task.assignee_id)
+  return "unassigned"
+}
+
+function taskAssigneeName(task: Task): string | undefined {
+  return (
+    task.assignee?.full_name ??
+    task.assignee_contact?.full_name ??
+    task.assignee_company?.name ??
+    undefined
+  )
+}
+
 function formatDueDate(dateStr?: string): { label: string; isOverdue: boolean; isPriority: boolean } {
   if (!dateStr) return { label: "No due date", isOverdue: false, isPriority: false }
   
@@ -247,6 +268,9 @@ export function TasksTab({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [assignableResources, setAssignableResources] = useState<AssignableResource[]>([])
+  const [loadingResources, setLoadingResources] = useState(false)
+  const [recentAssignees, setRecentAssignees] = useState<string[]>([])
 
   // Form
   const createForm = useForm<TaskInput>({
@@ -288,8 +312,9 @@ export function TasksTab({
 
       // Assignee filter
       if (assigneeFilter !== "all") {
-        if (assigneeFilter === "unassigned" && task.assignee_id) return false
-        if (assigneeFilter !== "unassigned" && task.assignee_id !== assigneeFilter) return false
+        const value = taskAssigneeValue(task)
+        if (assigneeFilter === "unassigned" && value !== "unassigned") return false
+        if (assigneeFilter !== "unassigned" && assigneeFilter !== value) return false
       }
 
       // Trade filter
@@ -349,6 +374,35 @@ export function TasksTab({
     return count
   }, [statusFilter, priorityFilter, assigneeFilter, tradeFilter, showCompleted])
 
+  const groupedResources = useMemo(() => {
+    const recencyMap = new Map<string, number>()
+    recentAssignees.forEach((id, idx) => recencyMap.set(id, recentAssignees.length - idx))
+    const sortByRecency = (a: AssignableResource, b: AssignableResource) =>
+      (recencyMap.get(encodeAssignee(a.type, a.id)) ?? 0) > (recencyMap.get(encodeAssignee(b.type, b.id)) ?? 0)
+        ? -1
+        : 1
+
+    return {
+      users: [...assignableResources.filter((r) => r.type === "user")].sort(sortByRecency),
+      contacts: [...assignableResources.filter((r) => r.type === "contact")].sort(sortByRecency),
+      companies: [...assignableResources.filter((r) => r.type === "company")].sort(sortByRecency),
+    }
+  }, [assignableResources, recentAssignees])
+
+  const findResource = (value?: string) => {
+    if (!value || value === "unassigned") return null
+    const [type, id] = value.split(":")
+    return assignableResources.find((r) => r.id === id && r.type === type)
+  }
+
+  useEffect(() => {
+    setLoadingResources(true)
+    getProjectAssignableResourcesAction(projectId)
+      .then((res) => setAssignableResources(res))
+      .catch((err) => console.error("Failed to load assignable resources", err))
+      .finally(() => setLoadingResources(false))
+  }, [projectId])
+
   // ============================================
   // HANDLERS
   // ============================================
@@ -356,7 +410,16 @@ export function TasksTab({
   const handleCreateTask = async (values: TaskInput) => {
     setIsSubmitting(true)
     try {
-      const created = await onTaskCreate(values)
+      const { assignee_id, ...rest } = values
+      let payload: TaskInput = { ...rest }
+      if (assignee_id && assignee_id !== "unassigned") {
+        const [kind, id] = assignee_id.split(":")
+        payload = { ...rest, assignee_id: id, assignee_kind: kind as any }
+      }
+      const created = await onTaskCreate(payload)
+      if (payload.assignee_id) {
+        setRecentAssignees((prev) => [encodeAssignee(payload.assignee_kind as any, payload.assignee_id as string), ...prev].slice(0, 5))
+      }
       setTasks((prev) => [created, ...prev])
       createForm.reset()
       setCreateSheetOpen(false)
@@ -371,7 +434,18 @@ export function TasksTab({
 
   const handleUpdateTask = async (taskId: string, updates: Partial<TaskInput>) => {
     try {
-      const updated = await onTaskUpdate(taskId, updates)
+      const { assignee_id, ...rest } = updates
+      let payload: Partial<TaskInput> = { ...rest }
+      if (assignee_id && assignee_id !== "unassigned") {
+        const [kind, id] = assignee_id.split(":")
+        payload = { ...rest, assignee_id: id, assignee_kind: kind as any }
+      } else if (assignee_id === "unassigned") {
+        payload = { ...rest, assignee_id: undefined, assignee_kind: undefined }
+      }
+      const updated = await onTaskUpdate(taskId, payload)
+      if (payload.assignee_id && payload.assignee_kind) {
+        setRecentAssignees((prev) => [encodeAssignee(payload.assignee_kind as any, payload.assignee_id as string), ...prev].slice(0, 5))
+      }
       setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)))
       if (selectedTask?.id === taskId) {
         setSelectedTask(updated)
@@ -518,17 +592,52 @@ export function TasksTab({
           <SelectContent>
             <SelectItem value="all">All Assignees</SelectItem>
             <SelectItem value="unassigned">Unassigned</SelectItem>
-            {team.map((member) => (
-              <SelectItem key={member.user_id} value={member.user_id}>
-                <div className="flex items-center gap-2">
-                  <Avatar className="h-5 w-5">
-                    <AvatarImage src={member.avatar_url} />
-                    <AvatarFallback className="text-[10px]">{getInitials(member.full_name)}</AvatarFallback>
-                  </Avatar>
-                  <span className="truncate">{member.full_name}</span>
-                </div>
-              </SelectItem>
-            ))}
+            {groupedResources.users.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Team</SelectLabel>
+                {groupedResources.users.map((member) => (
+                  <SelectItem key={member.id} value={encodeAssignee("user", member.id)}>
+                    <div className="flex items-center gap-2">
+                      <Avatar className="h-5 w-5">
+                        <AvatarImage src={member.avatar_url} />
+                        <AvatarFallback className="text-[10px]">{getInitials(member.name)}</AvatarFallback>
+                      </Avatar>
+                      <span className="truncate">{member.name}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            )}
+            {groupedResources.contacts.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Contacts</SelectLabel>
+                {groupedResources.contacts.map((contact) => (
+                  <SelectItem key={contact.id} value={encodeAssignee("contact", contact.id)}>
+                    <div className="flex items-center gap-2">
+                      <Avatar className="h-5 w-5">
+                        <AvatarFallback className="text-[10px]">{getInitials(contact.name)}</AvatarFallback>
+                      </Avatar>
+                      <span className="truncate">{contact.name}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            )}
+            {groupedResources.companies.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Companies</SelectLabel>
+                {groupedResources.companies.map((company) => (
+                  <SelectItem key={company.id} value={encodeAssignee("company", company.id)}>
+                    <div className="flex items-center gap-2">
+                      <Avatar className="h-5 w-5">
+                        <AvatarFallback className="text-[10px]">Co</AvatarFallback>
+                      </Avatar>
+                      <span className="truncate">{company.name}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            )}
           </SelectContent>
         </Select>
 
@@ -962,12 +1071,14 @@ function TaskCard({ task, onClick, onStatusChange, isDragging }: TaskCardProps) 
           )}
 
           {/* Assignee Avatar */}
-          {task.assignee && (
+          {task.assignee || task.assignee_contact || task.assignee_company ? (
             <Avatar className="h-5 w-5 flex-shrink-0">
-              <AvatarImage src={task.assignee.avatar_url} alt={task.assignee.full_name} />
-              <AvatarFallback className="text-[9px]">{getInitials(task.assignee.full_name)}</AvatarFallback>
+              <AvatarImage src={task.assignee?.avatar_url} alt={task.assignee?.full_name} />
+              <AvatarFallback className="text-[9px]">
+                {getInitials(taskAssigneeName(task) ?? "A")}
+              </AvatarFallback>
             </Avatar>
-          )}
+          ) : null}
 
           {/* More Menu */}
           <DropdownMenu>
@@ -1134,15 +1245,15 @@ function ListView({ tasks, onTaskClick, onStatusChange, onDeleteClick }: ListVie
                       )}
                     </TableCell>
                     <TableCell className="px-4 py-3 align-middle">
-                      {task.assignee ? (
+                      {task.assignee || task.assignee_contact || task.assignee_company ? (
                         <div className="flex items-center gap-2 min-w-0">
                           <Avatar className="h-6 w-6 flex-shrink-0">
-                            <AvatarImage src={task.assignee.avatar_url} />
+                            <AvatarImage src={task.assignee?.avatar_url} />
                             <AvatarFallback className="text-[10px]">
-                              {getInitials(task.assignee.full_name)}
+                              {getInitials(taskAssigneeName(task) ?? "A")}
                             </AvatarFallback>
                           </Avatar>
-                          <span className="text-sm truncate">{task.assignee.full_name}</span>
+                          <span className="text-sm truncate">{taskAssigneeName(task)}</span>
                         </div>
                       ) : (
                         <span className="text-muted-foreground text-sm">Unassigned</span>
@@ -1409,7 +1520,7 @@ function CreateTaskSheet({ open, onOpenChange, form, team, onSubmit, isSubmittin
                     render={({ field }) => (
                       <FormItem className="col-span-2">
                         <FormLabel>Assignee</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value ?? ""}>
+                        <Select onValueChange={field.onChange} value={field.value ?? "unassigned"}>
                           <FormControl>
                             <SelectTrigger className="w-full">
                               <SelectValue placeholder="Select assignee" />
@@ -1417,19 +1528,70 @@ function CreateTaskSheet({ open, onOpenChange, form, team, onSubmit, isSubmittin
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="unassigned">Unassigned</SelectItem>
-                            {team.map((member) => (
-                              <SelectItem key={member.user_id} value={member.user_id}>
-                                <div className="flex items-center gap-2">
-                                  <Avatar className="h-5 w-5">
-                                    <AvatarImage src={member.avatar_url} />
-                                    <AvatarFallback className="text-[10px]">
-                                      {getInitials(member.full_name)}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                  {member.full_name}
-                                </div>
-                              </SelectItem>
-                            ))}
+                            {groupedResources.users.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>Team</SelectLabel>
+                                {groupedResources.users.map((member) => (
+                                  <SelectItem key={member.id} value={encodeAssignee("user", member.id)}>
+                                    <div className="flex items-center gap-2">
+                                      <Avatar className="h-5 w-5">
+                                        <AvatarImage src={member.avatar_url} />
+                                        <AvatarFallback className="text-[10px]">
+                                          {getInitials(member.name)}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <div className="flex flex-col">
+                                        <span>{member.name}</span>
+                                        {member.role && <span className="text-[10px] text-muted-foreground">{member.role}</span>}
+                                      </div>
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            )}
+                            {groupedResources.contacts.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>Contacts</SelectLabel>
+                                {groupedResources.contacts.map((contact) => (
+                                  <SelectItem key={contact.id} value={encodeAssignee("contact", contact.id)}>
+                                    <div className="flex items-center gap-2">
+                                      <Avatar className="h-5 w-5">
+                                        <AvatarFallback className="text-[10px]">{getInitials(contact.name)}</AvatarFallback>
+                                      </Avatar>
+                                      <div className="flex flex-col">
+                                        <span>{contact.name}</span>
+                                        {contact.company_name && (
+                                          <span className="text-[10px] text-muted-foreground">{contact.company_name}</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            )}
+                            {groupedResources.companies.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>Companies</SelectLabel>
+                                {groupedResources.companies.map((company) => (
+                                  <SelectItem key={company.id} value={encodeAssignee("company", company.id)}>
+                                    <div className="flex items-center gap-2">
+                                      <Avatar className="h-5 w-5">
+                                        <AvatarFallback className="text-[10px]">Co</AvatarFallback>
+                                      </Avatar>
+                                      <div className="flex flex-col">
+                                        <span>{company.name}</span>
+                                        {company.role && (
+                                          <span className="text-[10px] text-muted-foreground">{company.role}</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            )}
+                            {loadingResources && (
+                              <div className="p-2 text-center text-sm text-muted-foreground">Loading assignees...</div>
+                            )}
                           </SelectContent>
                         </Select>
                         <FormMessage />
@@ -1869,15 +2031,23 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
 
               <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">Assignee</p>
-                {task.assignee ? (
+                {task.assignee || task.assignee_contact || task.assignee_company ? (
                   <div className="flex items-center gap-2">
                     <Avatar className="h-6 w-6">
-                      <AvatarImage src={task.assignee.avatar_url} />
+                      <AvatarImage src={task.assignee?.avatar_url} />
                       <AvatarFallback className="text-[10px]">
-                        {getInitials(task.assignee.full_name)}
+                        {getInitials(taskAssigneeName(task) ?? "A")}
                       </AvatarFallback>
                     </Avatar>
-                    <span className="text-sm">{task.assignee.full_name}</span>
+                    <div className="flex flex-col">
+                      <span className="text-sm">{taskAssigneeName(task)}</span>
+                      {task.assignee_company && (
+                        <span className="text-xs text-muted-foreground">{task.assignee_company.name}</span>
+                      )}
+                      {task.assignee_contact?.company_name && (
+                        <span className="text-xs text-muted-foreground">{task.assignee_contact.company_name}</span>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">Unassigned</p>

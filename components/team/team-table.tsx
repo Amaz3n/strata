@@ -29,14 +29,21 @@ import { useToast } from "@/hooks/use-toast"
 
 interface TeamTableProps {
   members: TeamMember[]
+  canManageMembers?: boolean
+  canEditRoles?: boolean
 }
 
-export function TeamTable({ members }: TeamTableProps) {
+export function TeamTable({ members, canManageMembers = false, canEditRoles = false }: TeamTableProps) {
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
 
   const updateRole = (membershipId: string, role: OrgRole) => {
+    if (!canEditRoles) {
+      toast({ title: "Permission required", description: "Only admins can change member roles." })
+      return
+    }
+
     startTransition(async () => {
       try {
         await updateMemberRoleAction(membershipId, { role })
@@ -49,6 +56,11 @@ export function TeamTable({ members }: TeamTableProps) {
   }
 
   const suspend = (membershipId: string) => {
+    if (!canManageMembers) {
+      toast({ title: "Permission required", description: "You need member management access to suspend users." })
+      return
+    }
+
     startTransition(async () => {
       try {
         await suspendMemberAction(membershipId)
@@ -61,6 +73,11 @@ export function TeamTable({ members }: TeamTableProps) {
   }
 
   const reactivate = (membershipId: string) => {
+    if (!canManageMembers) {
+      toast({ title: "Permission required", description: "You need member management access to reactivate users." })
+      return
+    }
+
     startTransition(async () => {
       try {
         await reactivateMemberAction(membershipId)
@@ -73,6 +90,11 @@ export function TeamTable({ members }: TeamTableProps) {
   }
 
   const remove = (membershipId: string) => {
+    if (!canManageMembers) {
+      toast({ title: "Permission required", description: "You need member management access to remove users." })
+      return
+    }
+
     startTransition(async () => {
       try {
         await removeMemberAction(membershipId)
@@ -85,6 +107,11 @@ export function TeamTable({ members }: TeamTableProps) {
   }
 
   const resend = (membershipId: string) => {
+    if (!canManageMembers) {
+      toast({ title: "Permission required", description: "You need member management access to resend invites." })
+      return
+    }
+
     startTransition(async () => {
       try {
         await resendInviteAction(membershipId)
@@ -110,7 +137,7 @@ export function TeamTable({ members }: TeamTableProps) {
               <TableHead>Status</TableHead>
               <TableHead>Projects</TableHead>
               <TableHead>Last active</TableHead>
-              <TableHead className="w-12" />
+              {(canManageMembers || canEditRoles) && <TableHead className="w-12" />}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -134,38 +161,50 @@ export function TeamTable({ members }: TeamTableProps) {
                 <TableCell className="text-sm text-muted-foreground">
                   {member.last_active_at ? new Date(member.last_active_at).toLocaleDateString() : "—"}
                 </TableCell>
-                <TableCell className="text-right">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                      <DropdownMenuItem onClick={() => updateRole(member.id, "admin")}>Make admin</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => updateRole(member.id, "staff")}>Set as staff</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => updateRole(member.id, "readonly")}>Set read-only</DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      {member.status === "suspended" ? (
-                        <DropdownMenuItem disabled={isPending} onClick={() => reactivate(member.id)}>
-                          Reactivate
+                {(canManageMembers || canEditRoles) && (
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        <DropdownMenuItem disabled={!canEditRoles} onClick={() => updateRole(member.id, "admin")}>
+                          Make admin
                         </DropdownMenuItem>
-                      ) : (
-                        <DropdownMenuItem disabled={isPending} onClick={() => suspend(member.id)}>
-                          Suspend
+                        <DropdownMenuItem disabled={!canEditRoles} onClick={() => updateRole(member.id, "staff")}>
+                          Set as staff
                         </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem disabled={isPending} onClick={() => resend(member.id)}>
-                        Resend invite
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem className="text-destructive" disabled={isPending} onClick={() => remove(member.id)}>
-                        Remove
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
+                        <DropdownMenuItem disabled={!canEditRoles} onClick={() => updateRole(member.id, "readonly")}>
+                          Set read-only
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        {member.status === "suspended" ? (
+                          <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => reactivate(member.id)}>
+                            Reactivate
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => suspend(member.id)}>
+                            Suspend
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => resend(member.id)}>
+                          Resend invite
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          disabled={isPending || !canManageMembers}
+                          onClick={() => remove(member.id)}
+                        >
+                          Remove
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
             {members.length === 0 && (
@@ -181,3 +220,4 @@ export function TeamTable({ members }: TeamTableProps) {
     </Card>
   )
 }
+

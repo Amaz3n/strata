@@ -3,11 +3,17 @@ import { StatsCards } from "@/components/dashboard/stats-cards"
 import { ProjectList } from "@/components/dashboard/project-list"
 import { ActivityFeed } from "@/components/dashboard/activity-feed"
 import { TasksPreview } from "@/components/dashboard/tasks-preview"
+import { OnboardingChecklist } from "@/components/dashboard/onboarding-checklist"
 import { getDashboardSnapshotAction } from "@/app/actions/dashboard"
 import { getCurrentUserAction } from "@/app/actions/user"
+import { getOnboardingStateAction } from "@/app/actions/orgs"
 
 export default async function DashboardPage() {
-  const [snapshot, currentUser] = await Promise.all([getDashboardSnapshotAction(), getCurrentUserAction()])
+  const [snapshot, currentUser, onboarding] = await Promise.all([
+    getDashboardSnapshotAction(),
+    getCurrentUserAction(),
+    getOnboardingStateAction(),
+  ])
   const projectBadge = snapshot.projects.filter((p) => p.status !== "completed" && p.status !== "cancelled").length
   const taskBadge = snapshot.tasks.filter((t) => t.status !== "done").length
 
@@ -32,7 +38,12 @@ export default async function DashboardPage() {
           </div>
 
           {/* Right column - Activity */}
-          <div>
+          <div className="space-y-6">
+            <OnboardingChecklist
+              members={onboarding.members}
+              projects={onboarding.projects}
+              contacts={onboarding.contacts}
+            />
             <ActivityFeed />
           </div>
         </div>

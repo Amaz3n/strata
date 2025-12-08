@@ -21,6 +21,7 @@ const signUpSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
   fullName: z.string().min(2, "Name is required"),
   orgName: z.string().min(2, "Company name is required"),
+  inviteCode: z.string().optional(),
 })
 
 const resetRequestSchema = z.object({
@@ -69,11 +70,21 @@ export async function signUpAction(prevState: AuthState, formData: FormData): Pr
     password: formData.get("password"),
     fullName: formData.get("fullName"),
     orgName: formData.get("orgName"),
+    inviteCode: formData.get("inviteCode") ?? undefined,
   })
 
   if (!parsed.success) {
     const firstError = parsed.error.errors.at(0)?.message ?? "Please check the form fields."
     return { error: firstError }
+  }
+
+  const allowSelfSignup = (process.env.ALLOW_SELF_SIGNUP ?? "false").toLowerCase() === "true"
+  const inviteCode = (process.env.SIGNUP_INVITE_CODE ?? "").trim()
+
+  if (!allowSelfSignup) {
+    if (!inviteCode || parsed.data.inviteCode !== inviteCode) {
+      return { error: "Signup is currently invite-only. Please contact support to join." }
+    }
   }
 
   const supabase = createServerSupabaseClient()

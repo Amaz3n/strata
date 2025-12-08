@@ -5,7 +5,9 @@ import { revalidatePath } from "next/cache"
 import {
   archiveContact,
   createContact,
+  getContact,
   getContactAssignments,
+  // portal
   linkContactToCompany,
   listContacts,
   unlinkContactFromCompany,
@@ -17,6 +19,7 @@ import {
   contactInputSchema,
   contactUpdateSchema,
 } from "@/lib/validation/contacts"
+import { createPortalAccessToken } from "@/lib/services/portal-access"
 
 export async function listContactsAction(filters?: unknown) {
   const parsed = contactFiltersSchema.parse(filters ?? undefined) ?? undefined
@@ -59,3 +62,29 @@ export async function unlinkContactFromCompanyAction(contactId: string, companyI
 export async function contactAssignmentsAction(contactId: string) {
   return getContactAssignments(contactId)
 }
+
+export async function getContactAction(contactId: string) {
+  const contact = await getContact(contactId)
+  const assignments = await getContactAssignments(contactId)
+  return { contact, assignments }
+}
+
+export async function sendPortalInviteAction({
+  contactId,
+  projectId,
+  portalType = "sub",
+}: {
+  contactId: string
+  projectId: string
+  portalType?: "client" | "sub"
+}) {
+  const token = await createPortalAccessToken({
+    projectId,
+    portalType,
+    contactId,
+    permissions: {},
+  })
+  return token
+}
+
+

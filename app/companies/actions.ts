@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
-import { archiveCompany, createCompany, listCompanies, updateCompany } from "@/lib/services/companies"
+import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, updateCompany } from "@/lib/services/companies"
 import { companyFiltersSchema, companyInputSchema, companyUpdateSchema } from "@/lib/validation/companies"
 
 export async function listCompaniesAction(filters?: unknown) {
@@ -29,3 +29,11 @@ export async function archiveCompanyAction(companyId: string) {
   revalidatePath("/companies")
   return true
 }
+
+export async function getCompanyAction(companyId: string) {
+  const company = await getCompany(companyId)
+  const projects = await getCompanyProjects(companyId)
+  return { company, projects }
+}
+
+

@@ -13,3 +13,5 @@ const ROLE_LABELS: Record<OrgRole, string> = {
 export function MemberRoleBadge({ role }: { role: OrgRole }) {
   return <Badge variant="secondary">{ROLE_LABELS[role] ?? role}</Badge>
 }
+
+

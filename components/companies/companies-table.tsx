@@ -28,17 +28,32 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { archiveCompanyAction } from "@/app/companies/actions"
-import type { Company } from "@/lib/types"
+import type { Company, Contact, TeamMember } from "@/lib/types"
 import { CompanyForm } from "@/components/companies/company-form"
 import { TradeBadge } from "@/components/companies/trade-badge"
+import { CompanyDetailSheet } from "@/components/companies/company-detail-sheet"
+import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet"
+import { DirectorySearch } from "@/components/directory/directory-search"
 import { Filter, LayoutGrid, List, MoreHorizontal, Plus, Search } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
 interface CompaniesTableProps {
   companies: Company[]
+  contacts?: Contact[]
+  teamMembers?: TeamMember[]
+  canCreate?: boolean
+  canEdit?: boolean
+  canArchive?: boolean
 }
 
-export function CompaniesTable({ companies }: CompaniesTableProps) {
+export function CompaniesTable({
+  companies,
+  contacts = [],
+  teamMembers = [],
+  canCreate = false,
+  canEdit = false,
+  canArchive = false,
+}: CompaniesTableProps) {
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState<string | undefined>()
   const [tradeFilter, setTradeFilter] = useState<string | undefined>()
@@ -48,6 +63,11 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
+  const [detailId, setDetailId] = useState<string | undefined>()
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [contactDetailId, setContactDetailId] = useState<string | undefined>()
+  const [contactDetailOpen, setContactDetailOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
 
   const filtered = useMemo(() => {
     return companies
@@ -63,6 +83,13 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
   const handleArchive = (companyId: string) => {
     startTransition(async () => {
       try {
+        if (!canArchive) {
+          toast({
+            title: "Permission required",
+            description: "You need admin or member management access to archive companies.",
+          })
+          return
+        }
         await archiveCompanyAction(companyId)
         router.refresh()
         toast({ title: "Company archived" })
@@ -77,9 +104,19 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
     setOpen(true)
   }
 
+  const openDetail = (companyId: string) => {
+    setDetailId(companyId)
+    setDetailOpen(true)
+  }
+
   const resetDialog = () => {
     setSelectedCompany(undefined)
     setOpen(false)
+  }
+
+  const openContactDetail = (id: string) => {
+    setContactDetailId(id)
+    setContactDetailOpen(true)
   }
 
   return (
@@ -104,21 +141,28 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
           </div>
         </div>
 
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => openEditor(undefined)}>
-              <Plus className="h-4 w-4 mr-2" />
-              New company
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-3xl">
-            <DialogHeader>
-              <DialogTitle>{selectedCompany ? "Edit company" : "Create company"}</DialogTitle>
-              <DialogDescription>Capture company details, trade, and insurance info.</DialogDescription>
-            </DialogHeader>
-            <CompanyForm company={selectedCompany} onSubmitted={resetDialog} />
-          </DialogContent>
-        </Dialog>
+        <Button variant="outline" onClick={() => setSearchOpen(true)}>
+          <Search className="h-4 w-4 mr-2" />
+          Directory search
+        </Button>
+
+        {canCreate && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button onClick={() => openEditor(undefined)} disabled={!canCreate}>
+                <Plus className="h-4 w-4 mr-2" />
+                New company
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl">
+              <DialogHeader>
+                <DialogTitle>{selectedCompany ? "Edit company" : "Create company"}</DialogTitle>
+                <DialogDescription>Capture company details, trade, and insurance info.</DialogDescription>
+              </DialogHeader>
+              <CompanyForm company={selectedCompany} onSubmitted={resetDialog} />
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -209,11 +253,14 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                          <DropdownMenuItem onClick={() => openEditor(company)}>Edit</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => openDetail(company.id)}>View details</DropdownMenuItem>
+                        <DropdownMenuItem disabled={!canEdit} onClick={() => openEditor(company)}>
+                          Edit
+                        </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-destructive"
-                            disabled={isPending}
+                          disabled={isPending || !canArchive}
                             onClick={() => handleArchive(company.id)}
                           >
                             Archive
@@ -258,9 +305,14 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
                   <span>{company.email || ""}</span>
                 </div>
                 <div className="flex justify-end">
-                  <Button variant="ghost" size="sm" onClick={() => openEditor(company)}>
-                    Edit
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => openDetail(company.id)}>
+                      Details
+                    </Button>
+                    <Button variant="ghost" size="sm" disabled={!canEdit} onClick={() => openEditor(company)}>
+                      Edit
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -272,6 +324,20 @@ export function CompaniesTable({ companies }: CompaniesTableProps) {
           )}
         </div>
       )}
+
+      <CompanyDetailSheet companyId={detailId} open={detailOpen} onOpenChange={setDetailOpen} />
+      <ContactDetailSheet contactId={contactDetailId} open={contactDetailOpen} onOpenChange={setContactDetailOpen} />
+      <DirectorySearch
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        companies={companies}
+        contacts={contacts}
+        teamMembers={teamMembers}
+        onSelectCompany={(id) => openDetail(id)}
+        onSelectContact={(id) => openContactDetail(id)}
+        onSelectTeam={() => router.push("/team")}
+      />
     </div>
   )
 }
+

@@ -13,6 +13,7 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { hasPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 function mapCompany(row: any): Company {
   const metadata = row?.metadata ?? {}
@@ -63,7 +64,8 @@ function mapContact(row: any): Contact {
 }
 
 export async function listContacts(orgId?: string, filters?: ContactFilters): Promise<Contact[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
   return listContactsWithClient(supabase, resolvedOrgId, filters)
 }
 
@@ -133,7 +135,8 @@ export async function listContactsWithClient(
 }
 
 export async function getContact(contactId: string, orgId?: string): Promise<Contact & { company_details: Company[] }> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("contacts")
@@ -184,6 +187,7 @@ function buildContactInsert(input: ContactInput, orgId: string) {
 export async function createContact({ input, orgId }: { input: ContactInput; orgId?: string }): Promise<Contact> {
   const parsed = contactInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("contacts")
@@ -232,6 +236,7 @@ export async function updateContact({
 }): Promise<Contact> {
   const parsed = contactUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("contacts")
@@ -303,6 +308,13 @@ export async function updateContact({
 
 export async function archiveContact(contactId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const canArchive =
+    (await hasPermission("org.admin", { supabase, orgId: resolvedOrgId, userId })) ||
+    (await hasPermission("members.manage", { supabase, orgId: resolvedOrgId, userId }))
+
+  if (!canArchive) {
+    throw new Error("Missing permission: org.admin")
+  }
 
   const [{ count: scheduleCount, error: scheduleError }, { count: taskCount, error: taskError }] = await Promise.all([
     supabase
@@ -362,6 +374,7 @@ export async function archiveContact(contactId: string, orgId?: string) {
 export async function linkContactToCompany(input: ContactCompanyLinkInput, orgId?: string) {
   const parsed = contactCompanyLinkSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("contact_company_links")
@@ -390,6 +403,7 @@ export async function linkContactToCompany(input: ContactCompanyLinkInput, orgId
 
 export async function unlinkContactFromCompany({ contactId, companyId, orgId }: { contactId: string; companyId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("contact_company_links")
@@ -472,3 +486,4 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
     })),
   }
 }
+
