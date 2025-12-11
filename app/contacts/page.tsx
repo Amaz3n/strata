@@ -6,6 +6,8 @@ import { ContactsTable } from "@/components/contacts/contacts-table"
 import { listProjectsAction } from "@/app/projects/actions"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
+export const dynamic = 'force-dynamic'
+
 export default async function ContactsPage() {
   const [contacts, companies, projects, currentUser, permissionResult] = await Promise.all([
     listContacts(),

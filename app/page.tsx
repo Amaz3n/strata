@@ -8,6 +8,8 @@ import { getDashboardSnapshotAction } from "@/app/actions/dashboard"
 import { getCurrentUserAction } from "@/app/actions/user"
 import { getOnboardingStateAction } from "@/app/actions/orgs"
 
+export const dynamic = 'force-dynamic'
+
 export default async function DashboardPage() {
   const [snapshot, currentUser, onboarding] = await Promise.all([
     getDashboardSnapshotAction(),

@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ProvisionOrgForm } from "@/components/admin/provision-form"
 import { getCurrentUserAction } from "@/app/actions/user"

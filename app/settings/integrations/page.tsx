@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
 import { getQBOConnection } from "@/lib/services/qbo-connection"
 import { requirePermissionGuard } from "@/lib/auth/guards"

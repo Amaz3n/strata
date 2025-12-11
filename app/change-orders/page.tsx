@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { ChangeOrdersClient } from "@/components/change-orders/change-orders-client"
 import { listChangeOrdersAction } from "./actions"
 import { listProjectsAction } from "../projects/actions"

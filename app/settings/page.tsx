@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getCurrentUserAction } from "../actions/user"
 import { requirePermissionGuard } from "@/lib/auth/guards"

@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { SelectionsBuilderClient } from "@/components/selections/selections-client"
 import { loadSelectionsBuilderAction } from "./actions"
 import { listProjectsAction } from "../projects/actions"

@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { SubmittalsClient } from "@/components/submittals/submittals-client"
 import { listSubmittalsAction } from "./actions"
 import { listProjectsAction } from "../projects/actions"

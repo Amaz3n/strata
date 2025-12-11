@@ -8,6 +8,8 @@ import { listContactsAction } from "@/app/contacts/actions"
 import type { Address, CostCode } from "@/lib/types"
 import { listCostCodes } from "@/lib/services/cost-codes"
 
+export const dynamic = 'force-dynamic'
+
 export default async function InvoicesPage() {
   const [invoices, projects, currentUser, orgBilling, contacts, costCodes] = await Promise.all([
     listInvoicesAction(),

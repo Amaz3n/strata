@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { RfisClient } from "@/components/rfis/rfis-client"
 import { listRfisAction } from "./actions"
 import { listProjectsAction } from "../projects/actions"

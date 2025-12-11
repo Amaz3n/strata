@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+export const dynamic = 'force-dynamic'
 import { AppShell } from "@/components/layout/app-shell"
 import { getCurrentUserAction } from "@/app/actions/user"
 import { ProjectDetailClient } from "./project-detail-client"

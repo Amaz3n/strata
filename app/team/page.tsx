@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { getCurrentUserAction } from "@/app/actions/user"
 import { listTeamMembers } from "@/lib/services/team"
 import { InviteMemberDialog } from "@/components/team/invite-member-dialog"

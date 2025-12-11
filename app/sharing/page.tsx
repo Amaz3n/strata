@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { listProjectsAction } from "@/app/projects/actions"
 import { getCurrentUserAction } from "@/app/actions/user"
 import { listPortalTokens } from "@/lib/services/portal-access"

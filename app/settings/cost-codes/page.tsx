@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { getCurrentUserAction } from "@/app/actions/user"
 import { listCostCodesAction } from "./actions"

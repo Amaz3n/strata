@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/app-shell"
+export const dynamic = 'force-dynamic'
 import { getCurrentUserAction } from "@/app/actions/user"
 import { CompaniesTable } from "@/components/companies/companies-table"
 import { listCompanies } from "@/lib/services/companies"
