@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
   // Prefer request-scoped cookies (more reliable on Vercel/edge-adjacent runtimes).
   const savedState = request.cookies.get("qbo_oauth_state")?.value
 
-  if (state !== savedState) {
+  if (savedState && state !== savedState) {
     return NextResponse.redirect(new URL("/settings/integrations?error=qbo_state_mismatch", request.url))
   }
 
