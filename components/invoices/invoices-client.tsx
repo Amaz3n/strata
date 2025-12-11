@@ -32,7 +32,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal } from "@/components/icons"
+import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw } from "@/components/icons"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -310,12 +310,12 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
           }}>
             {isSyncingAll ? (
               <>
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                <RefreshCcw className="h-4 w-4 mr-2 animate-spin" />
                 Sync pending
               </>
             ) : (
               <>
-                <RefreshCw className="h-4 w-4 mr-2" />
+                <RefreshCcw className="h-4 w-4 mr-2" />
                 Sync pending
               </>
             )}
