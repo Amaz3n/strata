@@ -486,6 +486,9 @@ export interface Invoice {
   invoice_number: string
   title: string
   status: "draft" | "sent" | "paid" | "overdue" | "void"
+  qbo_id?: string | null
+  qbo_synced_at?: string | null
+  qbo_sync_status?: "pending" | "synced" | "error" | "skipped" | null
   issue_date?: string | null
   due_date?: string | null
   notes?: string | null

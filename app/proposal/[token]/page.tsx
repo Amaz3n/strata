@@ -73,3 +73,4 @@ export default async function ProposalPage({ params }: Params) {
   return <ProposalViewClient proposal={proposal as any} token={token} />
 }
 
+

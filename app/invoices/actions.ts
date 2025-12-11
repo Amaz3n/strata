@@ -3,6 +3,9 @@
 import { revalidatePath } from "next/cache"
 
 import { createInvoice, ensureInvoiceToken, getInvoiceWithLines, listInvoiceViews, listInvoices } from "@/lib/services/invoices"
+import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { requireOrgContext } from "@/lib/services/context"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
 
 export async function listInvoicesAction(projectId?: string) {
@@ -39,12 +42,27 @@ export async function getInvoiceDetailAction(invoiceId: string) {
   const token = await ensureInvoiceToken(invoiceId, invoice.org_id)
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://app.strata.build"
   const views = await listInvoiceViews(invoiceId, invoice.org_id)
+  const supabase = createServiceSupabaseClient()
+  const { data: syncHistory } = await supabase
+    .from("qbo_sync_records")
+    .select("id, status, last_synced_at, error_message, qbo_id")
+    .eq("org_id", invoice.org_id)
+    .eq("entity_type", "invoice")
+    .eq("entity_id", invoiceId)
+    .order("last_synced_at", { ascending: false })
 
   return {
     invoice: { ...invoice, token },
     link: `${appUrl}/i/${token}`,
     views,
+    syncHistory: syncHistory ?? [],
   }
 }
 
-
+export async function manualResyncInvoiceAction(invoiceId: string) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+  const { orgId } = await requireOrgContext()
+  await enqueueInvoiceSync(invoiceId, orgId)
+  revalidatePath("/invoices")
+  return { success: true }
+}

@@ -270,3 +270,4 @@ export function ProposalViewClient({ proposal, token }: Props) {
   )
 }
 
+

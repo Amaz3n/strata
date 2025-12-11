@@ -15,6 +15,7 @@ import {
   Receipt,
   Share2,
   HardHat,
+  Link2,
 } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
@@ -77,6 +78,12 @@ function buildNavigation() {
       title: "Sharing",
       url: "/sharing",
       icon: Share2,
+      isActive: false,
+    },
+    {
+      title: "Integrations",
+      url: "/settings/integrations",
+      icon: Link2,
       isActive: false,
     },
     {

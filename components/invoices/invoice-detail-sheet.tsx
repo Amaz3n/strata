@@ -3,7 +3,7 @@
 import type React from "react"
 import { useMemo } from "react"
 import { format } from "date-fns"
-import { Copy, ExternalLink, Download } from "lucide-react"
+import { Copy, ExternalLink, Download, RefreshCw } from "lucide-react"
 
 import type { Invoice, InvoiceView } from "@/lib/types"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
 
 type Props = {
   trigger?: React.ReactNode
@@ -22,8 +23,11 @@ type Props = {
   invoice?: Invoice | null
   link?: string
   views?: InvoiceView[]
+  syncHistory?: Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
   loading?: boolean
   onCopyLink?: () => void
+  onManualResync?: () => Promise<void>
+  manualResyncing?: boolean
 }
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -61,7 +65,19 @@ function CopyInput({ value, actions }: CopyInputProps) {
   )
 }
 
-export function InvoiceDetailSheet({ trigger, open, onOpenChange, invoice, link, views, loading, onCopyLink }: Props) {
+export function InvoiceDetailSheet({
+  trigger,
+  open,
+  onOpenChange,
+  invoice,
+  link,
+  views,
+  syncHistory,
+  loading,
+  onCopyLink,
+  onManualResync,
+  manualResyncing,
+}: Props) {
   const subtotal = invoice?.totals?.subtotal_cents ?? invoice?.subtotal_cents ?? 0
   const tax = invoice?.totals?.tax_cents ?? invoice?.tax_cents ?? 0
   const total = invoice?.totals?.total_cents ?? invoice?.total_cents ?? subtotal + tax
@@ -79,6 +95,16 @@ export function InvoiceDetailSheet({ trigger, open, onOpenChange, invoice, link,
       ua: v.user_agent,
     }))
   }, [views])
+
+  const syncLogs = useMemo(() => {
+    return (syncHistory ?? []).map((item) => ({
+      id: item.id,
+      status: item.status,
+      last_synced_at: item.last_synced_at,
+      error: item.error_message,
+      qbo_id: item.qbo_id,
+    }))
+  }, [syncHistory])
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -99,7 +125,16 @@ export function InvoiceDetailSheet({ trigger, open, onOpenChange, invoice, link,
                   <span className="text-base font-semibold leading-tight line-clamp-1">{customerName}</span>
                 </div>
               </div>
-              {invoice?.status && <Badge className="capitalize">{invoice.status}</Badge>}
+              <div className="flex items-center gap-2">
+                {invoice?.qbo_sync_status && (
+                  <QBOSyncBadge
+                    status={invoice.qbo_sync_status}
+                    syncedAt={invoice.qbo_synced_at ?? undefined}
+                    qboId={invoice.qbo_id ?? undefined}
+                  />
+                )}
+                {invoice?.status && <Badge className="capitalize">{invoice.status}</Badge>}
+              </div>
             </div>
 
             <div className="flex flex-col gap-4">
@@ -175,6 +210,36 @@ export function InvoiceDetailSheet({ trigger, open, onOpenChange, invoice, link,
                 <Download className="h-4 w-4" />
               </Button>
             </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">QuickBooks sync</span>
+              {onManualResync && (
+                <Button size="sm" variant="outline" onClick={onManualResync} disabled={manualResyncing}>
+                  <RefreshCw className={`h-4 w-4 mr-2 ${manualResyncing ? "animate-spin" : ""}`} />
+                  {manualResyncing ? "Resyncing..." : "Manual resync"}
+                </Button>
+              )}
+            </div>
+            {syncLogs && syncLogs.length > 0 ? (
+              <div className="space-y-2">
+                {syncLogs.map((log) => (
+                  <div key={log.id} className="rounded-md border px-3 py-2 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium capitalize">{log.status}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {log.last_synced_at ? new Date(log.last_synced_at).toLocaleString() : "—"}
+                      </span>
+                    </div>
+                    {log.qbo_id && (
+                      <p className="text-xs text-muted-foreground mt-1">QBO ID: {log.qbo_id}</p>
+                    )}
+                    {log.error && <p className="text-xs text-destructive mt-1">{log.error}</p>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No syncs yet.</p>
+            )}
           </div>
 
           <Accordion type="multiple" className="px-5 pb-8" defaultValue={[]}>

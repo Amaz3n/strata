@@ -9,9 +9,7 @@ export default async function SettingsPage() {
 
   return (
     <AppShell title="Settings" user={currentUser}>
-      <div className="p-4 lg:p-6">
-        <SettingsWindow user={currentUser} />
-      </div>
+      <SettingsWindow user={currentUser} />
     </AppShell>
   )
 }

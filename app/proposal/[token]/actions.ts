@@ -27,3 +27,4 @@ export async function acceptProposalAction(input: { token: string; signature?: s
   return { success: true }
 }
 
+

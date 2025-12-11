@@ -211,3 +211,4 @@ export function InvoicePublicMiddayView({ invoice }: Props) {
     </div>
   )
 }
+

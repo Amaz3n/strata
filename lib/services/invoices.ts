@@ -8,6 +8,8 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { sendEmail } from "@/lib/services/mailer"
+import { markReservationUsed } from "@/lib/services/invoice-numbers"
+import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
 
 type InvoiceRow = {
   id: string
@@ -25,6 +27,9 @@ type InvoiceRow = {
   tax_cents?: number | null
   total_cents?: number | null
   balance_due_cents?: number | null
+  qbo_id?: string | null
+  qbo_synced_at?: string | null
+  qbo_sync_status?: string | null
   metadata?: Record<string, any> | null
   created_at?: string
   updated_at?: string
@@ -93,6 +98,9 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     invoice_number: row.invoice_number,
     title: row.title ?? `Invoice ${row.invoice_number}`,
     status: (row.status as Invoice["status"]) ?? "draft",
+    qbo_id: row.qbo_id ?? undefined,
+    qbo_synced_at: row.qbo_synced_at ?? undefined,
+    qbo_sync_status: (row.qbo_sync_status as Invoice["qbo_sync_status"]) ?? null,
     issue_date: row.issue_date ?? undefined,
     due_date: row.due_date ?? undefined,
     notes: row.notes ?? undefined,
@@ -158,7 +166,7 @@ export async function listInvoices({
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
     )
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
@@ -171,6 +179,7 @@ export async function listInvoices({
 
 export async function createInvoice({ input, orgId }: { input: InvoiceInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const reservationId = input.reservation_id ?? undefined
 
   const lines = normalizeLines(input.lines)
   const totals = calculateTotals(input.lines, input.tax_rate)
@@ -207,7 +216,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     .from("invoices")
     .insert(payload)
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at",
     )
     .single()
 
@@ -231,6 +240,10 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
 
   if (linesError) {
     throw new Error(`Failed to create invoice lines: ${linesError.message}`)
+  }
+
+  if (reservationId) {
+    await markReservationUsed(reservationId, data.id, resolvedOrgId)
   }
 
   await recordEvent({
@@ -259,6 +272,8 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       dueDate: input.due_date ?? undefined,
     })
   }
+
+  await enqueueInvoiceSync(data.id, resolvedOrgId)
 
   return mapInvoiceRow(data as InvoiceRow)
 }
@@ -305,7 +320,7 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)

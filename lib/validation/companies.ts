@@ -45,3 +45,4 @@ export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
 
 
+

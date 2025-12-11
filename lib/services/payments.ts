@@ -16,6 +16,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
+import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
 const PAY_PATH = `${APP_URL}/p/pay`
@@ -510,6 +511,12 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
   } else if (parsed.pay_link_token) {
     // HMAC-signed link path: rotate nonce to prevent replay when possible.
     await rotatePayLinkNonce(invoiceId, resolvedOrgId)
+  }
+
+  try {
+    await enqueuePaymentSync(paymentRow.id, resolvedOrgId)
+  } catch (err) {
+    console.error("Failed to enqueue QBO payment sync", err)
   }
 
   return mapPayment(paymentRow)

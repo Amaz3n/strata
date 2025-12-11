@@ -12,6 +12,13 @@ export const invoiceLineInputSchema = z.object({
 export const invoiceInputSchema = z.object({
   project_id: z.string().uuid("Project is required").optional().nullable(),
   invoice_number: z.string().min(1, "Invoice number is required"),
+  reservation_id: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable()
+    .or(z.literal(""))
+    .transform((val) => (val === "" ? undefined : val ?? undefined)),
   title: z.string().min(3, "Title is required"),
   status: z.enum(["draft", "sent", "paid", "overdue", "void"]).default("draft"),
   issue_date: z.string().optional(),
@@ -30,5 +37,4 @@ export const invoiceInputSchema = z.object({
 
 export type InvoiceLineInput = z.infer<typeof invoiceLineInputSchema>
 export type InvoiceInput = z.infer<typeof invoiceInputSchema>
-
 

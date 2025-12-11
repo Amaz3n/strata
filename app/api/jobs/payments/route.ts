@@ -10,3 +10,4 @@ export async function GET() {
     late_fee_candidates: lateFees.length,
   })
 }
+

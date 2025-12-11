@@ -39,3 +39,4 @@ export async function recordPaymentAction(input: unknown) {
 export async function listPaymentsForInvoiceAction(invoiceId: string) {
   return listPaymentsForInvoice(invoiceId)
 }
+

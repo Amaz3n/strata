@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useFieldArray, useForm } from "react-hook-form"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -24,6 +24,7 @@ import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { RichEditor } from "./rich-editor"
 import { Calendar, Building2, Plus, Trash2 } from "@/components/icons"
+import { Skeleton } from "@/components/ui/skeleton"
 
 const jsonLike = z.any().nullable().optional()
 
@@ -88,6 +89,12 @@ export function MiddayInvoiceForm({
   isSubmitting,
 }: MiddayInvoiceFormProps) {
   const [submitMode, setSubmitMode] = useState<"draft" | "send">("draft")
+  const [numberSource, setNumberSource] = useState<"qbo" | "local">("local")
+  const [reservationId, setReservationId] = useState<string | null>(null)
+  const [reservationUsed, setReservationUsed] = useState(false)
+  const [isLoadingNumber, setIsLoadingNumber] = useState(false)
+  const reservationRef = useRef<string | null>(null)
+  const reservationUsedRef = useRef(false)
 
   const form = useForm<InvoiceFormValues>({
     resolver: zodResolver(middayInvoiceSchema),
@@ -99,6 +106,7 @@ export function MiddayInvoiceForm({
       issue_date: "",
       due_date: "",
       notes: "",
+      reservation_id: "",
       client_visible: false,
       tax_rate: 0,
       lines: [defaultLine],
@@ -119,6 +127,65 @@ export function MiddayInvoiceForm({
   const watchedValues = form.watch()
   const previewTotals = useMemo(() => calculatePreviewTotals(watchedValues), [watchedValues])
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function releaseReservation() {
+      if (reservationRef.current && !reservationUsedRef.current) {
+        await fetch("/api/invoices/release-reservation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reservation_id: reservationRef.current }),
+        }).catch((err) => console.error("Failed to release reservation", err))
+        reservationRef.current = null
+        setReservationId(null)
+      }
+    }
+
+    async function loadNextNumber() {
+      setIsLoadingNumber(true)
+      setReservationUsed(false)
+      reservationUsedRef.current = false
+      try {
+        const response = await fetch("/api/invoices/next-number", { cache: "no-store" })
+        if (!response.ok) throw new Error("Failed to get next invoice number")
+        const data = await response.json()
+        if (cancelled) return
+        form.setValue("invoice_number", data.number ?? "")
+        form.setValue("reservation_id", data.reservation_id ?? "")
+        reservationRef.current = data.reservation_id ?? null
+        setReservationId(data.reservation_id ?? null)
+        setNumberSource(data.source ?? "local")
+      } catch (err) {
+        console.error(err)
+      } finally {
+        if (!cancelled) setIsLoadingNumber(false)
+      }
+    }
+
+    if (open) {
+      loadNextNumber()
+    } else {
+      void releaseReservation()
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [form, open])
+
+  useEffect(() => {
+    return () => {
+      if (reservationRef.current && !reservationUsedRef.current) {
+        void fetch("/api/invoices/release-reservation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reservation_id: reservationRef.current }),
+        }).catch((err) => console.error("Failed to release reservation", err))
+      }
+    }
+  }, [])
+
   const handleSubmit = form.handleSubmit(async (values) => {
     const payload: InvoiceInput = {
       ...values,
@@ -138,25 +205,34 @@ export function MiddayInvoiceForm({
           : values.notes,
     }
 
-    await onSubmit(payload, submitMode === "send")
-    form.reset({
-      project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      invoice_number: "",
-      title: "",
-      status: "draft",
-      issue_date: "",
-      due_date: "",
-      notes: "",
-      client_visible: false,
-      tax_rate: 0,
-      lines: [defaultLine],
-      from_details: null,
-      customer_details: null,
-      payment_details: null,
-      note_details: null,
-      top_block: null,
-      bottom_block: null,
-    })
+    try {
+      await onSubmit(payload, submitMode === "send")
+      setReservationUsed(true)
+      reservationUsedRef.current = true
+      reservationRef.current = null
+      setReservationId(null)
+      form.reset({
+        project_id: defaultProjectId ?? projects[0]?.id ?? "",
+        invoice_number: "",
+        reservation_id: "",
+        title: "",
+        status: "draft",
+        issue_date: "",
+        due_date: "",
+        notes: "",
+        client_visible: false,
+        tax_rate: 0,
+        lines: [defaultLine],
+        from_details: null,
+        customer_details: null,
+        payment_details: null,
+        note_details: null,
+        top_block: null,
+        bottom_block: null,
+      })
+    } finally {
+      // no-op; errors bubble to parent so toast can show
+    }
   })
 
   return (
@@ -184,12 +260,30 @@ export function MiddayInvoiceForm({
                       name="invoice_number"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Invoice #</FormLabel>
+                          <FormLabel className="flex items-center gap-2">
+                            Invoice #
+                            {numberSource === "qbo" && (
+                              <Badge variant="outline" className="text-[11px]">
+                                From QuickBooks
+                              </Badge>
+                            )}
+                          </FormLabel>
                           <FormControl>
-                            <Input placeholder="INV-00024" {...field} />
+                            {isLoadingNumber ? (
+                              <Skeleton className="h-10 w-full" />
+                            ) : (
+                              <Input placeholder="INV-00024" readOnly {...field} />
+                            )}
                           </FormControl>
                           <FormMessage />
                         </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="reservation_id"
+                      render={({ field }) => (
+                        <input type="hidden" {...field} value={field.value ?? ""} className="hidden" />
                       )}
                     />
                     <FormField
@@ -532,5 +626,3 @@ export function MiddayInvoiceForm({
     </Sheet>
   )
 }
-
-

@@ -6,12 +6,18 @@ import { toast } from "sonner"
 
 import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
-import { createInvoiceAction, generateInvoiceLinkAction, getInvoiceDetailAction } from "@/app/invoices/actions"
+import {
+  createInvoiceAction,
+  generateInvoiceLinkAction,
+  getInvoiceDetailAction,
+  manualResyncInvoiceAction,
+} from "@/app/invoices/actions"
 import { MiddayInvoiceSheet } from "@/components/invoices/midday/midday-invoice-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   DropdownMenu,
@@ -87,6 +93,10 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
   const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null)
   const [detailLink, setDetailLink] = useState<string | undefined>(undefined)
   const [detailViews, setDetailViews] = useState<InvoiceView[] | undefined>(undefined)
+  const [detailSyncHistory, setDetailSyncHistory] = useState<
+    Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
+  >()
+  const [isResyncing, setIsResyncing] = useState(false)
 
   const projectLookup = useMemo(() => {
     return projects.reduce<Record<string, Project>>((acc, project) => {
@@ -175,6 +185,7 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
       setDetailInvoice(result.invoice)
       setDetailLink(result.link)
       setDetailViews(result.views as InvoiceView[])
+      setDetailSyncHistory(result.syncHistory as any)
     } catch (error: any) {
       console.error(error)
       toast.error("Could not load invoice", { description: error?.message ?? "Please try again." })
@@ -316,6 +327,7 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
               <TableHead className="px-4 py-4 text-center">Due date</TableHead>
               <TableHead className="text-right px-4 py-4">Amount</TableHead>
               <TableHead className="px-4 py-4 text-center">Status</TableHead>
+              <TableHead className="px-4 py-4 text-center">QuickBooks</TableHead>
               <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
             </TableRow>
           </TableHeader>
@@ -366,6 +378,13 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
                     >
                       {statusLabels[resolveStatusKey(invoice.status)]}
                     </Badge>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    <QBOSyncBadge
+                      status={invoice.qbo_sync_status}
+                      syncedAt={invoice.qbo_synced_at ?? undefined}
+                      qboId={invoice.qbo_id ?? undefined}
+                    />
                   </TableCell>
                   <TableCell className="text-center w-12 px-4 py-4">
                     <div className="flex justify-center">
@@ -433,15 +452,30 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
         invoice={detailInvoice}
         link={detailLink}
         views={detailViews}
+        syncHistory={detailSyncHistory}
         loading={detailLoading}
+        manualResyncing={isResyncing}
         onCopyLink={async () => {
           if (detailLink && typeof navigator !== "undefined" && navigator.clipboard) {
             await navigator.clipboard.writeText(detailLink)
             toast.success("Link copied")
           }
         }}
+        onManualResync={async () => {
+          if (!detailInvoice) return
+          setIsResyncing(true)
+          try {
+            await manualResyncInvoiceAction(detailInvoice.id)
+            toast.success("Resync enqueued")
+            await handleOpenDetail(detailInvoice.id)
+          } catch (error: any) {
+            console.error(error)
+            toast.error("Failed to resync", { description: error?.message ?? "Please try again." })
+          } finally {
+            setIsResyncing(false)
+          }
+        }}
       />
     </div>
   )
 }
-

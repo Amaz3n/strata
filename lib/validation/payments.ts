@@ -35,3 +35,4 @@ export const recordPaymentInputSchema = z.object({
 export type CreatePaymentIntentInput = z.infer<typeof createPaymentIntentInputSchema>
 export type GeneratePayLinkInput = z.infer<typeof generatePayLinkInputSchema>
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
+
