@@ -25,9 +25,17 @@ export async function GET(request: NextRequest) {
   }
 
   // Prefer request-scoped cookies (more reliable on Vercel/edge-adjacent runtimes).
-  const savedState = request.cookies.get("qbo_oauth_state")?.value
+  let savedState = request.cookies.get("qbo_oauth_state")?.value
+  if (!savedState) {
+    try {
+      const cookieStore = cookies()
+      savedState = cookieStore.get("qbo_oauth_state")?.value
+    } catch {
+      // ignore
+    }
+  }
 
-  if (savedState && state !== savedState) {
+  if (!savedState || state !== savedState) {
     return NextResponse.redirect(new URL("/settings/integrations?error=qbo_state_mismatch", request.url))
   }
 
@@ -63,6 +71,7 @@ export async function GET(request: NextRequest) {
       path: "/",
       sameSite: "lax",
       maxAge: 0,
+      secure: request.nextUrl.protocol === "https:",
     })
 
     return response

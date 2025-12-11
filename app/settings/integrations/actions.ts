@@ -14,6 +14,7 @@ export async function connectQBOAction() {
 
   const state = `${orgId}:${randomUUID()}`
   const cookieStore = cookies()
+  const secure = typeof process.env.VERCEL !== "undefined" || process.env.NODE_ENV === "production"
   if (typeof cookieStore.set === "function") {
     cookieStore.set({
       name: "qbo_oauth_state",
@@ -22,10 +23,11 @@ export async function connectQBOAction() {
       sameSite: "lax",
       maxAge: 60 * 10,
       path: "/",
+      secure,
     })
   }
 
-  return { authUrl: getQBOAuthUrl(state) }
+  return { authUrl: getQBOAuthUrl(state), state }
 }
 
 export async function disconnectQBOAction() {

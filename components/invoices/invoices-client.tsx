@@ -11,6 +11,7 @@ import {
   generateInvoiceLinkAction,
   getInvoiceDetailAction,
   manualResyncInvoiceAction,
+  syncPendingInvoicesNowAction,
 } from "@/app/invoices/actions"
 import { MiddayInvoiceSheet } from "@/components/invoices/midday/midday-invoice-sheet"
 import { Badge } from "@/components/ui/badge"
@@ -97,6 +98,7 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
     Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
   >()
   const [isResyncing, setIsResyncing] = useState(false)
+  const [isSyncingAll, setIsSyncingAll] = useState(false)
 
   const projectLookup = useMemo(() => {
     return projects.reduce<Record<string, Project>>((acc, project) => {
@@ -290,10 +292,39 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
           </div>
         </div>
 
-        <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-          <Plus className="h-4 w-4 mr-2" />
-          New invoice
-        </Button>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Button variant="outline" onClick={async () => {
+            setIsSyncingAll(true)
+            try {
+              await syncPendingInvoicesNowAction()
+              toast.success("Queued invoices synced to QuickBooks")
+              if (typeof window !== "undefined") {
+                window.location.reload()
+              }
+            } catch (error: any) {
+              console.error(error)
+              toast.error("Sync failed", { description: error?.message ?? "Please try again." })
+            } finally {
+              setIsSyncingAll(false)
+            }
+          }}>
+            {isSyncingAll ? (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                Sync pending
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Sync pending
+              </>
+            )}
+          </Button>
+          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+            <Plus className="h-4 w-4 mr-2" />
+            New invoice
+          </Button>
+        </div>
       </div>
 
       <MiddayInvoiceSheet

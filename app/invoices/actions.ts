@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { createInvoice, ensureInvoiceToken, getInvoiceWithLines, listInvoiceViews, listInvoices } from "@/lib/services/invoices"
-import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
+import { enqueueInvoiceSync, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
@@ -65,4 +65,31 @@ export async function manualResyncInvoiceAction(invoiceId: string) {
   await enqueueInvoiceSync(invoiceId, orgId)
   revalidatePath("/invoices")
   return { success: true }
+}
+
+export async function syncPendingInvoicesNowAction(limit = 15) {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+
+  const { data: pending } = await supabase
+    .from("invoices")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("qbo_sync_status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(limit)
+
+  if (!pending?.length) {
+    revalidatePath("/invoices")
+    return { success: true, processed: 0 }
+  }
+
+  let processed = 0
+  for (const row of pending) {
+    const result = await syncInvoiceToQBO(row.id, orgId)
+    if (result.success) processed++
+  }
+
+  revalidatePath("/invoices")
+  return { success: true, processed }
 }

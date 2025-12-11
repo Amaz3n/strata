@@ -40,6 +40,19 @@ export function QBOConnectionCard({ connection }: Props) {
     try {
       const result = await connectQBOAction()
       if (result?.authUrl) {
+        if (result.state) {
+          // Ensure the state cookie is present even if the server-set cookie is dropped by the browser.
+          const secure = window.location.protocol === "https:"
+          document.cookie = [
+            `qbo_oauth_state=${result.state}`,
+            "Path=/",
+            "SameSite=Lax",
+            "Max-Age=600",
+            secure ? "Secure" : "",
+          ]
+            .filter(Boolean)
+            .join(";")
+        }
         window.location.href = result.authUrl
       }
     } catch (err) {
