@@ -51,14 +51,16 @@ export async function GET(request: NextRequest) {
       companyName: (companyInfo as any)?.CompanyName ?? (companyInfo as any)?.LegalName ?? null,
     })
 
-    cookieStore.set({
-      name: "qbo_oauth_state",
-      value: "",
-      httpOnly: true,
-      path: "/",
-      sameSite: "lax",
-      maxAge: 0,
-    })
+    if (typeof cookieStore.set === "function") {
+      cookieStore.set({
+        name: "qbo_oauth_state",
+        value: "",
+        httpOnly: true,
+        path: "/",
+        sameSite: "lax",
+        maxAge: 0,
+      })
+    }
 
     return NextResponse.redirect(new URL("/settings/integrations?success=qbo_connected", request.url))
   } catch (err) {

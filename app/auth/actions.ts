@@ -212,26 +212,30 @@ async function persistOrgCookie(supabase: ReturnType<typeof createServerSupabase
 
 async function setOrgCookie(orgId: string) {
   const cookieStore = await cookies()
-  cookieStore.set({
-    name: "org_id",
-    value: orgId,
-    path: "/",
-    httpOnly: false,
-    sameSite: "lax",
-    maxAge: 60 * 60 * 24 * 30,
-  })
+  if (typeof cookieStore.set === "function") {
+    cookieStore.set({
+      name: "org_id",
+      value: orgId,
+      path: "/",
+      httpOnly: false,
+      sameSite: "lax",
+      maxAge: 60 * 60 * 24 * 30,
+    })
+  }
 }
 
 async function clearOrgCookie() {
   const cookieStore = await cookies()
-  cookieStore.set({
-    name: "org_id",
-    value: "",
-    path: "/",
-    httpOnly: false,
-    sameSite: "lax",
-    maxAge: 0,
-  })
+  if (typeof cookieStore.set === "function") {
+    cookieStore.set({
+      name: "org_id",
+      value: "",
+      path: "/",
+      httpOnly: false,
+      sameSite: "lax",
+      maxAge: 0,
+    })
+  }
 }
 
 async function fetchOwnerRoleId(serviceClient: ReturnType<typeof createServiceSupabaseClient>) {

@@ -14,14 +14,16 @@ export async function connectQBOAction() {
 
   const state = `${orgId}:${randomUUID()}`
   const cookieStore = cookies()
-  cookieStore.set({
-    name: "qbo_oauth_state",
-    value: state,
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge: 60 * 10,
-    path: "/",
-  })
+  if (typeof cookieStore.set === "function") {
+    cookieStore.set({
+      name: "qbo_oauth_state",
+      value: state,
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: 60 * 10,
+      path: "/",
+    })
+  }
 
   return { authUrl: getQBOAuthUrl(state) }
 }

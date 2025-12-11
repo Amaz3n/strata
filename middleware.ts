@@ -38,34 +38,34 @@ export async function middleware(request: NextRequest) {
   )
 
   const {
-    data: { session },
-  } = await supabase.auth.getSession()
+    data: { user },
+  } = await supabase.auth.getUser()
 
   const pathname = request.nextUrl.pathname
   const isAuthRoute = pathname.startsWith("/auth")
   const isResetRoute = pathname.startsWith("/auth/reset")
   const isUnauthorizedRoute = pathname.startsWith("/unauthorized")
 
-  if (!session && !isAuthRoute) {
+  if (!user && !isAuthRoute) {
     const redirectUrl = new URL("/auth/signin", request.url)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
 
-  if (session && AUTH_ROUTES.includes(pathname)) {
+  if (user && AUTH_ROUTES.includes(pathname)) {
     const redirectUrl = new URL("/", request.url)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
 
-  if (!session) {
+  if (!user) {
     return response
   }
 
   if (!isAuthRoute && !isResetRoute && !isUnauthorizedRoute) {
     const matched = PROTECTED_ROUTES.find((route) => pathname.startsWith(route.prefix))
     if (matched) {
-      const orgId = await resolveOrgId(supabase, session.user.id, request)
-      const isPlatformAdmin = isPlatformAdminId(session.user.id, session.user.email)
-      const permissions = isPlatformAdmin ? ["*"] : orgId ? await fetchPermissionsForOrg(session.user.id, orgId) : []
+      const orgId = await resolveOrgId(supabase, user.id, request)
+      const isPlatformAdmin = isPlatformAdminId(user.id, user.email)
+      const permissions = isPlatformAdmin ? ["*"] : orgId ? await fetchPermissionsForOrg(user.id, orgId) : []
       const hasPermission = isPlatformAdmin || permissions.includes(matched.permission)
 
       if (!orgId || !hasPermission) {
