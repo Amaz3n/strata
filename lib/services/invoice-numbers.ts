@@ -16,6 +16,7 @@ export interface NextInvoiceNumber {
 
 export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceNumber> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const serviceSupabase = createServiceSupabaseClient()
 
   await cleanupExpiredReservations(resolvedOrgId)
 
@@ -29,7 +30,7 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
           connection.settings.last_known_invoice_number ?? (await client.getLastInvoiceNumber()) ?? "0"
         const nextNumber = incrementInvoiceNumber(lastNumber, connection.settings)
 
-        const { data, error } = await supabase
+        const { data, error } = await serviceSupabase
           .from("qbo_invoice_reservations")
           .insert({
             org_id: resolvedOrgId,
