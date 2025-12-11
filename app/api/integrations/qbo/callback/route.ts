@@ -6,6 +6,10 @@ import { upsertQBOConnection } from "@/lib/services/qbo-connection"
 import { requireOrgMembership } from "@/lib/auth/context"
 
 export async function GET(request: NextRequest) {
+  // Force Node runtime to ensure cookies API supports get/set.
+  // (Edge/runtime differences can otherwise break cookie access.)
+  // See: https://nextjs.org/docs/app/api-reference/file-conventions/route-segment-config#runtime
+  // runtime is declared at the bottom of the file.
   const searchParams = request.nextUrl.searchParams
   const code = searchParams.get("code")
   const state = searchParams.get("state")
@@ -20,8 +24,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL("/settings/integrations?error=qbo_invalid", request.url))
   }
 
-  const cookieStore = cookies()
-  const savedState = cookieStore.get("qbo_oauth_state")?.value
+  // Prefer request-scoped cookies (more reliable on Vercel/edge-adjacent runtimes).
+  const savedState = request.cookies.get("qbo_oauth_state")?.value
 
   if (state !== savedState) {
     return NextResponse.redirect(new URL("/settings/integrations?error=qbo_state_mismatch", request.url))
@@ -51,20 +55,21 @@ export async function GET(request: NextRequest) {
       companyName: (companyInfo as any)?.CompanyName ?? (companyInfo as any)?.LegalName ?? null,
     })
 
-    if (typeof cookieStore.set === "function") {
-      cookieStore.set({
-        name: "qbo_oauth_state",
-        value: "",
-        httpOnly: true,
-        path: "/",
-        sameSite: "lax",
-        maxAge: 0,
-      })
-    }
+    const response = NextResponse.redirect(new URL("/settings/integrations?success=qbo_connected", request.url))
+    response.cookies.set({
+      name: "qbo_oauth_state",
+      value: "",
+      httpOnly: true,
+      path: "/",
+      sameSite: "lax",
+      maxAge: 0,
+    })
 
-    return NextResponse.redirect(new URL("/settings/integrations?success=qbo_connected", request.url))
+    return response
   } catch (err) {
     console.error("QBO OAuth callback error:", err)
     return NextResponse.redirect(new URL("/settings/integrations?error=qbo_failed", request.url))
   }
 }
+
+export const runtime = "nodejs"
