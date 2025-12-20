@@ -1,276 +1,299 @@
-Directory Management Implementation Plan
+# Directory Unification + Vendor Management (Execution Plan)
 
-  The Big Picture
+## Goal
 
-  For a construction management app competing with Procore/Buildertrend, your directory needs to
-  handle three distinct but related concepts:
+Make the app feel like it has a single, unified “Directory” area (like Procore/Buildertrend), **without** merging `companies` and `contacts` into one database table. Unification happens at the **route + navigation + UX** level.
 
-  | Entity    | What It Is                         | Examples
-           |
-  |-----------|------------------------------------|------------------------------------------------
-  ---------|
-  | Team      | Internal employees with app logins | Your project managers, superintendents, office
-  staff    |
-  | Contacts  | Individual people you work with    | Client homeowner, plumber foreman, architect,
-  inspector |
-  | Companies | Businesses you contract with       | ABC Plumbing LLC, Smith Architecture, Home
-  Depot        |
+This plan is written to be LLM-executable: explicit files, invariants, and acceptance checks with minimal ambiguity.
 
-  The schema already models this correctly with memberships (team), contacts, and companies + the
-  junction table contact_company_links.
+---
 
-  ---
-  Phase 1: Core Types & Validation
+## Current State (Repo Reality Check)
 
-  Create these files:
+- Routes exist today:
+  - `app/companies/page.tsx` + `app/companies/actions.ts`
+  - `app/contacts/page.tsx` + `app/contacts/actions.ts`
+  - `app/team/page.tsx` + `app/team/actions.ts`
+- Sidebar “Directory” is currently a dropdown (Team/Contacts/Companies): `components/layout/app-sidebar.tsx`
+- Detail UI exists as sheets:
+  - `components/companies/company-detail-sheet.tsx`
+  - `components/contacts/contact-detail-sheet.tsx`
+- Search UI exists as a command dialog spanning companies/contacts/team:
+  - `components/directory/directory-search.tsx` (wired from `components/companies/companies-table.tsx`)
+- DB schema already has:
+  - `companies`, `contacts`, `contact_company_links`, `commitments`, `vendor_bills`, `project_vendors`, etc.: `supabase/schema.sql`
+- Archive model is soft-archive via `metadata.archived_at` and is enforced in services:
+  - `lib/services/companies.ts`, `lib/services/contacts.ts`
 
-  lib/types.ts          → Add Contact, Company, ContactCompanyLink types
-  lib/validation/contacts.ts
-  lib/validation/companies.ts
-  lib/validation/team.ts
+---
 
-  Types to add:
+## Non-Negotiable Decisions (Avoid Gaps Later)
 
-  // Companies
-  export type CompanyType = "subcontractor" | "supplier" | "client" | "architect" | "engineer" |
-  "other"
+### 1) Keep separate tables; unify the experience
+- Keep `companies` and `contacts` separate in DB.
+- Create a single `/directory` route with internal views (tabs/segmented control).
 
-  export interface Company {
-    id: string
-    org_id: string
-    name: string
-    company_type: CompanyType
-    trade?: string  // e.g., "Electrical", "Plumbing", "HVAC"
-    phone?: string
-    email?: string
-    website?: string
-    address?: Address
-    license_number?: string
-    insurance_expiry?: string
-    notes?: string
-    created_at: string
-  }
+### 2) Fix relationship consistency (required)
+Right now, contacts can have `primary_company_id` without necessarily having a corresponding `contact_company_links` row; company contact lists/counts rely heavily on the link table.
 
-  // Contacts
-  export type ContactType = "internal" | "subcontractor" | "client" | "vendor" | "consultant"
+**Invariant (must enforce in service layer):**
+- If `contacts.primary_company_id` is set, ensure a matching `contact_company_links` row exists (`relationship = "primary"`).
+- If primary company changes, update the primary link accordingly.
 
-  export interface Contact {
-    id: string
-    org_id: string
-    full_name: string
-    email?: string
-    phone?: string
-    role?: string  // e.g., "Foreman", "Owner", "Project Manager"
-    contact_type: ContactType
-    primary_company_id?: string
-    primary_company?: Company  // joined
-    has_portal_access?: boolean
-    created_at: string
-  }
+### 3) Define “standalone contact” correctly (for a hybrid “All” view)
+A contact is standalone iff:
+- `primary_company_id IS NULL` **and**
+- there are **no** `contact_company_links` rows for that contact.
 
-  // Team Members (wrapped membership with user data)
-  export interface TeamMember {
-    id: string  // membership id
-    user: User
-    role: OrgRole
-    status: "active" | "invited" | "suspended"
-    project_count?: number
-    last_active_at?: string
-    invited_by?: User
-    created_at: string
-  }
+### 4) Scale guardrail
+Do **not** preload all contacts for all companies. Company expansion should fetch contacts on-demand (server action).
 
-  ---
-  Phase 2: Services Layer
+---
 
-  Create:
-  lib/services/companies.ts
-  lib/services/contacts.ts
-  lib/services/team.ts
+## Phase 1 — Make `/directory` the Home (Minimal-Churn MVP) — **Status: Completed**
 
-  Each service follows your established pattern with these operations:
+### 1. Create `/directory` route
+**File:** `app/directory/page.tsx`
 
-  Companies Service:
-  - listCompanies(orgId, filters?) - with type/trade filtering
-  - getCompany(companyId) - with contacts included
-  - createCompany({ input, orgId })
-  - updateCompany({ companyId, input })
-  - archiveCompany(companyId) - soft delete, check for active assignments first
-  - getCompanyContacts(companyId) - all contacts linked to company
-  - getCompanyProjects(companyId) - projects where this company is assigned
+- Server component with `export const dynamic = "force-dynamic"`.
+- Fetch in parallel:
+  - `getCurrentUserAction()`
+  - `getCurrentUserPermissions()`
+  - `listCompanies()`
+  - `listContacts()`
+- Render “Directory” page with view tabs:
+  - **Companies** tab: reuse `InsuranceWidget` + `CompaniesTable`
+  - **People** tab: reuse `ContactsTable`
+  - (Optional) **All** tab deferred to Phase 3
 
-  Contacts Service:
-  - listContacts(orgId, filters?) - filter by type, company
-  - getContact(contactId) - with companies and assignments
-  - createContact({ input, orgId })
-  - updateContact({ contactId, input })
-  - archiveContact(contactId)
-  - linkContactToCompany({ contactId, companyId, relationship })
-  - unlinkContactFromCompany({ contactId, companyId })
-  - getContactAssignments(contactId) - tasks/schedules assigned to them
+**Important:** preserve current permission behavior:
+- Companies: `canCreate/canEdit = org.member`, `canArchive = org.admin || members.manage`
+- Contacts: same + `canInvitePortal = project.manage`
 
-  Team Service:
-  - listTeamMembers(orgId) - with project counts
-  - inviteTeamMember({ email, role, orgId }) - sends invite email
-  - updateMemberRole({ membershipId, role })
-  - suspendMember(membershipId)
-  - reactivateMember(membershipId)
-  - removeMember(membershipId) - only if no critical assignments
-  - resendInvite(membershipId)
+### 2. Update sidebar navigation
+**File:** `components/layout/app-sidebar.tsx`
 
-  ---
-  Phase 3: UI Components
+- Replace the “Directory” dropdown with a single “Directory” link pointing to `/directory`.
+- Remove Team/Contacts/Companies sub-items from sidebar.
 
-  File structure:
-  components/
-  ├── team/
-  │   ├── team-table.tsx
-  │   ├── invite-member-dialog.tsx
-  │   └── member-role-badge.tsx
-  ├── contacts/
-  │   ├── contacts-table.tsx
-  │   ├── contact-form.tsx
-  │   ├── contact-card.tsx
-  │   └── contact-companies-list.tsx
-  ├── companies/
-  │   ├── companies-table.tsx
-  │   ├── company-form.tsx
-  │   ├── company-card.tsx
-  │   ├── company-contacts-list.tsx
-  │   └── trade-badge.tsx
-  └── directory/
-      └── directory-search.tsx  # unified search across all three
+### 3. Keep old routes working (no broken links)
+Initial approach (recommended):
+- Keep `app/contacts/page.tsx` and `app/companies/page.tsx` temporarily, but remove them from navigation.
 
-  ---
-  Phase 4: Page Implementation
+Final approach (after parity confirmed):
+- Redirect:
+  - `/contacts` → `/directory?view=people`
+  - `/companies` → `/directory?view=companies`
 
-  Team Page (app/team/page.tsx):
-  - Table with: Name, Email, Role, Status, Last Active, Projects
-  - Invite member button → dialog with email + role selector
-  - Row actions: Change role, Suspend, Remove
-  - Filter by: Role, Status
-  - Show pending invites separately
+### Acceptance checks (Phase 1)
+- Users can do everything they could do before (create/edit/archive/view details) from `/directory` via the two views. **Completed**
+- Sidebar no longer feels fragmented (one Directory entry). **Completed**
 
-  Contacts Page (app/contacts/page.tsx):
-  - Table with: Name, Company, Role, Type, Phone, Email, Portal Access
-  - Quick create + full form dialog
-  - Row actions: Edit, View assignments, Grant portal access, Archive
-  - Filter by: Type (client/sub/vendor), Company
-  - Bulk actions: Add to company, Export
+---
 
-  Companies Page (app/companies/page.tsx):
-  - Card grid OR table view toggle
-  - Card shows: Name, Type, Trade badge, Contact count, Phone
-  - Row actions: View details, Add contact, Archive
-  - Filter by: Type (subcontractor/supplier/client), Trade
-  - Detail sheet: Shows all contacts, project history, documents
+## Phase 2 — Close Consistency + Revalidation Gaps (Must-Have) — **Status: Completed**
 
-  ---
-  Phase 5: Construction-Specific Features
+### 1. Enforce primary-company link invariant
+**File:** `lib/services/contacts.ts`
 
-  These differentiate you from generic CRM:
+- In `createContact`:
+  - If `primary_company_id` is present, upsert into `contact_company_links` with `relationship = "primary"`.
+- In `updateContact`:
+  - If primary company changes: upsert new `"primary"` link, delete old `"primary"` link (recommended).
+  - If primary company cleared: delete any `"primary"` link rows for that contact (recommended).
 
-  1. Trade Categories (for subcontractors)
-  const TRADES = [
-    "General", "Electrical", "Plumbing", "HVAC", "Roofing",
-    "Framing", "Drywall", "Painting", "Flooring", "Concrete",
-    "Masonry", "Landscaping", "Pool", "Fencing", "Windows/Doors",
-    "Cabinets", "Countertops", "Tile", "Insulation", "Stucco"
-  ] as const
+**Why:** This prevents “contact not showing under company” and mismatched counts.
 
-  2. Insurance/License Tracking
-  - Add to company form: License #, Insurance expiry date
-  - Dashboard widget showing expiring insurance (30/60/90 days)
-  - Prevent scheduling companies with expired insurance (optional warning)
+### 2. Make company contact queries resilient to legacy data
+**File:** `lib/services/companies.ts`
 
-  3. Project Relationship View
-  - On company detail: Show all projects they've worked on
-  - On contact detail: Show task/schedule assignments across projects
-  - Quick link to add them to current project
+Until the invariant is fully trusted, make `getCompanyContacts` (and/or `getCompany`) include:
+- contacts linked via `contact_company_links` **OR**
+- contacts where `contacts.primary_company_id = companyId`
 
-  4. Crew Assignment Integration
-  - When scheduling, allow selecting a company → then pick contacts from that company
-  - "Assign ABC Plumbing" → "Select crew members: John (Foreman), Mike, Dave"
+### 3. Revalidate `/directory` after mutations (easy-to-miss)
+**Files:**
+- `app/contacts/actions.ts`
+- `app/companies/actions.ts`
 
-  5. Portal Access (leverage existing portal_access_tokens)
-  - One-click "Send portal invite" from contact row
-  - Contact can then view project updates, schedules, photos
-  - Track when they last accessed
+Add `revalidatePath("/directory")` for:
+- contact: create/update/archive/link/unlink
+- company: create/update/archive
 
-  ---
-  Database Additions (Optional Enhancements)
+### 4. Update internal links to point at `/directory`
+**File:** `components/dashboard/onboarding-checklist.tsx`
 
-  Your schema is solid, but consider adding:
+- Change “Add contacts/companies” link to `/directory` (or `/directory?view=people`).
 
-  -- Trade categories enum or table
-  ALTER TABLE companies ADD COLUMN trade text;  -- Already have this via metadata, but make explicit
+### Acceptance checks (Phase 2)
+- Creating a contact with a Primary Company makes them appear under that company everywhere (detail sheets, company contact counts, directory lists). **Completed**
+- Editing/archiving from any view updates `/directory` without manual refresh. **Completed**
 
-  -- Insurance tracking
-  ALTER TABLE companies ADD COLUMN license_number text;
-  ALTER TABLE companies ADD COLUMN insurance_expiry timestamptz;
-  ALTER TABLE companies ADD COLUMN insurance_document_id uuid REFERENCES files(id);
+---
 
-  -- Contact preferences
-  ALTER TABLE contacts ADD COLUMN preferred_contact_method text; -- 'phone', 'email', 'text'
-  ALTER TABLE contacts ADD COLUMN notes text;
+## Phase 3 — Optional “All” View (Hybrid List Done Right) — **Status: Completed**
 
-  -- Performance tracking (future)
-  CREATE TABLE company_ratings (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id uuid NOT NULL REFERENCES orgs(id),
-    company_id uuid NOT NULL REFERENCES companies(id),
-    project_id uuid REFERENCES projects(id),
-    rating smallint CHECK (rating BETWEEN 1 AND 5),
-    notes text,
-    created_by uuid REFERENCES app_users(id),
-    created_at timestamptz DEFAULT now()
-  );
+If you want the “single list that shows everything” feel, ship it as a **third tab**, not as the only UI.
 
-  ---
-  Implementation Order
+### UX rules
+- Top-level shows:
+  - all companies
+  - standalone contacts (definition above)
+- Company rows are expandable; expanding loads contacts lazily.
+- Avoid duplicates:
+  - Contacts that belong to a company should not also appear top-level.
+  - If a contact is linked to multiple companies, display them under their **primary** company in the All view (and show additional companies inside contact detail).
 
-  I recommend building in this sequence:
+### Implementation
+**Server action:**
+- `app/directory/actions.ts`
+  - `getCompanyContactsForDirectoryAction(companyId)` → calls the company contact query and returns contacts
 
-  1. Types & Validation (30 min) - Foundation for everything
-  2. Companies Service + UI - Simplest entity, no dependencies
-  3. Contacts Service + UI - Builds on companies (links)
-  4. Team Service + UI - Slightly different (auth integration)
-  5. Integration Points - Connect to schedule/task assignment dropdowns
-  6. Polish - Unified search, bulk actions, exports
+**New components (suggested):**
+- `components/directory/directory-client.tsx` (tab state, search state, sheet open state)
+- `components/directory/directory-table.tsx` (hybrid list with expand rows)
+- `components/directory/directory-add-sheet.tsx` (choose Company vs Contact, reuse existing forms)
 
-  ---
-  Key Integration Points
+### Acceptance checks (Phase 3)
+- Expanding a company does not require loading all contacts upfront. **Completed**
+- Standalone contacts are correct (no company links at all). **Completed**
 
-  Once directory is built, wire it into:
+---
 
-  | Feature       | Integration                                                  |
-  |---------------|--------------------------------------------------------------|
-  | Schedule      | Assignment dropdown shows Team + Contacts grouped by company |
-  | Tasks         | Assignee picker includes contacts with type badge            |
-  | Daily Logs    | "On site" field lists from contacts/companies                |
-  | Change Orders | "Requested by" links to contact                              |
-  | Invoices      | Bill to company, attention to contact                        |
-  | RFIs          | Addressed to contact (architect, engineer)                   |
+## Phase 4 — Team to Settings (Only After Permissions Decision) — **Status: Completed**
 
-  ---
-  UI/UX Recommendations
+- Loosened settings access (now fetched for any org member) and gated Team actions by permissions.
+- Added Team tab in `components/settings/settings-window.tsx` reusing `TeamTable` + `InviteMemberDialog`.
+- Team actions now revalidate `/settings` as well as `/team`.
 
-  1. Unified Directory Search - Global search that spans team/contacts/companies with type
-  indicators
-  2. Quick Add - Floating action button to add contact while in other contexts (e.g., creating a
-  schedule item)
-  3. Smart Defaults - When adding contact to company, auto-populate company phone/address
-  4. Mobile First - Card layouts on mobile, table on desktop for contacts/companies
-  5. Recently Used - Show recently accessed contacts at top of assignment pickers
+Acceptance:
+- Users with `members.manage`/`org.admin` can manage Team from Settings; other members can still access non-Team tabs. **Completed**
 
-  ---
-  This plan gives you a solid directory system that:
-  - Follows your existing patterns exactly
-  - Leverages the schema you already have
-  - Addresses construction-specific needs (trades, insurance, crews)
-  - Integrates cleanly with your other features
-  - Scales from small builders to larger operations
+---
 
-  I'd suggest beginning with the types and
-  validation schemas, then moving to the Companies feature as it's the simplest and sets up patterns
-   for the others.
+## Phase 5 — Company Detail Page (Vendor Management) — **Status: Completed**
+
+### Route: `/companies/[id]`
+Full-page company detail with tabbed interface for vendor management. (You can keep the existing sheet for quick view.)
+
+**Suggested layout**
+```
+┌────────────────────────────────────────────────────────────────┐
+│  ← Back to Directory                                           │
+│  ABC Electric                              [Edit] [Archive]    │
+│  Subcontractor · Electrical · Since Jan 2023                   │
+├────────────────────────────────────────────────────────────────┤
+│  [Overview] [Contacts] [Projects] [Contracts] [Invoices] [Docs]│
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  (Tab content here)                                            │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+Tabs:
+- Overview (contact info, trade/type, quick compliance summary)
+- Contacts
+- Projects (via `project_vendors`)
+- Contracts (via `commitments`)
+- Invoices (via `vendor_bills`)
+- Compliance/Docs (insurance certs, license, W-9, prequal)
+
+**Tab detail (baseline requirements)**
+- Overview: phone/email/website/address, trade/type, default payment terms, internal notes, quick compliance status cards
+- Contacts: list, add, edit/archive, send portal invites
+- Projects: list projects where assigned (`project_vendors`), role per project, link to project
+- Contracts: commitments with status + totals, invoiced vs total, create new
+- Invoices: vendor bills by status, payment info, summary totals
+- Compliance/Docs: insurance certs + expiry alerts, license verification, W-9, prequal status
+
+**Implemented (repo)**
+- Full-page company detail route: `app/companies/[id]/page.tsx`
+- Tabbed UI: `components/companies/company-detail-page.tsx` + `components/companies/company-*-tab.tsx`
+- Contracts: create + list commitments and billed/remaining totals: `lib/services/commitments.ts`
+- Invoices: list vendor bills for company and update status (approve/paid + payment reference): `lib/services/vendor-bills.ts`, `app/companies/[id]/actions.ts`
+- Compliance + vendor profile fields stored in `companies.metadata` (no DB migration required)
+
+**Acceptance**
+- Supports insurance/license/W-9/prequal/rating/default terms/internal notes on vendor profile. **Completed**
+- Shows project history and vendor invoices; invoices can be approved/marked paid. **Completed**
+- Contracts track billed totals and remaining vs contract amount. **Completed**
+
+---
+
+## Database Notes (Pragmatic Path)
+
+### Today (works)
+- Company “compliance” fields are stored in `companies.metadata` and mapped in `lib/services/companies.ts`.
+
+### When expanding vendor management
+- Consider normalizing compliance into tables (multiple policies, renewals, multiple files) instead of many columns on `companies`.
+- Optional denormalization:
+  - Add `company_id` to `vendor_bills` for faster filtering by company (source of truth should remain `commitment_id → company_id`, and you must keep them consistent).
+
+**Existing tables used by this plan (already in `supabase/schema.sql`)**
+- `companies`, `contacts`, `contact_company_links`
+- `project_vendors`
+- `commitments`, `commitment_lines`
+- `vendor_bills`, `bill_lines`
+- `files`, `file_links`
+
+**Optional schema enhancements (only if you outgrow `companies.metadata`)**
+If you choose to move key compliance fields to columns for queryability:
+```sql
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS
+  insurance_gl_expiry date,
+  insurance_gl_coverage_cents integer,
+  insurance_wc_expiry date,
+  insurance_wc_coverage_cents integer,
+  insurance_auto_expiry date,
+  insurance_certificate_file_id uuid references files(id),
+  license_type text,
+  license_expiry date,
+  license_verified boolean default false,
+  w9_on_file boolean default false,
+  w9_file_id uuid references files(id),
+  prequalified boolean default false,
+  prequalified_at timestamptz,
+  rating integer check (rating between 1 and 5),
+  default_payment_terms text,
+  internal_notes text;
+```
+
+Optional denormalization for bills:
+```sql
+ALTER TABLE vendor_bills ADD COLUMN IF NOT EXISTS
+  company_id uuid references companies(id) on delete set null;
+
+CREATE INDEX IF NOT EXISTS vendor_bills_company_idx ON vendor_bills(company_id);
+```
+
+---
+
+## File Structure (Target State)
+
+**New**
+- `app/directory/page.tsx`
+- `app/directory/actions.ts` (Phase 3+)
+- `components/directory/directory-client.tsx` (Phase 3+)
+- `components/directory/directory-table.tsx` (Phase 3+)
+- `components/directory/directory-add-sheet.tsx` (Phase 3+)
+
+**Modified**
+- `components/layout/app-sidebar.tsx`
+- `app/contacts/actions.ts`
+- `app/companies/actions.ts`
+- `lib/services/contacts.ts`
+- `lib/services/companies.ts` (recommended)
+- `components/dashboard/onboarding-checklist.tsx`
+
+---
+
+## Implementation Order (Recommended)
+
+1) Phase 1: `/directory` + sidebar update
+2) Phase 2: relationship invariant + resilient queries + revalidation + link updates
+3) Phase 1 (finalize): redirect old `/contacts`/`/companies` routes
+4) Phase 3: optional “All” hybrid view with lazy expansion
+5) Phase 4: Team → Settings (after permissions model is decided)
+6) Phase 5: company detail full-page tabs + vendor management

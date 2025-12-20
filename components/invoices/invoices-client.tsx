@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react"
 import { addDays, format } from "date-fns"
 import { toast } from "sonner"
+import { AnimatePresence } from "framer-motion"
 
 import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
@@ -12,6 +13,7 @@ import {
   getInvoiceDetailAction,
   manualResyncInvoiceAction,
   syncPendingInvoicesNowAction,
+  updateInvoiceAction,
 } from "@/app/invoices/actions"
 import { MiddayInvoiceSheet } from "@/components/invoices/midday/midday-invoice-sheet"
 import { Badge } from "@/components/ui/badge"
@@ -34,6 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw } from "@/components/icons"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
+import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
 import { Skeleton } from "@/components/ui/skeleton"
 
 type StatusKey = "draft" | "sent" | "paid" | "overdue" | "void"
@@ -57,8 +60,8 @@ const statusStyles: Record<StatusKey, string> = {
 }
 
 function formatMoneyFromCents(cents?: number | null) {
-  const value = cents ?? 0
-  return value.toLocaleString("en-US", { style: "currency", currency: "USD" })
+  const dollars = (cents ?? 0) / 100
+  return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
 function resolveStatusKey(status?: string | null): StatusKey {
@@ -88,6 +91,7 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
   const [searchTerm, setSearchTerm] = useState("")
   const [sheetOpen, setSheetOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const [isUpdating, setIsUpdating] = useState(false)
   const [linkingId, setLinkingId] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -99,6 +103,8 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
   >()
   const [isResyncing, setIsResyncing] = useState(false)
   const [isSyncingAll, setIsSyncingAll] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
 
   const projectLookup = useMemo(() => {
     return projects.reduce<Record<string, Project>>((acc, project) => {
@@ -159,6 +165,23 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
     })
   }
 
+  async function handleUpdate(values: InvoiceInput, sendToClient: boolean) {
+    if (!editingInvoice) return
+    setIsUpdating(true)
+    try {
+      const updated = await updateInvoiceAction(editingInvoice.id, values)
+      setItems((prev) => prev.map((inv) => (inv.id === updated.id ? updated : inv)))
+      toast.success(sendToClient ? "Invoice sent" : "Invoice updated")
+      setEditOpen(false)
+      setEditingInvoice(null)
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not update invoice", { description: error?.message ?? "Please try again." })
+    } finally {
+      setIsUpdating(false)
+    }
+  }
+
   async function handleShare(invoiceId: string) {
     setLinkingId(invoiceId)
     try {
@@ -182,6 +205,10 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
   async function handleOpenDetail(invoiceId: string) {
     setDetailOpen(true)
     setDetailLoading(true)
+    setDetailInvoice(null)
+    setDetailLink(undefined)
+    setDetailViews(undefined)
+    setDetailSyncHistory(undefined)
     try {
       const result = await getInvoiceDetailAction(invoiceId)
       setDetailInvoice(result.invoice)
@@ -338,144 +365,169 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
         contacts={contacts}
         costCodes={costCodes}
       />
+      <MiddayInvoiceSheet
+        open={editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open)
+          if (!open) setEditingInvoice(null)
+        }}
+        projects={projects}
+        defaultProjectId={editingInvoice?.project_id ?? (filterProjectId !== "all" ? filterProjectId : projects[0]?.id)}
+        onSubmit={handleUpdate}
+        isSubmitting={isUpdating}
+        builderInfo={builderInfo}
+        contacts={contacts}
+        costCodes={costCodes}
+        mode="edit"
+        invoice={editingInvoice}
+      />
 
-      <div className="rounded-lg border overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="divide-x">
-              <TableHead className="w-12 px-4 py-4 text-center">
-                <div className="flex justify-center">
-                  <Checkbox
-                    checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
-                    onCheckedChange={toggleSelectAll}
-                    aria-label="Select all invoices"
-                  />
-                </div>
-              </TableHead>
-              <TableHead className="min-w-[260px] px-4 py-4">Invoice No.</TableHead>
-              <TableHead className="px-4 py-4">Project</TableHead>
-              <TableHead className="px-4 py-4 text-center">Issue date</TableHead>
-              <TableHead className="px-4 py-4 text-center">Due date</TableHead>
-              <TableHead className="text-right px-4 py-4">Amount</TableHead>
-              <TableHead className="px-4 py-4 text-center">Status</TableHead>
-              <TableHead className="px-4 py-4 text-center">QuickBooks</TableHead>
-              <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.map((invoice) => {
-              const projectName = projectLookup[invoice.project_id]?.name ?? "Unknown project"
-              const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
-              const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
-              return (
-                <TableRow key={invoice.id} className="align-top divide-x">
-                  <TableCell className="w-12 text-center align-middle px-4 py-4">
-                    <div className="flex justify-center">
-                      <Checkbox
-                        checked={selectedIds.includes(invoice.id)}
-                        onCheckedChange={(checked) => toggleSelectOne(invoice.id, checked)}
-                        aria-label={`Select invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
-                      />
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-4 py-4">
-                    <div className="flex flex-col gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenDetail(invoice.id)}
-                        className="font-semibold text-left hover:text-primary transition-colors"
-                        aria-label={`View invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
-                      >
-                        {invoiceLabel}
-                      </button>
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">
-                    {projectName}
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                    {invoice.issue_date ? format(new Date(invoice.issue_date), "MMM d, yyyy") : "—"}
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                    {invoice.due_date ? format(new Date(invoice.due_date), "MMM d, yyyy") : "—"}
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-right">
-                    <div className="font-semibold">{total}</div>
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-center">
-                    <Badge
-                      variant="secondary"
-                      className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}
-                    >
-                      {statusLabels[resolveStatusKey(invoice.status)]}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-center">
-                    <QBOSyncBadge
-                      status={invoice.qbo_sync_status}
-                      syncedAt={invoice.qbo_synced_at ?? undefined}
-                      qboId={invoice.qbo_id ?? undefined}
+      <AnimatePresence>
+        <div className="rounded-lg border overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow className="divide-x">
+                <TableHead className="w-12 py-4 text-center relative">
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Checkbox
+                      checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all invoices"
                     />
-                  </TableCell>
-                  <TableCell className="text-center w-12 px-4 py-4">
-                    <div className="flex justify-center">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Invoice actions</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            disabled={linkingId === invoice.id}
-                            onSelect={(event) => {
-                              event.preventDefault()
-                              handleShare(invoice.id)
-                            }}
-                          >
-                            {linkingId === invoice.id ? "Copying…" : "Copy link"}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                  </div>
+                </TableHead>
+                <TableHead className="min-w-[90px] px-4 py-4">Invoice No.</TableHead>
+                <TableHead className="px-4 py-4">Project</TableHead>
+                <TableHead className="px-4 py-4 text-center">Issue date</TableHead>
+                <TableHead className="px-4 py-4 text-center">Due date</TableHead>
+                <TableHead className="text-right px-4 py-4">Amount</TableHead>
+                <TableHead className="px-4 py-4 text-center">Status</TableHead>
+                <TableHead className="px-4 py-4 text-center">QuickBooks</TableHead>
+                <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((invoice) => {
+                const projectName = projectLookup[invoice.project_id]?.name ?? "Unknown project"
+                const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
+                const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
+                return (
+                  <TableRow key={invoice.id} className="align-top divide-x">
+                    <TableCell className="w-12 text-center align-middle py-4 relative">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Checkbox
+                          checked={selectedIds.includes(invoice.id)}
+                          onCheckedChange={(checked) => toggleSelectOne(invoice.id, checked)}
+                          aria-label={`Select invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
+                        />
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-4 py-4">
+                      <div className="flex flex-col gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenDetail(invoice.id)}
+                          className="font-semibold text-left hover:text-primary transition-colors"
+                          aria-label={`View invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
+                        >
+                          {invoiceLabel}
+                        </button>
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-muted-foreground">
+                      {projectName}
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                      {invoice.issue_date ? format(new Date(invoice.issue_date), "MMM d, yyyy") : "—"}
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                      {invoice.due_date ? format(new Date(invoice.due_date), "MMM d, yyyy") : "—"}
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-right">
+                      <div className="font-semibold">{total}</div>
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-center">
+                      <Badge
+                        variant="secondary"
+                        className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}
+                      >
+                        {statusLabels[resolveStatusKey(invoice.status)]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-center">
+                      <QBOSyncBadge
+                        status={invoice.qbo_sync_status}
+                        syncedAt={invoice.qbo_synced_at ?? undefined}
+                        qboId={invoice.qbo_id ?? undefined}
+                      />
+                    </TableCell>
+                    <TableCell className="text-center w-12 px-4 py-4">
+                      <div className="flex justify-center">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <MoreHorizontal className="h-4 w-4" />
+                              <span className="sr-only">Invoice actions</span>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              disabled={linkingId === invoice.id}
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                handleShare(invoice.id)
+                              }}
+                            >
+                              {linkingId === invoice.id ? "Copying…" : "Copy link"}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+              {filtered.length === 0 && !isPending && (
+                <TableRow className="divide-x">
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                        <FolderOpen className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <p className="font-medium">No invoices yet</p>
+                        <p className="text-sm">Create your first invoice to get started.</p>
+                      </div>
+                      <Button onClick={() => setSheetOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Create invoice
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
-              )
-            })}
-            {filtered.length === 0 && !isPending && (
-              <TableRow className="divide-x">
-                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                      <FolderOpen className="h-6 w-6" />
+              )}
+              {isPending && filtered.length === 0 && (
+                <TableRow className="divide-x">
+                  <TableCell colSpan={7}>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {[...Array(3)].map((_, idx) => (
+                        <Skeleton key={idx} className="h-24 w-full rounded-md" />
+                      ))}
                     </div>
-                    <div>
-                      <p className="font-medium">No invoices yet</p>
-                      <p className="text-sm">Create your first invoice to get started.</p>
-                    </div>
-                    <Button onClick={() => setSheetOpen(true)}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Create invoice
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-            {isPending && filtered.length === 0 && (
-              <TableRow className="divide-x">
-                <TableCell colSpan={7}>
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                    {[...Array(3)].map((_, idx) => (
-                      <Skeleton key={idx} className="h-24 w-full rounded-md" />
-                    ))}
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+
+        {selectedIds.length > 0 && (
+          <InvoiceBottomBar
+            selectedCount={selectedIds.length}
+            onDeselectAll={() => setSelectedIds([])}
+          />
+        )}
+      </AnimatePresence>
 
       <InvoiceDetailSheet
         open={detailOpen}
@@ -506,6 +558,15 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
             setIsResyncing(false)
           }
         }}
+        onEdit={
+          detailInvoice
+            ? () => {
+              setEditingInvoice(detailInvoice)
+              setEditOpen(true)
+              setDetailOpen(false)
+            }
+            : undefined
+        }
       />
     </div>
   )

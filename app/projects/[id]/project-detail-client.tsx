@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import {
   format,
   formatDistanceToNow,
@@ -16,7 +17,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { toast } from "sonner"
 import { DateRange } from "react-day-picker"
 
-import type { Project, Task, ScheduleItem, DailyLog, FileMetadata } from "@/lib/types"
+import type { Company, Contact, Project, Task, ScheduleItem, DailyLog, PortalAccessToken, ProjectVendor, Contract, DrawSchedule, Retainage } from "@/lib/types"
 import type {
   ProjectStats,
   ProjectTeamMember,
@@ -41,13 +42,28 @@ import {
   removeProjectMemberAction,
   updateProjectMemberRoleAction,
   getProjectTeamDirectoryAction,
+  updateProjectSettingsAction,
+  addProjectVendorAction,
+  removeProjectVendorAction,
+  updateProjectVendorAction,
+  getProjectVendorsAction,
+  createAndAssignVendorAction,
 } from "./actions"
+import { loadSharingDataAction, revokePortalTokenAction, setPortalTokenPinAction, removePortalTokenPinAction } from "@/app/sharing/actions"
 import { FilesManager } from "@/components/files"
 import { ScheduleView } from "@/components/schedule"
 import { DailyLogsTab } from "@/components/daily-logs"
 import { TasksTab } from "@/components/tasks/tasks-tab"
 import { scheduleItemInputSchema, type ScheduleItemInput } from "@/lib/validation/schedule"
+import type { ProjectInput } from "@/lib/validation/projects"
+import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { cn } from "@/lib/utils"
+import { AccessTokenGenerator } from "@/components/sharing/access-token-generator"
+import { AccessTokenList } from "@/components/sharing/access-token-list"
+import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
+import { ProjectDirectory, DIRECTORY_ROLE_FILTERS } from "@/components/projects/project-directory"
+import { FinancialsTab } from "@/components/projects/financials-tab"
+import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -56,7 +72,9 @@ import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -70,6 +88,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -85,7 +109,6 @@ import {
   DollarSign,
   TrendingUp,
   Upload,
-  ArrowUpRight,
   ClipboardList,
   Building2,
   Search,
@@ -93,6 +116,9 @@ import {
   Mail,
   UserPlus,
   Settings,
+  Share2,
+  RefreshCcw,
+  Filter,
 } from "@/components/icons"
 
 interface ProjectDetailClientProps {
@@ -104,6 +130,13 @@ interface ProjectDetailClientProps {
   files: EnhancedFileMetadata[]
   team: ProjectTeamMember[]
   activity: ProjectActivity[]
+  portalTokens: PortalAccessToken[]
+  contacts: Contact[]
+  projectVendors: ProjectVendor[]
+  companies: Company[]
+  contract: Contract | null
+  draws: DrawSchedule[]
+  retainage: Retainage[]
 }
 
 const statusColors: Record<string, string> = {
@@ -231,7 +264,15 @@ export function ProjectDetailClient({
   files: initialFiles,
   team,
   activity,
+  portalTokens,
+  contacts,
+  projectVendors,
+  companies,
+  contract,
+  draws,
+  retainage,
 }: ProjectDetailClientProps) {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState("overview")
   const today = new Date()
 
@@ -241,11 +282,23 @@ export function ProjectDetailClient({
   const [dailyLogs, setDailyLogs] = useState<DailyLog[]>(initialDailyLogs)
   const [files, setFiles] = useState<EnhancedFileMetadata[]>(initialFiles)
   const [teamMembers, setTeamMembers] = useState<ProjectTeamMember[]>(team)
+  const [sharingSheetOpen, setSharingSheetOpen] = useState(false)
+  const [portalTokensState, setPortalTokensState] = useState<PortalAccessToken[]>(portalTokens)
+  const [sharingLoading, setSharingLoading] = useState(false)
+  const [sharingLastLoadedAt, setSharingLastLoadedAt] = useState<Date | null>(portalTokens.length ? new Date() : null)
+  const [sharingInitialized, setSharingInitialized] = useState(Boolean(portalTokens.length))
 
   // Sheet states
   const [scheduleSheetOpen, setScheduleSheetOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [teamSheetOpen, setTeamSheetOpen] = useState(false)
+  const [settingsSheetOpen, setSettingsSheetOpen] = useState(false)
+  const [projectVendorsState, setProjectVendorsState] = useState<ProjectVendor[]>(projectVendors)
+  const [contractSheetOpen, setContractSheetOpen] = useState(false)
+  const handleSaveProject = async (input: Partial<ProjectInput>) => {
+    await updateProjectSettingsAction(project.id, input)
+    router.refresh()
+  }
 
   // Date range for schedule items
   const [scheduleDateRange, setScheduleDateRange] = useState<DateRange | undefined>()
@@ -260,10 +313,112 @@ export function ProjectDetailClient({
   const [selectedRoleId, setSelectedRoleId] = useState<string | undefined>()
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set())
   const [directorySearch, setDirectorySearch] = useState("")
+  const [vendorSearch, setVendorSearch] = useState("")
+  const [vendorRoleFilter, setVendorRoleFilter] = useState<"all" | ProjectVendorInput["role"]>("all")
+  const [directoryAssignOpen, setDirectoryAssignOpen] = useState(false)
+  const [selectedVendorEntity, setSelectedVendorEntity] = useState<{ type: "company" | "contact"; id: string } | null>(null)
+  const [vendorScope, setVendorScope] = useState("")
+  const [vendorNotes, setVendorNotes] = useState("")
+  const [vendorRole, setVendorRole] = useState<ProjectVendorInput["role"]>("subcontractor")
+  const [createNewMode, setCreateNewMode] = useState(false)
+  const [newVendorKind, setNewVendorKind] = useState<"company" | "contact" | "client_contact">("company")
+  const [newVendorName, setNewVendorName] = useState("")
+  const [newVendorEmail, setNewVendorEmail] = useState("")
+  const [newVendorPhone, setNewVendorPhone] = useState("")
+  const [newVendorTrade, setNewVendorTrade] = useState("")
+  const [newVendorCompanyType, setNewVendorCompanyType] = useState("subcontractor")
+  const [newVendorContactRole, setNewVendorContactRole] = useState("")
+  const [manageTeamSheetOpen, setManageTeamSheetOpen] = useState(false)
+  const [assigningVendor, setAssigningVendor] = useState(false)
+  const { clientActiveLinks, subActiveLinks, activeTokens } = useMemo(() => {
+    const activeClient = portalTokensState.filter((token) => token.portal_type === "client" && !token.revoked_at).length
+    const activeSubs = portalTokensState.filter((token) => token.portal_type === "sub" && !token.revoked_at).length
+    const actives = portalTokensState.filter((token) => !token.revoked_at)
+    return { clientActiveLinks: activeClient, subActiveLinks: activeSubs, activeTokens: actives }
+  }, [portalTokensState])
+  const activePortalLinks = clientActiveLinks + subActiveLinks
 
   useEffect(() => {
     void loadTeamDirectory()
   }, [])
+
+  async function refreshPortalTokens() {
+    setSharingLoading(true)
+    try {
+      const tokens = await loadSharingDataAction(project.id)
+      setPortalTokensState(tokens)
+      setSharingInitialized(true)
+      setSharingLastLoadedAt(new Date())
+    } catch (error) {
+      console.error(error)
+      toast.error("Unable to load sharing links")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  function handleTokenCreated(token: PortalAccessToken) {
+    setPortalTokensState((prev) => [token, ...prev])
+    setSharingInitialized(true)
+    setSharingLastLoadedAt(new Date())
+    toast.success("Link created", { description: "Share it with your client or sub." })
+  }
+
+  async function handleTokenRevoke(tokenId: string) {
+    setSharingLoading(true)
+    try {
+      await revokePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      setPortalTokensState((prev) =>
+        prev.map((token) =>
+          token.id === tokenId ? { ...token, revoked_at: new Date().toISOString() } : token
+        )
+      )
+      toast.success("Access revoked")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to revoke link")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  async function handleSetPin(tokenId: string, pin: string) {
+    setSharingLoading(true)
+    try {
+      await setPortalTokenPinAction({ token_id: tokenId, pin })
+      setPortalTokensState((prev) =>
+        prev.map((token) => (token.id === tokenId ? { ...token, pin_required: true } : token)),
+      )
+      toast.success("PIN updated")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to set PIN")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  async function handleClearPin(tokenId: string) {
+    setSharingLoading(true)
+    try {
+      await removePortalTokenPinAction({ token_id: tokenId })
+      setPortalTokensState((prev) =>
+        prev.map((token) => (token.id === tokenId ? { ...token, pin_required: false } : token)),
+      )
+      toast.success("PIN removed")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to remove PIN")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (sharingSheetOpen && !sharingInitialized) {
+      void refreshPortalTokens()
+    }
+  }, [sharingInitialized, sharingSheetOpen])
 
   async function loadTeamDirectory() {
     setTeamDirectoryLoading(true)
@@ -453,6 +608,111 @@ export function ProjectDetailClient({
     })
   }
 
+  async function handleAddVendor(input: ProjectVendorInput) {
+    setTeamLoading(true)
+    try {
+      await addProjectVendorAction(project.id, input)
+      const refreshed = await getProjectVendorsAction(project.id)
+      setProjectVendorsState(refreshed)
+      toast.success("Added to directory")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to add", { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setTeamLoading(false)
+    }
+  }
+
+  async function handleAssignExistingVendor(entity: { type: "company" | "contact"; id: string }) {
+    setAssigningVendor(true)
+    try {
+      await addProjectVendorAction(project.id, {
+        project_id: project.id,
+        company_id: entity.type === "company" ? entity.id : undefined,
+        contact_id: entity.type === "contact" ? entity.id : undefined,
+        role: vendorRole,
+        scope: vendorScope || undefined,
+        notes: vendorNotes || undefined,
+      })
+      const refreshed = await getProjectVendorsAction(project.id)
+      setProjectVendorsState(refreshed)
+      setSelectedVendorEntity(null)
+      setVendorScope("")
+      setVendorNotes("")
+      toast.success("Assigned to project")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to assign", { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setAssigningVendor(false)
+    }
+  }
+
+  async function handleCreateAndAssignVendor() {
+    if (!newVendorName.trim()) {
+      toast.error("Name is required")
+      return
+    }
+    setAssigningVendor(true)
+    try {
+      await createAndAssignVendorAction(project.id, {
+        kind: newVendorKind,
+        name: newVendorName.trim(),
+        email: newVendorEmail.trim() || undefined,
+        phone: newVendorPhone.trim() || undefined,
+        trade: newVendorTrade.trim() || undefined,
+        company_type: newVendorCompanyType,
+        contact_role: newVendorContactRole.trim() || undefined,
+        role: vendorRole,
+        scope: vendorScope || undefined,
+        notes: vendorNotes || undefined,
+      })
+      const refreshed = await getProjectVendorsAction(project.id)
+      setProjectVendorsState(refreshed)
+      setCreateNewMode(false)
+      setNewVendorName("")
+      setNewVendorEmail("")
+      setNewVendorPhone("")
+      setNewVendorTrade("")
+      setNewVendorContactRole("")
+      toast.success("Added to project")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to add", { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setAssigningVendor(false)
+    }
+  }
+
+  async function handleRemoveVendor(vendorId: string) {
+    setTeamLoading(true)
+    try {
+      await removeProjectVendorAction(project.id, vendorId)
+      setProjectVendorsState((prev) => prev.filter((v) => v.id !== vendorId))
+      toast.success("Removed from project")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to remove", { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setTeamLoading(false)
+    }
+  }
+
+  async function handleUpdateVendor(vendorId: string, updates: Partial<Pick<ProjectVendorInput, "role" | "scope" | "notes">>) {
+    setTeamLoading(true)
+    try {
+      await updateProjectVendorAction(project.id, vendorId, updates)
+      const refreshed = await getProjectVendorsAction(project.id)
+      setProjectVendorsState(refreshed)
+      toast.success("Updated")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to update", { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setTeamLoading(false)
+    }
+  }
+
   // Calculate progress percentage
   const progressPercentage = stats.totalDays > 0 
     ? Math.min(100, Math.round((stats.daysElapsed / stats.totalDays) * 100))
@@ -536,6 +796,47 @@ export function ProjectDetailClient({
       .sort((a, b) => Number(Boolean(a.project_member_id)) - Number(Boolean(b.project_member_id)))
   }, [availablePeople, directorySearch])
 
+  const assignedCompanyIds = useMemo(
+    () => new Set(projectVendorsState.map((v) => v.company_id).filter(Boolean) as string[]),
+    [projectVendorsState],
+  )
+  const assignedContactIds = useMemo(
+    () => new Set(projectVendorsState.map((v) => v.contact_id).filter(Boolean) as string[]),
+    [projectVendorsState],
+  )
+  const directoryOptions = useMemo(() => {
+    const lower = vendorSearch.trim().toLowerCase()
+    const companyOptions =
+      companies
+        ?.filter((c) => !assignedCompanyIds.has(c.id))
+        .map((c) => ({
+          id: c.id,
+          type: "company" as const,
+          title: c.name,
+          subtitle: c.trade || c.company_type,
+          match: `${c.name} ${c.trade ?? ""} ${c.company_type ?? ""}`.toLowerCase(),
+        })) ?? []
+    const contactOptions =
+      contacts
+        ?.filter((c) => !assignedContactIds.has(c.id))
+        .map((c) => ({
+          id: c.id,
+          type: "contact" as const,
+          title: c.full_name,
+          subtitle: c.email ?? c.role,
+          match: `${c.full_name} ${c.email ?? ""} ${c.role ?? ""}`.toLowerCase(),
+        })) ?? []
+    const combined = [...companyOptions, ...contactOptions]
+    if (!lower) return combined
+    return combined.filter((item) => item.match.includes(lower))
+  }, [companies, contacts, assignedCompanyIds, assignedContactIds, vendorSearch, projectVendorsState])
+
+  useEffect(() => {
+    if (vendorRoleFilter !== "all") {
+      setVendorRole(vendorRoleFilter)
+    }
+  }, [vendorRoleFilter])
+
   // Mini gantt data
   const ganttEnd = project.end_date ? parseISO(project.end_date) : addDays(today, 90)
   const ganttStart = project.start_date ? parseISO(project.start_date) : today
@@ -553,6 +854,14 @@ export function ProjectDetailClient({
 
   return (
     <div className="flex flex-col h-[calc(100vh-5rem)] space-y-4 p-4 lg:p-6 overflow-hidden">
+      <ProjectSettingsSheet
+        project={project}
+        contacts={contacts}
+        open={settingsSheetOpen}
+        onOpenChange={setSettingsSheetOpen}
+        onSave={handleSaveProject}
+      />
+      <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
       {/* Header Section - Fixed */}
       <div className="flex-shrink-0 space-y-4">
         {/* Project Header */}
@@ -605,13 +914,304 @@ export function ProjectDetailClient({
                 {project.description}
               </p>
             )}
+    </div>
+
+      {/* Directory Assignment Sheet */}
+      <Sheet open={directoryAssignOpen} onOpenChange={(open) => { setDirectoryAssignOpen(open); setSelectedVendorEntity(null); setCreateNewMode(false); }}>
+        <SheetContent
+          side="right"
+          className="sm:max-w-xl w-full max-w-xl ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation"
+          style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
+        >
+          <div className="flex h-full flex-col">
+            <div className="border-b bg-muted/30 px-6 py-3">
+              <SheetHeader className="text-left">
+                <SheetTitle className="text-lg font-semibold leading-none tracking-tight flex items-center gap-2">
+                  <Building2 className="h-5 w-5 text-muted-foreground" />
+                  Assign to directory
+                </SheetTitle>
+                <SheetDescription className="text-xs text-muted-foreground">
+                  Pick existing companies or contacts.
+                </SheetDescription>
+              </SheetHeader>
+            </div>
+
+            <ScrollArea className="flex-1">
+              <div className="px-6 py-4 space-y-6">
+                <div className="rounded-lg border bg-card/60 shadow-sm">
+                  <div className="border-b px-4 py-3 flex items-center justify-between">
+                    <p className="text-sm font-medium">Directory</p>
+                    <Badge variant="secondary" className="text-[11px]">
+                      {directoryOptions.length} found
+                    </Badge>
+                  </div>
+                  <div className="p-4 pb-0">
+                    <Input
+                      value={vendorSearch}
+                      onChange={(e) => {
+                        setVendorSearch(e.target.value)
+                        setCreateNewMode(false)
+                      }}
+                      placeholder="Search companies or contacts"
+                    />
+                  </div>
+                  <div className="max-h-[320px] overflow-y-auto divide-y mt-3">
+                    {directoryOptions.length === 0 ? (
+                      <div className="py-6 text-center text-sm text-muted-foreground">No matches found</div>
+                    ) : (
+                      directoryOptions.map((item) => {
+                        const isSelected =
+                          selectedVendorEntity?.id === item.id && selectedVendorEntity.type === item.type
+                        return (
+                          <button
+                            key={`${item.type}-${item.id}`}
+                            type="button"
+                            className={cn(
+                              "w-full px-4 py-3 text-left hover:bg-muted/70 transition flex items-center gap-3",
+                              isSelected && "bg-primary/10 ring-1 ring-primary/30"
+                            )}
+                            onClick={() => {
+                              setSelectedVendorEntity({ type: item.type, id: item.id })
+                              setCreateNewMode(false)
+                              setVendorScope("")
+                              setVendorNotes("")
+                            }}
+                          >
+                            <Avatar className="h-10 w-10">
+                              <AvatarFallback className="text-xs">
+                                {getInitials(item.title)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium truncate">{item.title}</p>
+                                <Badge variant="outline" className="text-[10px] capitalize">
+                                  {item.type}
+                                </Badge>
+                              </div>
+                              {item.subtitle && (
+                                <p className="text-xs text-muted-foreground truncate">{item.subtitle}</p>
+                              )}
+                            </div>
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {vendorSearch.trim().length > 0 && (
+                  <Button
+                    variant="outline"
+                    className="justify-start h-auto py-3"
+                    onClick={() => {
+                      setCreateNewMode(true)
+                      setNewVendorName(vendorSearch.trim())
+                      setSelectedVendorEntity(null)
+                    }}
+                  >
+                    Add “{vendorSearch.trim()}”
+                  </Button>
+                )}
+
+                {createNewMode && (
+                  <div className="rounded-lg border bg-card/60 shadow-sm p-4 space-y-4">
+                    <div className="flex items-center gap-3">
+                      <Select value={newVendorKind} onValueChange={(v) => setNewVendorKind(v as typeof newVendorKind)}>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="company">Company</SelectItem>
+                          <SelectItem value="contact">Contact</SelectItem>
+                          <SelectItem value="client_contact">Client</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        value={newVendorName}
+                        onChange={(e) => setNewVendorName(e.target.value)}
+                        placeholder="Name"
+                      />
+                    </div>
+                    {(newVendorKind === "contact" || newVendorKind === "client_contact") && (
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <Input
+                          value={newVendorEmail}
+                          onChange={(e) => setNewVendorEmail(e.target.value)}
+                          placeholder="Email"
+                        />
+                        <Input
+                          value={newVendorPhone}
+                          onChange={(e) => setNewVendorPhone(e.target.value)}
+                          placeholder="Phone"
+                        />
+                        <Input
+                          value={newVendorContactRole}
+                          onChange={(e) => setNewVendorContactRole(e.target.value)}
+                          placeholder="Role/title"
+                        />
+                      </div>
+                    )}
+                    {newVendorKind === "company" && (
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <Select value={newVendorCompanyType} onValueChange={setNewVendorCompanyType}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="subcontractor">Subcontractor</SelectItem>
+                            <SelectItem value="supplier">Supplier</SelectItem>
+                            <SelectItem value="client">Client</SelectItem>
+                            <SelectItem value="architect">Architect</SelectItem>
+                            <SelectItem value="engineer">Engineer</SelectItem>
+                            <SelectItem value="other">Other</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          value={newVendorTrade}
+                          onChange={(e) => setNewVendorTrade(e.target.value)}
+                          placeholder="Trade"
+                        />
+                        <Input
+                          value={newVendorEmail}
+                          onChange={(e) => setNewVendorEmail(e.target.value)}
+                          placeholder="Email"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="rounded-lg border bg-card/60 shadow-sm p-4 space-y-3">
+                  <Textarea
+                    value={vendorScope}
+                    onChange={(e) => setVendorScope(e.target.value)}
+                    placeholder="Scope on this project"
+                    className="min-h-[96px]"
+                  />
+                  <Textarea
+                    value={vendorNotes}
+                    onChange={(e) => setVendorNotes(e.target.value)}
+                    placeholder="Notes, access, crew names"
+                    className="min-h-[96px]"
+                  />
+                </div>
+              </div>
+            </ScrollArea>
+
+            <div className="flex-shrink-0 border-t bg-muted/30 p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => {
+                    setDirectoryAssignOpen(false)
+                    setSelectedVendorEntity(null)
+                    setCreateNewMode(false)
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="w-full"
+                  disabled={assigningVendor || (!selectedVendorEntity && !createNewMode)}
+                  onClick={() => {
+                    if (createNewMode || !selectedVendorEntity) {
+                      void handleCreateAndAssignVendor()
+                    } else if (selectedVendorEntity) {
+                      void handleAssignExistingVendor(selectedVendorEntity)
+                    }
+                  }}
+                >
+                  {assigningVendor
+                    ? "Saving..."
+                    : createNewMode || !selectedVendorEntity
+                      ? "Add and assign"
+                      : "Assign to project"}
+                </Button>
+              </div>
+            </div>
           </div>
+        </SheetContent>
+      </Sheet>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm">
-              <ArrowUpRight className="mr-2 h-4 w-4" />
-              Client Portal
-            </Button>
+            <Sheet open={sharingSheetOpen} onOpenChange={setSharingSheetOpen}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Share2 className="mr-2 h-4 w-4" />
+                  Share
+                </Button>
+              </SheetTrigger>
+              <SheetContent
+                side="right"
+                className="w-full max-w-5xl sm:max-w-5xl ml-auto mr-4 mt-4 mb-4 h-[calc(100vh-2rem)] overflow-hidden rounded-xl border bg-background p-0 shadow-2xl flex min-h-0 flex-col"
+              >
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="border-b bg-muted/50 px-6 py-5">
+                    <SheetHeader className="text-left">
+                      <SheetTitle className="text-xl font-semibold leading-tight">Share this project</SheetTitle>
+                      <SheetDescription className="text-sm text-muted-foreground">
+                        Generate secure client or subcontractor links and manage existing access without leaving the
+                        project.
+                      </SheetDescription>
+                    </SheetHeader>
+                  </div>
+
+                  <ScrollArea className="flex-1 min-h-0">
+                    <div className="space-y-6 px-6 py-6">
+                      <Accordion type="single" collapsible className="rounded-xl border bg-card/70 shadow-sm">
+                        <AccordionItem value="active-access" className="border-none">
+                          <AccordionTrigger className="px-4">
+                            <div className="flex w-full items-center justify-between gap-3">
+                              <div className="flex items-center gap-3">
+                                <Badge variant="secondary" className="px-3 py-1">
+                                  {activePortalLinks} active
+                                </Badge>
+                                <div className="flex items-center gap-4 text-sm">
+                                  <span className="text-muted-foreground">Clients {clientActiveLinks}</span>
+                                  <span className="text-muted-foreground">Subs {subActiveLinks}</span>
+                                </div>
+                              </div>
+                              <span className="text-xs text-muted-foreground">Expand to review active links</span>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4">
+                            <div className="pt-2">
+                              <AccessTokenList
+                                projectId={project.id}
+                                tokens={activeTokens}
+                                onRevoke={handleTokenRevoke}
+                                isLoading={sharingLoading}
+                                onSetPin={handleSetPin}
+                                onClearPin={handleClearPin}
+                              />
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      </Accordion>
+
+                      <Card className="shadow-sm">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <CardTitle className="text-lg">Create a new portal link</CardTitle>
+                              <CardDescription>
+                                Pick an audience, add an optional expiry, and lock down permissions.
+                              </CardDescription>
+                            </div>
+                            <Badge variant="outline">Step 1</Badge>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <AccessTokenGenerator projectId={project.id} onCreated={handleTokenCreated} />
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </ScrollArea>
+                </div>
+              </SheetContent>
+            </Sheet>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="icon">
@@ -619,11 +1219,11 @@ export function ProjectDetailClient({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem>
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSettingsSheetOpen(true) }}>
                   <Settings className="mr-2 h-4 w-4" />
                   Project Settings
                 </DropdownMenuItem>
-                <DropdownMenuItem>
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setManageTeamSheetOpen(true); void loadTeamDirectory() }}>
                   <Users className="mr-2 h-4 w-4" />
                   Manage Team
                 </DropdownMenuItem>
@@ -635,6 +1235,319 @@ export function ProjectDetailClient({
         </div>
       </div>
 
+      {/* Manage Team Sheet */}
+      <Sheet open={manageTeamSheetOpen} onOpenChange={setManageTeamSheetOpen}>
+        <SheetContent side="right" className="sm:max-w-3xl w-full max-w-3xl ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col">
+          <div className="flex-1 overflow-y-auto px-4">
+            <SheetHeader className="pt-6 pb-4">
+              <SheetTitle className="text-lg font-semibold leading-none tracking-tight">Project team</SheetTitle>
+              <SheetDescription className="text-sm text-muted-foreground">
+                View, add, and manage internal teammates on this project.
+              </SheetDescription>
+            </SheetHeader>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 w-full sm:w-auto mb-4">
+              <div className="relative flex-1 min-w-[260px]">
+                <Input
+                  value={teamSearch}
+                  onChange={(e) => setTeamSearch(e.target.value)}
+                  placeholder="Search team"
+                  className="pr-12"
+                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 h-8 w-8 border-0 shadow-none hover:bg-muted"
+                    >
+                      <Filter className="h-4 w-4" />
+                      <span className="sr-only">Filters</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuLabel>Filter by role</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuRadioGroup value={roleFilter} onValueChange={setRoleFilter}>
+                      <DropdownMenuRadioItem value="all">All roles</DropdownMenuRadioItem>
+                      {projectRoles.map((role) => (
+                        <DropdownMenuRadioItem key={role.id} value={role.id}>
+                          {role.label}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <Button size="icon" onClick={() => { setTeamSheetOpen(true); void loadTeamDirectory() }}>
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {filteredTeam.length > 0 ? (
+              <div className="rounded-lg border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="divide-x">
+                      <TableHead className="px-4 py-3">Name</TableHead>
+                      <TableHead className="px-4 py-3">Project role</TableHead>
+                      <TableHead className="px-4 py-3">Email</TableHead>
+                      <TableHead className="px-4 py-3 text-center">Workload</TableHead>
+                      <TableHead className="px-4 py-3 text-center">Status</TableHead>
+                      <TableHead className="px-4 py-3 text-center w-12">‎</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredTeam.map((member) => {
+                      const workload = teamWorkload[member.user_id] ?? { tasks: 0, schedule: 0 }
+                      const workloadText =
+                        workload.tasks || workload.schedule
+                          ? [
+                              workload.tasks ? `${workload.tasks} task${workload.tasks !== 1 ? "s" : ""}` : null,
+                              workload.schedule
+                                ? `${workload.schedule} schedule item${workload.schedule !== 1 ? "s" : ""}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" • ")
+                          : "—"
+
+                      return (
+                        <TableRow key={member.id} className="divide-x">
+                          <TableCell className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <Avatar className="h-10 w-10">
+                                <AvatarImage src={member.avatar_url} alt={member.full_name} />
+                                <AvatarFallback>{getInitials(member.full_name)}</AvatarFallback>
+                              </Avatar>
+                              <div className="min-w-0">
+                                <p className="font-medium truncate">{member.full_name}</p>
+                                <p className="text-xs text-muted-foreground truncate">{member.email}</p>
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="px-4 py-3">
+                            <Badge variant="secondary" className="text-[11px]">
+                              {member.role_label}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="px-4 py-3">
+                            <a
+                              href={`mailto:${member.email}`}
+                              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              {member.email}
+                            </a>
+                          </TableCell>
+                          <TableCell className="px-4 py-3 text-center text-sm text-muted-foreground">
+                            {workloadText}
+                          </TableCell>
+                          <TableCell className="px-4 py-3 text-center">
+                            <Badge variant="outline" className="capitalize">
+                              {member.status ?? "active"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="px-4 py-3 text-center">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem asChild>
+                                  <Link href={`/people/${member.user_id}`}>View profile</Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuSub>
+                                  <DropdownMenuSubTrigger>Change role</DropdownMenuSubTrigger>
+                                  <DropdownMenuSubContent>
+                                    {projectRoles.map((role) => (
+                                      <DropdownMenuItem
+                                        key={role.id}
+                                        disabled={role.id === member.role_id}
+                                        onClick={() => handleRoleChange(member.id, role.id)}
+                                      >
+                                        {role.label}
+                                      </DropdownMenuItem>
+                                    ))}
+                                  </DropdownMenuSubContent>
+                                </DropdownMenuSub>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={() => handleRemoveMember(member.id)}
+                                >
+                                  Remove from project
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : teamMembers.length > 0 ? (
+              <Card>
+                <CardContent className="py-12">
+                  <div className="flex flex-col items-center justify-center text-center">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted mb-4">
+                      <Search className="h-6 w-6 text-muted-foreground" />
+                    </div>
+                    <p className="font-medium">No matches found</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Try adjusting your search or filter.
+                    </p>
+                    <Button
+                      variant="outline"
+                      className="mt-4"
+                      onClick={() => {
+                        setTeamSearch("")
+                        setRoleFilter("all")
+                      }}
+                    >
+                      Clear filters
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardContent className="py-16">
+                  <div className="flex flex-col items-center justify-center text-center">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
+                      <Users className="h-8 w-8 text-muted-foreground" />
+                    </div>
+                    <h3 className="text-lg font-semibold">No team members yet</h3>
+                    <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+                      Add people from your organization to collaborate on this project.
+                    </p>
+                    <Button className="mt-6" onClick={() => { setTeamSheetOpen(true); void loadTeamDirectory() }}>
+                      <UserPlus className="mr-2 h-4 w-4" />
+                      Add first member
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Add Member Sheet */}
+      <Sheet open={teamSheetOpen} onOpenChange={setTeamSheetOpen}>
+        <SheetContent
+          side="right"
+          className="sm:max-w-md w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto px-4">
+            <SheetHeader className="pt-6 pb-4">
+              <SheetTitle className="text-lg font-semibold leading-none tracking-tight">Add team member</SheetTitle>
+              <SheetDescription className="text-sm text-muted-foreground">
+                Select people from your organization to add to this project.
+              </SheetDescription>
+            </SheetHeader>
+            <div className="space-y-4">
+              <Select
+                value={selectedRoleId ?? projectRoles[0]?.id ?? ""}
+                onValueChange={setSelectedRoleId}
+                disabled={!projectRoles.length}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select role" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projectRoles.map((role) => (
+                    <SelectItem key={role.id} value={role.id}>
+                      {role.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="rounded-lg border">
+                <div className="flex items-center gap-2 border-b px-3 py-2">
+                  <Search className="h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={directorySearch}
+                    onChange={(e) => setDirectorySearch(e.target.value)}
+                    placeholder="Search people..."
+                    className="h-8 border-0 shadow-none focus-visible:ring-0"
+                  />
+                </div>
+                <ScrollArea className="h-[400px]">
+                  <div className="divide-y">
+                    {filteredDirectory.length > 0 ? (
+                      filteredDirectory.map((person) => {
+                        const isSelected = selectedUserIds.has(person.user_id)
+                        const alreadyOnProject = Boolean(person.project_member_id)
+                        const isYou = person.is_current_user
+                        return (
+                          <button
+                            key={person.user_id}
+                            type="button"
+                            onClick={() => {
+                              if (alreadyOnProject) return
+                              toggleUserSelection(person.user_id)
+                            }}
+                            className={cn(
+                              "flex w-full items-center gap-3 px-3 py-3 text-left transition hover:bg-muted/60",
+                              isSelected && "bg-primary/10",
+                              alreadyOnProject && "cursor-not-allowed opacity-60"
+                            )}
+                          >
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => {
+                                if (alreadyOnProject) return
+                                toggleUserSelection(person.user_id)
+                              }}
+                              disabled={alreadyOnProject}
+                            />
+                            <Avatar className="h-8 w-8">
+                              <AvatarImage src={person.avatar_url} alt={person.full_name} />
+                              <AvatarFallback className="text-xs">{getInitials(person.full_name)}</AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-medium truncate">{person.full_name}</p>
+                                {isYou && (
+                                  <Badge variant="outline" className="text-[10px]">
+                                    You
+                                  </Badge>
+                                )}
+                                {alreadyOnProject && (
+                                  <Badge variant="secondary" className="text-[10px]">
+                                    On project
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-muted-foreground truncate">{person.email}</p>
+                            </div>
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                        No people found
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+            </div>
+          </div>
+          <div className="flex-shrink-0 border-t bg-background p-4">
+            <Button
+              className="w-full"
+              disabled={selectedUserIds.size === 0 || teamLoading || teamDirectoryLoading}
+              onClick={handleAddMembers}
+            >
+              {teamLoading ? "Adding..." : `Add ${selectedUserIds.size || ""} ${selectedUserIds.size === 1 ? "person" : "people"}`}
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0 space-y-4">
         <TabsList className="w-full justify-start overflow-x-auto flex-shrink-0">
@@ -643,7 +1556,8 @@ export function ProjectDetailClient({
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="daily-logs">Daily Logs</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
-          <TabsTrigger value="team">Team</TabsTrigger>
+          <TabsTrigger value="financials">Financials</TabsTrigger>
+          <TabsTrigger value="directory">Directory</TabsTrigger>
         </TabsList>
 
         {/* Overview Tab */}
@@ -1035,278 +1949,88 @@ export function ProjectDetailClient({
 
         {/* Files Tab */}
         <TabsContent value="files" className="flex-1 overflow-hidden data-[state=active]:flex flex-col">
+          <div className="flex items-center justify-end pb-2">
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/projects/${project.id}/drawings`}>Open Drawings</Link>
+            </Button>
+          </div>
           <FilesManager
-            files={files}            projectId={project.id}
+            projectId={project.id}
+            files={files}
             onUpload={handleFileUpload}
             onDelete={handleFileDelete}
             onDownload={handleFileDownload}
           />
         </TabsContent>
 
-        {/* Team Tab */}
-        <TabsContent value="team" className="flex-1 overflow-y-auto space-y-4 pr-2">
-          {/* Header */}
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Project Directory</h2>
-              <p className="text-sm text-muted-foreground">
-                {teamMembers.length} {teamMembers.length === 1 ? "person" : "people"} on this project
-              </p>
-            </div>
-            <Sheet open={teamSheetOpen} onOpenChange={setTeamSheetOpen}>
-              <SheetTrigger asChild>
-                <Button onClick={() => void loadTeamDirectory()}>
-                  <UserPlus className="mr-2 h-4 w-4" />
-                  Add Member
-                </Button>
-              </SheetTrigger>
-              <SheetContent
-                side="right"
-                className="sm:max-w-md w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col"
-              >
-                <div className="flex-1 overflow-y-auto px-4">
-                  <SheetHeader className="pt-6 pb-4">
-                    <SheetTitle className="text-lg font-semibold leading-none tracking-tight">Add team member</SheetTitle>
-                    <SheetDescription className="text-sm text-muted-foreground">
-                      Select people from your organization to add to this project.
-                    </SheetDescription>
-                  </SheetHeader>
-                  <div className="space-y-4">
-                    <Select
-                      value={selectedRoleId ?? projectRoles[0]?.id ?? ""}
-                      onValueChange={setSelectedRoleId}
-                      disabled={!projectRoles.length}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select role" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {projectRoles.map((role) => (
-                          <SelectItem key={role.id} value={role.id}>
-                            {role.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <div className="rounded-lg border">
-                      <div className="flex items-center gap-2 border-b px-3 py-2">
-                        <Search className="h-4 w-4 text-muted-foreground" />
-                        <Input
-                          value={directorySearch}
-                          onChange={(e) => setDirectorySearch(e.target.value)}
-                          placeholder="Search people..."
-                          className="h-8 border-0 shadow-none focus-visible:ring-0"
-                        />
-                      </div>
-                      <ScrollArea className="h-[400px]">
-                        <div className="divide-y">
-                          {filteredDirectory.length > 0 ? (
-                            filteredDirectory.map((person) => {
-                              const isSelected = selectedUserIds.has(person.user_id)
-                              const alreadyOnProject = Boolean(person.project_member_id)
-                              return (
-                                <button
-                                  key={person.user_id}
-                                  type="button"
-                                  onClick={() => toggleUserSelection(person.user_id)}
-                                  className={cn(
-                                    "flex w-full items-center gap-3 px-3 py-3 text-left transition hover:bg-muted/60",
-                                    isSelected && "bg-primary/10"
-                                  )}
-                                >
-                                  <Checkbox
-                                    checked={isSelected}
-                                    onCheckedChange={() => toggleUserSelection(person.user_id)}
-                                  />
-                                  <Avatar className="h-8 w-8">
-                                    <AvatarImage src={person.avatar_url} alt={person.full_name} />
-                                    <AvatarFallback className="text-xs">{getInitials(person.full_name)}</AvatarFallback>
-                                  </Avatar>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2">
-                                      <p className="text-sm font-medium truncate">{person.full_name}</p>
-                                      {alreadyOnProject && (
-                                        <Badge variant="secondary" className="text-[10px]">
-                                          On project
-                                        </Badge>
-                                      )}
-                                    </div>
-                                    <p className="text-xs text-muted-foreground truncate">{person.email}</p>
-                                  </div>
-                                </button>
-                              )
-                            })
-                          ) : (
-                            <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-                              No people found
-                            </div>
-                          )}
-                        </div>
-                      </ScrollArea>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex-shrink-0 border-t bg-background p-4">
+        {/* Financials Tab */}
+        <TabsContent value="financials" className="flex-1 overflow-y-auto space-y-4 pr-2">
+          <FinancialsTab
+            contract={contract}
+            draws={draws}
+            retainage={retainage}
+            budgetSummary={stats.budgetSummary}
+            onViewContract={() => setContractSheetOpen(true)}
+          />
+        </TabsContent>
+
+        {/* Directory Tab */}
+        <TabsContent value="directory" className="flex-1 overflow-y-auto space-y-4 pr-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-[220px]">
+              <Input
+                value={vendorSearch}
+                onChange={(e) => setVendorSearch(e.target.value)}
+                placeholder="Search directory"
+                className="pr-12"
+              />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                   <Button
-                    className="w-full"
-                    disabled={selectedUserIds.size === 0 || teamLoading || teamDirectoryLoading}
-                    onClick={handleAddMembers}
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-8 w-8 border-0 shadow-none hover:bg-muted"
                   >
-                    {teamLoading ? "Adding..." : `Add ${selectedUserIds.size || ""} ${selectedUserIds.size === 1 ? "person" : "people"}`}
+                    <Filter className="h-4 w-4" />
+                    <span className="sr-only">Filters</span>
                   </Button>
-                </div>
-              </SheetContent>
-            </Sheet>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Filter by role</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuRadioGroup
+                    value={vendorRoleFilter}
+                    onValueChange={(value) => setVendorRoleFilter(value as "all" | ProjectVendorInput["role"])}
+                  >
+                    {DIRECTORY_ROLE_FILTERS.map((option) => (
+                      <DropdownMenuRadioItem key={option.value} value={option.value}>
+                        {option.label}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <Button size="icon" onClick={() => setDirectoryAssignOpen(true)} disabled={teamLoading}>
+              <Plus className="h-4 w-4" />
+            </Button>
           </div>
 
-          {/* Search and Filter Bar */}
-          {teamMembers.length > 0 && (
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="flex flex-1 items-center gap-2 rounded-lg border bg-background px-3">
-                <Search className="h-4 w-4 text-muted-foreground" />
-                <Input
-                  value={teamSearch}
-                  onChange={(e) => setTeamSearch(e.target.value)}
-                  placeholder="Search by name or email..."
-                  className="h-9 border-0 shadow-none focus-visible:ring-0"
-                />
-              </div>
-              <Select value={roleFilter} onValueChange={setRoleFilter}>
-                <SelectTrigger className="w-full sm:w-[160px]">
-                  <SelectValue placeholder="All roles" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All roles</SelectItem>
-                  {projectRoles.map((role) => (
-                    <SelectItem key={role.id} value={role.id}>
-                      {role.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          {/* Team Member Cards */}
-          {filteredTeam.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {filteredTeam.map((member) => {
-                const workload = teamWorkload[member.user_id] ?? { tasks: 0, schedule: 0 }
-                return (
-                  <Card key={member.id} className="relative group">
-                    <CardContent className="p-4">
-                      <div className="flex items-start gap-3">
-                        <Avatar className="h-12 w-12">
-                          <AvatarImage src={member.avatar_url} alt={member.full_name} />
-                          <AvatarFallback>{getInitials(member.full_name)}</AvatarFallback>
-                        </Avatar>
-                        <div className="min-w-0 flex-1">
-                          <p className="font-medium truncate">{member.full_name}</p>
-                          <Badge variant="secondary" className="mt-1 text-[11px]">
-                            {member.role_label}
-                          </Badge>
-                        </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem asChild>
-                              <Link href={`/people/${member.user_id}`}>View profile</Link>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => {
-                                const newRole = projectRoles.find(r => r.id !== member.role_id)?.id
-                                if (newRole) handleRoleChange(member.id, newRole)
-                              }}
-                            >
-                              Change role
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              className="text-destructive"
-                              onClick={() => handleRemoveMember(member.id)}
-                            >
-                              Remove from project
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-
-                      {/* Contact Info */}
-                      <div className="mt-3 space-y-1.5">
-                        <a
-                          href={`mailto:${member.email}`}
-                          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          <Mail className="h-3.5 w-3.5" />
-                          <span className="truncate">{member.email}</span>
-                        </a>
-                      </div>
-
-                      {/* Workload indicator */}
-                      {(workload.tasks > 0 || workload.schedule > 0) && (
-                        <div className="mt-3 pt-3 border-t flex items-center gap-3 text-xs text-muted-foreground">
-                          {workload.tasks > 0 && (
-                            <span>{workload.tasks} task{workload.tasks !== 1 ? "s" : ""}</span>
-                          )}
-                          {workload.schedule > 0 && (
-                            <span>{workload.schedule} schedule item{workload.schedule !== 1 ? "s" : ""}</span>
-                          )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )
-              })}
-            </div>
-          ) : teamMembers.length > 0 ? (
-            // No results from search/filter
-            <Card>
-              <CardContent className="py-12">
-                <div className="flex flex-col items-center justify-center text-center">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted mb-4">
-                    <Search className="h-6 w-6 text-muted-foreground" />
-                  </div>
-                  <p className="font-medium">No matches found</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Try adjusting your search or filter.
-                  </p>
-                  <Button
-                    variant="outline"
-                    className="mt-4"
-                    onClick={() => {
-                      setTeamSearch("")
-                      setRoleFilter("all")
-                    }}
-                  >
-                    Clear filters
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
-            // Empty state - no team members
-            <Card>
-              <CardContent className="py-16">
-                <div className="flex flex-col items-center justify-center text-center">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
-                    <Users className="h-8 w-8 text-muted-foreground" />
-                  </div>
-                  <h3 className="text-lg font-semibold">No team members yet</h3>
-                  <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-                    Add people from your organization to collaborate on this project.
-                  </p>
-                  <Button className="mt-6" onClick={() => { setTeamSheetOpen(true); void loadTeamDirectory() }}>
-                    <UserPlus className="mr-2 h-4 w-4" />
-                    Add first member
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+          <ProjectDirectory
+            projectId={project.id}
+            vendors={projectVendorsState}
+            contacts={contacts}
+            companies={companies}
+            onAdd={handleAddVendor}
+            onRemove={handleRemoveVendor}
+            onUpdate={handleUpdateVendor}
+            loading={teamLoading}
+            search={vendorSearch}
+            onSearchChange={setVendorSearch}
+            roleFilter={vendorRoleFilter}
+            onRoleFilterChange={(value) => setVendorRoleFilter(value as "all" | ProjectVendorInput["role"])}
+            hideHeader
+          />
         </TabsContent>
       </Tabs>
     </div>

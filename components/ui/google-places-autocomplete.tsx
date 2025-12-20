@@ -107,7 +107,6 @@ export function GooglePlacesAutocomplete({
     const fetchPredictions = async () => {
       if (!autocompleteServiceRef.current || inputValue.length < 3) {
         setPredictions([])
-        setIsOpen(false)
         return
       }
 

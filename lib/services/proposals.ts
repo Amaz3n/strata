@@ -98,6 +98,7 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
       total_cents: totals.total,
       signature_required: parsed.signature_required ?? true,
       token_hash: tokenHash,
+      token,
       status: "draft",
       snapshot: {
         markup_percent: markup,
@@ -149,7 +150,31 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
   return {
     proposal,
     viewUrl: `${appUrl}/proposal/${token}`,
+    token,
   }
+}
+
+export async function generateProposalLink(proposalId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const secret = requireProposalSecret()
+
+  const token = randomBytes(32).toString("hex")
+  const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
+
+  const { data, error } = await supabase
+    .from("proposals")
+    .update({ token_hash: tokenHash, token })
+    .eq("id", proposalId)
+    .eq("org_id", resolvedOrgId)
+    .select("id")
+    .single()
+
+  if (error) {
+    throw new Error(`Failed to generate proposal link: ${error.message}`)
+  }
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
+  return { token, url: `${appUrl}/proposal/${token}`, proposalId: data.id as string }
 }
 
 export async function sendProposal(proposalId: string, orgId?: string) {
@@ -372,5 +397,3 @@ export async function createDrawScheduleFromContract(
 
   return data
 }
-
-

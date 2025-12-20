@@ -26,6 +26,20 @@ export const createPortalTokenInputSchema = z.object({
   company_id: z.string().uuid().optional(),
   expires_at: z.string().optional().nullable(),
   permissions: portalPermissionsSchema.partial().optional(),
+  pin: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{4,6}$/, "PIN must be 4-6 digits")
+    .optional(),
+}).refine((data) => {
+  // For sub portal tokens, company_id is required
+  if (data.portal_type === "sub") {
+    return data.company_id != null
+  }
+  return true
+}, {
+  message: "Company selection is required for subcontractor portal links",
+  path: ["company_id"],
 })
 
 export const revokePortalTokenInputSchema = z.object({
@@ -33,6 +47,19 @@ export const revokePortalTokenInputSchema = z.object({
   project_id: z.string().uuid(),
 })
 
+export const setPortalTokenPinSchema = z.object({
+  token_id: z.string().uuid(),
+  pin: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{4,6}$/, "PIN must be 4-6 digits"),
+})
+
+export const removePortalTokenPinSchema = z.object({
+  token_id: z.string().uuid(),
+})
+
 export type CreatePortalTokenInput = z.infer<typeof createPortalTokenInputSchema>
 export type RevokePortalTokenInput = z.infer<typeof revokePortalTokenInputSchema>
-
+export type SetPortalTokenPinInput = z.infer<typeof setPortalTokenPinSchema>
+export type RemovePortalTokenPinInput = z.infer<typeof removePortalTokenPinSchema>

@@ -13,7 +13,14 @@ export default async function SupportPage() {
   const tier = (support?.details as any)?.tier ?? "standard"
 
   return (
-    <AppShell title="Support" user={currentUser}>
+    <AppShell
+      title="Support"
+      user={currentUser}
+      breadcrumbs={[
+        { label: "Settings", href: "/settings" },
+        { label: "Support" },
+      ]}
+    >
       <div className="p-4 lg:p-6 space-y-6">
         <div>
           <h1 className="text-2xl font-bold">Support</h1>
@@ -55,6 +62,7 @@ export default async function SupportPage() {
     </AppShell>
   )
 }
+
 
 
 

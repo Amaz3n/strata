@@ -31,7 +31,7 @@ export default async function ProposalPage({ params }: Params) {
         recipient:contacts(full_name, email)
       `,
     )
-    .eq("token_hash", tokenHash)
+    .or(`token.eq.${token},token_hash.eq.${tokenHash}`)
     .maybeSingle()
 
   if (!proposal) {

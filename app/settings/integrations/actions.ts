@@ -4,7 +4,7 @@ import { randomUUID } from "crypto"
 import { cookies } from "next/headers"
 
 import { getQBOAuthUrl } from "@/lib/integrations/accounting/qbo-auth"
-import { disconnectQBO, updateQBOSettings } from "@/lib/services/qbo-connection"
+import { disconnectQBO, getQBOConnection, updateQBOSettings } from "@/lib/services/qbo-connection"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 
@@ -42,4 +42,8 @@ export async function updateQBOSettingsAction(settings: Record<string, any>) {
   await requirePermission("org.admin", { supabase, orgId, userId })
   await updateQBOSettings(settings, orgId)
   return { success: true }
+}
+
+export async function getQBOConnectionAction() {
+  return getQBOConnection()
 }

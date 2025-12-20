@@ -8,6 +8,7 @@ import type { Project, Rfi } from "@/lib/types"
 import type { RfiInput } from "@/lib/validation/rfis"
 import { createRfiAction, listRfisAction } from "@/app/rfis/actions"
 import { RfiForm } from "@/components/rfis/rfi-form"
+import { RfiDetailSheet } from "@/components/rfis/rfi-detail-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -46,7 +47,14 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
   const [items, setItems] = useState<Rfi[]>(rfis)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
+  const [selectedRfi, setSelectedRfi] = useState<Rfi | null>(null)
   const [isPending, startTransition] = useTransition()
+
+  const handleRfiClick = (rfi: Rfi) => {
+    setSelectedRfi(rfi)
+    setDetailSheetOpen(true)
+  }
 
   const filtered = useMemo(() => {
     if (filterProjectId === "all") return items
@@ -124,9 +132,20 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
         isSubmitting={isPending}
       />
 
+      <RfiDetailSheet
+        rfi={selectedRfi}
+        project={projects.find((p) => p.id === selectedRfi?.project_id)}
+        open={detailSheetOpen}
+        onOpenChange={setDetailSheetOpen}
+      />
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {filtered.map((rfi) => (
-          <Card key={rfi.id} className="h-full flex flex-col">
+          <Card
+            key={rfi.id}
+            className="h-full flex flex-col cursor-pointer hover:border-primary/50 transition-colors"
+            onClick={() => handleRfiClick(rfi)}
+          >
             <CardHeader className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-base font-semibold">
@@ -190,6 +209,7 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
     </div>
   )
 }
+
 
 
 

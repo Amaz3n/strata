@@ -16,7 +16,7 @@ export function OnboardingChecklist({ members, projects, contacts }: OnboardingC
   const steps = [
     {
       label: "Invite your team",
-      href: "/team",
+      href: "/settings?tab=team",
       done: members > 1,
     },
     {
@@ -26,7 +26,7 @@ export function OnboardingChecklist({ members, projects, contacts }: OnboardingC
     },
     {
       label: "Add contacts/companies",
-      href: "/contacts",
+      href: "/directory?view=people",
       done: contacts > 0,
     },
   ]
@@ -63,6 +63,5 @@ export function OnboardingChecklist({ members, projects, contacts }: OnboardingC
     </Card>
   )
 }
-
 
 

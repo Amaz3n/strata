@@ -30,6 +30,7 @@ export async function createContactAction(input: unknown) {
   const parsed = contactInputSchema.parse(input)
   const contact = await createContact({ input: parsed })
   revalidatePath("/contacts")
+  revalidatePath("/directory")
   return contact
 }
 
@@ -37,12 +38,14 @@ export async function updateContactAction(contactId: string, input: unknown) {
   const parsed = contactUpdateSchema.parse(input)
   const contact = await updateContact({ contactId, input: parsed })
   revalidatePath("/contacts")
+  revalidatePath("/directory")
   return contact
 }
 
 export async function archiveContactAction(contactId: string) {
   await archiveContact(contactId)
   revalidatePath("/contacts")
+  revalidatePath("/directory")
   return true
 }
 
@@ -50,12 +53,14 @@ export async function linkContactToCompanyAction(input: unknown) {
   const parsed = contactCompanyLinkSchema.parse(input)
   await linkContactToCompany(parsed)
   revalidatePath("/contacts")
+  revalidatePath("/directory")
   return true
 }
 
 export async function unlinkContactFromCompanyAction(contactId: string, companyId: string) {
   await unlinkContactFromCompany({ contactId, companyId })
   revalidatePath("/contacts")
+  revalidatePath("/directory")
   return true
 }
 

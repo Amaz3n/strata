@@ -8,15 +8,17 @@ import type { ChangeOrder, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { createChangeOrderAction, publishChangeOrderAction } from "@/app/change-orders/actions"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
+import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Plus, Share2, BadgeCheck, Clock, Building2 } from "@/components/icons"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Plus, Share2, FolderOpen } from "@/components/icons"
 
 type StatusKey = "draft" | "pending" | "sent" | "approved" | "requested_changes" | "cancelled"
+type StatusFilter = StatusKey | "all"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
@@ -55,21 +57,38 @@ interface ChangeOrdersClientProps {
 export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClientProps) {
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
+  const [searchTerm, setSearchTerm] = useState("")
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
+  const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(null)
   const [isPending, startTransition] = useTransition()
 
-  const filtered = useMemo(() => {
-    if (filterProjectId === "all") return items
-    return items.filter((item) => item.project_id === filterProjectId)
-  }, [filterProjectId, items])
+  const handleRowClick = (changeOrder: ChangeOrder) => {
+    setSelectedChangeOrder(changeOrder)
+    setDetailSheetOpen(true)
+  }
 
-  const stats = useMemo(() => {
-    return {
-      total: items.length,
-      clientVisible: items.filter((co) => co.client_visible).length,
-      pending: items.filter((co) => co.status === "pending").length,
-    }
-  }, [items])
+  const projectLookup = useMemo(() => {
+    return projects.reduce<Record<string, Project>>((acc, project) => {
+      acc[project.id] = project
+      return acc
+    }, {})
+  }, [projects])
+
+  const filtered = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase()
+    return items.filter((item) => {
+      const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
+      const resolvedStatus = resolveStatusKey(item.status)
+      const matchesStatus = statusFilter === "all" || resolvedStatus === statusFilter
+      const projectName = projectLookup[item.project_id]?.name ?? ""
+      const matchesSearch =
+        term.length === 0 ||
+        [item.title ?? "", item.summary ?? "", projectName].some((value) => value.toLowerCase().includes(term))
+      return matchesProject && matchesStatus && matchesSearch
+    })
+  }, [filterProjectId, items, projectLookup, searchTerm, statusFilter])
 
   async function handleCreate(values: ChangeOrderInput, published: boolean) {
     startTransition(async () => {
@@ -101,29 +120,20 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Change Orders</h1>
-          <p className="text-muted-foreground text-sm">
-            Create, price, and publish change orders with taxes, markup, and allowances.
-          </p>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <Badge variant="secondary" className="text-xs">
-              Total {stats.total}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Client visible {stats.clientVisible}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Pending {stats.pending}
-            </Badge>
-          </div>
+    <div className="space-y-4 lg:space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="w-full sm:max-w-md">
+          <Input
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Search by title, summary, or project"
+            className="w-full"
+          />
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-full sm:w-[220px]">
+            <SelectTrigger className="w-full sm:w-[200px]">
               <SelectValue placeholder="Filter by project" />
             </SelectTrigger>
             <SelectContent>
@@ -135,6 +145,21 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
               ))}
             </SelectContent>
           </Select>
+
+          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
+            <SelectTrigger className="w-full sm:w-[180px]">
+              <SelectValue placeholder="Filter by status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {(Object.keys(statusLabels) as StatusKey[]).map((status) => (
+                <SelectItem key={status} value={status}>
+                  {statusLabels[status]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
             <Plus className="h-4 w-4 mr-2" />
             New change order
@@ -151,135 +176,145 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
         isSubmitting={isPending}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((changeOrder) => (
-          <Card key={changeOrder.id} className="h-full flex flex-col">
-            <CardHeader className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base font-semibold">{changeOrder.title}</CardTitle>
-                <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(changeOrder.status)]}`}>
-                  {statusLabels[resolveStatusKey(changeOrder.status)] ?? changeOrder.status}
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Building2 className="h-4 w-4" />
-                  {projects.find((p) => p.id === changeOrder.project_id)?.name ?? "Unknown project"}
-                </span>
-                {changeOrder.days_impact != null && (
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-4 w-4" />
-                    {changeOrder.days_impact} day impact
-                  </span>
-                )}
-                {changeOrder.client_visible && (
-                  <span className="flex items-center gap-1 text-primary">
-                    <Share2 className="h-4 w-4" />
-                    Client can view
-                  </span>
-                )}
-              </div>
-            </CardHeader>
+      <ChangeOrderDetailSheet
+        changeOrder={selectedChangeOrder}
+        project={projects.find((p) => p.id === selectedChangeOrder?.project_id)}
+        open={detailSheetOpen}
+        onOpenChange={setDetailSheetOpen}
+      />
 
-            <CardContent className="flex-1 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-muted-foreground">Total</div>
-                <div className="text-xl font-bold">
-                  {formatMoneyFromCents(changeOrder.total_cents ?? changeOrder.totals?.total_cents)}
-                </div>
-              </div>
+      <div className="rounded-lg border bg-card overflow-hidden">
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="divide-x">
+                <TableHead className="min-w-[200px] px-4 py-4">Title</TableHead>
+                <TableHead className="px-4 py-4">Project</TableHead>
+                <TableHead className="px-4 py-4 text-center">Created</TableHead>
+                <TableHead className="px-4 py-4 text-center">Impact</TableHead>
+                <TableHead className="text-right px-4 py-4">Total</TableHead>
+                <TableHead className="px-4 py-4 text-center">Status</TableHead>
+                <TableHead className="px-4 py-4 text-center">Client</TableHead>
+                <TableHead className="text-center w-24 px-4 py-4">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((changeOrder) => {
+                const projectName = projectLookup[changeOrder.project_id]?.name ?? "Unknown project"
+                const statusKey = resolveStatusKey(changeOrder.status)
+                const total = formatMoneyFromCents(changeOrder.total_cents ?? changeOrder.totals?.total_cents)
+                const impact =
+                  changeOrder.days_impact != null && changeOrder.days_impact !== 0
+                    ? `${changeOrder.days_impact} day${Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}`
+                    : "—"
 
-              {changeOrder.summary && <p className="text-sm text-muted-foreground">{changeOrder.summary}</p>}
-
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span className="font-medium">
-                    {formatMoneyFromCents(changeOrder.totals?.subtotal_cents ?? changeOrder.total_cents)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Markup</span>
-                  <span className="font-medium">{formatMoneyFromCents(changeOrder.totals?.markup_cents)}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Tax</span>
-                  <span className="font-medium">{formatMoneyFromCents(changeOrder.totals?.tax_cents)}</span>
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Allowances</span>
-                  <span className="font-medium">{formatMoneyFromCents(changeOrder.totals?.allowance_cents)}</span>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                <Badge variant="outline" className="text-xs">
-                  {changeOrder.lines?.length ?? 0} line items
-                </Badge>
-                <Badge variant="outline" className="text-xs">
-                  Tax {changeOrder.totals?.tax_rate ?? changeOrder.metadata?.tax_rate ?? 0}%
-                </Badge>
-                <Badge variant="outline" className="text-xs">
-                  Markup {changeOrder.totals?.markup_percent ?? changeOrder.metadata?.markup_percent ?? 0}%
-                </Badge>
-                {changeOrder.created_at && (
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    {format(new Date(changeOrder.created_at), "MMM d, yyyy")}
-                  </span>
-                )}
-              </div>
-
-              {!changeOrder.client_visible && (
-                <div className="flex gap-2 pt-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    disabled={isPending}
-                    onClick={() => handlePublish(changeOrder.id)}
+                return (
+                  <TableRow
+                    key={changeOrder.id}
+                    className="divide-x cursor-pointer hover:bg-muted/50 transition-colors"
+                    onClick={() => handleRowClick(changeOrder)}
                   >
-                    <Share2 className="h-4 w-4 mr-2" />
-                    Publish
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="w-full"
-                    disabled
-                    title="Role-based editing will be added later."
-                  >
-                    <BadgeCheck className="h-4 w-4 mr-2" />
-                    Edit
-                  </Button>
-                </div>
+                    <TableCell className="px-4 py-4 align-top">
+                      <div className="flex flex-col gap-1">
+                        <div className="font-semibold">{changeOrder.title}</div>
+                        {changeOrder.summary && (
+                          <p className="text-sm text-muted-foreground line-clamp-2">{changeOrder.summary}</p>
+                        )}
+                      </div>
+                    </TableCell>
+
+                    <TableCell className="px-4 py-4 text-muted-foreground">{projectName}</TableCell>
+
+                    <TableCell className="px-4 py-4 text-center text-sm text-muted-foreground">
+                      {changeOrder.created_at ? format(new Date(changeOrder.created_at), "MMM d, yyyy") : "—"}
+                    </TableCell>
+
+                    <TableCell className="px-4 py-4 text-center text-sm text-muted-foreground">{impact}</TableCell>
+
+                    <TableCell className="px-4 py-4 text-right">
+                      <div className="font-semibold">{total}</div>
+                    </TableCell>
+
+                    <TableCell className="px-4 py-4 text-center">
+                      <Badge variant="secondary" className={`capitalize border ${statusStyles[statusKey]}`}>
+                        {statusLabels[statusKey]}
+                      </Badge>
+                    </TableCell>
+
+                    <TableCell className="px-4 py-4 text-center">
+                      {changeOrder.client_visible ? (
+                        <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/20">
+                          <Share2 className="mr-1 h-3 w-3" />
+                          Client can view
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs text-muted-foreground">
+                          Internal
+                        </Badge>
+                      )}
+                    </TableCell>
+
+                    <TableCell className="px-4 py-4 text-center">
+                      {!changeOrder.client_visible ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handlePublish(changeOrder.id)
+                          }}
+                          disabled={isPending}
+                        >
+                          <Share2 className="h-4 w-4 mr-2" />
+                          Publish
+                        </Button>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">Published</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+
+              {filtered.length === 0 && !isPending && (
+                <TableRow className="divide-x">
+                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                        <FolderOpen className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <p className="font-medium">No change orders yet</p>
+                        <p className="text-sm">Create your first change order to get started.</p>
+                      </div>
+                      <Button onClick={() => setSheetOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Create change order
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
               )}
-            </CardContent>
-          </Card>
-        ))}
 
-        {filtered.length === 0 && (
-          <div className="col-span-full rounded-lg border border-dashed p-8 text-center">
-            <p className="text-sm text-muted-foreground">No change orders yet.</p>
-            <Button className="mt-3" onClick={() => setSheetOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create your first change order
-            </Button>
-          </div>
-        )}
-
-        {isPending && filtered.length === 0 && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {[...Array(3)].map((_, idx) => (
-              <Skeleton key={idx} className="h-44 w-full rounded-lg" />
-            ))}
-          </div>
-        )}
+              {isPending && filtered.length === 0 && (
+                <TableRow className="divide-x">
+                  <TableCell colSpan={8} className="py-6">
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {[...Array(3)].map((_, idx) => (
+                        <Skeleton key={idx} className="h-16 w-full rounded-md" />
+                      ))}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </div>
     </div>
   )
 }
+
 
 
 

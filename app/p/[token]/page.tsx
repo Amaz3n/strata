@@ -26,6 +26,12 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
 
   await recordPortalAccess(access.id)
 
-  return <PortalPublicClient data={data} token={token} portalType="client" canMessage={access.permissions.can_message} />
+  return (
+    <PortalPublicClient
+      data={data}
+      token={token}
+      portalType="client"
+      pinRequired={access.pin_required}
+    />
+  )
 }
-

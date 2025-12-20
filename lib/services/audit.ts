@@ -9,7 +9,7 @@ interface AuditInput {
   entityId?: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
-  reason?: string
+  source?: string
 }
 
 export async function recordAudit(input: AuditInput) {
@@ -19,13 +19,13 @@ export async function recordAudit(input: AuditInput) {
 
     const { error } = await supabase.from("audit_log").insert({
       org_id: context.orgId,
-      actor_id: input.actorId ?? context.userId,
+      actor_user_id: input.actorId ?? context.userId,
       action: input.action,
       entity_type: input.entityType,
       entity_id: input.entityId,
-      before: input.before ?? null,
-      after: input.after ?? null,
-      reason: input.reason,
+      before_data: input.before ?? null,
+      after_data: input.after ?? null,
+      source: input.source,
     })
 
     if (error) {

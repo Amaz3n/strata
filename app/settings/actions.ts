@@ -1,7 +1,9 @@
 'use server'
 
 import { requireOrgMembership } from '@/lib/auth/context'
+import { requirePermissionGuard } from "@/lib/auth/guards"
 import { NotificationService } from '@/lib/services/notifications'
+import { getOrgBilling } from "@/lib/services/orgs"
 
 export async function getNotificationPreferencesAction() {
   const { user } = await requireOrgMembership()
@@ -40,4 +42,9 @@ export async function markNotificationAsReadAction(notificationId: string) {
   await service.markAsRead(notificationId)
 
   return { success: true }
+}
+
+export async function getBillingAction() {
+  await requirePermissionGuard("billing.manage")
+  return await getOrgBilling()
 }

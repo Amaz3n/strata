@@ -31,3 +31,4 @@ export default async function PayLinkPage({ params }: Params) {
   return <PayLinkClient token={token} invoice={result.invoice} publishableKey={publishableKey} clientSecret={intent.client_secret ?? ""} />
 }
 
+

@@ -10,7 +10,6 @@ pages=(
     "app/schedule/page.tsx"
     "app/tasks/page.tsx"
     "app/portal/page.tsx"
-    "app/sharing/page.tsx"
     "app/selections/page.tsx"
     "app/invoices/page.tsx"
     "app/projects/[id]/page.tsx"

@@ -17,11 +17,11 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get("error")
 
   if (error) {
-    return NextResponse.redirect(new URL("/settings/integrations?error=qbo_denied", request.url))
+    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_denied", request.url))
   }
 
   if (!code || !realmId || !state) {
-    return NextResponse.redirect(new URL("/settings/integrations?error=qbo_invalid", request.url))
+    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_invalid", request.url))
   }
 
   // Prefer request-scoped cookies (more reliable on Vercel/edge-adjacent runtimes).
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!savedState || state !== savedState) {
-    return NextResponse.redirect(new URL("/settings/integrations?error=qbo_state_mismatch", request.url))
+    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_state_mismatch", request.url))
   }
 
   const [orgId] = state.split(":")
@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
       companyName: (companyInfo as any)?.CompanyName ?? (companyInfo as any)?.LegalName ?? null,
     })
 
-    const response = NextResponse.redirect(new URL("/settings/integrations?success=qbo_connected", request.url))
+    const response = NextResponse.redirect(new URL("/settings?tab=integrations&success=qbo_connected", request.url))
     response.cookies.set({
       name: "qbo_oauth_state",
       value: "",
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
     return response
   } catch (err) {
     console.error("QBO OAuth callback error:", err)
-    return NextResponse.redirect(new URL("/settings/integrations?error=qbo_failed", request.url))
+    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_failed", request.url))
   }
 }
 

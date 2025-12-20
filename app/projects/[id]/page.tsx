@@ -12,7 +12,14 @@ import {
   getProjectFilesAction,
   getProjectTeamAction,
   getProjectActivityAction,
+  getClientContactsAction,
+  getProjectVendorsAction,
+  getOrgCompaniesAction,
+  getProjectContractAction,
+  listProjectDrawsAction,
+  listProjectRetainageAction,
 } from "./actions"
+import { listPortalTokens } from "@/lib/services/portal-access"
 
 interface ProjectDetailPageProps {
   params: Promise<{ id: string }>
@@ -31,6 +38,13 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
     files,
     team,
     activity,
+    portalTokens,
+    contacts,
+    projectVendors,
+    companies,
+    contract,
+    draws,
+    retainage,
   ] = await Promise.all([
     getProjectAction(id),
     getCurrentUserAction(),
@@ -41,6 +55,13 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
     getProjectFilesAction(id),
     getProjectTeamAction(id),
     getProjectActivityAction(id),
+    listPortalTokens(id),
+    getClientContactsAction(),
+    getProjectVendorsAction(id),
+    getOrgCompaniesAction(),
+    getProjectContractAction(id),
+    listProjectDrawsAction(id),
+    listProjectRetainageAction(id),
   ])
 
   if (!project) {
@@ -48,7 +69,14 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
   }
 
   return (
-    <AppShell title={project.name} user={currentUser}>
+    <AppShell
+      title={project.name}
+      user={currentUser}
+      breadcrumbs={[
+        { label: "Projects", href: "/projects" },
+        { label: project.name },
+      ]}
+    >
       <ProjectDetailClient
         project={project}
         stats={stats}
@@ -58,13 +86,17 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
         files={files}
         team={team}
         activity={activity}
+        portalTokens={portalTokens}
+        contacts={contacts}
+        projectVendors={projectVendors}
+        companies={companies}
+        contract={contract}
+        draws={draws}
+        retainage={retainage}
       />
     </AppShell>
   )
 }
-
-
-
 
 
 

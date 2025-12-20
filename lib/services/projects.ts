@@ -20,6 +20,11 @@ function mapProject(row: any): Project {
     start_date: row.start_date ?? undefined,
     end_date: row.end_date ?? undefined,
     address,
+    client_id: row.client_id ?? undefined,
+    property_type: row.property_type ?? undefined,
+    project_type: row.project_type ?? undefined,
+    description: row.description ?? undefined,
+    total_value: row.total_value ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -33,7 +38,7 @@ export async function listProjects(orgId?: string): Promise<Project[]> {
 export async function listProjectsWithClient(supabase: SupabaseClient, orgId: string): Promise<Project[]> {
   const { data, error } = await supabase
     .from("projects")
-    .select("id, org_id, name, status, start_date, end_date, location, created_at, updated_at")
+    .select("id, org_id, name, status, start_date, end_date, location, client_id, property_type, project_type, description, total_value, created_at, updated_at")
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
 
@@ -55,13 +60,18 @@ export async function createProject({ input, orgId }: { input: ProjectInput; org
     start_date: input.start_date,
     end_date: input.end_date,
     location: input.location ?? (input.address ? { address: input.address } : null),
+    client_id: input.client_id ?? null,
+    property_type: input.property_type,
+    project_type: input.project_type,
+    description: input.description,
+    total_value: input.total_value,
     created_by: userId,
   }
 
   const { data, error } = await supabase
     .from("projects")
     .insert(payload)
-    .select("id, org_id, name, status, start_date, end_date, location, created_at, updated_at")
+    .select("id, org_id, name, status, start_date, end_date, location, client_id, property_type, project_type, description, total_value, created_at, updated_at")
     .single()
 
   if (error) {
@@ -103,7 +113,7 @@ export async function updateProject({
 
   const existing = await supabase
     .from("projects")
-    .select("id, org_id, name, status, start_date, end_date, location, created_at, updated_at")
+    .select("id, org_id, name, status, start_date, end_date, location, client_id, property_type, project_type, description, total_value, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", projectId)
     .single()
@@ -119,6 +129,11 @@ export async function updateProject({
     end_date: parsed.end_date ?? existing.data.end_date,
     location:
       parsed.location ?? (parsed.address ? { address: parsed.address } : existing.data.location ?? null),
+    client_id: parsed.client_id ?? existing.data.client_id ?? null,
+    property_type: parsed.property_type ?? existing.data.property_type,
+    project_type: parsed.project_type ?? existing.data.project_type,
+    description: parsed.description ?? existing.data.description,
+    total_value: parsed.total_value ?? existing.data.total_value,
   }
 
   const { data, error } = await supabase
@@ -126,7 +141,7 @@ export async function updateProject({
     .update(updatePayload)
     .eq("org_id", resolvedOrgId)
     .eq("id", projectId)
-    .select("id, org_id, name, status, start_date, end_date, location, created_at, updated_at")
+    .select("id, org_id, name, status, start_date, end_date, location, client_id, property_type, project_type, description, total_value, created_at, updated_at")
     .single()
 
   if (error || !data) {

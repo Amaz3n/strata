@@ -22,8 +22,17 @@ function mapCompany(row: any): Company {
     website: row.website ?? undefined,
     address: row.address ?? metadata.address ?? undefined,
     license_number: metadata.license_number ?? undefined,
+    license_expiry: metadata.license_expiry ?? undefined,
+    license_verified: metadata.license_verified ?? undefined,
     insurance_expiry: metadata.insurance_expiry ?? undefined,
     insurance_document_id: metadata.insurance_document_id ?? undefined,
+    w9_on_file: metadata.w9_on_file ?? undefined,
+    w9_file_id: metadata.w9_file_id ?? undefined,
+    prequalified: metadata.prequalified ?? undefined,
+    prequalified_at: metadata.prequalified_at ?? undefined,
+    rating: metadata.rating ?? undefined,
+    default_payment_terms: metadata.default_payment_terms ?? undefined,
+    internal_notes: metadata.internal_notes ?? undefined,
     notes: metadata.notes ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
@@ -119,17 +128,39 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     throw new Error("Company not found")
   }
 
+  const primaryContactQuery = await supabase
+    .from("contacts")
+    .select(
+      "id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at",
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("primary_company_id", companyId)
+
+  if (primaryContactQuery.error) {
+    throw new Error(`Failed to load company contacts: ${primaryContactQuery.error.message}`)
+  }
+
   const contacts =
-    data.contact_company_links?.map((link: any) =>
-      mapContact({
-        ...link.contact,
-        relationship: link.relationship,
-      }),
-    ) ?? []
+    [
+      ...(data.contact_company_links?.map((link: any) =>
+        mapContact({
+          ...link.contact,
+          relationship: link.relationship,
+        }),
+      ) ?? []),
+      ...(primaryContactQuery.data ?? []).map((row: any) => mapContact(row)),
+    ] ?? []
+
+  const deduped = new Map<string, Contact>()
+  for (const contact of contacts) {
+    if (!deduped.has(contact.id)) {
+      deduped.set(contact.id, contact)
+    }
+  }
 
   return {
     ...mapCompany(data),
-    contacts,
+    contacts: Array.from(deduped.values()),
   }
 }
 
@@ -145,8 +176,17 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     metadata: {
       trade: input.trade,
       license_number: input.license_number,
+      license_expiry: input.license_expiry,
+      license_verified: input.license_verified,
       insurance_expiry: input.insurance_expiry,
       insurance_document_id: input.insurance_document_id,
+      w9_on_file: input.w9_on_file,
+      w9_file_id: input.w9_file_id,
+      prequalified: input.prequalified,
+      prequalified_at: input.prequalified_at,
+      rating: input.rating,
+      default_payment_terms: input.default_payment_terms,
+      internal_notes: input.internal_notes,
       notes: input.notes,
     },
   }
@@ -217,9 +257,22 @@ export async function updateCompany({
     ...(existing.metadata ?? {}),
     trade: parsed.trade ?? existing.metadata?.trade,
     license_number: parsed.license_number ?? existing.metadata?.license_number,
+    license_expiry: parsed.license_expiry ?? existing.metadata?.license_expiry,
+    license_verified: typeof parsed.license_verified === "boolean" ? parsed.license_verified : existing.metadata?.license_verified,
     insurance_expiry: parsed.insurance_expiry ?? existing.metadata?.insurance_expiry,
     insurance_document_id: parsed.insurance_document_id ?? existing.metadata?.insurance_document_id,
+    w9_on_file: typeof parsed.w9_on_file === "boolean" ? parsed.w9_on_file : existing.metadata?.w9_on_file,
+    w9_file_id: parsed.w9_file_id ?? existing.metadata?.w9_file_id,
+    prequalified: typeof parsed.prequalified === "boolean" ? parsed.prequalified : existing.metadata?.prequalified,
+    prequalified_at: parsed.prequalified_at ?? existing.metadata?.prequalified_at,
+    rating: parsed.rating ?? existing.metadata?.rating,
+    default_payment_terms: parsed.default_payment_terms ?? existing.metadata?.default_payment_terms,
+    internal_notes: parsed.internal_notes ?? existing.metadata?.internal_notes,
     notes: parsed.notes ?? existing.metadata?.notes,
+  }
+
+  if (typeof parsed.prequalified === "boolean" && parsed.prequalified && !existing.metadata?.prequalified && !parsed.prequalified_at) {
+    metadata.prequalified_at = new Date().toISOString()
   }
 
   const { data, error } = await supabase
@@ -326,27 +379,51 @@ export async function archiveCompany(companyId: string, orgId?: string) {
 
 export async function getCompanyContacts(companyId: string, orgId?: string): Promise<Contact[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const { data, error } = await supabase
-    .from("contact_company_links")
-    .select(
-      `
-      id, relationship, created_at,
-      contacts!inner(id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at)
-    `,
-    )
-    .eq("org_id", resolvedOrgId)
-    .eq("company_id", companyId)
+  const [{ data: linked, error: linkError }, { data: primaryContacts, error: primaryError }] = await Promise.all([
+    supabase
+      .from("contact_company_links")
+      .select(
+        `
+        id, relationship, created_at,
+        contacts!inner(id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at)
+      `,
+      )
+      .eq("org_id", resolvedOrgId)
+      .eq("company_id", companyId),
+    supabase
+      .from("contacts")
+      .select(
+        "id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at",
+      )
+      .eq("org_id", resolvedOrgId)
+      .eq("primary_company_id", companyId),
+  ])
 
-  if (error) {
-    throw new Error(`Failed to load company contacts: ${error.message}`)
+  if (linkError) {
+    throw new Error(`Failed to load company contacts: ${linkError.message}`)
+  }
+  if (primaryError) {
+    throw new Error(`Failed to load primary company contacts: ${primaryError.message}`)
   }
 
-  return (data ?? []).map((link: any) =>
-    mapContact({
-      ...link.contacts,
-      relationship: link.relationship,
-    }),
-  )
+  const combined = [
+    ...(linked ?? []).map((link: any) =>
+      mapContact({
+        ...link.contacts,
+        relationship: link.relationship,
+      }),
+    ),
+    ...(primaryContacts ?? []).map((row: any) => mapContact(row)),
+  ]
+
+  const deduped = new Map<string, Contact>()
+  for (const contact of combined) {
+    if (!deduped.has(contact.id)) {
+      deduped.set(contact.id, contact)
+    }
+  }
+
+  return Array.from(deduped.values())
 }
 
 export async function getCompanyProjects(
@@ -380,4 +457,3 @@ export async function getCompanyProjects(
 
   return projects ?? []
 }
-

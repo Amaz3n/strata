@@ -14,6 +14,7 @@ export async function createCompanyAction(input: unknown) {
   const parsed = companyInputSchema.parse(input)
   const company = await createCompany({ input: parsed })
   revalidatePath("/companies")
+  revalidatePath("/directory")
   return company
 }
 
@@ -21,12 +22,16 @@ export async function updateCompanyAction(companyId: string, input: unknown) {
   const parsed = companyUpdateSchema.parse(input)
   const company = await updateCompany({ companyId, input: parsed })
   revalidatePath("/companies")
+  revalidatePath(`/companies/${companyId}`)
+  revalidatePath("/directory")
   return company
 }
 
 export async function archiveCompanyAction(companyId: string) {
   await archiveCompany(companyId)
   revalidatePath("/companies")
+  revalidatePath(`/companies/${companyId}`)
+  revalidatePath("/directory")
   return true
 }
 
@@ -35,6 +40,5 @@ export async function getCompanyAction(companyId: string) {
   const projects = await getCompanyProjects(companyId)
   return { company, projects }
 }
-
 
 

@@ -2,7 +2,14 @@
 
 import { revalidatePath } from "next/cache"
 
-import { createInvoice, ensureInvoiceToken, getInvoiceWithLines, listInvoiceViews, listInvoices } from "@/lib/services/invoices"
+import {
+  createInvoice,
+  ensureInvoiceToken,
+  getInvoiceWithLines,
+  listInvoiceViews,
+  listInvoices,
+  updateInvoice,
+} from "@/lib/services/invoices"
 import { enqueueInvoiceSync, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
@@ -15,6 +22,14 @@ export async function listInvoicesAction(projectId?: string) {
 export async function createInvoiceAction(input: unknown) {
   const parsed = invoiceInputSchema.parse(input)
   const invoice = await createInvoice({ input: parsed })
+  revalidatePath("/invoices")
+  return invoice
+}
+
+export async function updateInvoiceAction(invoiceId: string, input: unknown) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+  const parsed = invoiceInputSchema.parse(input)
+  const invoice = await updateInvoice({ invoiceId, input: parsed })
   revalidatePath("/invoices")
   return invoice
 }

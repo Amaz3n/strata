@@ -31,7 +31,6 @@ import { archiveCompanyAction } from "@/app/companies/actions"
 import type { Company, Contact, TeamMember } from "@/lib/types"
 import { CompanyForm } from "@/components/companies/company-form"
 import { TradeBadge } from "@/components/companies/trade-badge"
-import { CompanyDetailSheet } from "@/components/companies/company-detail-sheet"
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet"
 import { DirectorySearch } from "@/components/directory/directory-search"
 import { Filter, LayoutGrid, List, MoreHorizontal, Plus, Search } from "@/components/icons"
@@ -63,8 +62,6 @@ export function CompaniesTable({
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
-  const [detailId, setDetailId] = useState<string | undefined>()
-  const [detailOpen, setDetailOpen] = useState(false)
   const [contactDetailId, setContactDetailId] = useState<string | undefined>()
   const [contactDetailOpen, setContactDetailOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -105,8 +102,7 @@ export function CompaniesTable({
   }
 
   const openDetail = (companyId: string) => {
-    setDetailId(companyId)
-    setDetailOpen(true)
+    router.push(`/companies/${companyId}`)
   }
 
   const resetDialog = () => {
@@ -325,7 +321,6 @@ export function CompaniesTable({
         </div>
       )}
 
-      <CompanyDetailSheet companyId={detailId} open={detailOpen} onOpenChange={setDetailOpen} />
       <ContactDetailSheet contactId={contactDetailId} open={contactDetailOpen} onOpenChange={setContactDetailOpen} />
       <DirectorySearch
         open={searchOpen}
@@ -335,9 +330,8 @@ export function CompaniesTable({
         teamMembers={teamMembers}
         onSelectCompany={(id) => openDetail(id)}
         onSelectContact={(id) => openContactDetail(id)}
-        onSelectTeam={() => router.push("/team")}
+        onSelectTeam={() => router.push("/settings?tab=team")}
       />
     </div>
   )
 }
-

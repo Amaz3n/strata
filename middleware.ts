@@ -7,7 +7,6 @@ const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password"]
 const PROTECTED_ROUTES: { prefix: string; permission: string }[] = [
   { prefix: "/settings", permission: "members.manage" },
   { prefix: "/team", permission: "org.read" },
-  { prefix: "/settings/billing", permission: "billing.manage" },
   { prefix: "/settings/support", permission: "billing.manage" },
   { prefix: "/admin", permission: "billing.manage" },
 ]

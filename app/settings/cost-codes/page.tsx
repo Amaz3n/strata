@@ -8,7 +8,14 @@ export default async function CostCodesPage() {
   const [user, costCodes] = await Promise.all([getCurrentUserAction(), listCostCodesAction()])
 
   return (
-    <AppShell title="Cost Codes" user={user}>
+    <AppShell
+      title="Cost Codes"
+      user={user}
+      breadcrumbs={[
+        { label: "Settings", href: "/settings" },
+        { label: "Cost Codes" },
+      ]}
+    >
       <div className="p-4 lg:p-6 space-y-6">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold">Cost Codes</h1>
@@ -21,4 +28,5 @@ export default async function CostCodesPage() {
     </AppShell>
   )
 }
+
 

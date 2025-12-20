@@ -12,6 +12,8 @@ export const invoiceLineInputSchema = z.object({
 export const invoiceInputSchema = z.object({
   project_id: z.string().uuid("Project is required").optional().nullable(),
   invoice_number: z.string().min(1, "Invoice number is required"),
+  customer_id: z.string().uuid().optional().nullable(),
+  customer_name: z.string().optional().nullable(),
   reservation_id: z
     .string()
     .uuid()
@@ -37,4 +39,3 @@ export const invoiceInputSchema = z.object({
 
 export type InvoiceLineInput = z.infer<typeof invoiceLineInputSchema>
 export type InvoiceInput = z.infer<typeof invoiceInputSchema>
-

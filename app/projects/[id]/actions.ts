@@ -1,10 +1,21 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
-import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
-import type { Project, Task, ScheduleItem, DailyLog, FileMetadata } from "@/lib/types"
+import type {
+  Company,
+  Contact,
+  Project,
+  Task,
+  ScheduleItem,
+  DailyLog,
+  FileMetadata,
+  ProjectVendor,
+  DrawSchedule,
+  Retainage,
+} from "@/lib/types"
 import type { ScheduleItemInput } from "@/lib/validation/schedule"
 import type { TaskInput } from "@/lib/validation/tasks"
 import type { DailyLogInput } from "@/lib/validation/daily-logs"
@@ -12,6 +23,14 @@ import { scheduleItemInputSchema } from "@/lib/validation/schedule"
 import { taskInputSchema } from "@/lib/validation/tasks"
 import { dailyLogInputSchema } from "@/lib/validation/daily-logs"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
+import type { ProjectInput } from "@/lib/validation/projects"
+import { updateProject } from "@/lib/services/projects"
+import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
+import { addProjectVendor, listProjectVendors, removeProjectVendor, updateProjectVendor } from "@/lib/services/project-vendors"
+import { createContact } from "@/lib/services/contacts"
+import { createCompany } from "@/lib/services/companies"
+import { getProjectContract } from "@/lib/services/contracts"
+import { requireOrgContext } from "@/lib/services/context"
 
 export interface ProjectStats {
   totalTasks: number
@@ -71,6 +90,7 @@ export interface TeamDirectoryEntry {
   project_role_id?: string
   project_role_label?: string
   status?: string
+  is_current_user?: boolean
 }
 
 export interface ProjectActivity {
@@ -94,11 +114,15 @@ function mapProject(row: any): Project {
     status: row.status,
     start_date: row.start_date ?? undefined,
     end_date: row.end_date ?? undefined,
-    budget: row.budget ?? undefined,
-    address,
-    client_id: row.client_id ?? undefined,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+  budget: row.budget ?? undefined,
+  address,
+  client_id: row.client_id ?? undefined,
+  property_type: row.property_type ?? undefined,
+  project_type: row.project_type ?? undefined,
+  description: row.description ?? undefined,
+  total_value: row.total_value ?? undefined,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
   }
 }
 
@@ -118,6 +142,176 @@ export async function getProjectAction(projectId: string): Promise<Project | nul
   }
 
   return mapProject(data)
+}
+
+export async function updateProjectSettingsAction(projectId: string, input: Partial<ProjectInput>) {
+  const { orgId } = await requireOrgContext()
+  await updateProject({ projectId, input, orgId })
+  revalidatePath(`/projects/${projectId}`)
+}
+
+export async function getClientContactsAction(): Promise<Contact[]> {
+  const { supabase, orgId } = await requireOrgContext()
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id, full_name, email, phone, role, contact_type")
+    .eq("org_id", orgId)
+    .in("contact_type", ["client", "consultant", "vendor", "subcontractor"])
+    .order("full_name", { ascending: true })
+
+  if (error) {
+    console.error("Failed to load contacts", error.message)
+    return []
+  }
+
+  return data as Contact[]
+}
+
+export async function getOrgCompaniesAction(): Promise<Company[]> {
+  const { supabase, orgId } = await requireOrgContext()
+
+  const { data, error } = await supabase
+    .from("companies")
+    .select("id, name, company_type, phone, email")
+    .eq("org_id", orgId)
+    .order("name", { ascending: true })
+
+  if (error) {
+    console.error("Failed to load companies", error.message)
+    return []
+  }
+
+  return data as Company[]
+}
+
+export async function getProjectVendorsAction(projectId: string): Promise<ProjectVendor[]> {
+  return listProjectVendors(projectId)
+}
+
+export async function addProjectVendorAction(projectId: string, input: ProjectVendorInput) {
+  await addProjectVendor({ input })
+  revalidatePath(`/projects/${projectId}`)
+}
+
+export async function createAndAssignVendorAction(
+  projectId: string,
+  payload: {
+    kind: "company" | "contact" | "client_contact"
+    name: string
+    email?: string
+    phone?: string
+    trade?: string
+    company_type?: string
+    contact_role?: string
+    role: ProjectVendorInput["role"]
+    scope?: string
+    notes?: string
+  },
+) {
+  const { orgId } = await requireOrgContext()
+
+  if (payload.kind === "company") {
+    const company = await createCompany({
+      input: {
+        name: payload.name,
+        company_type: (payload.company_type as any) ?? "subcontractor",
+        trade: payload.trade,
+        email: payload.email,
+        phone: payload.phone,
+      },
+      orgId,
+    })
+
+    await addProjectVendor({
+      orgId,
+      input: {
+        project_id: projectId,
+        company_id: company.id,
+        role: payload.role,
+        scope: payload.scope,
+        notes: payload.notes,
+      },
+    })
+    revalidatePath(`/projects/${projectId}`)
+    return { company }
+  }
+
+  const contact = await createContact({
+    input: {
+      full_name: payload.name,
+      email: payload.email,
+      phone: payload.phone,
+      role: payload.contact_role,
+      contact_type: payload.kind === "client_contact" ? "client" : "subcontractor",
+    },
+    orgId,
+  })
+
+  await addProjectVendor({
+    orgId,
+    input: {
+      project_id: projectId,
+      contact_id: contact.id,
+      role: payload.role,
+      scope: payload.scope,
+      notes: payload.notes,
+    },
+  })
+  revalidatePath(`/projects/${projectId}`)
+  return { contact }
+}
+
+export async function removeProjectVendorAction(projectId: string, vendorId: string) {
+  await removeProjectVendor(vendorId)
+  revalidatePath(`/projects/${projectId}`)
+}
+
+export async function updateProjectVendorAction(
+  projectId: string,
+  vendorId: string,
+  updates: Partial<Pick<ProjectVendorInput, "role" | "scope" | "notes">>,
+) {
+  await updateProjectVendor({ vendorId, updates })
+  revalidatePath(`/projects/${projectId}`)
+}
+
+export async function getProjectContractAction(projectId: string) {
+  return getProjectContract(projectId)
+}
+
+export async function listProjectDrawsAction(projectId: string) {
+  const { supabase, orgId } = await requireOrgContext()
+  const { data, error } = await supabase
+    .from("draw_schedules")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("draw_number", { ascending: true })
+
+  if (error) {
+    console.error("Failed to list draws", error.message)
+    return []
+  }
+
+  return (data ?? []) as DrawSchedule[]
+}
+
+export async function listProjectRetainageAction(projectId: string) {
+  const { supabase, orgId } = await requireOrgContext()
+  const { data, error } = await supabase
+    .from("retainage")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("held_at", { ascending: false })
+
+  if (error) {
+    console.error("Failed to list retainage", error.message)
+    return []
+  }
+
+  return (data ?? []) as Retainage[]
 }
 
 export async function getProjectStatsAction(projectId: string): Promise<ProjectStats> {
@@ -539,17 +733,18 @@ function inferFileCategory(fileName: string, mimeType?: string | null): FileCate
 }
 
 export async function getProjectTeamAction(projectId: string): Promise<ProjectTeamMember[]> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { orgId } = await requireOrgContext()
+  const serviceClient = createServiceSupabaseClient()
 
-  const { data, error } = await supabase
+  const { data, error } = await serviceClient
     .from("project_members")
     .select(`
       id,
       user_id,
       role_id,
       status,
-      app_users!inner(id, full_name, email, avatar_url),
-      roles!inner(key, label)
+      app_users:app_users(id, full_name, email, avatar_url),
+      roles:roles(id, key, label)
     `)
     .eq("org_id", orgId)
     .eq("project_id", projectId)
@@ -598,14 +793,15 @@ export async function getProjectRolesAction(): Promise<ProjectRoleOption[]> {
 export async function getProjectTeamDirectoryAction(
   projectId: string
 ): Promise<{ roles: ProjectRoleOption[]; people: TeamDirectoryEntry[] }> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  const serviceClient = createServiceSupabaseClient()
 
   const [
     { data: roleRows, error: roleError },
     { data: projectMemberRows, error: projectMemberError },
     { data: orgMemberRows, error: orgMemberError },
   ] = await Promise.all([
-    supabase
+    serviceClient
       .from("roles")
       .select("id, key, label, description")
       .eq("scope", "project")
@@ -615,20 +811,29 @@ export async function getProjectTeamDirectoryAction(
       .select("id, user_id, role_id, status, roles!inner(id, key, label)")
       .eq("org_id", orgId)
       .eq("project_id", projectId),
-    supabase
+    serviceClient
       .from("memberships")
       .select(`
         user_id,
         status,
-        app_users!inner(id, full_name, email, avatar_url),
-        roles!inner(key, label)
+        app_users:app_users!memberships_user_id_fkey(id, full_name, email, avatar_url),
+        roles:roles!memberships_role_id_fkey(key, label)
       `)
-      .eq("org_id", orgId)
-      .eq("status", "active"),
+      .eq("org_id", orgId),
   ])
+
+  let resolvedRoleRows = roleRows ?? []
 
   if (roleError) {
     console.error("Failed to load project roles:", roleError.message)
+    // Fallback: attempt to fetch roles without scope filter if scoped query fails
+    const { data: fallbackRoles, error: fallbackRoleError } = await serviceClient
+      .from("roles")
+      .select("id, key, label, description")
+      .order("label", { ascending: true })
+    if (!fallbackRoleError && fallbackRoles) {
+      resolvedRoleRows = fallbackRoles
+    }
   }
   if (projectMemberError) {
     console.error("Failed to load project members:", projectMemberError.message)
@@ -637,7 +842,7 @@ export async function getProjectTeamDirectoryAction(
     console.error("Failed to load org members:", orgMemberError.message)
   }
 
-  const roles: ProjectRoleOption[] = (roleRows ?? []).map(role => ({
+  const roles: ProjectRoleOption[] = (resolvedRoleRows ?? []).map(role => ({
     id: role.id,
     key: role.key,
     label: role.label,
@@ -658,25 +863,65 @@ export async function getProjectTeamDirectoryAction(
     ])
   )
 
-  const people: TeamDirectoryEntry[] = (orgMemberRows ?? []).map(row => {
-    const user = row.app_users as any
-    const orgRole = row.roles as any
-    const membership = memberMap.get(row.user_id)
-    const projectRole = membership?.role_id ? rolesById.get(membership.role_id) : undefined
+  let memberships = orgMemberRows ?? []
 
-    return {
-      user_id: row.user_id,
-      full_name: user?.full_name ?? "Unknown user",
-      email: user?.email ?? "",
-      avatar_url: user?.avatar_url ?? undefined,
-      org_role: orgRole?.key ?? undefined,
-      org_role_label: orgRole?.label ?? undefined,
-      project_member_id: membership?.id,
-      project_role_id: membership?.role_id,
-      project_role_label: membership?.role_label ?? projectRole?.label,
-      status: membership?.status ?? row.status,
+  // Fallback: if the join query failed (e.g., due to relationship ambiguity), fetch memberships
+  // and resolve user info separately to avoid an empty directory.
+  if (orgMemberError || !orgMemberRows) {
+    const { data: membershipRows, error: membershipError } = await serviceClient
+      .from("memberships")
+      .select("user_id, status, role_id")
+      .eq("org_id", orgId)
+
+    if (!membershipError && membershipRows?.length) {
+      const userIds = membershipRows.map(row => row.user_id)
+      const { data: users } = await serviceClient
+        .from("app_users")
+        .select("id, full_name, email, avatar_url")
+        .in("id", userIds)
+
+      const { data: rolesRows } = await serviceClient
+        .from("roles")
+        .select("id, key, label")
+        .eq("scope", "org")
+
+      const rolesById = new Map((rolesRows ?? []).map(r => [r.id, r]))
+      const usersById = new Map((users ?? []).map(u => [u.id, u]))
+
+      memberships = membershipRows.map(row => ({
+        user_id: row.user_id,
+        status: row.status,
+        app_users: usersById.get(row.user_id) ?? null,
+        roles: row.role_id ? rolesById.get(row.role_id) ?? null : null,
+      })) as any
     }
-  })
+  }
+
+  const people: TeamDirectoryEntry[] = memberships
+    // Only show non-inactive org memberships in the picker
+    .filter(row => row.status !== "inactive")
+    // Exclude users already on the project, except allow the current user through for clarity
+    .filter(row => row.user_id === userId || !memberMap.has(row.user_id))
+    .map(row => {
+      const user = row.app_users as any
+      const orgRole = row.roles as any
+      const membership = memberMap.get(row.user_id)
+      const projectRole = membership?.role_id ? rolesById.get(membership.role_id) : undefined
+
+      return {
+        user_id: row.user_id,
+        full_name: user?.full_name ?? "Unknown user",
+        email: user?.email ?? "",
+        avatar_url: user?.avatar_url ?? undefined,
+        org_role: orgRole?.key ?? undefined,
+        org_role_label: orgRole?.label ?? undefined,
+        project_member_id: membership?.id,
+        project_role_id: membership?.role_id,
+        project_role_label: membership?.role_label ?? projectRole?.label,
+        status: membership?.status ?? row.status,
+        is_current_user: row.user_id === userId,
+      }
+    })
 
   return { roles, people }
 }
@@ -686,6 +931,7 @@ export async function addProjectMembersAction(
   payload: { userIds: string[]; roleId: string }
 ): Promise<ProjectTeamMember[]> {
   const { supabase, orgId, userId } = await requireOrgContext()
+  const serviceClient = createServiceSupabaseClient()
 
   if (!payload.userIds?.length) {
     return []
@@ -699,7 +945,7 @@ export async function addProjectMembersAction(
     status: "active",
   }))
 
-  const { data, error } = await supabase
+  const { data, error } = await serviceClient
     .from("project_members")
     .upsert(rows, { onConflict: "project_id,user_id" })
     .select(`
@@ -707,8 +953,8 @@ export async function addProjectMembersAction(
       user_id,
       role_id,
       status,
-      app_users:app_users!inner(id, full_name, email, avatar_url),
-      roles:roles!inner(key, label)
+      app_users:app_users(id, full_name, email, avatar_url),
+      roles:roles(key, label)
     `)
 
   if (error) {

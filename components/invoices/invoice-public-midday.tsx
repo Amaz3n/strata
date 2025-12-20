@@ -212,3 +212,4 @@ export function InvoicePublicMiddayView({ invoice }: Props) {
   )
 }
 
+

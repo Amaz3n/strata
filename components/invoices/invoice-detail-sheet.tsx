@@ -28,11 +28,12 @@ type Props = {
   onCopyLink?: () => void
   onManualResync?: () => Promise<void>
   manualResyncing?: boolean
+  onEdit?: () => void
 }
 
 function formatMoneyFromCents(cents?: number | null) {
-  const value = cents ?? 0
-  return value.toLocaleString("en-US", { style: "currency", currency: "USD" })
+  const dollars = (cents ?? 0) / 100
+  return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
 type CopyInputProps = { value: string; actions?: React.ReactNode }
@@ -77,15 +78,55 @@ export function InvoiceDetailSheet({
   onCopyLink,
   onManualResync,
   manualResyncing,
+  onEdit,
 }: Props) {
+  const loadingView = (
+    <div className="px-5 pt-6 pb-4 space-y-4 animate-pulse">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <div className="h-9 w-9 rounded-full bg-muted" />
+          <div className="flex flex-col gap-1">
+            <div className="h-3 w-32 rounded bg-muted" />
+            <div className="h-3 w-24 rounded bg-muted" />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="h-6 w-16 rounded bg-muted" />
+          <div className="h-6 w-16 rounded bg-muted" />
+        </div>
+      </div>
+      <div className="flex flex-col gap-4">
+        <div className="h-8 w-24 rounded bg-muted" />
+        <div className="grid grid-cols-2 gap-3">
+          <div className="h-9 rounded bg-muted" />
+          <div className="h-9 rounded bg-muted" />
+        </div>
+      </div>
+      <div className="space-y-3">
+        {[...Array(4)].map((_, idx) => (
+          <div key={idx} className="flex items-center justify-between text-sm text-muted-foreground">
+            <span className="h-3 w-20 rounded bg-muted" />
+            <span className="h-3 w-24 rounded bg-muted" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+
   const subtotal = invoice?.totals?.subtotal_cents ?? invoice?.subtotal_cents ?? 0
   const tax = invoice?.totals?.tax_cents ?? invoice?.tax_cents ?? 0
   const total = invoice?.totals?.total_cents ?? invoice?.total_cents ?? subtotal + tax
   const metadata = (invoice?.metadata as Record<string, any>) ?? {}
-  const customerName = metadata.customer_name ?? "Customer"
+  const sentToArray = invoice?.sent_to_emails ?? (metadata.sent_to ?? metadata.sentTo ?? []) ?? []
+  const customerName = (invoice?.customer_name as string | undefined) ?? metadata.customer_name ?? sentToArray?.[0] ?? "Customer"
   const customerInitial = customerName?.[0] ?? "C"
   const sentAtValue = (invoice as any)?.sent_at ?? metadata.sent_at ?? metadata.sentAt
-  const sentToValue = (invoice as any)?.sent_to ?? metadata.sent_to ?? metadata.sentTo
+  const sentToValue =
+    typeof sentToArray === "string"
+      ? sentToArray
+      : Array.isArray(sentToArray)
+        ? sentToArray.filter(Boolean).join(", ")
+        : undefined
 
   const activity = useMemo(() => {
     return (views ?? []).map((v) => ({
@@ -116,43 +157,66 @@ export function InvoiceDetailSheet({
       >
         <div className="flex-1 overflow-y-auto">
           <div className="px-5 pt-6 pb-4 space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Avatar className="size-9">
-                  <AvatarFallback className="text-xs font-medium">{customerInitial}</AvatarFallback>
-                </Avatar>
-                <div className="flex flex-col">
-                  <span className="text-base font-semibold leading-tight line-clamp-1">{customerName}</span>
+            {loading ? (
+              loadingView
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Avatar className="size-9">
+                      <AvatarFallback className="text-xs font-medium">{customerInitial}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex flex-col">
+                      <span className="text-base font-semibold leading-tight line-clamp-1">{customerName}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {invoice?.qbo_sync_status && (
+                      <QBOSyncBadge
+                        status={invoice.qbo_sync_status}
+                        syncedAt={invoice.qbo_synced_at ?? undefined}
+                        qboId={invoice.qbo_id ?? undefined}
+                      />
+                    )}
+                    {invoice?.status && <Badge className="capitalize">{invoice.status}</Badge>}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {invoice?.qbo_sync_status && (
-                  <QBOSyncBadge
-                    status={invoice.qbo_sync_status}
-                    syncedAt={invoice.qbo_synced_at ?? undefined}
-                    qboId={invoice.qbo_id ?? undefined}
-                  />
-                )}
-                {invoice?.status && <Badge className="capitalize">{invoice.status}</Badge>}
-              </div>
-            </div>
 
-            <div className="flex flex-col gap-4">
-              <span className="text-4xl font-semibold leading-none select-text">{formatMoneyFromCents(total)}</span>
-              <div className="grid grid-cols-2 gap-3">
-                <Button type="button" variant="secondary" size="sm" className="w-full justify-center">
-                  Remind
-                </Button>
-                <Button type="button" variant="outline" size="sm" className="w-full justify-center">
-                  Edit
-                </Button>
-              </div>
-            </div>
+                <div className="flex flex-col gap-4">
+                  <span className="text-4xl font-semibold leading-none select-text">{formatMoneyFromCents(total)}</span>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Button type="button" variant="secondary" size="sm" className="w-full justify-center">
+                      Remind
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-center"
+                      onClick={onEdit}
+                      disabled={!onEdit}
+                    >
+                      Edit
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           <Separator className="my-4" />
 
-          <div className="px-5 py-5 space-y-4">
+          {loading ? (
+            <div className="px-5 py-5 space-y-3 animate-pulse">
+              {[...Array(5)].map((_, idx) => (
+                <div key={idx} className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span className="h-3 w-24 rounded bg-muted" />
+                  <span className="h-3 w-28 rounded bg-muted" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="px-5 py-5 space-y-4">
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>Due date</span>
               <span className="text-foreground">
@@ -180,69 +244,87 @@ export function InvoiceDetailSheet({
               <span className="text-foreground">{invoice?.invoice_number ?? "—"}</span>
             </div>
           </div>
+          )}
 
           <Separator className="my-2" />
 
-          <div className="px-5 py-5 space-y-3">
-            <span className="text-sm text-muted-foreground">Invoice link</span>
-            <div className="flex w-full items-start gap-2">
-              <div className="relative min-w-0 flex-1">
-                <CopyInput
-                  value={link ?? "No link yet"}
-                  actions={
-                    link ? (
-                      <Button variant="ghost" size="icon" asChild className="h-8 w-8 text-muted-foreground">
-                        <a href={link} target="_blank" rel="noreferrer">
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
-                      </Button>
-                    ) : null
-                  }
-                />
+          {loading ? (
+            <div className="px-5 py-5 space-y-3 animate-pulse">
+              <div className="h-3 w-24 rounded bg-muted" />
+              <div className="h-9 rounded bg-muted" />
+              <div className="flex items-center justify-between mt-2">
+                <span className="h-3 w-24 rounded bg-muted" />
+                <span className="h-8 w-24 rounded bg-muted" />
               </div>
-              <Button
-                variant="secondary"
-                className="size-[38px] hover:bg-secondary shrink-0"
-                onClick={() => {
-                  if (typeof window !== "undefined") window.print()
-                }}
-              >
-                <Download className="h-4 w-4" />
-              </Button>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">QuickBooks sync</span>
-              {onManualResync && (
-                <Button size="sm" variant="outline" onClick={onManualResync} disabled={manualResyncing}>
-                  <RefreshCw className={`h-4 w-4 mr-2 ${manualResyncing ? "animate-spin" : ""}`} />
-                  {manualResyncing ? "Resyncing..." : "Manual resync"}
-                </Button>
-              )}
-            </div>
-            {syncLogs && syncLogs.length > 0 ? (
               <div className="space-y-2">
-                {syncLogs.map((log) => (
-                  <div key={log.id} className="rounded-md border px-3 py-2 text-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium capitalize">{log.status}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {log.last_synced_at ? new Date(log.last_synced_at).toLocaleString() : "—"}
-                      </span>
-                    </div>
-                    {log.qbo_id && (
-                      <p className="text-xs text-muted-foreground mt-1">QBO ID: {log.qbo_id}</p>
-                    )}
-                    {log.error && <p className="text-xs text-destructive mt-1">{log.error}</p>}
-                  </div>
+                {[...Array(2)].map((_, idx) => (
+                  <div key={idx} className="h-14 rounded border bg-muted/30" />
                 ))}
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">No syncs yet.</p>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="px-5 py-5 space-y-3">
+              <span className="text-sm text-muted-foreground">Invoice link</span>
+              <div className="flex w-full items-start gap-2">
+                <div className="relative min-w-0 flex-1">
+                  <CopyInput
+                    value={link ?? "No link yet"}
+                    actions={
+                      link ? (
+                        <Button variant="ghost" size="icon" asChild className="h-8 w-8 text-muted-foreground">
+                          <a href={link} target="_blank" rel="noreferrer">
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        </Button>
+                      ) : null
+                    }
+                  />
+                </div>
+                <Button
+                  variant="secondary"
+                  className="size-[38px] hover:bg-secondary shrink-0"
+                  onClick={() => {
+                    if (typeof window !== "undefined") window.print()
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                </Button>
+              </div>
 
-          <Accordion type="multiple" className="px-5 pb-8" defaultValue={[]}>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">QuickBooks sync</span>
+                {onManualResync && (
+                  <Button size="sm" variant="outline" onClick={onManualResync} disabled={manualResyncing}>
+                    <RefreshCw className={`h-4 w-4 mr-2 ${manualResyncing ? "animate-spin" : ""}`} />
+                    {manualResyncing ? "Resyncing..." : "Manual resync"}
+                  </Button>
+                )}
+              </div>
+              {syncLogs && syncLogs.length > 0 ? (
+                <div className="space-y-2">
+                  {syncLogs.map((log) => (
+                    <div key={log.id} className="rounded-md border px-3 py-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium capitalize">{log.status}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {log.last_synced_at ? new Date(log.last_synced_at).toLocaleString() : "—"}
+                        </span>
+                      </div>
+                      {log.qbo_id && (
+                        <p className="text-xs text-muted-foreground mt-1">QBO ID: {log.qbo_id}</p>
+                      )}
+                      {log.error && <p className="text-xs text-destructive mt-1">{log.error}</p>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No syncs yet.</p>
+              )}
+            </div>
+          )}
+
+          {!loading && (
+            <Accordion type="multiple" className="px-5 pb-8" defaultValue={[]}>
             <AccordionItem value="internal-notes">
               <AccordionTrigger>Internal notes</AccordionTrigger>
               <AccordionContent>
@@ -276,6 +358,7 @@ export function InvoiceDetailSheet({
               </AccordionContent>
             </AccordionItem>
           </Accordion>
+          )}
         </div>
       </SheetContent>
     </Sheet>

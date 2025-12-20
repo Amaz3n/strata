@@ -1,14 +1,14 @@
 "use client"
 
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
 import { signOutAction } from "@/app/auth/actions"
 import {
-  BadgeCheck,
   Bell,
   ChevronsUpDown,
   CreditCard,
+  Link2,
   LogOut,
-  Sparkles,
+  Settings,
 } from "@/components/icons"
 import {
   Avatar,
@@ -30,8 +30,8 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import Link from "next/link"
 import type { User } from "@/lib/types"
+import { SettingsDialog } from "@/components/settings/settings-dialog"
 
 export function NavUser({
   user,
@@ -40,12 +40,19 @@ export function NavUser({
 }) {
   const { isMobile, state } = useSidebar()
   const [signingOut, startSignOut] = useTransition()
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string>("profile")
 
   const initials =
     user?.full_name
       ?.split(" ")
       .map((n) => n[0])
       .join("") || "?"
+
+  const openSettings = (targetTab: string) => {
+    setSettingsTab(targetTab)
+    setSettingsOpen(true)
+  }
 
   return (
     <SidebarMenu>
@@ -93,17 +100,43 @@ export function NavUser({
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  openSettings("profile")
+                }}
+              >
+                <Settings />
+                Settings
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  openSettings("integrations")
+                }}
+              >
+                <Link2 />
+                Integrations
+              </DropdownMenuItem>
               <DropdownMenuItem asChild>
-                <Link href="/settings">
-                  <BadgeCheck />
-                  Account Settings
-                </Link>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    openSettings("billing")
+                  }}
+                >
+                  <CreditCard />
+                  Billing
+                </button>
               </DropdownMenuItem>
-              <DropdownMenuItem>
-                <CreditCard />
-                Billing
-              </DropdownMenuItem>
-              <DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  openSettings("notifications")
+                }}
+              >
                 <Bell />
                 Notifications
               </DropdownMenuItem>
@@ -123,6 +156,12 @@ export function NavUser({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <SettingsDialog
+          user={user ?? null}
+          open={settingsOpen}
+          initialTab={settingsTab}
+          onOpenChange={setSettingsOpen}
+        />
       </SidebarMenuItem>
     </SidebarMenu>
   )

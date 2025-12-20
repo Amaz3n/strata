@@ -8,6 +8,7 @@ import type { Project, Submittal } from "@/lib/types"
 import type { SubmittalInput } from "@/lib/validation/submittals"
 import { createSubmittalAction } from "@/app/submittals/actions"
 import { SubmittalForm } from "@/components/submittals/submittal-form"
+import { SubmittalDetailSheet } from "@/components/submittals/submittal-detail-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -46,7 +47,14 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
   const [items, setItems] = useState<Submittal[]>(submittals)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
+  const [selectedSubmittal, setSelectedSubmittal] = useState<Submittal | null>(null)
   const [isPending, startTransition] = useTransition()
+
+  const handleSubmittalClick = (submittal: Submittal) => {
+    setSelectedSubmittal(submittal)
+    setDetailSheetOpen(true)
+  }
 
   const filtered = useMemo(() => {
     if (filterProjectId === "all") return items
@@ -124,9 +132,20 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
         isSubmitting={isPending}
       />
 
+      <SubmittalDetailSheet
+        submittal={selectedSubmittal}
+        project={projects.find((p) => p.id === selectedSubmittal?.project_id)}
+        open={detailSheetOpen}
+        onOpenChange={setDetailSheetOpen}
+      />
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {filtered.map((submittal) => (
-          <Card key={submittal.id} className="h-full flex flex-col">
+          <Card
+            key={submittal.id}
+            className="h-full flex flex-col cursor-pointer hover:border-primary/50 transition-colors"
+            onClick={() => handleSubmittalClick(submittal)}
+          >
             <CardHeader className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-base font-semibold">
@@ -197,6 +216,7 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
     </div>
   )
 }
+
 
 
 

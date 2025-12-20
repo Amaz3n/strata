@@ -25,8 +25,17 @@ export const companyInputSchema = z.object({
   website: z.string().url().optional(),
   address: addressSchema,
   license_number: z.string().optional(),
+  license_expiry: z.string().optional(),
+  license_verified: z.boolean().optional(),
   insurance_expiry: z.string().optional(),
   insurance_document_id: z.string().uuid().optional(),
+  w9_on_file: z.boolean().optional(),
+  w9_file_id: z.string().uuid().optional(),
+  prequalified: z.boolean().optional(),
+  prequalified_at: z.string().optional(),
+  rating: z.number().int().min(1).max(5).optional(),
+  default_payment_terms: z.string().max(200).optional(),
+  internal_notes: z.string().max(5000).optional(),
   notes: z.string().max(1000).optional(),
 })
 

@@ -38,13 +38,22 @@ type InvoiceRow = {
   sent_to_emails?: string[] | null
 }
 
+function toCents(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  // If a very large number is passed (likely already in cents), avoid double-multiplying.
+  if (Math.abs(value) > 100000) {
+    return Math.round(value)
+  }
+  return Math.round(value * 100)
+}
+
 function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
   return lines.map((line) => ({
     cost_code_id: line.cost_code_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",
-    unit_cost_cents: Math.round(line.unit_cost * 100),
+    unit_cost_cents: toCents(line.unit_cost),
     taxable: line.taxable ?? true,
   }))
 }
@@ -110,13 +119,15 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     total_cents: row.total_cents ?? totals?.total_cents,
     balance_due_cents: row.balance_due_cents ?? totals?.balance_due_cents,
     metadata: metadata ?? undefined,
+    customer_name: (metadata as any)?.customer_name ?? (row as any).customer_name,
     lines,
     totals,
     created_at: row.created_at,
     updated_at: row.updated_at,
     viewed_at: row.viewed_at ?? undefined,
-    sent_at: row.sent_at ?? undefined,
+    sent_at: row.sent_at ?? (metadata as any)?.sent_at ?? undefined,
     sent_to_emails: row.sent_to_emails ?? undefined,
+    customer_name: (metadata as any)?.customer_name,
   }
 }
 
@@ -207,6 +218,9 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       tax_rate: input.tax_rate,
       created_by: userId,
       payment_terms_days: input.payment_terms_days,
+      customer_id: input.customer_id,
+      customer_name: input.customer_name,
+      customer_email: input.sent_to_emails?.[0],
     },
     sent_at: input.status === "sent" || input.client_visible ? new Date().toISOString() : null,
     sent_to_emails: input.sent_to_emails ?? null,
@@ -216,7 +230,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     .from("invoices")
     .insert(payload)
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at",
     )
     .single()
 
@@ -267,13 +281,134 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     await sendInvoiceEmail({
       orgId: resolvedOrgId,
       invoiceId: data.id,
-      projectId: input.project_id,
       totalCents: totals.total_cents,
       dueDate: input.due_date ?? undefined,
     })
   }
 
   await enqueueInvoiceSync(data.id, resolvedOrgId)
+
+  return mapInvoiceRow(data as InvoiceRow)
+}
+
+export async function updateInvoice({
+  invoiceId,
+  input,
+  orgId,
+}: {
+  invoiceId: string
+  input: InvoiceInput
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: existing, error: existingError } = await supabase
+    .from("invoices")
+    .select("id, org_id, token, client_visible, status, sent_at, sent_to_emails, metadata")
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error(existingError?.message ?? "Invoice not found")
+  }
+
+  const lines = normalizeLines(input.lines)
+  const totals = calculateTotals(input.lines, input.tax_rate)
+  const shouldGenerateToken = input.client_visible === true || input.status === "sent"
+  const token = shouldGenerateToken ? existing.token ?? randomUUID() : existing.token ?? null
+  const sentAt = shouldGenerateToken ? existing.sent_at ?? new Date().toISOString() : existing.sent_at ?? null
+  const sentTo =
+    input.sent_to_emails && input.sent_to_emails.length > 0 ? input.sent_to_emails : existing.sent_to_emails ?? null
+
+  const payload = {
+    project_id: input.project_id ?? null,
+    token,
+    invoice_number: input.invoice_number,
+    title: input.title,
+    status: input.status ?? "draft",
+    issue_date: input.issue_date ?? null,
+    due_date: input.due_date ?? null,
+    notes: input.notes ?? null,
+    client_visible: shouldGenerateToken,
+    subtotal_cents: totals.subtotal_cents,
+    tax_cents: totals.tax_cents,
+    total_cents: totals.total_cents,
+    balance_due_cents: totals.total_cents,
+    metadata: {
+      ...(existing.metadata ?? {}),
+      lines,
+      totals,
+      tax_rate: input.tax_rate,
+      payment_terms_days: input.payment_terms_days,
+      updated_by: userId,
+      customer_id: input.customer_id ?? (existing.metadata as any)?.customer_id,
+      customer_name: input.customer_name ?? (existing.metadata as any)?.customer_name,
+      customer_email: (input.sent_to_emails ?? [])[0] ?? (existing.metadata as any)?.customer_email,
+    },
+    sent_at: sentAt,
+    sent_to_emails: sentTo,
+  }
+
+  const { data, error } = await supabase
+    .from("invoices")
+    .update(payload)
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .select(
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+    )
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update invoice: ${error?.message}`)
+  }
+
+  await supabase.from("invoice_lines").delete().eq("invoice_id", invoiceId).eq("org_id", resolvedOrgId)
+
+  const { error: linesError } = await supabase.from("invoice_lines").insert(
+    lines.map((line) => ({
+      org_id: resolvedOrgId,
+      invoice_id: invoiceId,
+      cost_code_id: line.cost_code_id ?? null,
+      description: line.description,
+      quantity: line.quantity,
+      unit: line.unit,
+      unit_price_cents: line.unit_cost_cents,
+    })),
+  )
+
+  if (linesError) {
+    throw new Error(`Failed to update invoice lines: ${linesError.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "invoice_updated",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: existing,
+    after: payload,
+  })
+
+  if (payload.client_visible || payload.status === "sent") {
+    await sendInvoiceEmail({
+      orgId: resolvedOrgId,
+      invoiceId,
+      totalCents: totals.total_cents,
+      dueDate: input.due_date ?? undefined,
+    })
+  }
+
+  await enqueueInvoiceSync(invoiceId, resolvedOrgId)
 
   return mapInvoiceRow(data as InvoiceRow)
 }
@@ -320,7 +455,7 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
@@ -423,25 +558,23 @@ export async function listInvoiceViews(invoiceId: string, orgId?: string): Promi
   return data ?? []
 }
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://app.strata.build"
 
 async function sendInvoiceEmail({
   orgId,
   invoiceId,
-  projectId,
   totalCents,
   dueDate,
 }: {
   orgId: string
   invoiceId: string
-  projectId: string
   totalCents?: number
   dueDate?: string
 }) {
   const supabase = createServiceSupabaseClient()
   const { data: invoice, error } = await supabase
     .from("invoices")
-    .select("invoice_number, title, project:projects(name, client_id)")
+    .select("invoice_number, title, token, sent_to_emails, project:projects(name)")
     .eq("id", invoiceId)
     .eq("org_id", orgId)
     .maybeSingle()
@@ -451,37 +584,69 @@ async function sendInvoiceEmail({
     return
   }
 
-  const recipients: (string | null)[] = []
-  if (invoice.project?.client_id) {
-    const contact = await fetchContactEmail(supabase, invoice.project.client_id)
-    if (contact) recipients.push(contact.email)
+  const recipients = new Set<string>()
+
+  for (const email of invoice.sent_to_emails ?? []) {
+    if (email) recipients.add(email)
   }
 
-  if (recipients.length === 0) {
+  const uniqueRecipients = Array.from(recipients)
+
+  if (uniqueRecipients.length === 0) {
     console.warn("No recipients for invoice email; skipping", { invoiceId })
     return
   }
 
   const subject = `Invoice ${invoice.invoice_number}: ${invoice.title ?? "New invoice"}`
-  const amount = totalCents != null ? `$${(totalCents / 100).toLocaleString()}` : undefined
+  const amount =
+    totalCents != null
+      ? `$${(totalCents / 100).toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      : undefined
+  const dueDisplay = dueDate
+    ? new Date(dueDate).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : undefined
+  const invoiceLink = invoice.token ? `${APP_URL}/i/${invoice.token}` : `${APP_URL}/invoices`
+  const greeting = "Hi there,"
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+      <p style="margin: 0 0 12px 0;">${greeting}</p>
       <h2 style="margin-bottom: 4px;">${invoice.project?.name ?? "Project"}</h2>
       <p style="margin: 0 0 12px 0; color: #555;">Invoice ${invoice.invoice_number}</p>
       <p style="margin: 0 0 8px 0;"><strong>${invoice.title ?? "New invoice"}</strong></p>
       ${amount ? `<p style="margin: 0 0 8px 0;">Amount: <strong>${amount}</strong></p>` : ""}
-      ${dueDate ? `<p style="margin: 0 0 8px 0;">Due: ${dueDate}</p>` : ""}
+      ${dueDisplay ? `<p style="margin: 0 0 8px 0;">Due: ${dueDisplay}</p>` : ""}
       <div style="margin-top: 16px;">
-        <a href="${APP_URL}/invoices" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">View invoice</a>
+        <a href="${invoiceLink}" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">View invoice</a>
       </div>
     </div>
   `
 
   await sendEmail({
-    to: recipients,
+    to: uniqueRecipients,
     subject,
     html,
   })
+
+  const mergedRecipients = Array.from(new Set([...(invoice.sent_to_emails ?? []), ...uniqueRecipients]))
+  const existingRecipients = invoice.sent_to_emails ?? []
+  const shouldUpdateRecipients =
+    mergedRecipients.length !== existingRecipients.length ||
+    mergedRecipients.some((email) => !existingRecipients.includes(email))
+
+  if (shouldUpdateRecipients) {
+    await supabase
+      .from("invoices")
+      .update({ sent_to_emails: mergedRecipients })
+      .eq("id", invoiceId)
+      .eq("org_id", orgId)
+  }
 }
 
 async function fetchContactEmail(

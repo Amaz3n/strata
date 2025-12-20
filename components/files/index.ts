@@ -6,5 +6,7 @@ export { FileGrid } from "./file-grid"
 export { FileList } from "./file-list"
 export { FileCategoryNav } from "./file-category-nav"
 export { FileToolbar, type ViewMode } from "./file-toolbar"
+export { EntityAttachments, type AttachedFile } from "./entity-attachments"
+export { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
 export * from "./types"
 

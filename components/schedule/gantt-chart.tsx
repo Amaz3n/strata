@@ -302,6 +302,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["all", "Unassigned"]))
   const [scrollLeft, setScrollLeft] = useState(0)
   const [dateSelection, setDateSelection] = useState<DateSelection | null>(null)
+  const [viewportHeight, setViewportHeight] = useState(0)
 
   // DnD sensors for drag-to-reorder
   const sensors = useSensors(
@@ -614,6 +615,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
   // Calculate total height
   const totalRows = currentRowIndex || 1
   const totalHeight = Math.max(totalRows * GANTT_ROW_HEIGHT, 200)
+  const timelineHeight = Math.max(totalHeight, viewportHeight || 0)
 
   // Today marker position - use local timezone by constructing date from local components
   const now = new Date()
@@ -644,6 +646,20 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
       setScrollLeft(scrollPos)
     }
   }, [scrollToTodayTrigger, todayPosition])
+
+  // Keep the gantt grid stretched to the available vertical space
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+
+    const updateHeight = () => setViewportHeight(el.clientHeight || 0)
+    updateHeight()
+
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(el)
+
+    return () => observer.disconnect()
+  }, [])
 
   // Selection highlight position
   const selectionPosition = useMemo(() => {
@@ -733,7 +749,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
               collisionDetection={closestCenter}
               onDragEnd={handleDragEnd}
             >
-              <div style={{ minHeight: totalHeight }}>
+              <div style={{ minHeight: timelineHeight }}>
                 {sortedGroups.map((groupKey) => {
                   const groupItemsList = groupedItems.get(groupKey) || []
                   const isExpanded = expandedGroups.has(groupKey) || viewState.groupBy === "none"
@@ -811,8 +827,8 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
               style={{
                 width: totalWidth,
                 minWidth: totalWidth,
-                height: totalHeight,
-                minHeight: totalHeight,
+                height: timelineHeight,
+                minHeight: timelineHeight,
               }}
             >
               {/* Background grid */}
@@ -859,7 +875,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
               {viewState.showDependencies && dependencyLines.length > 0 && (
                 <svg 
                   className="absolute inset-0 pointer-events-none z-10" 
-                  style={{ width: totalWidth, height: totalHeight }}
+                  style={{ width: totalWidth, height: timelineHeight }}
                 >
                   <defs>
                     <marker

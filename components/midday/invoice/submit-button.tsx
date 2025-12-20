@@ -33,9 +33,10 @@ import { useFormContext } from "react-hook-form";
 type Props = {
   isSubmitting: boolean;
   disabled?: boolean;
+  isEdit?: boolean;
 };
 
-export function SubmitButton({ isSubmitting, disabled }: Props) {
+export function SubmitButton({ isSubmitting, disabled, isEdit }: Props) {
   const { watch, setValue, formState } = useFormContext();
   const weekStartsOn = 0;
 
@@ -147,7 +148,7 @@ export function SubmitButton({ isSubmitting, disabled }: Props) {
   };
 
   const selectedOption = watch("template.deliveryType");
-  const canUpdate = watch("status") !== "draft";
+  const canUpdate = isEdit || watch("status") !== "draft";
 
   const invoiceNumberValid = !formState.errors.invoiceNumber;
 

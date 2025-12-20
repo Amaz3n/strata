@@ -128,3 +128,4 @@ export function InvoicePublicView({ invoice }: Props) {
   )
 }
 
+

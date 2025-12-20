@@ -205,6 +205,24 @@ export async function createContact({ input, orgId }: { input: ContactInput; org
     throw new Error(`Failed to create contact: ${error?.message}`)
   }
 
+  if (parsed.primary_company_id) {
+    const { error: linkError } = await supabase
+      .from("contact_company_links")
+      .upsert(
+        {
+          org_id: resolvedOrgId,
+          contact_id: data.id,
+          company_id: parsed.primary_company_id,
+          relationship: "primary",
+        },
+        { onConflict: "contact_id,company_id" },
+      )
+
+    if (linkError) {
+      throw new Error(`Failed to link contact to primary company: ${linkError.message}`)
+    }
+  }
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "contact_created",
@@ -251,6 +269,9 @@ export async function updateContact({
     throw new Error("Contact not found")
   }
 
+  const previousPrimaryCompanyId = existing.primary_company_id ?? undefined
+  const nextPrimaryCompanyId = parsed.primary_company_id ?? existing.primary_company_id ?? undefined
+
   const metadata = {
     ...(existing.metadata ?? {}),
     has_portal_access:
@@ -283,6 +304,38 @@ export async function updateContact({
 
   if (error || !data) {
     throw new Error(`Failed to update contact: ${error?.message}`)
+  }
+
+  if (nextPrimaryCompanyId) {
+    const { error: linkError } = await supabase
+      .from("contact_company_links")
+      .upsert(
+        {
+          org_id: resolvedOrgId,
+          contact_id: data.id,
+          company_id: nextPrimaryCompanyId,
+          relationship: "primary",
+        },
+        { onConflict: "contact_id,company_id" },
+      )
+
+    if (linkError) {
+      throw new Error(`Failed to link contact to primary company: ${linkError.message}`)
+    }
+  }
+
+  if (previousPrimaryCompanyId && previousPrimaryCompanyId !== nextPrimaryCompanyId) {
+    const { error: unlinkError } = await supabase
+      .from("contact_company_links")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("contact_id", data.id)
+      .eq("company_id", previousPrimaryCompanyId)
+      .eq("relationship", "primary")
+
+    if (unlinkError) {
+      throw new Error(`Failed to unlink previous primary company: ${unlinkError.message}`)
+    }
   }
 
   await recordEvent({
@@ -486,4 +539,3 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
     })),
   }
 }
-

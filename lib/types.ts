@@ -54,8 +54,17 @@ export interface Company {
   website?: string
   address?: Address
   license_number?: string
+  license_expiry?: string
+  license_verified?: boolean
   insurance_expiry?: string
   insurance_document_id?: string
+  w9_on_file?: boolean
+  w9_file_id?: string
+  prequalified?: boolean
+  prequalified_at?: string
+  rating?: number
+  default_payment_terms?: string
+  internal_notes?: string
   notes?: string
   created_at: string
   updated_at?: string
@@ -126,6 +135,51 @@ export interface Project {
 export type ProjectStatus = "planning" | "bidding" | "active" | "on_hold" | "completed" | "cancelled"
 export type ProjectPropertyType = "residential" | "commercial"
 export type ProjectWorkType = "new_construction" | "remodel" | "addition" | "renovation" | "repair"
+export type ProjectVendorRole = "subcontractor" | "supplier" | "consultant" | "architect" | "engineer" | "client"
+
+export interface ProjectVendor {
+  id: string
+  org_id: string
+  project_id: string
+  company_id?: string
+  contact_id?: string
+  role: ProjectVendorRole
+  scope?: string
+  status: "active" | "invited" | "inactive"
+  notes?: string
+  created_at: string
+  updated_at: string
+  company?: Company
+  contact?: Contact
+}
+
+export interface Contract {
+  id: string
+  org_id: string
+  project_id: string
+  proposal_id?: string
+  number?: string
+  title: string
+  status: "draft" | "active" | "amended" | "completed" | "terminated"
+  contract_type?: "fixed_price" | "cost_plus" | "time_materials" | "unit_price"
+  total_cents?: number
+  currency: string
+  markup_percent?: number
+  retainage_percent?: number
+  retainage_release_trigger?: string
+  terms?: string
+  effective_date?: string
+  signed_at?: string
+  signature_data?: {
+    signature_svg?: string
+    signed_at?: string
+    signer_name?: string
+    signer_ip?: string
+  }
+  snapshot: Record<string, any>
+  created_at: string
+  updated_at: string
+}
 
 export type ConversationChannel = "internal" | "client" | "sub"
 
@@ -369,6 +423,10 @@ export interface PortalPermissions {
   can_view_submittals?: boolean
   can_respond_rfis?: boolean
   can_submit_submittals?: boolean
+  // Sub-specific permissions
+  can_view_commitments?: boolean     // Can see their contracts
+  can_view_bills?: boolean           // Can see their submitted invoices
+  can_submit_invoices?: boolean      // Can submit new invoices
 }
 
 export interface PortalAccessToken {
@@ -376,17 +434,19 @@ export interface PortalAccessToken {
   org_id: string
   project_id: string
   contact_id?: string | null
-  company_id?: string | null
+  company_id?: string | null      // For sub portals
   token: string
-  portal_type: "client" | "sub"
-  created_by?: string | null
-  created_at: string
+  name: string
+  portal_type: "client" | "sub"   // Explicit portal type
+  permissions: PortalPermissions
+  pin_required: boolean
+  pin_locked_until?: string | null
   expires_at?: string | null
-  last_accessed_at?: string | null
-  revoked_at?: string | null
   access_count: number
   max_access_count?: number | null
-  permissions: PortalPermissions
+  last_accessed_at?: string | null
+  revoked_at?: string | null
+  created_at: string
 }
 
 export interface PhotoTimelineEntry {
@@ -505,6 +565,7 @@ export interface Invoice {
   viewed_at?: string | null
   sent_at?: string | null
   sent_to_emails?: string[] | null
+  customer_name?: string | null
 }
 
 export type PaymentStatus = "pending" | "processing" | "succeeded" | "failed" | "canceled" | "refunded"
@@ -841,9 +902,34 @@ export interface PortalMessageThread {
   messages: PortalMessage[]
 }
 
+export interface PortalFinancialSummary {
+  contractTotal: number
+  totalPaid: number
+  balanceRemaining: number
+  nextDraw?: {
+    id: string
+    draw_number: number
+    title: string
+    amount_cents: number
+    due_date?: string | null
+    status: string
+  }
+  draws: DrawSchedule[]
+}
+
+export interface PortalProjectManager {
+  id: string
+  full_name: string
+  email?: string
+  phone?: string
+  avatar_url?: string
+  role_label?: string
+}
+
 export interface ClientPortalData {
   org: { name: string; logo_url?: string }
   project: Project
+  projectManager?: PortalProjectManager
   schedule: ScheduleItem[]
   photos: PhotoTimelineEntry[]
   pendingChangeOrders: ChangeOrder[]
@@ -855,6 +941,68 @@ export interface ClientPortalData {
   sharedFiles: FileMetadata[]
   messages: PortalMessage[]
   punchItems: PunchItem[]
+  financialSummary?: PortalFinancialSummary
+}
+
+export interface SubPortalCommitment {
+  id: string
+  title: string
+  status: "draft" | "approved" | "complete" | "canceled"
+  total_cents: number
+  billed_cents: number
+  paid_cents: number
+  remaining_cents: number
+  start_date?: string | null
+  end_date?: string | null
+  project_name: string
+}
+
+export interface SubPortalBill {
+  id: string
+  bill_number: string
+  commitment_id: string
+  commitment_title: string
+  status: "pending" | "approved" | "paid"
+  total_cents: number
+  bill_date: string
+  due_date?: string | null
+  submitted_at: string
+  paid_at?: string | null
+  payment_reference?: string | null
+}
+
+export interface SubPortalFinancialSummary {
+  total_committed: number      // Sum of all commitment totals
+  total_billed: number         // Sum of all vendor bills
+  total_paid: number           // Sum of paid vendor bills
+  total_remaining: number      // committed - billed
+  pending_approval: number     // Bills in "pending" status
+  approved_unpaid: number      // Bills in "approved" status
+}
+
+export interface SubPortalData {
+  org: {
+    id: string
+    name: string
+    logo_url?: string | null
+  }
+  project: Project
+  company: {
+    id: string
+    name: string
+    trade?: string | null
+  }
+  projectManager?: PortalProjectManager
+  commitments: SubPortalCommitment[]
+  bills: SubPortalBill[]
+  financialSummary: SubPortalFinancialSummary
+  schedule: ScheduleItem[]           // Filtered to this company's tasks
+  rfis: Rfi[]                        // Assigned to this company
+  submittals: Submittal[]            // Assigned to this company
+  sharedFiles: FileMetadata[]        // Shared with sub portal
+  messages: PortalMessage[]
+  pendingRfiCount: number
+  pendingSubmittalCount: number
 }
 
 export interface FileMetadata {
@@ -874,4 +1022,26 @@ export interface DashboardStats {
   tasksThisWeek: number
   pendingApprovals: number
   recentPhotos: number
+}
+
+export interface Proposal {
+  id: string
+  org_id: string
+  project_id: string
+  estimate_id?: string | null
+  recipient_contact_id?: string | null
+  number?: string | null
+  title: string
+  summary?: string | null
+  terms?: string | null
+  status?: "draft" | "sent" | "accepted" | string | null
+  total_cents?: number | null
+  token?: string | null
+  token_hash?: string | null
+  valid_until?: string | null
+  sent_at?: string | null
+  accepted_at?: string | null
+  signature_required?: boolean | null
+  created_at?: string | null
+  updated_at?: string | null
 }

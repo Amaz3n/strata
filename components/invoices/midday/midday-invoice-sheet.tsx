@@ -1,8 +1,7 @@
 "use client"
 
-import type { Contact, CostCode, Project } from "@/lib/types"
+import type { Contact, CostCode, Invoice, Project } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
-import { useState } from "react"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { MiddayInvoiceWrapper } from "./midday-invoice-wrapper"
 
@@ -13,6 +12,8 @@ type Props = {
   defaultProjectId?: string
   onSubmit: (values: InvoiceInput, sendToClient: boolean) => Promise<void>
   isSubmitting?: boolean
+  mode?: "create" | "edit"
+  invoice?: Invoice | null
   builderInfo?: {
     name?: string | null
     email?: string | null
@@ -29,12 +30,12 @@ export function MiddayInvoiceSheet({
   defaultProjectId,
   onSubmit,
   isSubmitting,
+  mode = "create",
+  invoice,
   builderInfo,
   contacts,
   costCodes,
 }: Props) {
-  const [submitMode, setSubmitMode] = useState<"draft" | "send">("draft")
-
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -47,12 +48,10 @@ export function MiddayInvoiceSheet({
               <MiddayInvoiceWrapper
                 projects={projects}
                 defaultProjectId={defaultProjectId}
-                onSubmit={async (values, send) => {
-                  setSubmitMode(send ? "send" : "draft")
-                  await onSubmit(values, send)
-                }}
+                onSubmit={onSubmit}
                 isSubmitting={isSubmitting}
-                submitMode={submitMode}
+                mode={mode}
+                invoice={invoice ?? undefined}
                 builderInfo={builderInfo}
                 contacts={contacts}
                 costCodes={costCodes}
@@ -64,6 +63,3 @@ export function MiddayInvoiceSheet({
     </Sheet>
   )
 }
-
-
-

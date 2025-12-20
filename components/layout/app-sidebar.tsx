@@ -13,9 +13,7 @@ import {
   MessageSquare,
   Users,
   Receipt,
-  Share2,
   HardHat,
-  Link2,
 } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
@@ -60,6 +58,7 @@ function buildNavigation() {
       isActive: false,
       items: [
         { title: "Files", url: "/files" },
+        { title: "Drawings", url: "/drawings" },
         { title: "RFIs", url: "/rfis" },
         { title: "Submittals", url: "/submittals" },
       ],
@@ -70,32 +69,16 @@ function buildNavigation() {
       icon: Receipt,
       isActive: false,
       items: [
+        { title: "Proposals", url: "/proposals" },
         { title: "Change Orders", url: "/change-orders" },
         { title: "Invoices", url: "/invoices" },
       ],
     },
     {
-      title: "Sharing",
-      url: "/sharing",
-      icon: Share2,
-      isActive: false,
-    },
-    {
-      title: "Integrations",
-      url: "/settings/integrations",
-      icon: Link2,
-      isActive: false,
-    },
-    {
       title: "Directory",
-      url: "/team",
+      url: "/directory",
       icon: Users,
       isActive: false,
-      items: [
-        { title: "Team", url: "/team" },
-        { title: "Contacts", url: "/contacts" },
-        { title: "Companies", url: "/companies" },
-      ],
     },
   ]
 }

@@ -31,9 +31,10 @@ interface ContactFormProps {
   contact?: Contact
   companies?: Company[]
   onSubmitted?: () => void
+  onCancel?: () => void
 }
 
-export function ContactForm({ contact, companies = [], onSubmitted }: ContactFormProps) {
+export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: ContactFormProps) {
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
@@ -83,16 +84,17 @@ export function ContactForm({ contact, companies = [], onSubmitted }: ContactFor
   }
 
   return (
-    <form className="space-y-4" onSubmit={handleSubmit}>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label>Name</Label>
-          <Input value={formState.full_name} onChange={(e) => setField("full_name", e.target.value)} required placeholder="Jane Doe" />
-        </div>
+    <form className="flex h-full flex-col" onSubmit={handleSubmit}>
+      <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>Name</Label>
+            <Input value={formState.full_name} onChange={(e) => setField("full_name", e.target.value)} required placeholder="Jane Doe" />
+          </div>
         <div className="space-y-2">
           <Label>Type</Label>
           <Select value={formState.contact_type} onValueChange={(value) => setField("contact_type", value)}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Select type" />
             </SelectTrigger>
             <SelectContent>
@@ -128,7 +130,7 @@ export function ContactForm({ contact, companies = [], onSubmitted }: ContactFor
             value={formState.primary_company_id}
             onValueChange={(value) => setField("primary_company_id", value)}
           >
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Select company" />
             </SelectTrigger>
             <SelectContent>
@@ -147,7 +149,7 @@ export function ContactForm({ contact, companies = [], onSubmitted }: ContactFor
             value={formState.preferred_contact_method}
             onValueChange={(value) => setField("preferred_contact_method", value)}
           >
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Select" />
             </SelectTrigger>
             <SelectContent>
@@ -169,12 +171,16 @@ export function ContactForm({ contact, companies = [], onSubmitted }: ContactFor
         <Label htmlFor="portal-access">Grant portal access</Label>
       </div>
 
-      <div className="space-y-2">
-        <Label>Notes</Label>
-        <Textarea value={formState.notes} onChange={(e) => setField("notes", e.target.value)} placeholder="Crew members, gate codes, preferences..." />
+        <div className="space-y-2">
+          <Label>Notes</Label>
+          <Textarea value={formState.notes} onChange={(e) => setField("notes", e.target.value)} placeholder="Crew members, gate codes, preferences..." />
+        </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="grid grid-cols-2 gap-3 border-t pt-4">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={isPending}>
+          Cancel
+        </Button>
         <Button type="submit" disabled={isPending}>
           {isPending ? "Saving..." : contact ? "Update contact" : "Create contact"}
         </Button>
@@ -182,6 +188,3 @@ export function ContactForm({ contact, companies = [], onSubmitted }: ContactFor
     </form>
   )
 }
-
-
-
