@@ -13,7 +13,6 @@ import {
   History,
   Tag,
   Folder,
-  CheckCircle,
   FileText,
 } from "@/components/icons"
 import { Button } from "@/components/ui/button"
@@ -32,7 +31,10 @@ import {
   getMimeIcon,
   formatFileSize,
   isImageFile,
+  ENTITY_TYPE_LABELS,
 } from "./types"
+
+type FileLinkSummaryMap = Record<string, { total: number; types: Record<string, number> }>
 
 interface FileGridProps {
   files: FileWithDetails[]
@@ -42,6 +44,9 @@ interface FileGridProps {
   onDownload: (file: FileWithDetails) => void
   onDelete: (file: FileWithDetails) => void
   onVersionHistory?: (file: FileWithDetails) => void
+  onEdit?: (file: FileWithDetails) => void
+  onViewActivity?: (file: FileWithDetails) => void
+  attachmentSummary?: FileLinkSummaryMap
   isLoading?: boolean
 }
 
@@ -53,6 +58,9 @@ export function FileGrid({
   onDownload,
   onDelete,
   onVersionHistory,
+  onEdit,
+  onViewActivity,
+  attachmentSummary,
   isLoading,
 }: FileGridProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
@@ -116,6 +124,12 @@ export function FileGrid({
           const isHovered = hoveredId === file.id
           const isImage = isImageFile(file.mime_type)
           const category = file.category ? FILE_CATEGORIES[file.category] : null
+          const summary = attachmentSummary?.[file.id]
+          const attachmentText = summary
+            ? Object.entries(summary.types)
+                .map(([type, count]) => `${ENTITY_TYPE_LABELS[type] ?? type} (${count})`)
+                .join(", ")
+            : ""
 
           return (
             <div
@@ -213,6 +227,21 @@ export function FileGrid({
                     </Badge>
                   </div>
                 )}
+
+                {(file.share_with_clients || file.share_with_subs) && (
+                  <div className="absolute bottom-2 right-2 flex gap-1">
+                    {file.share_with_clients && (
+                      <Badge variant="secondary" className="text-[10px] bg-black/60 text-white border-0">
+                        C
+                      </Badge>
+                    )}
+                    {file.share_with_subs && (
+                      <Badge variant="secondary" className="text-[10px] bg-black/60 text-white border-0">
+                        S
+                      </Badge>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* File info */}
@@ -220,6 +249,45 @@ export function FileGrid({
                 <p className="font-medium text-sm truncate" title={file.file_name}>
                   {file.file_name}
                 </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {file.share_with_clients && (
+                    <Badge variant="secondary" className="text-[10px]">
+                      Clients
+                    </Badge>
+                  )}
+                  {file.share_with_subs && (
+                    <Badge variant="secondary" className="text-[10px]">
+                      Subs
+                    </Badge>
+                  )}
+                  {!file.share_with_clients && !file.share_with_subs && (
+                    <span className="text-[11px] text-muted-foreground">Private</span>
+                  )}
+                </div>
+                {(file.folder_path || (file.tags && file.tags.length > 0)) && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                    {file.folder_path && <span>{file.folder_path}</span>}
+                    {file.tags && file.tags.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {file.tags.slice(0, 2).map((tag) => (
+                          <Badge key={tag} variant="outline" className="text-[9px]">
+                            {tag}
+                          </Badge>
+                        ))}
+                        {file.tags.length > 2 && (
+                          <span className="text-[9px] text-muted-foreground">
+                            +{file.tags.length - 2}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {summary && attachmentText && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Attached to: {attachmentText}
+                  </p>
+                )}
                 <div className="flex items-center justify-between mt-1">
                   <span className="text-xs text-muted-foreground">
                     {formatFileSize(file.size_bytes)}
@@ -243,6 +311,12 @@ export function FileGrid({
                         <Download className="mr-2 h-4 w-4" />
                         Download
                       </DropdownMenuItem>
+                      {onViewActivity && (
+                        <DropdownMenuItem onClick={() => onViewActivity(file)}>
+                          <History className="mr-2 h-4 w-4" />
+                          View activity
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem>
                         <Copy className="mr-2 h-4 w-4" />
                         Copy link
@@ -253,15 +327,19 @@ export function FileGrid({
                           Version history
                         </DropdownMenuItem>
                       )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem>
-                        <Tag className="mr-2 h-4 w-4" />
-                        Edit tags
-                      </DropdownMenuItem>
-                      <DropdownMenuItem>
-                        <Folder className="mr-2 h-4 w-4" />
-                        Move to folder
-                      </DropdownMenuItem>
+                      {onEdit && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => onEdit(file)}>
+                            <Tag className="mr-2 h-4 w-4" />
+                            Edit details
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onEdit(file)}>
+                            <Folder className="mr-2 h-4 w-4" />
+                            Sharing & folders
+                          </DropdownMenuItem>
+                        </>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
@@ -284,8 +362,6 @@ export function FileGrid({
     </div>
   )
 }
-
-
 
 
 

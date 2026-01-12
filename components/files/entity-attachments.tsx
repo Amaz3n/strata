@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { Upload, Paperclip, Trash2, Download, Eye, X, FileText } from "lucide-react"
@@ -74,6 +75,7 @@ export function EntityAttachments({
   const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragCounterRef = useRef(0)
+  const router = useRouter()
 
   const canAddMore = !maxFiles || attachments.length < maxFiles
 
@@ -212,6 +214,14 @@ export function EntityAttachments({
     [onDownload]
   )
 
+  const handleViewInDocuments = useCallback(
+    (attachment: AttachedFile) => {
+      const basePath = projectId ? `/projects/${projectId}/files` : "/files"
+      router.push(`${basePath}?fileId=${attachment.id}`)
+    },
+    [projectId, router]
+  )
+
   const previewableFiles = attachments
     .filter((a) => isPreviewable(a.mime_type))
     .map((a) => ({
@@ -286,6 +296,15 @@ export function EntityAttachments({
                     onClick={() => handleDownload(attachment)}
                   >
                     <Download className="h-3 w-3" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
+                    onClick={() => handleViewInDocuments(attachment)}
+                    aria-label="View in Documents"
+                  >
+                    <FileText className="h-3 w-3" />
                   </Button>
                   {!readOnly && (
                     <Button
@@ -425,6 +444,14 @@ export function EntityAttachments({
                   onClick={() => handleDownload(attachment)}
                 >
                   <Download className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleViewInDocuments(attachment)}
+                  aria-label="View in Documents"
+                >
+                  <FileText className="h-4 w-4" />
                 </Button>
                 {!readOnly && (
                   <Button

@@ -2,6 +2,7 @@ import type { FileLinkInput } from "@/lib/validation/files"
 import { fileLinkInputSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { FileRecord, FileWithUrls } from "@/lib/services/files"
 
 export interface FileLink {
@@ -18,6 +19,12 @@ export interface FileLink {
 
 export interface FileLinkWithFile extends FileLink {
   file: FileWithUrls
+}
+
+export interface FileLinkSummary {
+  file_id: string
+  entity_type: string
+  count: number
 }
 
 function mapFileLink(row: any): FileLink {
@@ -153,6 +160,46 @@ export async function attachFile(
   })
 
   return mapFileLink(data)
+}
+
+/**
+ * Attach a file to an entity using service role (portal/background use-cases).
+ * Does not write audit logs (no authenticated actor context).
+ */
+export async function attachFileWithServiceRole(input: {
+  orgId: string
+  fileId: string
+  projectId?: string | null
+  entityType: string
+  entityId: string
+  linkRole?: string | null
+  createdBy?: string | null
+}): Promise<void> {
+  const supabase = createServiceSupabaseClient()
+  const { data: existing } = await supabase
+    .from("file_links")
+    .select("id")
+    .eq("org_id", input.orgId)
+    .eq("file_id", input.fileId)
+    .eq("entity_type", input.entityType)
+    .eq("entity_id", input.entityId)
+    .maybeSingle()
+
+  if (existing?.id) return
+
+  const { error } = await supabase.from("file_links").insert({
+    org_id: input.orgId,
+    file_id: input.fileId,
+    project_id: input.projectId ?? null,
+    entity_type: input.entityType,
+    entity_id: input.entityId,
+    link_role: input.linkRole ?? null,
+    created_by: input.createdBy ?? null,
+  })
+
+  if (error) {
+    throw new Error(`Failed to attach file (service role): ${error.message}`)
+  }
 }
 
 /**
@@ -314,6 +361,46 @@ export async function listFileLinks(fileId: string, orgId?: string): Promise<Fil
   }
 
   return (data ?? []).map(mapFileLink)
+}
+
+/**
+ * Summarize links for a set of files
+ */
+export async function listFileLinkSummary(
+  fileIds: string[],
+  orgId?: string
+): Promise<FileLinkSummary[]> {
+  if (fileIds.length === 0) return []
+
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("file_links")
+    .select("file_id, entity_type")
+    .eq("org_id", resolvedOrgId)
+    .in("file_id", fileIds)
+
+  if (error) {
+    throw new Error(`Failed to list file link summary: ${error.message}`)
+  }
+
+  const summary = new Map<string, Map<string, number>>()
+  for (const row of data ?? []) {
+    const fileId = row.file_id as string
+    const entityType = row.entity_type as string
+    if (!summary.has(fileId)) summary.set(fileId, new Map())
+    const fileMap = summary.get(fileId)!
+    fileMap.set(entityType, (fileMap.get(entityType) ?? 0) + 1)
+  }
+
+  const results: FileLinkSummary[] = []
+  for (const [fileId, fileMap] of summary.entries()) {
+    for (const [entityType, count] of fileMap.entries()) {
+      results.push({ file_id: fileId, entity_type: entityType, count })
+    }
+  }
+
+  return results
 }
 
 /**

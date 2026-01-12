@@ -37,6 +37,10 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
             <Badge variant={insurance.tone}>{insurance.label}</Badge>
           </div>
           <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Provider</span>
+            <span>{company.insurance_provider || "—"}</span>
+          </div>
+          <div className="flex items-center justify-between">
             <span className="text-muted-foreground">Expiry</span>
             <span>{formatDate(company.insurance_expiry)}</span>
           </div>
@@ -97,4 +101,3 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
     </div>
   )
 }
-

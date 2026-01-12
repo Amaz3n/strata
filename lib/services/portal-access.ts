@@ -5,6 +5,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type {
   ChangeOrder,
   ClientPortalData,
+  DailyLog,
   DrawSchedule,
   Invoice,
   PortalAccessToken,
@@ -19,11 +20,10 @@ import type {
   SubPortalCommitment,
   SubPortalBill,
   SubPortalFinancialSummary,
+  WarrantyRequest,
 } from "@/lib/types"
 
 import { listScheduleItemsWithClient } from "@/lib/services/schedule"
-import { listDailyLogs } from "@/lib/services/daily-logs"
-import { listFiles } from "@/lib/services/files"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 
@@ -541,7 +541,7 @@ async function loadPortalFinancialSummary({
 }): Promise<PortalFinancialSummary> {
   const supabase = createServiceSupabaseClient()
 
-  const [contractResult, projectResult, paymentsResult, nextDrawResult, drawsResult] = await Promise.all([
+  const [contractResult, projectResult, approvedCosResult, paymentsResult, nextDrawResult, drawsResult] = await Promise.all([
     supabase
       .from("contracts")
       .select("total_cents")
@@ -555,14 +555,22 @@ async function loadPortalFinancialSummary({
       .eq("id", projectId)
       .single(),
     supabase
+      .from("change_orders")
+      .select("total_cents")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "approved")
+      .eq("client_visible", true),
+    supabase
       .from("payments")
       .select("amount_cents")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
+      .not("invoice_id", "is", null)
       .eq("status", "succeeded"),
     supabase
       .from("draw_schedules")
-      .select("id, draw_number, title, amount_cents, due_date, status")
+      .select("id, draw_number, title, amount_cents, percent_of_contract, due_date, status")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .eq("status", "pending")
@@ -577,9 +585,20 @@ async function loadPortalFinancialSummary({
       .order("draw_number", { ascending: true }),
   ])
 
-  const contractTotal = contractResult.data?.total_cents ??
+  const baseContractTotal = contractResult.data?.total_cents ??
     (projectResult.data?.total_value ? projectResult.data.total_value * 100 : 0)
+  const approvedChangesTotal = (approvedCosResult.data ?? []).reduce((sum, row) => sum + (row.total_cents ?? 0), 0)
+  const contractTotal = baseContractTotal + approvedChangesTotal
   const totalPaid = (paymentsResult.data ?? []).reduce((sum, p) => sum + (p.amount_cents ?? 0), 0)
+
+  const draws = (drawsResult.data ?? []) as DrawSchedule[]
+  const normalizedDraws = draws.map((draw) => {
+    const percent = (draw as any).percent_of_contract
+    if (typeof percent === "number" && contractTotal > 0) {
+      return { ...draw, amount_cents: Math.round((contractTotal * percent) / 100) }
+    }
+    return draw
+  })
 
   return {
     contractTotal,
@@ -589,12 +608,72 @@ async function loadPortalFinancialSummary({
       id: nextDrawResult.data.id,
       draw_number: nextDrawResult.data.draw_number,
       title: nextDrawResult.data.title,
-      amount_cents: nextDrawResult.data.amount_cents,
+      amount_cents: typeof (nextDrawResult.data as any).percent_of_contract === "number" && contractTotal > 0
+        ? Math.round((contractTotal * (nextDrawResult.data as any).percent_of_contract) / 100)
+        : nextDrawResult.data.amount_cents,
       due_date: nextDrawResult.data.due_date,
       status: nextDrawResult.data.status,
     } : undefined,
-    draws: (drawsResult.data ?? []) as DrawSchedule[],
+    draws: normalizedDraws,
   }
+}
+
+function mapPortalDailyLog(row: any): DailyLog {
+  const weather = row.weather ?? {}
+  const summary = row.summary ?? undefined
+  const weatherText =
+    typeof weather === "string"
+      ? weather
+      : [weather.conditions, weather.temperature, weather.notes].filter(Boolean).join(" • ")
+
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    project_id: row.project_id,
+    date: row.log_date,
+    weather: weatherText || undefined,
+    notes: summary,
+    created_by: row.created_by ?? undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+async function fetchSharedDailyLogsForPortal(supabase: any, orgId: string, projectId: string): Promise<DailyLog[]> {
+  const { data: sharedLinks, error: sharedError } = await supabase
+    .from("file_links")
+    .select("entity_id, files!inner(share_with_clients)")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("entity_type", "daily_log")
+    .eq("files.share_with_clients", true)
+
+  if (sharedError) {
+    console.error("Failed to load shared daily log links for portal", sharedError)
+    return []
+  }
+
+  const dailyLogIds = Array.from(
+    new Set((sharedLinks ?? []).map((row: any) => row.entity_id).filter(Boolean)),
+  )
+
+  if (dailyLogIds.length === 0) return []
+
+  const { data: logs, error } = await supabase
+    .from("daily_logs")
+    .select("id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .in("id", dailyLogIds)
+    .order("log_date", { ascending: false })
+    .limit(50)
+
+  if (error) {
+    console.error("Failed to load shared daily logs for portal", error)
+    return []
+  }
+
+  return (logs ?? []).map(mapPortalDailyLog)
 }
 
 export async function loadClientPortalData({
@@ -610,7 +689,7 @@ export async function loadClientPortalData({
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, files, messages, financialSummary] = await Promise.all([
+  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, messages, financialSummary] = await Promise.all([
     supabase.from("orgs").select("id, name").eq("id", orgId).single(),
     supabase
       .from("projects")
@@ -621,11 +700,21 @@ export async function loadClientPortalData({
       .from("project_members")
       .select("user_id, role, app_users(id, full_name, email, phone, avatar_url)")
       .eq("project_id", projectId)
-      .eq("role", "pm")
+      .in("role", ["pm", "project_manager"])
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle(),
     permissions.can_view_schedule ? listScheduleItemsWithClient(supabase, orgId) : Promise.resolve([]),
-    permissions.can_view_daily_logs ? listDailyLogs(orgId) : Promise.resolve([]),
-    permissions.can_view_documents ? listFiles(orgId) : Promise.resolve([]),
+    permissions.can_view_daily_logs ? fetchSharedDailyLogsForPortal(supabase, orgId, projectId) : Promise.resolve([]),
+    permissions.can_view_documents
+      ? supabase
+          .from("files")
+          .select("*")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("share_with_clients", true)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] }),
     permissions.can_message ? listPortalMessages({ orgId, projectId, channel: portalType }) : Promise.resolve([]),
     permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
   ])
@@ -648,7 +737,7 @@ export async function loadClientPortalData({
     : []
 
   const invoices = permissions.can_view_invoices
-    ? await fetchInvoices(supabase, orgId, projectId, permissions.can_pay_invoices)
+    ? await fetchInvoices(supabase, orgId, projectId, permissions.can_pay_invoices ?? false)
     : []
   const rfis = permissions.can_view_rfis ? await fetchRfis(supabase, orgId, projectId) : []
   const submittals = permissions.can_view_submittals ? await fetchSubmittals(supabase, orgId, projectId) : []
@@ -656,6 +745,7 @@ export async function loadClientPortalData({
   const selections = permissions.can_submit_selections ? await fetchSelections(supabase, orgId, projectId) : []
   const punchItems = permissions.can_create_punch_items ? await fetchPunchItems(supabase, orgId, projectId) : []
   const photos = permissions.can_view_photos ? await fetchPhotoTimeline(supabase, orgId, projectId) : []
+  const warrantyRequests = await fetchWarrantyRequests(supabase, orgId, projectId)
 
   return {
     org: { name: orgRow.data.name },
@@ -675,11 +765,12 @@ export async function loadClientPortalData({
     photos,
     pendingChangeOrders,
     pendingSelections: selections,
+    warrantyRequests,
     invoices,
     rfis,
     submittals,
     recentLogs: (dailyLogs ?? []).filter((log) => log.project_id === projectId).slice(0, 5),
-    sharedFiles: (files ?? []).filter((file) => file.project_id === projectId).slice(0, 10),
+    sharedFiles: (filesResult.data ?? []).map(mapFileMetadata).slice(0, 10),
     messages: messages ?? [],
     punchItems,
     financialSummary,
@@ -730,7 +821,7 @@ export async function loadSubPortalData({
     // Company info
     supabase
       .from("companies")
-      .select("id, name, metadata")
+      .select("id, name, insurance_expiry, license_expiry, w9_on_file, metadata")
       .eq("id", companyId)
       .single(),
 
@@ -745,7 +836,9 @@ export async function loadSubPortalData({
         )
       `)
       .eq("project_id", projectId)
-      .eq("role", "project_manager")
+      .in("role", ["pm", "project_manager"])
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle(),
 
     // Commitments for this company + project
@@ -766,8 +859,8 @@ export async function loadSubPortalData({
       .from("vendor_bills")
       .select(`
         id, bill_number, commitment_id, status,
-        total_cents, bill_date, due_date,
-        created_at, metadata,
+        total_cents, paid_cents, bill_date, due_date,
+        created_at, paid_at, payment_reference, metadata,
         commitments:commitment_id (title)
       `)
       .eq("org_id", orgId)
@@ -823,12 +916,8 @@ export async function loadSubPortalData({
 
     // Messages
     permissions.can_message
-      ? supabase
-          .from("messages")
-          .select("*")
-          .eq("conversation_id", `sub-${projectId}-${companyId}`)
-          .order("sent_at", { ascending: true })
-      : Promise.resolve({ data: [] }),
+      ? listPortalMessages({ orgId, projectId, channel: "sub" })
+      : Promise.resolve([]),
   ])
 
   // Filter bills to only those belonging to this company's commitments
@@ -842,7 +931,9 @@ export async function loadSubPortalData({
   for (const bill of companyBills) {
     const existing = billsByCommitment.get(bill.commitment_id) ?? { billed: 0, paid: 0 }
     existing.billed += bill.total_cents ?? 0
-    if (bill.status === "paid") {
+    if (typeof bill.paid_cents === "number") {
+      existing.paid += bill.paid_cents
+    } else if (bill.status === "paid") {
       existing.paid += bill.total_cents ?? 0
     }
     billsByCommitment.set(bill.commitment_id, existing)
@@ -873,11 +964,16 @@ export async function loadSubPortalData({
     commitment_title: (b.commitments as any)?.title ?? "",
     status: b.status,
     total_cents: b.total_cents ?? 0,
+    paid_cents: typeof b.paid_cents === "number"
+      ? b.paid_cents
+      : b.status === "paid"
+        ? b.total_cents ?? 0
+        : 0,
     bill_date: b.bill_date,
     due_date: b.due_date,
     submitted_at: b.created_at,
-    paid_at: b.metadata?.paid_at ?? null,
-    payment_reference: b.metadata?.payment_reference ?? null,
+    paid_at: b.paid_at ?? b.metadata?.paid_at ?? null,
+    payment_reference: b.payment_reference ?? b.metadata?.payment_reference ?? null,
   }))
 
   // Calculate financial summary
@@ -890,7 +986,7 @@ export async function loadSubPortalData({
       .filter(b => b.status === "pending")
       .reduce((sum, b) => sum + b.total_cents, 0),
     approved_unpaid: bills
-      .filter(b => b.status === "approved")
+      .filter(b => b.status === "approved" || b.status === "partial")
       .reduce((sum, b) => sum + b.total_cents, 0),
   }
 
@@ -918,17 +1014,23 @@ export async function loadSubPortalData({
       id: companyResult.data?.id ?? companyId,
       name: companyResult.data?.name ?? "",
       trade: companyResult.data?.metadata?.trade,
+      insurance_expiry: companyResult.data?.insurance_expiry ?? companyResult.data?.metadata?.insurance_expiry ?? null,
+      license_expiry: companyResult.data?.license_expiry ?? companyResult.data?.metadata?.license_expiry ?? null,
+      w9_on_file: companyResult.data?.w9_on_file ?? companyResult.data?.metadata?.w9_on_file ?? null,
     },
-    projectManager: pmResult.data?.users
-      ? {
-          id: pmResult.data.users.id,
-          name: pmResult.data.users.full_name ?? "",
-          email: pmResult.data.users.email,
-          phone: pmResult.data.users.phone,
-          avatar_url: pmResult.data.users.avatar_url,
-          role: "Project Manager",
-        }
-      : undefined,
+    projectManager: (() => {
+      const candidate = (pmResult.data as any)?.users
+      const user = Array.isArray(candidate) ? candidate[0] : candidate
+      if (!user) return undefined
+      return {
+        id: user.id,
+        full_name: user.full_name ?? "",
+        email: user.email ?? undefined,
+        phone: user.phone ?? undefined,
+        avatar_url: user.avatar_url ?? undefined,
+        role_label: "Project Manager",
+      }
+    })(),
     commitments,
     bills,
     financialSummary,
@@ -936,7 +1038,7 @@ export async function loadSubPortalData({
     rfis: (rfisResult.data ?? []).map(mapRfi),
     submittals: (submittalsResult.data ?? []).map(mapSubmittal),
     sharedFiles: (filesResult.data ?? []).map(mapFileMetadata),
-    messages: (messagesResult.data ?? []).map(mapPortalMessage),
+    messages: messagesResult ?? [],
     pendingRfiCount,
     pendingSubmittalCount,
   }
@@ -1011,6 +1113,25 @@ async function fetchPunchItems(supabase: any, orgId: string, projectId: string):
 
   if (error) {
     console.error("Failed to load punch items for portal", error)
+    return []
+  }
+  return data ?? []
+}
+
+async function fetchWarrantyRequests(
+  supabase: any,
+  orgId: string,
+  projectId: string,
+): Promise<WarrantyRequest[]> {
+  const { data, error } = await supabase
+    .from("warranty_requests")
+    .select("id, org_id, project_id, title, description, status, priority, requested_by, created_at, closed_at")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    console.error("Failed to load warranty requests for portal", error)
     return []
   }
   return data ?? []
@@ -1199,6 +1320,9 @@ function mapFileMetadata(data: any) {
     mime_type: data.mime_type ?? undefined,
     size_bytes: data.size_bytes ?? undefined,
     visibility: data.visibility,
+    category: data.category ?? undefined,
+    tags: data.tags ?? undefined,
+    folder_path: data.folder_path ?? undefined,
     created_at: data.created_at,
   }
 }

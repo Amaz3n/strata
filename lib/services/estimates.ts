@@ -112,6 +112,93 @@ export async function createEstimateFromTemplate({
   return { estimate, items: itemsPayload }
 }
 
+export async function createEstimate({
+  project_id,
+  recipient_contact_id,
+  title,
+  summary,
+  terms,
+  valid_until,
+  tax_rate,
+  markup_percent,
+  lines,
+  orgId,
+}: {
+  project_id?: string | null
+  recipient_contact_id?: string | null
+  title: string
+  summary?: string
+  terms?: string
+  valid_until?: string
+  tax_rate?: number
+  markup_percent?: number
+  lines: z.infer<typeof estimateLineSchema>[]
+  orgId?: string
+}) {
+  const parsedLines = estimateLineSchema.array().min(1).parse(lines)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const totals = calculateTotals(parsedLines, tax_rate ?? 0)
+
+  const { data: estimate, error: estimateError } = await supabase
+    .from("estimates")
+    .insert({
+      org_id: resolvedOrgId,
+      project_id: project_id ?? null,
+      recipient_contact_id: recipient_contact_id ?? null,
+      title,
+      status: "draft",
+      version: 1,
+      subtotal_cents: totals.subtotal,
+      tax_cents: totals.tax,
+      total_cents: totals.total,
+      valid_until: valid_until ?? null,
+      metadata: {
+        tax_rate: tax_rate ?? 0,
+        markup_percent: markup_percent ?? 0,
+        summary: summary ?? null,
+        terms: terms ?? null,
+      },
+      created_by: userId,
+    })
+    .select("*")
+    .single()
+
+  if (estimateError || !estimate) {
+    throw new Error(`Failed to create estimate: ${estimateError?.message}`)
+  }
+
+  const itemsPayload = parsedLines.map((line, idx) => ({
+    org_id: resolvedOrgId,
+    estimate_id: estimate.id,
+    cost_code_id: line.cost_code_id ?? null,
+    item_type: line.item_type ?? "line",
+    description: line.description,
+    quantity: line.quantity ?? 1,
+    unit: line.unit ?? null,
+    unit_cost_cents: line.unit_cost_cents ?? 0,
+    markup_pct: line.markup_pct ?? 0,
+    sort_order: line.sort_order ?? idx,
+    metadata: line.metadata ?? {},
+  }))
+
+  const { error: lineError } = await supabase.from("estimate_items").insert(itemsPayload)
+  if (lineError) {
+    throw new Error(`Failed to create estimate lines: ${lineError.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "estimate",
+    entityId: estimate.id,
+    after: { ...estimate, items: itemsPayload },
+  })
+
+  return { estimate, items: itemsPayload }
+}
+
 export async function updateEstimateLines({
   estimateId,
   lines,
@@ -149,13 +236,23 @@ export async function updateEstimateLines({
     throw new Error(`Failed to update estimate lines: ${lineError.message}`)
   }
 
+  const { data: existing } = await supabase
+    .from("estimates")
+    .select("metadata")
+    .eq("id", estimateId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
   const { error: estimateError } = await supabase
     .from("estimates")
     .update({
       subtotal_cents: totals.subtotal,
       tax_cents: totals.tax,
       total_cents: totals.total,
-      metadata: { tax_rate: tax_rate ?? 0 },
+      metadata: {
+        ...(existing?.metadata ?? {}),
+        tax_rate: tax_rate ?? (existing?.metadata as any)?.tax_rate ?? 0,
+      },
     })
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
@@ -174,6 +271,41 @@ export async function updateEstimateLines({
   })
 
   return { totals, items: itemsPayload }
+}
+
+export async function updateEstimateStatus({
+  estimateId,
+  status,
+  orgId,
+}: {
+  estimateId: string
+  status: "draft" | "sent" | "approved" | "rejected"
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("estimates")
+    .update({ status })
+    .eq("id", estimateId)
+    .eq("org_id", resolvedOrgId)
+    .select("*")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update estimate status: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "estimate",
+    entityId: estimateId,
+    after: data,
+  })
+
+  return data
 }
 
 export async function duplicateEstimate({ estimateId, orgId }: { estimateId: string; orgId?: string }) {
@@ -270,7 +402,7 @@ export async function convertEstimateToProposal({
 
   const { data: estimate, error } = await supabase
     .from("estimates")
-    .select("*, items:estimate_items(*)")
+    .select("*, items:estimate_items(*), recipient:contacts(id, full_name, email)")
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
     .single()
@@ -296,9 +428,9 @@ export async function convertEstimateToProposal({
 
   return await createProposal(
     {
-      project_id: estimate.project_id,
+      project_id: estimate.project_id ?? undefined,
       estimate_id: estimate.id,
-      recipient_contact_id,
+      recipient_contact_id: recipient_contact_id ?? estimate.recipient_contact_id ?? undefined,
       title: title ?? estimate.title,
       summary: summary ?? (estimate.metadata as any)?.summary,
       terms: terms ?? (estimate.metadata as any)?.terms,
@@ -310,6 +442,8 @@ export async function convertEstimateToProposal({
     resolvedOrgId,
   )
 }
+
+
 
 
 

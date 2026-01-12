@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils"
 import type { ScheduleItem } from "@/lib/types"
 import { useSchedule } from "./schedule-context"
 import { STATUS_COLORS, PHASE_COLORS, parseDate } from "./types"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { MobileLookaheadView } from "./mobile-lookahead-view"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,11 +28,13 @@ import {
   AlertTriangle,
   User,
   Building2,
+  Plus,
 } from "lucide-react"
 
 interface LookaheadViewProps {
   className?: string
   weeks?: 2 | 3 | 4
+  onAddItem?: () => void
 }
 
 // Group items by assignee (user, contact, or company)
@@ -81,7 +85,8 @@ function getWeatherForDay(day: Date): { icon: typeof Sun; label: string; temp: n
   }
 }
 
-export function LookaheadView({ className, weeks = 2 }: LookaheadViewProps) {
+export function LookaheadView({ className, weeks = 2, onAddItem }: LookaheadViewProps) {
+  const isMobile = useIsMobile()
   const { items, selectedItem, setSelectedItem, onItemUpdate } = useSchedule()
   const [weeksToShow, setWeeksToShow] = useState<2 | 3 | 4>(weeks)
   const [startDate, setStartDate] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }))
@@ -98,7 +103,7 @@ export function LookaheadView({ className, weeks = 2 }: LookaheadViewProps) {
 
   // Filter items that fall within the date range
   const relevantItems = useMemo(() => {
-    return items.filter((item) => {
+    return (items ?? []).filter((item) => {
       const itemStart = parseDate(item.start_date)
       const itemEnd = parseDate(item.end_date) || itemStart
       
@@ -126,6 +131,11 @@ export function LookaheadView({ className, weeks = 2 }: LookaheadViewProps) {
       return a[1].label.localeCompare(b[1].label)
     })
   }, [groupedItems])
+
+  // Render mobile view on small screens (after all hooks)
+  if (isMobile) {
+    return <MobileLookaheadView className={className} onAddItem={onAddItem} />
+  }
 
   // Navigation
   const goToPreviousWeek = () => setStartDate((prev) => addWeeks(prev, -1))
@@ -168,6 +178,11 @@ export function LookaheadView({ className, weeks = 2 }: LookaheadViewProps) {
                 <SelectItem value="4">4 Weeks</SelectItem>
               </SelectContent>
             </Select>
+            {onAddItem && (
+              <Button onClick={onAddItem} size="icon" variant="default" className="h-8 w-8">
+                <Plus className="h-4 w-4" />
+              </Button>
+            )}
           </div>
         </div>
 
@@ -271,7 +286,7 @@ export function LookaheadView({ className, weeks = 2 }: LookaheadViewProps) {
                       )}
                     >
                       <div className="space-y-1">
-                        {dayItems.slice(0, 3).map((item) => {
+                        {(dayItems ?? []).slice(0, 3).map((item) => {
                           const statusColors = STATUS_COLORS[item.status] || STATUS_COLORS.planned
                           const isSelected = selectedItem?.id === item.id
                           
@@ -406,6 +421,8 @@ export function LookaheadView({ className, weeks = 2 }: LookaheadViewProps) {
     </TooltipProvider>
   )
 }
+
+
 
 
 

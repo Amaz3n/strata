@@ -1,9 +1,10 @@
 "use client"
 
-import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from "react"
+import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from "react"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
 import type { ScheduleContextValue, ScheduleViewState, ScheduleViewType, GanttZoomLevel, GroupByOption } from "./types"
 import { addDays } from "./types"
+import { useIsMobile } from "@/hooks/use-mobile"
 
 const defaultViewState: ScheduleViewState = {
   view: "gantt",
@@ -57,6 +58,7 @@ export function ScheduleProvider({
   onDependencyCreate,
   onDependencyDelete,
 }: ScheduleProviderProps) {
+  const isMobile = useIsMobile()
   const [items, setItems] = useState<ScheduleItem[]>(initialItems)
   const [dependencies, setDependencies] = useState<ScheduleDependency[]>(initialDependencies)
   const [assignments] = useState<ScheduleAssignment[]>(initialAssignments)
@@ -65,6 +67,13 @@ export function ScheduleProvider({
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [scrollToTodayTrigger, setScrollToTodayTrigger] = useState(0)
+
+  // Force lookahead view on mobile
+  useEffect(() => {
+    if (isMobile && viewState.view !== "lookahead") {
+      setViewStateInternal((prev) => ({ ...prev, view: "lookahead" }))
+    }
+  }, [isMobile, viewState.view])
 
   // Scroll to today function
   const scrollToToday = useCallback(() => {
@@ -110,7 +119,11 @@ export function ScheduleProvider({
       if (onItemUpdate) {
         const updated = await onItemUpdate(id, updates)
         setItems((prev) => prev.map((item) => (item.id === id ? updated : item)))
+        return updated
       }
+      const fallback = items.find((i) => i.id === id) ?? originalItem
+      if (!fallback) throw new Error("Schedule item not found")
+      return { ...fallback, ...updates }
     } catch (err) {
       // Rollback on error
       if (originalItem) {
@@ -131,7 +144,9 @@ export function ScheduleProvider({
       if (onItemCreate) {
         const created = await onItemCreate(item)
         setItems((prev) => [...prev, created])
+        return created
       }
+      throw new Error("Create is not configured")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create item")
       throw err
@@ -239,4 +254,3 @@ export function ScheduleProvider({
     </ScheduleContext.Provider>
   )
 }
-

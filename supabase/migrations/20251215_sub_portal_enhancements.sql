@@ -32,3 +32,6 @@ ADD COLUMN IF NOT EXISTS assigned_company_id uuid REFERENCES companies(id) ON DE
 
 CREATE INDEX IF NOT EXISTS rfis_assigned_company_idx ON rfis(assigned_company_id);
 CREATE INDEX IF NOT EXISTS submittals_assigned_company_idx ON submittals(assigned_company_id);
+
+
+

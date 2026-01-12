@@ -24,7 +24,15 @@ import { CSS } from "@dnd-kit/utilities"
 import type { Task, TaskStatus, TaskPriority, TaskChecklistItem, TaskTrade } from "@/lib/types"
 import { taskInputSchema, type TaskInput } from "@/lib/validation/tasks"
 import { cn } from "@/lib/utils"
-import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/projects/[id]/actions"
+import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/(app)/projects/[id]/actions"
+import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { LinkedDrawings } from "@/components/drawings"
+import {
+  listAttachmentsAction,
+  detachFileLinkAction,
+  uploadFileAction,
+  attachFileAction,
+} from "@/app/(app)/files/actions"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -382,10 +390,11 @@ export function TasksTab({
         ? -1
         : 1
 
+    const resources = assignableResources ?? []
     return {
-      users: [...assignableResources.filter((r) => r.type === "user")].sort(sortByRecency),
-      contacts: [...assignableResources.filter((r) => r.type === "contact")].sort(sortByRecency),
-      companies: [...assignableResources.filter((r) => r.type === "company")].sort(sortByRecency),
+      users: [...resources.filter((r) => r.type === "user")].sort(sortByRecency),
+      contacts: [...resources.filter((r) => r.type === "contact")].sort(sortByRecency),
+      companies: [...resources.filter((r) => r.type === "company")].sort(sortByRecency),
     }
   }, [assignableResources, recentAssignees])
 
@@ -908,7 +917,7 @@ interface DroppableColumnProps {
 }
 
 function DroppableColumn({ status, tasks, onTaskClick, onStatusChange, onAddTask, isFirst, isLast }: DroppableColumnProps) {
-  const taskIds = useMemo(() => tasks.map(t => t.id), [tasks])
+  const taskIds = useMemo(() => (tasks ?? []).map(t => t.id), [tasks])
 
   const { setNodeRef, isOver } = useDroppable({
     id: status,
@@ -946,7 +955,7 @@ function DroppableColumn({ status, tasks, onTaskClick, onStatusChange, onAddTask
           )}
         >
           <div className="p-2 space-y-2 min-h-[100px]" data-status={status}>
-            {tasks.map((task) => (
+            {(tasks ?? []).map((task) => (
               <DraggableTaskCard
                 key={task.id}
                 task={task}
@@ -1129,7 +1138,7 @@ interface ListViewProps {
 
 function ListView({ tasks, onTaskClick, onStatusChange, onDeleteClick }: ListViewProps) {
   const sortedTasks = useMemo(() => {
-    return [...tasks].sort((a, b) => {
+    return [...(tasks ?? [])].sort((a, b) => {
       // First sort by status
       const statusA = STATUS_ORDER.indexOf(a.status)
       const statusB = STATUS_ORDER.indexOf(b.status)
@@ -1777,6 +1786,8 @@ interface TaskDetailSheetProps {
 }
 
 function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }: TaskDetailSheetProps) {
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(task.title)
   const [editDescription, setEditDescription] = useState(task.description ?? "")
@@ -1823,6 +1834,76 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
   const handleRemoveChecklistItem = async (itemId: string) => {
     const updatedChecklist = (task.checklist ?? []).filter((item) => item.id !== itemId)
     await onUpdate(task.id, { checklist: updatedChecklist })
+  }
+
+  useEffect(() => {
+    if (!open) return
+    setAttachmentsLoading(true)
+    listAttachmentsAction("task", task.id)
+      .then((links) =>
+        setAttachments(
+          links.map((link) => ({
+            id: link.file.id,
+            linkId: link.id,
+            file_name: link.file.file_name,
+            mime_type: link.file.mime_type,
+            size_bytes: link.file.size_bytes,
+            download_url: link.file.download_url,
+            thumbnail_url: link.file.thumbnail_url,
+            created_at: link.created_at,
+            link_role: link.link_role,
+          }))
+        )
+      )
+      .catch((error) => console.error("Failed to load task attachments", error))
+      .finally(() => setAttachmentsLoading(false))
+  }, [open, task.id])
+
+  const handleAttach = async (files: File[], linkRole?: string) => {
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append("file", file)
+      if (task.project_id) {
+        formData.append("projectId", task.project_id)
+      }
+      formData.append("category", "other")
+
+      const uploaded = await uploadFileAction(formData)
+      await attachFileAction(uploaded.id, "task", task.id, task.project_id ?? undefined, linkRole)
+    }
+
+    const links = await listAttachmentsAction("task", task.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
+  }
+
+  const handleDetach = async (linkId: string) => {
+    await detachFileLinkAction(linkId)
+    const links = await listAttachmentsAction("task", task.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
   }
 
   return (
@@ -1969,7 +2050,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="unassigned">Unassigned</SelectItem>
-                    {team.map((member) => (
+                    {(team ?? []).map((member) => (
                       <SelectItem key={member.user_id} value={member.user_id}>
                         <div className="flex items-center gap-2">
                           <Avatar className="h-5 w-5">
@@ -2094,6 +2175,35 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                 </div>
               )}
               </div>
+            </div>
+
+            <Separator />
+
+            {/* Attachments */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-muted-foreground">Attachments</h4>
+                <Badge variant="secondary" className="text-[11px]">Files</Badge>
+              </div>
+              <EntityAttachments
+                entityType="task"
+                entityId={task.id}
+                projectId={task.project_id ?? undefined}
+                attachments={attachments}
+                onAttach={handleAttach}
+                onDetach={handleDetach}
+                compact
+                readOnly={attachmentsLoading}
+              />
+
+              {task.project_id && (
+                <LinkedDrawings
+                  projectId={task.project_id}
+                  entityType="task"
+                  entityId={task.id}
+                  title="Linked drawings"
+                />
+              )}
             </div>
 
             <Separator />

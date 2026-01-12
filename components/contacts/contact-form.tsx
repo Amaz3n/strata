@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import type { Company, Contact } from "@/lib/types"
-import { createContactAction, updateContactAction } from "@/app/contacts/actions"
+import { createContactAction, updateContactAction } from "@/app/(app)/contacts/actions"
 import { useToast } from "@/hooks/use-toast"
 
 const CONTACT_TYPES: { label: string; value: Contact["contact_type"] }[] = [
@@ -48,6 +48,8 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
     has_portal_access: contact?.has_portal_access ?? false,
     notes: contact?.notes ?? "",
     preferred_contact_method: contact?.preferred_contact_method ?? "none",
+    external_crm_id: contact?.external_crm_id ?? "",
+    crm_source: contact?.crm_source ?? "",
   })
 
   const setField = (key: string, value: string | boolean) => {
@@ -64,6 +66,8 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
       primary_company_id: formState.primary_company_id === "none" ? undefined : formState.primary_company_id,
       preferred_contact_method: formState.preferred_contact_method === "none" ? undefined : formState.preferred_contact_method,
       notes: formState.notes || undefined,
+      external_crm_id: formState.external_crm_id || undefined,
+      crm_source: formState.crm_source || undefined,
     }
 
     startTransition(async () => {
@@ -171,6 +175,17 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
         <Label htmlFor="portal-access">Grant portal access</Label>
       </div>
 
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label>CRM source</Label>
+          <Input value={formState.crm_source} onChange={(e) => setField("crm_source", e.target.value)} placeholder="Salesforce" />
+        </div>
+        <div className="space-y-2">
+          <Label>External CRM ID</Label>
+          <Input value={formState.external_crm_id} onChange={(e) => setField("external_crm_id", e.target.value)} placeholder="003..."/>
+        </div>
+      </div>
+
         <div className="space-y-2">
           <Label>Notes</Label>
           <Textarea value={formState.notes} onChange={(e) => setField("notes", e.target.value)} placeholder="Crew members, gate codes, preferences..." />
@@ -188,3 +203,6 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
     </form>
   )
 }
+
+
+

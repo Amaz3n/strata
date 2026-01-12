@@ -39,6 +39,8 @@ export const fileInputSchema = z.object({
   description: z.string().optional(),
   tags: z.array(z.string()).optional(),
   source: fileSourceSchema.optional(),
+  share_with_clients: z.boolean().optional(),
+  share_with_subs: z.boolean().optional(),
 })
 
 export type FileInput = z.infer<typeof fileInputSchema>
@@ -51,6 +53,8 @@ export const fileUpdateSchema = z.object({
   description: z.string().optional().nullable(),
   tags: z.array(z.string()).optional(),
   visibility: z.enum(["private", "public"]).optional(),
+  share_with_clients: z.boolean().optional(),
+  share_with_subs: z.boolean().optional(),
 })
 
 export type FileUpdate = z.infer<typeof fileUpdateSchema>
@@ -62,6 +66,8 @@ export const fileListFiltersSchema = z.object({
   folder_path: z.string().optional(),
   tags: z.array(z.string()).optional(),
   search: z.string().optional(),
+  share_with_clients: z.boolean().optional(),
+  share_with_subs: z.boolean().optional(),
   include_archived: z.boolean().default(false),
   limit: z.number().int().positive().max(200).default(100),
   offset: z.number().int().nonnegative().default(0),

@@ -16,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { Company } from "@/lib/types"
-import { createCompanyAction, updateCompanyAction } from "@/app/companies/actions"
+import { createCompanyAction, updateCompanyAction } from "@/app/(app)/companies/actions"
 import { useToast } from "@/hooks/use-toast"
 
 const COMPANY_TYPES: { label: string; value: Company["company_type"] }[] = [
@@ -72,6 +72,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     license_expiry: company?.license_expiry ?? "",
     license_verified: company?.license_verified ?? false,
     insurance_expiry: company?.insurance_expiry ?? "",
+    insurance_provider: company?.insurance_provider ?? "",
     w9_on_file: company?.w9_on_file ?? false,
     prequalified: company?.prequalified ?? false,
     rating: company?.rating ? String(company.rating) : "none",
@@ -99,6 +100,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       license_expiry: formState.license_expiry || undefined,
       license_verified: formState.license_verified,
       insurance_expiry: formState.insurance_expiry || undefined,
+      insurance_provider: formState.insurance_provider || undefined,
       w9_on_file: formState.w9_on_file,
       prequalified: formState.prequalified,
       rating: formState.rating === "none" ? undefined : Number(formState.rating),
@@ -222,6 +224,10 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
           <Input type="date" value={formState.license_expiry} onChange={(e) => setField("license_expiry", e.target.value)} />
         </div>
         <div className="space-y-2">
+          <Label>Insurance provider</Label>
+          <Input value={formState.insurance_provider} onChange={(e) => setField("insurance_provider", e.target.value)} placeholder="Carrier name" />
+        </div>
+        <div className="space-y-2">
           <Label>Performance rating</Label>
           <Select value={formState.rating} onValueChange={(value) => setField("rating", value)}>
             <SelectTrigger>
@@ -315,3 +321,5 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     </form>
   )
 }
+
+

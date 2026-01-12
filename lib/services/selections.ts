@@ -128,4 +128,3 @@ export async function createProjectSelection({ input, orgId }: { input: Selectio
 
   return data as Selection
 }
-

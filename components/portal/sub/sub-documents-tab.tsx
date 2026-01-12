@@ -6,31 +6,15 @@ import { FileText, Download, Eye, Search } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import { FILE_CATEGORIES } from "@/components/files/types"
 import type { FileMetadata } from "@/lib/types"
+import { logPortalFileAccessClientAction } from "@/app/(app)/files/actions"
 
 interface SubDocumentsTabProps {
   files: FileMetadata[]
   canDownload?: boolean
-}
-
-const categoryLabels: Record<string, string> = {
-  drawings: "Drawings",
-  specs: "Specifications",
-  contracts: "Contracts",
-  submittals: "Submittals",
-  photos: "Photos",
-  correspondence: "Correspondence",
-  other: "Other",
-}
-
-const categoryIcons: Record<string, string> = {
-  drawings: "text-blue-500",
-  specs: "text-purple-500",
-  contracts: "text-green-500",
-  submittals: "text-orange-500",
-  photos: "text-pink-500",
-  correspondence: "text-cyan-500",
-  other: "text-gray-500",
+  portalToken?: string
 }
 
 function formatFileSize(bytes: number): string {
@@ -42,6 +26,7 @@ function formatFileSize(bytes: number): string {
 export function SubDocumentsTab({
   files,
   canDownload = true,
+  portalToken,
 }: SubDocumentsTabProps) {
   const [search, setSearch] = useState("")
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
@@ -60,7 +45,10 @@ export function SubDocumentsTab({
   // Filter files
   const filteredFiles = files.filter((file) => {
     const matchesSearch =
-      !search || file.file_name.toLowerCase().includes(search.toLowerCase())
+      !search ||
+      file.file_name.toLowerCase().includes(search.toLowerCase()) ||
+      file.tags?.some((tag) => tag.toLowerCase().includes(search.toLowerCase())) ||
+      file.folder_path?.toLowerCase().includes(search.toLowerCase())
     const matchesCategory =
       !selectedCategory || file.category === selectedCategory
     return matchesSearch && matchesCategory
@@ -111,8 +99,7 @@ export function SubDocumentsTab({
             variant={selectedCategory === category ? "default" : "outline"}
             onClick={() => setSelectedCategory(category)}
           >
-            {categoryLabels[category] ?? category} (
-            {filesByCategory[category].length})
+            {FILE_CATEGORIES[category]?.label ?? category} ({filesByCategory[category].length})
           </Button>
         ))}
       </div>
@@ -130,35 +117,56 @@ export function SubDocumentsTab({
                 key={file.id}
                 className="flex items-center gap-3 p-3 hover:bg-muted/50"
               >
-                <div
-                  className={`shrink-0 ${categoryIcons[file.category ?? "other"]}`}
-                >
+                <div className="shrink-0 text-muted-foreground">
                   <FileText className="h-8 w-8" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{file.file_name}</p>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>{categoryLabels[file.category ?? "other"]}</span>
+                    <span>{FILE_CATEGORIES[file.category ?? "other"]?.label ?? "Other"}</span>
                     <span>·</span>
                     <span>{format(new Date(file.created_at), "MMM d, yyyy")}</span>
-                    {file.file_size && (
+                    {file.size_bytes != null && (
                       <>
                         <span>·</span>
-                        <span>{formatFileSize(file.file_size)}</span>
+                        <span>{formatFileSize(file.size_bytes)}</span>
                       </>
                     )}
                   </div>
+                  {file.category && (
+                    <Badge variant="secondary" className="mt-1 text-[11px]">
+                      {FILE_CATEGORIES[file.category]?.label ?? file.category}
+                    </Badge>
+                  )}
                 </div>
                 <div className="flex gap-1 shrink-0">
                   {file.url && (
-                    <Button size="icon" variant="ghost" asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => {
+                        if (portalToken) {
+                          logPortalFileAccessClientAction(file.id, portalToken, "view")
+                        }
+                      }}
+                      asChild
+                    >
                       <a href={file.url} target="_blank" rel="noopener noreferrer">
                         <Eye className="h-4 w-4" />
                       </a>
                     </Button>
                   )}
                   {canDownload && file.url && (
-                    <Button size="icon" variant="ghost" asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => {
+                        if (portalToken) {
+                          logPortalFileAccessClientAction(file.id, portalToken, "download")
+                        }
+                      }}
+                      asChild
+                    >
                       <a href={file.url} download={file.file_name}>
                         <Download className="h-4 w-4" />
                       </a>

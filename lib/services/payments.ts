@@ -17,6 +17,7 @@ import { recordEvent } from "@/lib/services/events"
 import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
+import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
 const PAY_PATH = `${APP_URL}/p/pay`
@@ -191,7 +192,7 @@ async function rotatePayLinkNonce(invoiceId: string, orgId: string) {
 async function getInvoiceTotals(supabase: ReturnType<typeof createServiceSupabaseClient>, invoiceId: string, orgId: string) {
   const { data, error } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, total_cents, balance_due_cents, due_date, status")
+    .select("id, org_id, project_id, invoice_number, total_cents, balance_due_cents, due_date, status, metadata")
     .eq("id", invoiceId)
     .eq("org_id", orgId)
     .maybeSingle()
@@ -203,49 +204,53 @@ async function getInvoiceTotals(supabase: ReturnType<typeof createServiceSupabas
   return data
 }
 
-async function recalcInvoiceBalance(supabase: ReturnType<typeof createServiceSupabaseClient>, invoiceId: string, orgId: string) {
-  const invoice = await getInvoiceTotals(supabase, invoiceId, orgId)
+async function ensureReceiptForPayment({
+  supabase,
+  orgId,
+  invoice,
+  paymentId,
+  amountCents,
+  provider,
+  method,
+  reference,
+}: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  invoice: any
+  paymentId: string
+  amountCents: number
+  provider?: string | null
+  method?: string | null
+  reference?: string | null
+}) {
+  try {
+    const issuedToEmail =
+      (invoice?.metadata as any)?.customer_email ??
+      (invoice?.metadata as any)?.customerEmail ??
+      (invoice?.metadata as any)?.email ??
+      null
 
-  const { data: paymentRows, error: paymentError } = await supabase
-    .from("payments")
-    .select("amount_cents, status")
-    .eq("org_id", orgId)
-    .eq("invoice_id", invoiceId)
-    .in("status", ["succeeded", "processing"])
-
-  if (paymentError) {
-    throw new Error(`Failed to aggregate payments: ${paymentError.message}`)
+    await supabase.from("receipts").upsert(
+      {
+        org_id: orgId,
+        project_id: invoice.project_id ?? null,
+        invoice_id: invoice.id,
+        payment_id: paymentId,
+        amount_cents: amountCents,
+        issued_to_email: issuedToEmail,
+        issued_at: new Date().toISOString(),
+        metadata: {
+          invoice_number: invoice.invoice_number ?? null,
+          provider: provider ?? null,
+          method: method ?? null,
+          reference: reference ?? null,
+        },
+      },
+      { onConflict: "payment_id" },
+    )
+  } catch (err) {
+    console.warn("Failed to create receipt for payment", err)
   }
-
-  const paidCents = (paymentRows ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
-  const total = invoice.total_cents ?? 0
-  const balance = Math.max(total - paidCents, 0)
-
-  let nextStatus = invoice.status ?? "sent"
-  if (balance === 0 && total > 0) {
-    nextStatus = "paid"
-  } else if (invoice.due_date && balance > 0) {
-    const due = new Date(invoice.due_date)
-    if (due.getTime() < Date.now()) {
-      nextStatus = "overdue"
-    } else if (nextStatus === "draft") {
-      nextStatus = "draft"
-    } else {
-      nextStatus = "sent"
-    }
-  }
-
-  const { error: updateError } = await supabase
-    .from("invoices")
-    .update({ balance_due_cents: balance, status: nextStatus })
-    .eq("id", invoiceId)
-    .eq("org_id", orgId)
-
-  if (updateError) {
-    throw new Error(`Failed to update invoice balance: ${updateError.message}`)
-  }
-
-  return { balance_due_cents: balance, status: nextStatus }
 }
 
 export async function generatePayLink(input: GeneratePayLinkInput, orgId?: string) {
@@ -348,7 +353,7 @@ export async function getInvoiceForPayLink(token: string) {
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, invoice_lines (id, description, quantity, unit, unit_cost_cents, taxable)",
+      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", result.invoice.id)
     .eq("org_id", result.invoice.org_id)
@@ -471,7 +476,20 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     throw new Error(`Failed to record payment: ${paymentError?.message}`)
   }
 
-  await recalcInvoiceBalance(supabase, invoiceId, resolvedOrgId)
+  await recalcInvoiceBalanceAndStatus({ supabase, orgId: resolvedOrgId, invoiceId })
+
+  if (payload.status === "succeeded" && payload.invoice_id) {
+    await ensureReceiptForPayment({
+      supabase,
+      orgId: resolvedOrgId,
+      invoice,
+      paymentId: paymentRow.id,
+      amountCents: payload.amount_cents,
+      provider: payload.provider,
+      method: payload.method,
+      reference: payload.reference,
+    })
+  }
 
   await recordAudit({
     orgId: resolvedOrgId,

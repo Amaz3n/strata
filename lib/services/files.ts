@@ -23,6 +23,8 @@ export interface FileRecord {
   uploaded_by?: string
   uploader_name?: string
   uploader_avatar?: string
+  share_with_clients: boolean
+  share_with_subs: boolean
   archived_at?: string
   created_at: string
   updated_at: string
@@ -52,6 +54,8 @@ function mapFile(row: any): FileRecord {
     uploaded_by: row.uploaded_by ?? undefined,
     uploader_name: (row.app_users as any)?.full_name ?? undefined,
     uploader_avatar: (row.app_users as any)?.avatar_url ?? undefined,
+    share_with_clients: row.share_with_clients ?? false,
+    share_with_subs: row.share_with_subs ?? false,
     archived_at: row.archived_at ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -73,6 +77,7 @@ export async function listFiles(
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -99,7 +104,17 @@ export async function listFiles(
   if (parsed.search) {
     // Search in file_name, description, and tags
     const searchPattern = `%${parsed.search}%`
-    query = query.or(`file_name.ilike.${searchPattern},description.ilike.${searchPattern}`)
+    query = query.or(
+      `file_name.ilike.${searchPattern},description.ilike.${searchPattern},tags::text.ilike.${searchPattern}`
+    )
+  }
+
+  if (parsed.share_with_clients !== undefined) {
+    query = query.eq("share_with_clients", parsed.share_with_clients)
+  }
+
+  if (parsed.share_with_subs !== undefined) {
+    query = query.eq("share_with_subs", parsed.share_with_subs)
   }
 
   if (!parsed.include_archived) {
@@ -128,6 +143,7 @@ export async function getFile(fileId: string, orgId?: string): Promise<FileRecor
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -165,11 +181,14 @@ export async function createFileRecord(input: FileInput, orgId?: string): Promis
       description: parsed.description,
       tags: parsed.tags ?? [],
       source: parsed.source ?? "upload",
+      share_with_clients: parsed.share_with_clients ?? false,
+      share_with_subs: parsed.share_with_subs ?? false,
       uploaded_by: userId,
     })
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -233,6 +252,8 @@ export async function updateFile(
   if (parsed.description !== undefined) updateData.description = parsed.description
   if (parsed.tags !== undefined) updateData.tags = parsed.tags
   if (parsed.visibility !== undefined) updateData.visibility = parsed.visibility
+  if (parsed.share_with_clients !== undefined) updateData.share_with_clients = parsed.share_with_clients
+  if (parsed.share_with_subs !== undefined) updateData.share_with_subs = parsed.share_with_subs
 
   const { data, error } = await supabase
     .from("files")
@@ -242,6 +263,7 @@ export async function updateFile(
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -289,6 +311,7 @@ export async function archiveFile(fileId: string, orgId?: string): Promise<FileR
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -344,6 +367,7 @@ export async function unarchiveFile(fileId: string, orgId?: string): Promise<Fil
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -471,33 +495,47 @@ export async function listFilesWithUrls(
   const files = await listFiles(filters, orgId)
   const { supabase } = await requireOrgContext(orgId)
 
-  return Promise.all(
-    files.map(async (file) => {
-      let download_url: string | undefined
-      let thumbnail_url: string | undefined
+  if (files.length === 0) return []
 
-      try {
-        const { data: urlData } = await supabase.storage
-          .from("project-files")
-          .createSignedUrl(file.storage_path, 3600)
+  const imageFiles = files.filter((file) => file.mime_type?.startsWith("image/"))
+  const imagePaths = imageFiles.map((file) => file.storage_path)
+  const signedByPath = new Map<string, string>()
 
-        download_url = urlData?.signedUrl
-
-        // For images, use the same URL as thumbnail
-        if (file.mime_type?.startsWith("image/")) {
-          thumbnail_url = download_url
+  if (imagePaths.length > 0) {
+    try {
+      const bucket = supabase.storage.from("project-files") as any
+      if (typeof bucket.createSignedUrls === "function") {
+        const { data } = await bucket.createSignedUrls(imagePaths, 3600)
+        for (const entry of data ?? []) {
+          if (entry?.path && entry?.signedUrl) {
+            signedByPath.set(entry.path, entry.signedUrl)
+          }
         }
-      } catch (e) {
-        console.error("Failed to generate URL for", file.file_name)
+      } else {
+        await Promise.all(
+          imageFiles.map(async (file) => {
+            const { data } = await bucket.createSignedUrl(file.storage_path, 3600)
+            if (data?.signedUrl) {
+              signedByPath.set(file.storage_path, data.signedUrl)
+            }
+          })
+        )
       }
+    } catch (e) {
+      console.error("Failed to generate image URLs")
+    }
+  }
 
-      return {
-        ...file,
-        download_url,
-        thumbnail_url,
-      }
-    })
-  )
+  return files.map((file) => {
+    const signedUrl = signedByPath.get(file.storage_path)
+    const isImage = file.mime_type?.startsWith("image/")
+
+    return {
+      ...file,
+      download_url: isImage ? signedUrl : undefined,
+      thumbnail_url: isImage ? signedUrl : undefined,
+    }
+  })
 }
 
 /**

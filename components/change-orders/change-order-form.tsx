@@ -1,14 +1,15 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useEffect } from "react"
 import { useFieldArray, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
 import { changeOrderInputSchema, type ChangeOrderInput } from "@/lib/validation/change-orders"
-import type { Project } from "@/lib/types"
+import type { CostCode, Project } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -28,8 +29,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2, DollarSign, Building2, Sparkles } from "@/components/icons"
+import { Plus, Trash2, DollarSign, Sparkles } from "@/components/icons"
 
 type ChangeOrderFormValues = ChangeOrderInput
 
@@ -37,12 +39,14 @@ interface ChangeOrderFormProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
+  costCodes?: CostCode[]
   defaultProjectId?: string
   onSubmit: (values: ChangeOrderFormValues, publish: boolean) => Promise<void>
   isSubmitting?: boolean
 }
 
 const defaultLine = {
+  cost_code_id: undefined,
   description: "",
   quantity: 1,
   unit: "item",
@@ -78,11 +82,13 @@ export function ChangeOrderForm({
   open,
   onOpenChange,
   projects,
+  costCodes = [],
   defaultProjectId,
   onSubmit,
   isSubmitting,
 }: ChangeOrderFormProps) {
   const [submitMode, setSubmitMode] = useState<"draft" | "publish">("draft")
+  const [summaryManuallyEdited, setSummaryManuallyEdited] = useState(false)
 
   const form = useForm<ChangeOrderFormValues>({
     resolver: zodResolver(changeOrderInputSchema),
@@ -108,6 +114,14 @@ export function ChangeOrderForm({
 
   const watchedValues = form.watch()
   const previewTotals = useMemo(() => calculatePreviewTotals(watchedValues), [watchedValues])
+  const titleValue = form.watch("title")
+
+  // Auto-populate summary from title, but stop if user manually edited summary
+  useEffect(() => {
+    if (!summaryManuallyEdited && titleValue) {
+      form.setValue("summary", titleValue, { shouldValidate: false, shouldDirty: false })
+    }
+  }, [titleValue, summaryManuallyEdited, form])
 
   const handleSubmit = form.handleSubmit(async (values) => {
     const normalized: ChangeOrderFormValues = {
@@ -115,8 +129,13 @@ export function ChangeOrderForm({
       status: submitMode === "publish" ? "pending" : "draft",
       client_visible: submitMode === "publish",
       days_impact: values.days_impact ?? null,
+      lines: values.lines.map((line) => ({
+        ...line,
+        cost_code_id: line.cost_code_id === "none" ? undefined : line.cost_code_id,
+      })),
     }
     await onSubmit(normalized, submitMode === "publish")
+    setSummaryManuallyEdited(false)
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
       title: "",
@@ -151,35 +170,8 @@ export function ChangeOrderForm({
 
         <Form {...form}>
           <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
-              <FormField
-                control={form.control}
-                name="project_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Project</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a project" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {projects.map((project) => (
-                          <SelectItem key={project.id} value={project.id}>
-                            <div className="flex items-center gap-2">
-                              <Building2 className="h-4 w-4 text-muted-foreground" />
-                              <span>{project.name}</span>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="px-6 py-4 space-y-6">
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField
                   control={form.control}
@@ -202,7 +194,14 @@ export function ChangeOrderForm({
                     <FormItem>
                       <FormLabel>Client-facing summary</FormLabel>
                       <FormControl>
-                        <Input placeholder="Brief summary the client will see" {...field} />
+                        <Input
+                          placeholder="Brief summary the client will see"
+                          {...field}
+                          onChange={(e) => {
+                            setSummaryManuallyEdited(true)
+                            field.onChange(e)
+                          }}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -241,7 +240,6 @@ export function ChangeOrderForm({
                           placeholder="0"
                         />
                       </FormControl>
-                      <FormDescription>Positive values push the schedule.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -312,15 +310,14 @@ export function ChangeOrderForm({
                 <div className="space-y-3">
                   {lineArray.fields.map((field, index) => (
                     <div key={field.id} className="rounded-lg border p-4 space-y-3 bg-muted/30">
-                      <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2">
                         <FormField
                           control={form.control}
                           name={`lines.${index}.description`}
                           render={({ field }) => (
-                            <FormItem className="flex-1">
-                              <FormLabel>Description</FormLabel>
+                            <FormItem className="flex-1 space-y-0">
                               <FormControl>
-                                <Input placeholder="Work description" {...field} />
+                                <Input placeholder="Work description" {...field} className="w-full" />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
@@ -330,7 +327,7 @@ export function ChangeOrderForm({
                           type="button"
                           variant="ghost"
                           size="icon"
-                          className="mt-6"
+                          className="h-10 w-10 shrink-0"
                           onClick={() => lineArray.remove(index)}
                           disabled={lineArray.fields.length === 1}
                         >
@@ -338,13 +335,41 @@ export function ChangeOrderForm({
                         </Button>
                       </div>
 
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        <FormField
+                          control={form.control}
+                          name={`lines.${index}.cost_code_id`}
+                          render={({ field }) => (
+                            <FormItem className="md:col-span-2 space-y-2">
+                              <FormLabel className="text-xs font-medium text-muted-foreground">Cost code</FormLabel>
+                              <Select
+                                value={field.value ?? "none"}
+                                onValueChange={(value) => field.onChange(value === "none" ? undefined : value)}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="No cost code" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="none">No cost code</SelectItem>
+                                  {costCodes.map((code) => (
+                                    <SelectItem key={code.id} value={code.id}>
+                                      {code.code} · {code.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
                         <FormField
                           control={form.control}
                           name={`lines.${index}.quantity`}
                           render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Qty</FormLabel>
+                            <FormItem className="space-y-2">
+                              <FormLabel className="text-xs font-medium text-muted-foreground">Qty</FormLabel>
                               <FormControl>
                                 <Input
                                   type="number"
@@ -352,21 +377,8 @@ export function ChangeOrderForm({
                                   min={0}
                                   value={field.value}
                                   onChange={(e) => field.onChange(Number(e.target.value) || 0)}
+                                  placeholder="1"
                                 />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.unit`}
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Unit</FormLabel>
-                              <FormControl>
-                                <Input placeholder="unit" {...field} />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
@@ -377,8 +389,8 @@ export function ChangeOrderForm({
                           control={form.control}
                           name={`lines.${index}.unit_cost`}
                           render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Unit cost (USD)</FormLabel>
+                            <FormItem className="space-y-2">
+                              <FormLabel className="text-xs font-medium text-muted-foreground">Unit cost</FormLabel>
                               <FormControl>
                                 <Input
                                   type="number"
@@ -386,6 +398,7 @@ export function ChangeOrderForm({
                                   min={0}
                                   value={field.value}
                                   onChange={(e) => field.onChange(Number(e.target.value) || 0)}
+                                  placeholder="0.00"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -397,8 +410,8 @@ export function ChangeOrderForm({
                           control={form.control}
                           name={`lines.${index}.allowance`}
                           render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Allowance (USD)</FormLabel>
+                            <FormItem className="space-y-2">
+                              <FormLabel className="text-xs font-medium text-muted-foreground">Allowance</FormLabel>
                               <FormControl>
                                 <Input
                                   type="number"
@@ -406,6 +419,7 @@ export function ChangeOrderForm({
                                   min={0}
                                   value={field.value}
                                   onChange={(e) => field.onChange(Number(e.target.value) || 0)}
+                                  placeholder="0.00"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -414,25 +428,26 @@ export function ChangeOrderForm({
                         />
                       </div>
 
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-3">
                         <FormField
                           control={form.control}
                           name={`lines.${index}.taxable`}
                           render={({ field }) => (
-                            <FormItem className="flex flex-row items-center justify-between rounded-md border p-3">
-                              <div className="space-y-0.5">
-                                <FormLabel>Taxable</FormLabel>
-                                <FormDescription>Apply tax to this line item.</FormDescription>
-                              </div>
+                            <FormItem className="flex flex-row items-center space-x-2 space-y-0">
                               <FormControl>
-                                <Switch checked={field.value} onCheckedChange={field.onChange} />
+                                <Checkbox
+                                  checked={field.value}
+                                  onCheckedChange={field.onChange}
+                                />
                               </FormControl>
+                              <FormLabel className="text-xs font-medium cursor-pointer">
+                                Taxable
+                              </FormLabel>
                             </FormItem>
                           )}
                         />
                         <Badge variant="secondary" className="text-xs">
-                          Est. line total:{" "}
-                          {formatMoney(
+                          Total: {formatMoney(
                             (form.watch(`lines.${index}.quantity`) || 0) *
                               (form.watch(`lines.${index}.unit_cost`) || 0) +
                               (form.watch(`lines.${index}.allowance`) || 0),
@@ -449,7 +464,7 @@ export function ChangeOrderForm({
               <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
                 <div className="flex items-center gap-2">
                   <DollarSign className="h-4 w-4 text-muted-foreground" />
-                  <h4 className="font-semibold text-sm">Totals preview (USD)</h4>
+                  <h4 className="font-semibold text-sm">Totals preview</h4>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
                   <div className="flex items-center justify-between rounded-md bg-background border px-3 py-2">
@@ -490,18 +505,15 @@ export function ChangeOrderForm({
                   </FormItem>
                 )}
               />
-            </div>
-
-            <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-col gap-3">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">USD only</Badge>
-                <Badge variant="outline">Supports taxes, markup, allowances</Badge>
               </div>
-              <div className="flex gap-3">
+            </ScrollArea>
+
+            <SheetFooter className="flex-shrink-0 border-t bg-muted/30 px-6 py-4">
+              <div className="flex gap-2 w-full">
                 <Button
                   type="submit"
                   variant="secondary"
-                  className="w-full"
+                  className="flex-1"
                   disabled={isSubmitting}
                   onClick={() => setSubmitMode("draft")}
                 >
@@ -509,7 +521,7 @@ export function ChangeOrderForm({
                 </Button>
                 <Button
                   type="submit"
-                  className="w-full"
+                  className="flex-1"
                   disabled={isSubmitting}
                   onClick={() => setSubmitMode("publish")}
                 >
@@ -523,7 +535,4 @@ export function ChangeOrderForm({
     </Sheet>
   )
 }
-
-
-
 

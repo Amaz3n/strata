@@ -285,7 +285,7 @@ interface DateSelection {
 
 export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProps) {
   const {
-    items,
+    items: rawItems,
     dependencies,
     viewState,
     selectedItem,
@@ -293,6 +293,8 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     onItemUpdate,
     scrollToTodayTrigger,
   } = useSchedule()
+
+  const items = Array.isArray(rawItems) ? rawItems : []
 
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -991,9 +993,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                           <div
                             data-bar
                             className={cn(
-                              "absolute cursor-pointer transition-all z-10",
-                              isSelected && "ring-2 ring-primary ring-offset-1",
-                              isDragging && "opacity-70"
+                              "absolute cursor-pointer z-10",
+                              "transition-all duration-200 ease-out",
+                              "hover:scale-125 hover:shadow-lg",
+                              isSelected && "ring-2 ring-primary ring-offset-2 scale-125",
+                              isDragging && "opacity-80 scale-150 shadow-xl z-50"
                             )}
                             style={{
                               left: position.left + position.width / 2 - GANTT_MILESTONE_SIZE / 2,
@@ -1002,6 +1006,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                               height: GANTT_MILESTONE_SIZE,
                               backgroundColor: barColor,
                               transform: "rotate(45deg)",
+                              transformOrigin: "center center",
                             }}
                             onClick={(e) => {
                               e.stopPropagation()
@@ -1027,11 +1032,12 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                         <div
                           data-bar
                           className={cn(
-                            "absolute rounded-md cursor-pointer transition-all group z-10",
-                            "shadow-sm hover:shadow-md",
-                            isSelected && "ring-2 ring-primary ring-offset-1",
-                            isDragging && "opacity-70 shadow-lg",
-                            item.is_critical_path && "ring-1 ring-orange-500"
+                            "absolute rounded-md cursor-pointer group z-10",
+                            "shadow-sm hover:shadow-lg hover:scale-[1.02] hover:-translate-y-0.5",
+                            "transition-all duration-200 ease-out",
+                            isSelected && "ring-2 ring-primary ring-offset-1 scale-[1.02]",
+                            isDragging && "opacity-80 shadow-xl scale-105 z-50",
+                            item.is_critical_path && "ring-1 ring-orange-500/70"
                           )}
                           style={{
                             left: position.left,
@@ -1039,6 +1045,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                             width: position.width,
                             height: GANTT_BAR_HEIGHT,
                             backgroundColor: barColor,
+                            transformOrigin: "center center",
                           }}
                           onClick={(e) => {
                             e.stopPropagation()
@@ -1069,11 +1076,21 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                           
                           {/* Resize handles */}
                           <div
-                            className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/30 rounded-l-md transition-opacity"
+                            className={cn(
+                              "absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l-md",
+                              "bg-white/0 group-hover:bg-white/40",
+                              "transition-all duration-150",
+                              "hover:!bg-white/60 hover:w-3"
+                            )}
                             onMouseDown={(e) => handleDragStart(e, item, "resize-start")}
                           />
                           <div
-                            className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/30 rounded-r-md transition-opacity"
+                            className={cn(
+                              "absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r-md",
+                              "bg-white/0 group-hover:bg-white/40",
+                              "transition-all duration-150",
+                              "hover:!bg-white/60 hover:w-3"
+                            )}
                             onMouseDown={(e) => handleDragStart(e, item, "resize-end")}
                           />
                         </div>

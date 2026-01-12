@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { Contact, Project } from "@/lib/types"
-import { sendPortalInviteAction } from "@/app/contacts/actions"
+import { sendPortalInviteAction } from "@/app/(app)/contacts/actions"
 import { useToast } from "@/hooks/use-toast"
 
 interface PortalInviteDialogProps {
@@ -90,6 +90,10 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
     </Dialog>
   )
 }
+
+
+
+
 
 
 

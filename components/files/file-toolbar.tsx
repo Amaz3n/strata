@@ -37,6 +37,9 @@ interface FileToolbarProps {
   onClearSelection?: () => void
   showImageOnly?: boolean
   onShowImageOnlyChange?: (value: boolean) => void
+  showSearch?: boolean
+  showFilters?: boolean
+  showViewToggle?: boolean
   className?: string
 }
 
@@ -52,9 +55,23 @@ export function FileToolbar({
   onClearSelection,
   showImageOnly,
   onShowImageOnlyChange,
+  showSearch = true,
+  showFilters = true,
+  showViewToggle = true,
   className,
 }: FileToolbarProps) {
   const hasSelection = selectedCount > 0
+  const shouldShowSearch = showSearch
+  const shouldShowFilters = showFilters && !hasSelection
+  const hasBulkActions =
+    hasSelection && (onBulkDownload || onBulkDelete || onBulkMove || onClearSelection)
+  const shouldShowViewToggle = showViewToggle
+  const hasControls =
+    shouldShowSearch || shouldShowFilters || shouldShowViewToggle || hasBulkActions
+
+  if (!hasControls) {
+    return null
+  }
 
   return (
     <div
@@ -63,26 +80,27 @@ export function FileToolbar({
         className
       )}
     >
-      {/* Search */}
-      <div className="relative flex-1 w-full sm:max-w-xs">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search files..."
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="pl-9 h-9"
-        />
-        {searchQuery && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-            onClick={() => onSearchChange("")}
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        )}
-      </div>
+      {shouldShowSearch && (
+        <div className="relative flex-1 w-full sm:max-w-xs">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search files..."
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className="pl-9 h-9"
+          />
+          {searchQuery && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+              onClick={() => onSearchChange("")}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center gap-2 w-full sm:w-auto">
         {/* Bulk actions */}
@@ -121,7 +139,7 @@ export function FileToolbar({
               </Button>
             )}
           </div>
-        ) : (
+        ) : shouldShowFilters ? (
           <>
             {/* Filters */}
             <DropdownMenu>
@@ -150,31 +168,36 @@ export function FileToolbar({
               </DropdownMenuContent>
             </DropdownMenu>
           </>
-        )}
+        ) : null}
 
         {/* View mode toggle */}
-        <div className="flex items-center border rounded-md ml-auto sm:ml-0">
-          <Button
-            variant={viewMode === "grid" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-9 px-3 rounded-r-none"
-            onClick={() => onViewModeChange("grid")}
-          >
-            <Grid3X3 className="h-4 w-4" />
-          </Button>
-          <Button
-            variant={viewMode === "list" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-9 px-3 rounded-l-none"
-            onClick={() => onViewModeChange("list")}
-          >
-            <List className="h-4 w-4" />
-          </Button>
-        </div>
+        {shouldShowViewToggle && (
+          <div className="flex items-center border rounded-md ml-auto sm:ml-0">
+            <Button
+              variant={viewMode === "grid" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-9 px-3 rounded-r-none"
+              onClick={() => onViewModeChange("grid")}
+            >
+              <Grid3X3 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={viewMode === "list" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-9 px-3 rounded-l-none"
+              onClick={() => onViewModeChange("list")}
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )
 }
+
+
+
 
 
 

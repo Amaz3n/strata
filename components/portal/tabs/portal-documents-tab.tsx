@@ -4,6 +4,7 @@ import { format } from "date-fns"
 import { FileText } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { FILE_CATEGORIES } from "@/components/files/types"
 import type { ClientPortalData } from "@/lib/types"
 
 interface PortalDocumentsTabProps {
@@ -65,6 +66,11 @@ export function PortalDocumentsTab({ data, token, portalType }: PortalDocumentsT
                   <p className="text-xs text-muted-foreground">
                     {format(new Date(file.created_at), "MMM d, yyyy")}
                   </p>
+                  {file.category && (
+                    <Badge variant="secondary" className="mt-1 text-[11px]">
+                      {FILE_CATEGORIES[file.category]?.label ?? file.category}
+                    </Badge>
+                  )}
                 </div>
               </div>
             ))

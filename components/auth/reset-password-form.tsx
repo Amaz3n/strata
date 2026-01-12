@@ -2,7 +2,7 @@
 
 import { useActionState } from "react"
 
-import { updatePasswordAction, type AuthState } from "@/app/auth/actions"
+import { updatePasswordAction, type AuthState } from "@/app/(auth)/auth/actions"
 import { AlertCircle } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

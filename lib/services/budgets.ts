@@ -23,6 +23,20 @@ export async function createBudget(input: z.infer<typeof createBudgetSchema>, or
   const parsed = createBudgetSchema.parse(input)
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
+  const { data: latestBudget, error: latestError } = await supabase
+    .from("budgets")
+    .select("version")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", parsed.project_id)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (latestError) {
+    throw new Error(`Failed to determine next budget version: ${latestError.message}`)
+  }
+
+  const nextVersion = (latestBudget?.version ?? 0) + 1
   const totalCents = parsed.lines.reduce((sum, line) => sum + line.amount_cents, 0)
 
   const { data: budget, error: budgetError } = await supabase
@@ -30,6 +44,7 @@ export async function createBudget(input: z.infer<typeof createBudgetSchema>, or
     .insert({
       org_id: resolvedOrgId,
       project_id: parsed.project_id,
+      version: nextVersion,
       status: parsed.status,
       total_cents: totalCents,
     })
@@ -76,6 +91,277 @@ export async function createBudget(input: z.infer<typeof createBudgetSchema>, or
   return budget
 }
 
+export async function duplicateBudgetVersion({
+  projectId,
+  fromBudgetId,
+  orgId,
+}: {
+  projectId: string
+  fromBudgetId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: latestBudget, error: latestError } = await supabase
+    .from("budgets")
+    .select("version")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (latestError) {
+    throw new Error(`Failed to determine next budget version: ${latestError.message}`)
+  }
+
+  const nextVersion = (latestBudget?.version ?? 0) + 1
+
+  const { data: fromBudget, error: fromBudgetError } = await supabase
+    .from("budgets")
+    .select("id, org_id, project_id, status, total_cents, currency, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", fromBudgetId)
+    .maybeSingle()
+
+  if (fromBudgetError || !fromBudget) {
+    throw new Error("Source budget not found")
+  }
+
+  const { data: fromLines, error: linesError } = await supabase
+    .from("budget_lines")
+    .select("cost_code_id, description, amount_cents, sort_order, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("budget_id", fromBudgetId)
+    .order("sort_order", { ascending: true })
+
+  if (linesError) {
+    throw new Error(`Failed to load budget lines: ${linesError.message}`)
+  }
+
+  const { data: newBudget, error: newBudgetError } = await supabase
+    .from("budgets")
+    .insert({
+      org_id: resolvedOrgId,
+      project_id: projectId,
+      version: nextVersion,
+      status: "draft",
+      total_cents: fromBudget.total_cents ?? 0,
+      currency: fromBudget.currency ?? "usd",
+      metadata: fromBudget.metadata ?? {},
+    })
+    .select("*")
+    .single()
+
+  if (newBudgetError || !newBudget) {
+    throw new Error(`Failed to create budget version: ${newBudgetError?.message}`)
+  }
+
+  if (fromLines?.length) {
+    const insertLines = fromLines.map((line: any, idx: number) => ({
+      org_id: resolvedOrgId,
+      budget_id: newBudget.id,
+      cost_code_id: line.cost_code_id ?? null,
+      description: line.description,
+      amount_cents: line.amount_cents ?? 0,
+      sort_order: idx,
+      metadata: line.metadata ?? {},
+    }))
+
+    const { error: insertLinesError } = await supabase.from("budget_lines").insert(insertLines)
+    if (insertLinesError) {
+      throw new Error(`Failed to copy budget lines: ${insertLinesError.message}`)
+    }
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "budget",
+    entityId: newBudget.id,
+    after: { ...newBudget, source_budget_id: fromBudgetId },
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "budget_created",
+    entityType: "budget",
+    entityId: newBudget.id,
+    payload: { project_id: projectId, status: "draft", version: nextVersion },
+  })
+
+  return newBudget
+}
+
+export async function updateBudgetStatus({
+  budgetId,
+  status,
+  orgId,
+}: {
+  budgetId: string
+  status: "draft" | "approved" | "locked"
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: existingError } = await supabase
+    .from("budgets")
+    .select("id, org_id, project_id, status, total_cents, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", budgetId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Budget not found")
+  }
+
+  const nextMetadata = {
+    ...(existing.metadata ?? {}),
+    approved_at: status === "approved" ? (existing.metadata?.approved_at ?? new Date().toISOString()) : existing.metadata?.approved_at,
+    approved_by: status === "approved" ? (existing.metadata?.approved_by ?? userId) : existing.metadata?.approved_by,
+    locked_at: status === "locked" ? (existing.metadata?.locked_at ?? new Date().toISOString()) : existing.metadata?.locked_at,
+    locked_by: status === "locked" ? (existing.metadata?.locked_by ?? userId) : existing.metadata?.locked_by,
+  }
+
+  const { data, error } = await supabase
+    .from("budgets")
+    .update({ status, metadata: nextMetadata })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", budgetId)
+    .select("*")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update budget status: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "budget",
+    entityId: budgetId,
+    before: existing,
+    after: data,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "budget_updated",
+    entityType: "budget",
+    entityId: budgetId,
+    payload: { project_id: existing.project_id, status },
+  })
+
+  return data
+}
+
+export async function replaceBudgetLines({
+  budgetId,
+  lines,
+  orgId,
+}: {
+  budgetId: string
+  lines: Array<{ cost_code_id?: string | null; description: string; amount_cents: number; metadata?: Record<string, any> }>
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: budget, error: budgetError } = await supabase
+    .from("budgets")
+    .select("id, org_id, project_id, status, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", budgetId)
+    .maybeSingle()
+
+  if (budgetError || !budget) {
+    throw new Error("Budget not found")
+  }
+
+  if (budget.status === "locked") {
+    throw new Error("Budget is locked and cannot be edited")
+  }
+
+  const totalCents = lines.reduce((sum, line) => sum + (line.amount_cents ?? 0), 0)
+
+  const { error: deleteError } = await supabase
+    .from("budget_lines")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("budget_id", budgetId)
+
+  if (deleteError) {
+    throw new Error(`Failed to replace budget lines: ${deleteError.message}`)
+  }
+
+  if (lines.length > 0) {
+    const toInsert = lines.map((line, idx) => ({
+      org_id: resolvedOrgId,
+      budget_id: budgetId,
+      cost_code_id: line.cost_code_id ?? null,
+      description: line.description,
+      amount_cents: line.amount_cents,
+      sort_order: idx,
+      metadata: line.metadata ?? {},
+    }))
+
+    const { error: insertError } = await supabase.from("budget_lines").insert(toInsert)
+    if (insertError) {
+      throw new Error(`Failed to replace budget lines: ${insertError.message}`)
+    }
+  }
+
+  const { data: updatedBudget, error: updateError } = await supabase
+    .from("budgets")
+    .update({ total_cents: totalCents })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", budgetId)
+    .select("*")
+    .single()
+
+  if (updateError || !updatedBudget) {
+    throw new Error(`Failed to update budget totals: ${updateError?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "budget",
+    entityId: budgetId,
+    after: { ...updatedBudget, lines_count: lines.length },
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "budget_updated",
+    entityType: "budget",
+    entityId: budgetId,
+    payload: { project_id: budget.project_id, total_cents: totalCents },
+  })
+
+  return updatedBudget
+}
+
+export async function listVarianceAlertsForProject(projectId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("variance_alerts")
+    .select("id, project_id, cost_code_id, alert_type, threshold_percent, current_percent, budget_cents, actual_cents, variance_cents, status, acknowledged_by, acknowledged_at, metadata, created_at")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .order("status", { ascending: true })
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to list variance alerts: ${error.message}`)
+  }
+
+  return data ?? []
+}
+
 export async function getBudgetWithActuals(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   return getBudgetWithActualsInternal(supabase, projectId, resolvedOrgId)
@@ -92,7 +378,7 @@ async function getBudgetWithActualsInternal(
       `
       *,
       lines:budget_lines(
-        id, cost_code_id, description, amount_cents, sort_order,
+        id, cost_code_id, description, amount_cents, sort_order, metadata,
         cost_code:cost_codes(id, code, name, category)
       )
     `,
@@ -192,7 +478,7 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : await supabase
           .from("change_order_lines")
-          .select("cost_code_id, unit_cost_cents, quantity")
+          .select("cost_code_id, unit_cost_cents, quantity, metadata")
           .eq("org_id", orgId)
           .in("change_order_id", changeOrderIds)
 
@@ -213,13 +499,16 @@ async function getBudgetWithActualsInternal(
 
   for (const line of budget.lines ?? []) {
     const key = line.cost_code_id ?? "uncoded"
-    byCostCode.set(key, {
-      budget_cents: line.amount_cents ?? 0,
-      committed_cents: 0,
-      actual_cents: 0,
-      invoiced_cents: 0,
-      co_adjustment_cents: 0,
-    })
+    const existing =
+      byCostCode.get(key) ?? {
+        budget_cents: 0,
+        committed_cents: 0,
+        actual_cents: 0,
+        invoiced_cents: 0,
+        co_adjustment_cents: 0,
+      }
+    existing.budget_cents += line.amount_cents ?? 0
+    byCostCode.set(key, existing)
   }
 
   for (const line of commitments ?? []) {
@@ -274,7 +563,8 @@ async function getBudgetWithActualsInternal(
         invoiced_cents: 0,
         co_adjustment_cents: 0,
       }
-    existing.co_adjustment_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    const allowanceCents = (line.metadata as any)?.allowance_cents ?? 0
+    existing.co_adjustment_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1) + allowanceCents
     byCostCode.set(key, existing)
   }
 
@@ -482,5 +772,6 @@ async function selectIds(
 
   return Array.from(new Set((data ?? []).map((row: any) => row.id)))
 }
+
 
 

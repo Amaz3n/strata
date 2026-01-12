@@ -68,4 +68,3 @@ export async function sendPortalEntityMessageAction(input: {
     entityId: input.entityId,
   })
 }
-

@@ -27,6 +27,8 @@ export interface FileWithDetails {
   uploaded_by?: string
   uploader_name?: string
   uploader_avatar?: string
+  share_with_clients?: boolean
+  share_with_subs?: boolean
   created_at: string
   updated_at?: string
   thumbnail_url?: string
@@ -46,6 +48,22 @@ export interface FileVersion {
   created_at: string
   storage_path: string
   size_bytes?: number
+}
+
+export const ENTITY_TYPE_LABELS: Record<string, string> = {
+  task: "Task",
+  daily_log: "Daily log",
+  invoice: "Invoice",
+  commitment: "Commitment",
+  vendor_bill: "Vendor bill",
+  selection: "Selection",
+  rfi: "RFI",
+  submittal: "Submittal",
+  change_order: "Change order",
+  drawing: "Drawing",
+  punch_item: "Punch item",
+  closeout_item: "Closeout item",
+  warranty_request: "Warranty request",
 }
 
 export interface FileFolder {
@@ -152,6 +170,7 @@ export function isPdfFile(mimeType?: string): boolean {
 export function isPreviewable(mimeType?: string): boolean {
   return isImageFile(mimeType) || isPdfFile(mimeType)
 }
+
 
 
 

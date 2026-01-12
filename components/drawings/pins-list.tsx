@@ -38,7 +38,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { PIN_ENTITY_TYPE_LABELS } from "@/lib/validation/drawings"
-import type { DrawingPin, PinEntityType, PinStatus } from "@/app/drawings/actions"
+import type { DrawingPin, PinEntityType, PinStatus } from "@/app/(app)/drawings/actions"
 
 // Entity type icons
 const ENTITY_ICONS: Record<PinEntityType, React.ElementType> = {

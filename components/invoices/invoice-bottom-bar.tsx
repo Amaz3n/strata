@@ -37,3 +37,7 @@ export function InvoiceBottomBar({ selectedCount, onDeselectAll }: InvoiceBottom
     </motion.div>
   )
 }
+
+
+
+

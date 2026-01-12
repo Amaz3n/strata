@@ -14,15 +14,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Calendar, Building2, DollarSign, Clock, FileText } from "@/components/icons"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Calendar, Building2, DollarSign, Clock, FileText, Sparkles } from "@/components/icons"
+import { approveChangeOrderAction } from "@/app/(app)/change-orders/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/files/actions"
+} from "@/app/(app)/files/actions"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -62,6 +65,7 @@ export function ChangeOrderDetailSheet({
 }: ChangeOrderDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
+  const [approving, setApproving] = useState(false)
 
   // Load attachments when sheet opens
   useEffect(() => {
@@ -131,15 +135,37 @@ export function ChangeOrderDetailSheet({
   }
 
   const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
+  const canApprove = changeOrder.status !== "approved"
+
+  const handleApprove = async () => {
+    if (!canApprove) return
+    setApproving(true)
+    try {
+      const updated = await approveChangeOrderAction(changeOrder.id)
+      onUpdate?.(updated)
+      toast.success("Change order approved")
+    } catch (error: any) {
+      toast.error("Failed to approve", { description: error?.message ?? "Please try again." })
+    } finally {
+      setApproving(false)
+    }
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="sm:max-w-xl w-full overflow-y-auto">
-        <SheetHeader>
+      <SheetContent
+        side="right"
+        className="sm:max-w-lg w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation [&>button]:hidden"
+        style={{
+          animationDuration: '150ms',
+          transitionDuration: '150ms'
+        } as React.CSSProperties}
+      >
+        <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <div className="flex items-center gap-2">
-            <FileText className="h-5 w-5 text-primary" />
-            <SheetTitle>
-              Change Order
+            <Sparkles className="h-5 w-5 text-primary" />
+            <SheetTitle className="flex-1">
+              {changeOrder.title}
             </SheetTitle>
             <Badge
               variant="secondary"
@@ -148,34 +174,10 @@ export function ChangeOrderDetailSheet({
               {statusLabels[changeOrder.status] ?? changeOrder.status}
             </Badge>
           </div>
-          <SheetDescription className="text-left">
-            {changeOrder.title}
-          </SheetDescription>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6">
-          {/* Meta info */}
-          <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
-            {project && (
-              <div className="flex items-center gap-1">
-                <Building2 className="h-4 w-4" />
-                {project.name}
-              </div>
-            )}
-            <div className="flex items-center gap-1">
-              <DollarSign className="h-4 w-4" />
-              <span className="font-semibold text-foreground">
-                {formatMoney(totalCents)}
-              </span>
-            </div>
-            {changeOrder.days_impact != null && changeOrder.days_impact > 0 && (
-              <Badge variant="outline" className="text-xs">
-                +{changeOrder.days_impact} days impact
-              </Badge>
-            )}
-          </div>
-
-          <Separator />
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="px-6 py-4 space-y-6">
 
           {/* Summary */}
           {changeOrder.summary && (
@@ -199,39 +201,59 @@ export function ChangeOrderDetailSheet({
 
           {/* Line items */}
           {changeOrder.lines && changeOrder.lines.length > 0 && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-medium">Line Items</h4>
-              <div className="rounded-lg border divide-y">
-                {changeOrder.lines.map((line, idx) => (
-                  <div key={line.id ?? idx} className="p-3 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm">{line.description}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {line.quantity} {line.unit ?? "units"} @ {formatMoney(line.unit_cost_cents)}
-                      </p>
+            <div className="space-y-3">
+              <h4 className="text-sm font-semibold">Line Items</h4>
+              <div className="space-y-2">
+                {changeOrder.lines.map((line, idx) => {
+                  const lineTotal = (line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0)
+                  return (
+                    <div key={line.id ?? idx} className="rounded-lg border p-4 bg-muted/30">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 space-y-1">
+                          <p className="text-sm font-medium">{line.description}</p>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            <span>{line.quantity} {line.unit ?? "units"}</span>
+                            {line.unit_cost_cents && (
+                              <>
+                                <span>@</span>
+                                <span>{formatMoney(line.unit_cost_cents)}</span>
+                              </>
+                            )}
+                            {line.allowance_cents && line.allowance_cents > 0 && (
+                              <>
+                                <span>+</span>
+                                <span>Allowance: {formatMoney(line.allowance_cents)}</span>
+                              </>
+                            )}
+                            {line.taxable && (
+                              <Badge variant="outline" className="text-xs">Taxable</Badge>
+                            )}
+                          </div>
+                        </div>
+                        <span className="font-semibold text-sm">
+                          {formatMoney(lineTotal)}
+                        </span>
+                      </div>
                     </div>
-                    <span className="font-medium text-sm">
-                      {formatMoney(line.quantity * (line.unit_cost_cents ?? 0))}
-                    </span>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
 
           {/* Totals */}
           {changeOrder.totals && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-medium">Totals</h4>
-              <div className="rounded-lg border bg-muted/30 p-4 space-y-2 text-sm">
+            <div className="space-y-3">
+              <h4 className="text-sm font-semibold">Totals</h4>
+              <div className="rounded-lg border bg-muted/40 p-4 space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Subtotal</span>
-                  <span>{formatMoney(changeOrder.totals.subtotal_cents)}</span>
+                  <span className="font-medium">{formatMoney(changeOrder.totals.subtotal_cents)}</span>
                 </div>
                 {changeOrder.totals.allowance_cents != null && changeOrder.totals.allowance_cents > 0 && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Allowances</span>
-                    <span>{formatMoney(changeOrder.totals.allowance_cents)}</span>
+                    <span className="font-medium">{formatMoney(changeOrder.totals.allowance_cents)}</span>
                   </div>
                 )}
                 {changeOrder.totals.markup_cents != null && changeOrder.totals.markup_cents > 0 && (
@@ -239,7 +261,7 @@ export function ChangeOrderDetailSheet({
                     <span className="text-muted-foreground">
                       Markup ({changeOrder.totals.markup_percent ?? 0}%)
                     </span>
-                    <span>{formatMoney(changeOrder.totals.markup_cents)}</span>
+                    <span className="font-medium">{formatMoney(changeOrder.totals.markup_cents)}</span>
                   </div>
                 )}
                 {changeOrder.totals.tax_cents != null && changeOrder.totals.tax_cents > 0 && (
@@ -247,11 +269,11 @@ export function ChangeOrderDetailSheet({
                     <span className="text-muted-foreground">
                       Tax ({changeOrder.totals.tax_rate ?? 0}%)
                     </span>
-                    <span>{formatMoney(changeOrder.totals.tax_cents)}</span>
+                    <span className="font-medium">{formatMoney(changeOrder.totals.tax_cents)}</span>
                   </div>
                 )}
                 <Separator />
-                <div className="flex justify-between font-semibold">
+                <div className="flex justify-between font-semibold text-base">
                   <span>Total</span>
                   <span>{formatMoney(changeOrder.totals.total_cents)}</span>
                 </div>
@@ -260,14 +282,23 @@ export function ChangeOrderDetailSheet({
           )}
 
           {/* Approval info */}
-          {changeOrder.approved_at && (
+          {(changeOrder.approved_at || (changeOrder.days_impact != null && changeOrder.days_impact > 0)) && (
             <div className="space-y-2">
               <h4 className="text-sm font-medium">Approval</h4>
-              <div className="rounded-lg border bg-success/5 border-success/20 p-4 space-y-1">
-                <Badge variant="default">Approved</Badge>
-                <p className="text-xs text-muted-foreground">
-                  Approved {formatDate(changeOrder.approved_at)}
-                </p>
+              <div className="rounded-lg border bg-success/5 border-success/20 p-4 space-y-2">
+                {changeOrder.approved_at && (
+                  <>
+                    <Badge variant="default">Approved</Badge>
+                    <p className="text-xs text-muted-foreground">
+                      Approved {formatDate(changeOrder.approved_at)}
+                    </p>
+                  </>
+                )}
+                {changeOrder.days_impact != null && changeOrder.days_impact > 0 && (
+                  <Badge variant="outline" className="text-xs">
+                    +{changeOrder.days_impact} days impact
+                  </Badge>
+                )}
               </div>
             </div>
           )}
@@ -275,29 +306,59 @@ export function ChangeOrderDetailSheet({
           <Separator />
 
           {/* Attachments */}
-          <EntityAttachments
-            entityType="change_order"
-            entityId={changeOrder.id}
-            projectId={changeOrder.project_id}
-            attachments={attachments}
-            onAttach={handleAttach}
-            onDetach={handleDetach}
-            title="Supporting Documents"
-            description="Photos, quotes, specs, or other supporting documents for this change order"
-          />
+          <div className="[&_button]:hidden [&_div[class*='border-dashed']]:!border-solid">
+            <EntityAttachments
+              entityType="change_order"
+              entityId={changeOrder.id}
+              projectId={changeOrder.project_id}
+              attachments={attachments}
+              onAttach={handleAttach}
+              onDetach={handleDetach}
+              title="Supporting Documents"
+              description="Photos, quotes, specs, or other supporting documents for this change order"
+            />
+          </div>
 
-          {/* Timestamps */}
-          <div className="text-xs text-muted-foreground space-y-1 pt-4 border-t">
-            <div className="flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              Created {formatDate(changeOrder.created_at)}
-            </div>
-            {changeOrder.updated_at && changeOrder.updated_at !== changeOrder.created_at && (
-              <div className="flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                Updated {formatDate(changeOrder.updated_at)}
-              </div>
+          {/* Activity */}
+          <Accordion type="single" collapsible className="w-full">
+            <AccordionItem value="activity" className="border-none">
+              <AccordionTrigger className="text-sm font-medium py-2 hover:no-underline">
+                Activity
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="text-xs text-muted-foreground space-y-2 pt-2">
+                  <div className="flex items-center gap-2">
+                    <Clock className="h-3 w-3" />
+                    <span>Created {formatDate(changeOrder.created_at)}</span>
+                  </div>
+                  {changeOrder.updated_at && changeOrder.updated_at !== changeOrder.created_at && (
+                    <div className="flex items-center gap-2">
+                      <Clock className="h-3 w-3" />
+                      <span>Updated {formatDate(changeOrder.updated_at)}</span>
+                    </div>
+                  )}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+          </div>
+        </ScrollArea>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 border-t bg-muted/30 p-4">
+          <div className="flex gap-2">
+            {canApprove && (
+              <Button onClick={handleApprove} disabled={approving} className="flex-1">
+                {approving ? "Approving..." : "Mark approved"}
+              </Button>
             )}
+            <Button
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              className={canApprove ? "flex-1" : "w-full"}
+            >
+              Close
+            </Button>
           </div>
         </div>
       </SheetContent>

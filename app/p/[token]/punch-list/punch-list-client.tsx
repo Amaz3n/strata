@@ -2,13 +2,20 @@
 
 import { useState, useTransition } from "react"
 import type { PunchItem } from "@/lib/types"
-import { createPunchItemAction } from "./actions"
+import {
+  createPunchItemAction,
+  listPunchItemAttachmentsAction,
+  uploadPunchItemAttachmentAction,
+  detachPunchItemAttachmentAction,
+} from "./actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { EntityAttachments, type AttachedFile } from "@/components/files"
 
 interface Props {
   token: string
@@ -19,6 +26,10 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
   const [items, setItems] = useState(initialItems)
   const [form, setForm] = useState({ title: "", description: "", location: "", severity: "" })
   const [isPending, startTransition] = useTransition()
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false)
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [selectedItem, setSelectedItem] = useState<PunchItem | null>(null)
 
   const handleSubmit = () => {
     if (!form.title.trim()) return
@@ -31,6 +42,73 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
         console.error("Failed to add punch item", error)
       }
     })
+  }
+
+  const openAttachments = (item: PunchItem) => {
+    setSelectedItem(item)
+    setAttachmentsOpen(true)
+    setAttachmentsLoading(true)
+    listPunchItemAttachmentsAction({ token, punchItemId: item.id })
+      .then((rows) => {
+        setAttachments(
+          rows.map((row) => ({
+            id: row.id,
+            linkId: row.linkId,
+            file_name: row.file_name,
+            mime_type: row.mime_type,
+            size_bytes: row.size_bytes,
+            download_url: row.download_url,
+            thumbnail_url: row.thumbnail_url,
+            created_at: row.created_at,
+            link_role: row.link_role,
+          }))
+        )
+      })
+      .catch((error) => console.error("Failed to load punch item attachments", error))
+      .finally(() => setAttachmentsLoading(false))
+  }
+
+  const handleAttach = async (files: File[]) => {
+    if (!selectedItem) return
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append("file", file)
+      await uploadPunchItemAttachmentAction({ token, punchItemId: selectedItem.id, formData })
+    }
+
+    const rows = await listPunchItemAttachmentsAction({ token, punchItemId: selectedItem.id })
+    setAttachments(
+      rows.map((row) => ({
+        id: row.id,
+        linkId: row.linkId,
+        file_name: row.file_name,
+        mime_type: row.mime_type,
+        size_bytes: row.size_bytes,
+        download_url: row.download_url,
+        thumbnail_url: row.thumbnail_url,
+        created_at: row.created_at,
+        link_role: row.link_role,
+      }))
+    )
+  }
+
+  const handleDetach = async (linkId: string) => {
+    await detachPunchItemAttachmentAction({ token, linkId })
+    if (!selectedItem) return
+    const rows = await listPunchItemAttachmentsAction({ token, punchItemId: selectedItem.id })
+    setAttachments(
+      rows.map((row) => ({
+        id: row.id,
+        linkId: row.linkId,
+        file_name: row.file_name,
+        mime_type: row.mime_type,
+        size_bytes: row.size_bytes,
+        download_url: row.download_url,
+        thumbnail_url: row.thumbnail_url,
+        created_at: row.created_at,
+        link_role: row.link_role,
+      }))
+    )
   }
 
   return (
@@ -79,9 +157,14 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
             <Card key={item.id}>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">{item.title}</CardTitle>
-                <Badge variant="secondary" className="capitalize text-[11px]">
-                  {item.status}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => openAttachments(item)}>
+                    Photos
+                  </Button>
+                  <Badge variant="secondary" className="capitalize text-[11px]">
+                    {item.status}
+                  </Badge>
+                </div>
               </CardHeader>
               <CardContent className="space-y-1">
                 {item.description && <p className="text-sm text-muted-foreground">{item.description}</p>}
@@ -97,9 +180,42 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={attachmentsOpen}
+        onOpenChange={(open) => {
+          setAttachmentsOpen(open)
+          if (!open) {
+            setSelectedItem(null)
+            setAttachments([])
+            setAttachmentsLoading(false)
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{selectedItem ? `Punch item: ${selectedItem.title}` : "Punch item photos"}</DialogTitle>
+            <DialogDescription>Add photos and supporting docs for this punch item.</DialogDescription>
+          </DialogHeader>
+          {selectedItem && (
+            <EntityAttachments
+              entityType="punch_item"
+              entityId={selectedItem.id}
+              attachments={attachments}
+              onAttach={handleAttach}
+              onDetach={handleDetach}
+              readOnly={attachmentsLoading}
+              acceptedTypes=".pdf,.png,.jpg,.jpeg,.webp,.heic"
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
+
+
+
 
 
 

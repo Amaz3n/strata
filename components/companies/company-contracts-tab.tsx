@@ -1,11 +1,11 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useMemo, useState, useTransition, useEffect } from "react"
 import { useRouter } from "next/navigation"
 
 import type { Project } from "@/lib/types"
 import type { CommitmentSummary } from "@/lib/services/commitments"
-import { createCompanyCommitmentAction } from "@/app/companies/[id]/actions"
+import { createCompanyCommitmentAction } from "@/app/(app)/companies/[id]/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -14,6 +14,13 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
+import { EntityAttachments, type AttachedFile } from "@/components/files"
+import {
+  listAttachmentsAction,
+  detachFileLinkAction,
+  uploadFileAction,
+  attachFileAction,
+} from "@/app/(app)/files/actions"
 
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
@@ -39,6 +46,10 @@ export function CompanyContractsTab({
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false)
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [selectedCommitment, setSelectedCommitment] = useState<CommitmentSummary | null>(null)
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
 
@@ -86,6 +97,82 @@ export function CompanyContractsTab({
         toast({ title: "Unable to create contract", description: (error as Error).message })
       }
     })
+  }
+
+  useEffect(() => {
+    if (!attachmentsOpen || !selectedCommitment) return
+    setAttachmentsLoading(true)
+    listAttachmentsAction("commitment", selectedCommitment.id)
+      .then((links) =>
+        setAttachments(
+          links.map((link) => ({
+            id: link.file.id,
+            linkId: link.id,
+            file_name: link.file.file_name,
+            mime_type: link.file.mime_type,
+            size_bytes: link.file.size_bytes,
+            download_url: link.file.download_url,
+            thumbnail_url: link.file.thumbnail_url,
+            created_at: link.created_at,
+            link_role: link.link_role,
+          }))
+        )
+      )
+      .catch((error) => console.error("Failed to load commitment attachments", error))
+      .finally(() => setAttachmentsLoading(false))
+  }, [attachmentsOpen, selectedCommitment])
+
+  const handleAttach = async (files: File[], linkRole?: string) => {
+    if (!selectedCommitment) return
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("projectId", selectedCommitment.project_id)
+      formData.append("category", "financials")
+
+      const uploaded = await uploadFileAction(formData)
+      await attachFileAction(
+        uploaded.id,
+        "commitment",
+        selectedCommitment.id,
+        selectedCommitment.project_id,
+        linkRole
+      )
+    }
+
+    const links = await listAttachmentsAction("commitment", selectedCommitment.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
+  }
+
+  const handleDetach = async (linkId: string) => {
+    if (!selectedCommitment) return
+    await detachFileLinkAction(linkId)
+    const links = await listAttachmentsAction("commitment", selectedCommitment.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
   }
 
   return (
@@ -167,6 +254,7 @@ export function CompanyContractsTab({
               <TableHead className="px-4 py-3 text-right">Total</TableHead>
               <TableHead className="px-4 py-3 text-right">Billed</TableHead>
               <TableHead className="px-4 py-3 text-right">Remaining</TableHead>
+              <TableHead className="px-4 py-3 text-right">Attachments</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -186,6 +274,19 @@ export function CompanyContractsTab({
                   <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(total)}</TableCell>
                   <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(billed)}</TableCell>
                   <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(remaining)}</TableCell>
+                  <TableCell className="text-right px-4 py-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setSelectedCommitment(c)
+                        setAttachmentsOpen(true)
+                      }}
+                    >
+                      Files
+                    </Button>
+                  </TableCell>
                 </TableRow>
               )
             })}
@@ -197,11 +298,12 @@ export function CompanyContractsTab({
                 <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(totals.committed)}</TableCell>
                 <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(totals.billed)}</TableCell>
                 <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(Math.max(0, totals.committed - totals.billed))}</TableCell>
+                <TableCell className="px-4 py-3" />
               </TableRow>
             )}
             {commitments.length === 0 && (
               <TableRow className="divide-x">
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
+                <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
                   No contracts yet.
                 </TableCell>
               </TableRow>
@@ -209,6 +311,38 @@ export function CompanyContractsTab({
           </TableBody>
         </Table>
       </div>
+
+      <Dialog
+        open={attachmentsOpen}
+        onOpenChange={(nextOpen) => {
+          setAttachmentsOpen(nextOpen)
+          if (!nextOpen) {
+            setSelectedCommitment(null)
+            setAttachments([])
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{selectedCommitment?.title ?? "Commitment files"}</DialogTitle>
+            <DialogDescription>
+              Attach contracts, invoices, and supporting documentation for this commitment.
+            </DialogDescription>
+          </DialogHeader>
+          {selectedCommitment && (
+            <EntityAttachments
+              entityType="commitment"
+              entityId={selectedCommitment.id}
+              projectId={selectedCommitment.project_id}
+              attachments={attachments}
+              onAttach={handleAttach}
+              onDetach={handleDetach}
+              readOnly={attachmentsLoading}
+              compact
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

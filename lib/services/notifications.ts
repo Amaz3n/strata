@@ -1,17 +1,10 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requireOrgMembership } from "@/lib/auth/context"
+import type { NotificationType, NotificationRecord, NotificationInput } from "@/lib/types/notifications"
 
-interface NotificationInput {
-  orgId: string
-  userId: string
-  type: 'task_assigned' | 'daily_log_submitted' | 'photo_uploaded' | 'message_received' | 'schedule_changed'
-  title: string
-  message: string
-  entityType?: string
-  entityId?: string
-  eventId?: string
-}
+// Re-export types for backward compatibility
+export type { NotificationType, NotificationRecord, NotificationInput }
 
 export interface NotificationRecord {
   id: string
@@ -38,6 +31,7 @@ export class NotificationService {
         payload: {
           title: input.title,
           message: input.message,
+          project_id: input.projectId,
           entity_type: input.entityType,
           entity_id: input.entityId,
           event_id: input.eventId,

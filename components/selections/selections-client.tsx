@@ -1,17 +1,23 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useMemo, useState, useTransition, useEffect } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { Project, Selection, SelectionCategory, SelectionOption } from "@/lib/types"
 import type { SelectionInput } from "@/lib/validation/selections"
-import { createSelectionAction } from "@/app/selections/actions"
+import { createSelectionAction } from "@/app/(app)/selections/actions"
 import { SelectionForm } from "@/components/selections/selection-form"
+import { EntityAttachments, type AttachedFile } from "@/components/files"
+import {
+  listAttachmentsAction,
+  detachFileLinkAction,
+  uploadFileAction,
+  attachFileAction,
+} from "@/app/(app)/files/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, Calendar, List } from "@/components/icons"
@@ -189,6 +195,7 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
                   </p>
                 </div>
                 {sel.notes && <p className="text-xs text-muted-foreground">Notes: {sel.notes}</p>}
+                <SelectionAttachments selection={sel} />
               </CardContent>
             </Card>
           )
@@ -215,6 +222,108 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
     </div>
   )
 }
+
+function SelectionAttachments({ selection }: { selection: Selection }) {
+  const [open, setOpen] = useState(false)
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    listAttachmentsAction("selection", selection.id)
+      .then((links) =>
+        setAttachments(
+          links.map((link) => ({
+            id: link.file.id,
+            linkId: link.id,
+            file_name: link.file.file_name,
+            mime_type: link.file.mime_type,
+            size_bytes: link.file.size_bytes,
+            download_url: link.file.download_url,
+            thumbnail_url: link.file.thumbnail_url,
+            created_at: link.created_at,
+            link_role: link.link_role,
+          }))
+        )
+      )
+      .catch((error) => console.error("Failed to load selection attachments", error))
+      .finally(() => setLoading(false))
+  }, [open, selection.id])
+
+  const handleAttach = async (files: File[], linkRole?: string) => {
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("projectId", selection.project_id)
+      formData.append("category", "other")
+
+      const uploaded = await uploadFileAction(formData)
+      await attachFileAction(uploaded.id, "selection", selection.id, selection.project_id, linkRole)
+    }
+
+    const links = await listAttachmentsAction("selection", selection.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
+  }
+
+  const handleDetach = async (linkId: string) => {
+    await detachFileLinkAction(linkId)
+    const links = await listAttachmentsAction("selection", selection.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
+  }
+
+  return (
+    <div className="pt-2">
+      <button
+        type="button"
+        className="text-xs text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        {open ? "Hide attachments" : "Manage attachments"}
+      </button>
+      {open && (
+        <div className="mt-2">
+          <EntityAttachments
+            entityType="selection"
+            entityId={selection.id}
+            projectId={selection.project_id}
+            attachments={attachments}
+            onAttach={handleAttach}
+            onDetach={handleDetach}
+            readOnly={loading}
+            compact
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 
 
 

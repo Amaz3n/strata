@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 export const changeOrderLineInputSchema = z.object({
+  cost_code_id: z.string().uuid().optional(),
   description: z.string().min(2, "Description is required"),
   quantity: z
     .number({ invalid_type_error: "Quantity is required" })
@@ -31,6 +32,9 @@ export const changeOrderInputSchema = z.object({
 
 export type ChangeOrderLineInput = z.infer<typeof changeOrderLineInputSchema>
 export type ChangeOrderInput = z.infer<typeof changeOrderInputSchema>
+
+
+
 
 
 

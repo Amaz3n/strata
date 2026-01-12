@@ -3,6 +3,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { sendEmail } from "@/lib/services/mailer"
+import { attachFile, attachFileWithServiceRole } from "@/lib/services/file-links"
 import type { Submittal } from "@/lib/types"
 import type { SubmittalDecisionInput, SubmittalInput, SubmittalItemInput } from "@/lib/validation/submittals"
 
@@ -70,6 +71,23 @@ export async function createSubmittal({ input, orgId }: { input: SubmittalInput;
     after: payload,
   })
 
+  if (payload.attachment_file_id) {
+    try {
+      await attachFile(
+        {
+          file_id: payload.attachment_file_id,
+          project_id: payload.project_id,
+          entity_type: "submittal",
+          entity_id: data.id,
+          link_role: "legacy_attachment",
+        },
+        resolvedOrgId,
+      )
+    } catch (error) {
+      console.warn("Failed to attach legacy submittal attachment to file_links", error)
+    }
+  }
+
   await sendSubmittalEmail({
     orgId: resolvedOrgId,
     submittalId: data.id,
@@ -130,6 +148,22 @@ export async function addSubmittalItem({ orgId, input }: { orgId: string; input:
     entityId: input.submittal_id,
     after: { ...input, item_number: nextNumber },
   })
+
+  if (input.file_id) {
+    try {
+      await attachFileWithServiceRole({
+        orgId,
+        fileId: input.file_id,
+        projectId: undefined,
+        entityType: "submittal",
+        entityId: input.submittal_id,
+        linkRole: "item",
+        createdBy: input.responder_user_id ?? null,
+      })
+    } catch (error) {
+      console.warn("Failed to attach submittal item file to file_links", error)
+    }
+  }
 
   return { success: true }
 }
@@ -294,9 +328,7 @@ async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: s
     return null
   }
   return data
-}
-
-async function fetchContactEmail(
+}async function fetchContactEmail(
   supabase: any,
   contactId: string,
 ): Promise<{ email: string | null; full_name?: string } | null> {
@@ -307,4 +339,3 @@ async function fetchContactEmail(
   }
   return data
 }
-

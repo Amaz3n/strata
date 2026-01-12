@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   Dialog,
@@ -28,7 +29,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ContactForm } from "@/components/contacts/contact-form"
 import type { Company, Contact, Project } from "@/lib/types"
-import { archiveContactAction } from "@/app/contacts/actions"
+import { archiveContactAction, importContactsCsvAction } from "@/app/(app)/contacts/actions"
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet"
 import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog"
 import { Filter, MoreHorizontal, Plus, Search } from "@/components/icons"
@@ -65,6 +66,10 @@ export function ContactsTable({
   const [detailOpen, setDetailOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteContact, setInviteContact] = useState<Contact | undefined>()
+  const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importFileName, setImportFileName] = useState<string | null>(null)
+  const [importCsv, setImportCsv] = useState("")
 
   const filtered = useMemo(() => {
     return contacts
@@ -101,6 +106,33 @@ export function ContactsTable({
     setInviteOpen(true)
   }
 
+  const handleImportFile = async (file?: File | null) => {
+    if (!file) return
+    setImportFileName(file.name)
+    const text = await file.text()
+    setImportCsv(text)
+  }
+
+  const handleImport = async () => {
+    if (!importCsv.trim()) {
+      toast({ title: "Add a CSV file to import." })
+      return
+    }
+    setImporting(true)
+    try {
+      const result = await importContactsCsvAction(importCsv)
+      router.refresh()
+      toast({ title: "Contacts imported", description: `${result.created} contacts added.` })
+      setImportOpen(false)
+      setImportCsv("")
+      setImportFileName(null)
+    } catch (error) {
+      toast({ title: "Import failed", description: (error as Error).message })
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const handleArchive = (contactId: string) => {
     startTransition(async () => {
       try {
@@ -132,23 +164,66 @@ export function ContactsTable({
           </div>
         </div>
 
-        {canCreate && (
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button onClick={() => openEditor(undefined)} disabled={!canCreate}>
-                <Plus className="h-4 w-4 mr-2" />
-                New contact
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>{selectedContact ? "Edit contact" : "Create contact"}</DialogTitle>
-                <DialogDescription>Track people you collaborate with and grant portal access.</DialogDescription>
-              </DialogHeader>
-              <ContactForm contact={selectedContact} companies={companies} onSubmitted={resetDialog} />
-            </DialogContent>
-          </Dialog>
-        )}
+        <div className="flex items-center gap-2">
+          {canCreate && (
+            <>
+              <Dialog open={importOpen} onOpenChange={setImportOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    Import CSV
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Import contacts</DialogTitle>
+                    <DialogDescription>
+                      CSV headers: full_name, email, phone, role, contact_type, external_crm_id, crm_source.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <Input
+                      type="file"
+                      accept=".csv"
+                      onChange={(event) => void handleImportFile(event.target.files?.[0])}
+                    />
+                    {importFileName && (
+                      <p className="text-xs text-muted-foreground">Selected: {importFileName}</p>
+                    )}
+                    <Textarea
+                      value={importCsv}
+                      onChange={(event) => setImportCsv(event.target.value)}
+                      rows={6}
+                      placeholder="Paste CSV content here if needed."
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importing}>
+                      Cancel
+                    </Button>
+                    <Button onClick={() => void handleImport()} disabled={importing}>
+                      {importing ? "Importing..." : "Import"}
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+              <Dialog open={open} onOpenChange={setOpen}>
+                <DialogTrigger asChild>
+                  <Button onClick={() => openEditor(undefined)} disabled={!canCreate}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    New contact
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>{selectedContact ? "Edit contact" : "Create contact"}</DialogTitle>
+                    <DialogDescription>Track people you collaborate with and grant portal access.</DialogDescription>
+                  </DialogHeader>
+                  <ContactForm contact={selectedContact} companies={companies} onSubmitted={resetDialog} />
+                </DialogContent>
+              </Dialog>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -274,4 +349,3 @@ export function ContactsTable({
     </div>
   )
 }
-

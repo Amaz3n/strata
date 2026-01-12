@@ -1,4 +1,5 @@
 import type React from "react"
+import type { FileCategory } from "@/lib/validation/files"
 // Core domain types for Strata
 // Following the spec: every tenant-owned row includes org_id
 
@@ -57,6 +58,7 @@ export interface Company {
   license_expiry?: string
   license_verified?: boolean
   insurance_expiry?: string
+  insurance_provider?: string
   insurance_document_id?: string
   w9_on_file?: boolean
   w9_file_id?: string
@@ -71,6 +73,14 @@ export interface Company {
   contact_count?: number
   project_count?: number
   contacts?: Contact[]
+}
+
+export type ComplianceRules = {
+  require_w9?: boolean
+  require_insurance?: boolean
+  require_license?: boolean
+  require_lien_waiver?: boolean
+  block_payment_on_missing_docs?: boolean
 }
 
 export type ContactType = "internal" | "subcontractor" | "client" | "vendor" | "consultant"
@@ -88,6 +98,8 @@ export interface Contact {
   has_portal_access?: boolean
   preferred_contact_method?: string
   notes?: string
+  external_crm_id?: string
+  crm_source?: string
   created_at: string
   updated_at?: string
   companies?: ContactCompanyLink[]
@@ -312,9 +324,15 @@ export interface ScheduleItem {
   float_days?: number
   color?: string
   sort_order?: number
+  // Cost tracking fields
+  cost_code_id?: string | null
+  budget_cents?: number | null
+  actual_cost_cents?: number | null
   // Joined data (optional, populated by service)
   assignments?: ScheduleAssignment[]
   dependency_details?: ScheduleDependency[]
+  change_order_impacts?: ScheduleItemChangeOrder[]
+  linked_draws?: DrawSchedule[]
 }
 
 export type ScheduleItemType = "task" | "milestone" | "inspection" | "handoff" | "phase" | "delivery"
@@ -354,6 +372,19 @@ export interface ScheduleAssignment {
   user?: { id: string; full_name: string; avatar_url?: string }
   contact?: { id: string; full_name: string; email?: string }
   company?: { id: string; name: string; company_type?: string }
+}
+
+export interface ScheduleItemChangeOrder {
+  id: string
+  org_id: string
+  schedule_item_id: string
+  change_order_id: string
+  days_adjusted: number
+  notes?: string | null
+  applied_at?: string | null
+  created_at: string
+  // Joined data
+  change_order?: ChangeOrder
 }
 
 export interface ScheduleBaseline {
@@ -465,6 +496,7 @@ export interface Photo {
 
 export interface ChangeOrderLine {
   id?: string
+  cost_code_id?: string | null
   description: string
   quantity: number
   unit?: string | null
@@ -545,7 +577,7 @@ export interface Invoice {
   token?: string | null
   invoice_number: string
   title: string
-  status: "draft" | "sent" | "paid" | "overdue" | "void"
+  status: "draft" | "sent" | "partial" | "paid" | "overdue" | "void"
   qbo_id?: string | null
   qbo_synced_at?: string | null
   qbo_sync_status?: "pending" | "synced" | "error" | "skipped" | null
@@ -635,6 +667,20 @@ export interface InvoiceView {
   created_at?: string
 }
 
+export interface Receipt {
+  id: string
+  org_id: string
+  payment_id: string
+  project_id?: string | null
+  invoice_id?: string | null
+  amount_cents?: number | null
+  issued_to_email?: string | null
+  issued_at: string
+  file_id?: string | null
+  metadata?: Record<string, any>
+  created_at?: string
+}
+
 export interface EstimateItem {
   id?: string
   org_id?: string
@@ -653,7 +699,8 @@ export interface EstimateItem {
 export interface Estimate {
   id: string
   org_id: string
-  project_id: string
+  project_id?: string | null
+  recipient_contact_id?: string | null
   title: string
   status: string
   version: number
@@ -661,6 +708,7 @@ export interface Estimate {
   tax_cents?: number | null
   total_cents?: number | null
   currency?: string | null
+  valid_until?: string | null
   metadata?: Record<string, any>
   created_by?: string | null
   created_at?: string
@@ -833,6 +881,20 @@ export interface PunchItem {
   resolved_at?: string | null
 }
 
+export interface Decision {
+  id: string
+  org_id: string
+  project_id: string
+  title: string
+  description?: string
+  status: string
+  due_date?: string | null
+  approved_at?: string | null
+  approved_by?: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface RfiDecision {
   decision_status?: "approved" | "revisions_requested" | "rejected"
   decision_note?: string | null
@@ -934,6 +996,7 @@ export interface ClientPortalData {
   photos: PhotoTimelineEntry[]
   pendingChangeOrders: ChangeOrder[]
   pendingSelections: Selection[]
+  warrantyRequests?: WarrantyRequest[]
   invoices: Invoice[]
   rfis: Rfi[]
   submittals: Submittal[]
@@ -962,8 +1025,9 @@ export interface SubPortalBill {
   bill_number: string
   commitment_id: string
   commitment_title: string
-  status: "pending" | "approved" | "paid"
+  status: "pending" | "approved" | "partial" | "paid"
   total_cents: number
+  paid_cents?: number
   bill_date: string
   due_date?: string | null
   submitted_at: string
@@ -991,6 +1055,9 @@ export interface SubPortalData {
     id: string
     name: string
     trade?: string | null
+    insurance_expiry?: string | null
+    license_expiry?: string | null
+    w9_on_file?: boolean | null
   }
   projectManager?: PortalProjectManager
   commitments: SubPortalCommitment[]
@@ -1014,7 +1081,45 @@ export interface FileMetadata {
   mime_type?: string
   size_bytes?: number
   visibility: string
+  category?: FileCategory
+  tags?: string[]
+  folder_path?: string
+  url?: string
   created_at: string
+}
+
+export interface CloseoutPackage {
+  id: string
+  org_id: string
+  project_id: string
+  status: string
+  created_at: string
+  updated_at?: string
+}
+
+export interface CloseoutItem {
+  id: string
+  org_id: string
+  project_id: string
+  closeout_package_id?: string | null
+  title: string
+  status: string
+  file_id?: string | null
+  created_at: string
+  updated_at?: string
+}
+
+export interface WarrantyRequest {
+  id: string
+  org_id: string
+  project_id: string
+  title: string
+  description?: string | null
+  status: string
+  priority?: string | null
+  requested_by?: string | null
+  created_at: string
+  closed_at?: string | null
 }
 
 export interface DashboardStats {
@@ -1027,7 +1132,7 @@ export interface DashboardStats {
 export interface Proposal {
   id: string
   org_id: string
-  project_id: string
+  project_id?: string | null
   estimate_id?: string | null
   recipient_contact_id?: string | null
   number?: string | null
@@ -1036,7 +1141,6 @@ export interface Proposal {
   terms?: string | null
   status?: "draft" | "sent" | "accepted" | string | null
   total_cents?: number | null
-  token?: string | null
   token_hash?: string | null
   valid_until?: string | null
   sent_at?: string | null

@@ -1,14 +1,15 @@
 "use client"
 
-import { Home, Camera, FileText, CheckSquare, Info } from "lucide-react"
+import { Home, Camera, FileText, CheckSquare, MessageCircle, Info } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type PortalTab = "home" | "timeline" | "documents" | "actions" | "about"
+export type PortalTab = "home" | "timeline" | "documents" | "actions" | "messages" | "about"
 
 interface PortalBottomNavProps {
   activeTab: PortalTab
   onTabChange: (tab: PortalTab) => void
   hasPendingActions?: boolean
+  tabs?: PortalTab[]
 }
 
 const tabs: { id: PortalTab; label: string; icon: typeof Home }[] = [
@@ -16,14 +17,15 @@ const tabs: { id: PortalTab; label: string; icon: typeof Home }[] = [
   { id: "timeline", label: "Timeline", icon: Camera },
   { id: "documents", label: "Docs", icon: FileText },
   { id: "actions", label: "Actions", icon: CheckSquare },
+  { id: "messages", label: "Messages", icon: MessageCircle },
   { id: "about", label: "About", icon: Info },
 ]
 
-export function PortalBottomNav({ activeTab, onTabChange, hasPendingActions }: PortalBottomNavProps) {
+export function PortalBottomNav({ activeTab, onTabChange, hasPendingActions, tabs: visibleTabs }: PortalBottomNavProps) {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 border-t bg-background pb-[env(safe-area-inset-bottom)]">
       <div className="flex h-14">
-        {tabs.map((tab) => {
+        {(visibleTabs ? tabs.filter((t) => visibleTabs.includes(t.id)) : tabs).map((tab) => {
           const Icon = tab.icon
           const isActive = activeTab === tab.id
           const showDot = tab.id === "actions" && hasPendingActions

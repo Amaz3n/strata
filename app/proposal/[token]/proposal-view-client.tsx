@@ -43,8 +43,8 @@ type ProposalPortalPayload = {
     tax_cents?: number | null
   } | null
   lines?: ProposalLine[]
-  org?: { name?: string | null; logo_url?: string | null } | null
-  project?: { name?: string | null; address?: Record<string, unknown> | null } | null
+  org?: { name?: string | null } | null
+  project?: { name?: string | null; location?: Record<string, unknown> | null } | null
   recipient?: { full_name?: string | null; email?: string | null } | null
 }
 
@@ -56,6 +56,8 @@ interface Props {
 }
 
 export function ProposalViewClient({ proposal, token }: Props) {
+  console.log("ProposalViewClient rendering with proposal:", proposal.id, "lines:", proposal.lines?.length)
+
   const [signature, setSignature] = useState<string | null>(null)
   const [signerName, setSignerName] = useState("")
   const [isPending, startTransition] = useTransition()
@@ -63,26 +65,36 @@ export function ProposalViewClient({ proposal, token }: Props) {
 
   const requiresSignature = proposal.signature_required ?? true
   const sortedLines = useMemo(
-    () => [...(proposal.lines ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
+    () => {
+      const lines = [...(proposal.lines ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      console.log("Sorted lines:", lines.length)
+      return lines
+    },
     [proposal.lines],
   )
 
   const totals = useMemo(() => {
-    const subtotal = sortedLines.reduce((sum, line) => {
-      if (line.line_type === "section") return sum
-      if (line.is_optional && line.is_selected === false) return sum
-      const base = (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
-      const markupPercent = line.markup_percent ?? proposal.snapshot?.markup_percent ?? 0
-      const markup = Math.round(base * markupPercent / 100)
-      return sum + base + markup
-    }, 0)
+    try {
+      const subtotal = sortedLines.reduce((sum, line) => {
+        if (line.line_type === "section") return sum
+        if (line.is_optional && line.is_selected === false) return sum
+        const base = (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+        const markupPercent = line.markup_percent ?? proposal.snapshot?.markup_percent ?? 0
+        const markup = Math.round(base * markupPercent / 100)
+        return sum + base + markup
+      }, 0)
 
-    const tax =
-      proposal.snapshot?.tax_cents ??
-      Math.round(subtotal * ((proposal.snapshot?.tax_rate ?? 0) / 100))
+      const tax =
+        proposal.snapshot?.tax_cents ??
+        Math.round(subtotal * ((proposal.snapshot?.tax_rate ?? 0) / 100))
 
-    const total = proposal.total_cents ?? subtotal + tax
-    return { subtotal, tax, total }
+      const total = proposal.total_cents ?? subtotal + tax
+      console.log("Calculated totals:", { subtotal, tax, total })
+      return { subtotal, tax, total }
+    } catch (error) {
+      console.error("Error calculating totals:", error)
+      return { subtotal: 0, tax: 0, total: proposal.total_cents ?? 0 }
+    }
   }, [proposal.snapshot, proposal.total_cents, sortedLines])
 
   const handleAccept = () => {
@@ -100,9 +112,10 @@ export function ProposalViewClient({ proposal, token }: Props) {
 
   const formatMoney = (value?: number | null) => currency.format((value ?? 0) / 100)
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-8">
-      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+  try {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-8">
+        <div className="mx-auto flex max-w-5xl flex-col gap-6">
         <header className="rounded-lg bg-card p-6 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="space-y-2">
@@ -268,7 +281,25 @@ export function ProposalViewClient({ proposal, token }: Props) {
       </div>
     </div>
   )
+  } catch (error) {
+    console.error("Error rendering proposal:", error)
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-8">
+        <div className="mx-auto flex max-w-5xl flex-col gap-6">
+          <div className="rounded-lg bg-red-50 p-6 text-center">
+            <h1 className="text-2xl font-bold text-red-600">Error Loading Proposal</h1>
+            <p className="mt-2 text-red-700">There was an error loading this proposal. Please check the console for details.</p>
+            <pre className="mt-4 text-sm text-red-600 bg-red-100 p-2 rounded">
+              {error instanceof Error ? error.message : String(error)}
+            </pre>
+          </div>
+        </div>
+      </div>
+    )
+  }
 }
+
+
 
 
 

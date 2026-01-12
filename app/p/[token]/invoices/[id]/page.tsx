@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { createPaymentIntent } from "@/lib/services/payments"
+import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { InvoicePortalClient } from "./portal-invoice-client"
 
 interface Params {
@@ -55,7 +56,8 @@ export default async function InvoicePortalPage({ params }: Params) {
     }
   }
 
-  return <InvoicePortalClient invoice={invoice} portalType="client" payment={paymentProps} />
-}
+  const receipts = await listReceiptsForInvoice({ orgId: access.org_id, invoiceId: invoice.id })
 
+  return <InvoicePortalClient invoice={invoice} portalType="client" payment={paymentProps} receipts={receipts} />
+}
 

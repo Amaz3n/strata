@@ -1,0 +1,1 @@
+ALTER TABLE proposals ALTER COLUMN project_id DROP NOT NULL;;

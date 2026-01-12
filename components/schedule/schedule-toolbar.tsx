@@ -4,9 +4,9 @@ import { useState } from "react"
 import { format, addDays, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth, addMonths } from "date-fns"
 import { cn } from "@/lib/utils"
 import { useSchedule } from "./schedule-context"
+import { useIsMobile } from "@/hooks/use-mobile"
 import type { ScheduleViewType, GanttZoomLevel, GroupByOption } from "./types"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import {
   Select,
   SelectContent,
@@ -22,21 +22,20 @@ import {
   DropdownMenuSeparator,
   DropdownMenuCheckboxItem,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Separator } from "@/components/ui/separator"
 import {
   GanttChart,
-  List,
   Calendar,
   Clock,
-  Users,
-  Layers,
   Plus,
   Download,
   Upload,
   Settings2,
-  Filter,
   ZoomIn,
   ZoomOut,
   ChevronLeft,
@@ -46,7 +45,11 @@ import {
   AlertTriangle,
   Eye,
   LayoutGrid,
+  FileText,
+  FileSpreadsheet,
+  Loader2,
 } from "lucide-react"
+import { toast } from "sonner"
 
 interface ScheduleToolbarProps {
   className?: string
@@ -56,7 +59,6 @@ interface ScheduleToolbarProps {
 
 const viewOptions: { value: ScheduleViewType; label: string; icon: typeof GanttChart }[] = [
   { value: "gantt", label: "Gantt", icon: GanttChart },
-  { value: "list", label: "List", icon: List },
   { value: "lookahead", label: "Lookahead", icon: Clock },
 ]
 
@@ -75,7 +77,45 @@ const groupByOptions: { value: GroupByOption; label: string }[] = [
 ]
 
 export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToolbarProps) {
+  const isMobile = useIsMobile()
   const { viewState, setViewState, items, baselines, scrollToToday } = useSchedule()
+  const [isExporting, setIsExporting] = useState<"pdf" | "csv" | null>(null)
+
+  // Export handlers
+  const handleExport = async (exportFormat: "pdf" | "gantt-pdf" | "csv") => {
+    if (!projectId) {
+      toast.error("No project selected")
+      return
+    }
+
+    setIsExporting(exportFormat === "gantt-pdf" ? "pdf" : exportFormat)
+    try {
+      const response = await fetch(`/api/projects/${projectId}/reports/schedule?format=${exportFormat}`)
+
+      if (!response.ok) {
+        throw new Error("Failed to generate export")
+      }
+
+      // Get the blob and trigger download
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = response.headers.get("Content-Disposition")?.split("filename=")[1]?.replace(/"/g, "") || `schedule.${exportFormat === "gantt-pdf" ? "pdf" : exportFormat}`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+
+      const formatLabel = exportFormat === "gantt-pdf" ? "Gantt PDF" : exportFormat.toUpperCase()
+      toast.success(`Schedule exported as ${formatLabel}`)
+    } catch (error) {
+      console.error("Export error:", error)
+      toast.error(`Failed to export schedule`)
+    } finally {
+      setIsExporting(null)
+    }
+  }
 
   // Date range navigation
   const navigateBack = () => {
@@ -129,41 +169,39 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
     }
   }
 
-  // Stats
-  const atRiskCount = items.filter((i) => i.status === "at_risk" || i.status === "blocked").length
-  const completedCount = items.filter((i) => i.status === "completed").length
-
   return (
-    <div className={cn("flex flex-col gap-3 p-4 border-b bg-muted/30", className)}>
+    <div className={cn("flex flex-col gap-2 border-b bg-muted/30", isMobile ? "p-2" : "p-4", className)}>
       {/* Main toolbar row */}
-      <div className="flex items-center justify-between gap-4">
-        {/* Left section - View switcher */}
-        <div className="flex items-center gap-2">
-          <ToggleGroup
-            type="single"
-            value={viewState.view}
-            onValueChange={(value) => value && setViewState({ view: value as ScheduleViewType })}
-            className="bg-background border rounded-lg p-1"
-          >
-            {viewOptions.map((option) => {
-              const Icon = option.icon
-              return (
-                <ToggleGroupItem
-                  key={option.value}
-                  value={option.value}
-                  aria-label={option.label}
-                  className="w-28 justify-center data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
-                >
-                  <Icon className="h-4 w-4 mr-1.5" />
-                  <span className="text-sm hidden sm:inline">{option.label}</span>
-                </ToggleGroupItem>
-              )
-            })}
-          </ToggleGroup>
-        </div>
+      <div className={cn("flex items-center gap-2", isMobile ? "justify-between" : "justify-between gap-4")}>
+        {/* Left section - View switcher (hidden on mobile) */}
+        {!isMobile && (
+          <div className="flex items-center gap-2">
+            <ToggleGroup
+              type="single"
+              value={viewState.view}
+              onValueChange={(value) => value && setViewState({ view: value as ScheduleViewType })}
+              className="bg-background border rounded-lg p-1"
+            >
+              {viewOptions.map((option) => {
+                const Icon = option.icon
+                return (
+                  <ToggleGroupItem
+                    key={option.value}
+                    value={option.value}
+                    aria-label={option.label}
+                    className="w-28 justify-center data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                  >
+                    <Icon className="h-4 w-4 mr-1.5" />
+                    <span className="text-sm">{option.label}</span>
+                  </ToggleGroupItem>
+                )
+              })}
+            </ToggleGroup>
+          </div>
+        )}
 
-        {/* Center section - Date navigation (only for Gantt view) */}
-        {viewState.view === "gantt" && (
+        {/* Center section - Date navigation (only for Gantt view, hidden on mobile) */}
+        {!isMobile && viewState.view === "gantt" && (
           <div className="flex flex-col items-center justify-center gap-1">
             <div className="flex items-center gap-1">
               <Button variant="outline" size="icon" onClick={navigateBack}>
@@ -182,157 +220,175 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
           </div>
         )}
 
-        {/* Right section - Actions */}
-        <div className="flex items-center gap-2">
-          {/* Stats badges */}
-          {atRiskCount > 0 && (
-            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300">
-              <AlertTriangle className="h-3 w-3 mr-1" />
-              {atRiskCount} at risk
-            </Badge>
-          )}
-          <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300">
-            {completedCount}/{items.length} done
-          </Badge>
-
-          <Separator orientation="vertical" className="h-6 mx-2" />
-
-          {/* Add item button */}
-          <Button onClick={onAddItem} className="gap-2">
-            <Plus className="h-4 w-4" />
-            <span className="hidden sm:inline">Add Item</span>
-          </Button>
-        </div>
+        {/* Right section - Actions (hidden for lookahead view, button is in the view itself) */}
+        {viewState.view === "gantt" && (
+          <div className="flex items-center justify-end">
+            {/* Add item button (icon-only on mobile) */}
+            <Button onClick={onAddItem} size={isMobile ? "icon" : "default"} className={isMobile ? "h-8 w-8" : "gap-2"}>
+              <Plus className="h-4 w-4" />
+              {!isMobile && <span>Add Item</span>}
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* Secondary toolbar row - View-specific controls */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          {/* Zoom controls (Gantt only) */}
-          {viewState.view === "gantt" && (
-            <>
-              <div className="flex items-center gap-1 bg-background border rounded-md p-1">
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={zoomOut}>
-                  <ZoomOut className="h-3.5 w-3.5" />
-                </Button>
+      {/* Secondary toolbar row - View-specific controls (hidden on mobile) */}
+      {!isMobile && (
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            {/* Zoom controls (Gantt only) */}
+            {viewState.view === "gantt" && (
+              <>
+                <div className="flex items-center gap-1 bg-background border rounded-md p-1">
+                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={zoomOut}>
+                    <ZoomOut className="h-3.5 w-3.5" />
+                  </Button>
+                  <Select
+                    value={viewState.zoom}
+                    onValueChange={(value) => setViewState({ zoom: value as GanttZoomLevel })}
+                  >
+                    <SelectTrigger className="h-7 w-28 border-0 bg-transparent">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {zoomOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={zoomIn}>
+                    <ZoomIn className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+
+                <Separator orientation="vertical" className="h-6" />
+              </>
+            )}
+
+            {/* Group by */}
+            {viewState.view === "gantt" && (
+              <div className="flex items-center gap-2">
+                <LayoutGrid className="h-4 w-4 text-muted-foreground" />
                 <Select
-                  value={viewState.zoom}
-                  onValueChange={(value) => setViewState({ zoom: value as GanttZoomLevel })}
+                  value={viewState.groupBy}
+                  onValueChange={(value) => setViewState({ groupBy: value as GroupByOption })}
                 >
-                  <SelectTrigger className="h-7 w-28 border-0 bg-transparent">
-                    <SelectValue />
+                  <SelectTrigger className="h-8 w-32">
+                    <SelectValue placeholder="Group by" />
                   </SelectTrigger>
                   <SelectContent>
-                    {zoomOptions.map((option) => (
+                    {groupByOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
                         {option.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={zoomIn}>
-                  <ZoomIn className="h-3.5 w-3.5" />
-                </Button>
               </div>
+            )}
+          </div>
 
-              <Separator orientation="vertical" className="h-6" />
-            </>
-          )}
+          <div className="flex items-center gap-2">
+            {/* View options dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2">
+                  <Eye className="h-4 w-4" />
+                  <span>Display</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>Display Options</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuCheckboxItem
+                  checked={viewState.showDependencies}
+                  onCheckedChange={(checked) => setViewState({ showDependencies: checked })}
+                >
+                  <Link2 className="h-4 w-4 mr-2" />
+                  Show Dependencies
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={viewState.showCriticalPath}
+                  onCheckedChange={(checked) => setViewState({ showCriticalPath: checked })}
+                >
+                  <AlertTriangle className="h-4 w-4 mr-2" />
+                  Highlight Critical Path
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={viewState.showBaseline}
+                  onCheckedChange={(checked) => setViewState({ showBaseline: checked })}
+                  disabled={baselines.length === 0}
+                >
+                  <Baseline className="h-4 w-4 mr-2" />
+                  Show Baseline
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={viewState.showWeekends}
+                  onCheckedChange={(checked) => setViewState({ showWeekends: checked })}
+                >
+                  <Calendar className="h-4 w-4 mr-2" />
+                  Show Weekends
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
-          {/* Group by */}
-          {(viewState.view === "gantt" || viewState.view === "list") && (
-            <div className="flex items-center gap-2">
-              <LayoutGrid className="h-4 w-4 text-muted-foreground" />
-              <Select
-                value={viewState.groupBy}
-                onValueChange={(value) => setViewState({ groupBy: value as GroupByOption })}
-              >
-                <SelectTrigger className="h-8 w-32">
-                  <SelectValue placeholder="Group by" />
-                </SelectTrigger>
-                <SelectContent>
-                  {groupByOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+            {/* Export button */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2" disabled={!projectId || isExporting !== null}>
+                  {isExporting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  <span>Export</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>Export Schedule</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => handleExport("gantt-pdf")} disabled={isExporting !== null}>
+                  <GanttChart className="h-4 w-4 mr-2" />
+                  Export Gantt Chart (PDF)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleExport("pdf")} disabled={isExporting !== null}>
+                  <FileText className="h-4 w-4 mr-2" />
+                  Export Table (PDF)
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => handleExport("csv")} disabled={isExporting !== null}>
+                  <FileSpreadsheet className="h-4 w-4 mr-2" />
+                  Export as CSV
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* More actions */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon">
+                  <Settings2 className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem>
+                  <Upload className="h-4 w-4 mr-2" />
+                  Import from Template
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem>
+                  <Baseline className="h-4 w-4 mr-2" />
+                  Save Baseline
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
-
-        <div className="flex items-center gap-2">
-          {/* View options dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <Eye className="h-4 w-4" />
-                <span className="hidden sm:inline">Display</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel>Display Options</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuCheckboxItem
-                checked={viewState.showDependencies}
-                onCheckedChange={(checked) => setViewState({ showDependencies: checked })}
-              >
-                <Link2 className="h-4 w-4 mr-2" />
-                Show Dependencies
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={viewState.showCriticalPath}
-                onCheckedChange={(checked) => setViewState({ showCriticalPath: checked })}
-              >
-                <AlertTriangle className="h-4 w-4 mr-2" />
-                Highlight Critical Path
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={viewState.showBaseline}
-                onCheckedChange={(checked) => setViewState({ showBaseline: checked })}
-                disabled={baselines.length === 0}
-              >
-                <Baseline className="h-4 w-4 mr-2" />
-                Show Baseline
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={viewState.showWeekends}
-                onCheckedChange={(checked) => setViewState({ showWeekends: checked })}
-              >
-                <Calendar className="h-4 w-4 mr-2" />
-                Show Weekends
-              </DropdownMenuCheckboxItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {/* More actions */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon">
-                <Settings2 className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>Actions</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem>
-                <Download className="h-4 w-4 mr-2" />
-                Export Schedule
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <Upload className="h-4 w-4 mr-2" />
-                Import from Template
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem>
-                <Baseline className="h-4 w-4 mr-2" />
-                Save Baseline
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
+      )}
     </div>
   )
 }

@@ -32,6 +32,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
       token={token}
       portalType="client"
       pinRequired={access.pin_required}
+      canMessage={access.permissions.can_message}
     />
   )
 }

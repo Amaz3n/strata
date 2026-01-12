@@ -6,16 +6,17 @@ import { toast } from "sonner"
 
 import type { Project, Submittal } from "@/lib/types"
 import type { SubmittalInput } from "@/lib/validation/submittals"
-import { createSubmittalAction } from "@/app/submittals/actions"
+import { createSubmittalAction } from "@/app/(app)/submittals/actions"
 import { SubmittalForm } from "@/components/submittals/submittal-form"
 import { SubmittalDetailSheet } from "@/components/submittals/submittal-detail-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Plus, Calendar, FileText, Building2 } from "@/components/icons"
+import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -45,7 +46,9 @@ interface SubmittalsClientProps {
 
 export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps) {
   const [items, setItems] = useState<Submittal[]>(submittals)
+  const [search, setSearch] = useState("")
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
   const [selectedSubmittal, setSelectedSubmittal] = useState<Submittal | null>(null)
@@ -57,17 +60,20 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
   }
 
   const filtered = useMemo(() => {
-    if (filterProjectId === "all") return items
-    return items.filter((item) => item.project_id === filterProjectId)
-  }, [filterProjectId, items])
+    const safeItems = items ?? []
+    const term = search.toLowerCase()
+    return safeItems.filter((item) => {
+      const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
+      const matchesStatus = statusFilter === "all" || item.status === statusFilter
+      const matchesSearch =
+        term.length === 0 ||
+        [item.submittal_number ?? "", item.title ?? "", item.description ?? ""].some((value) =>
+          value.toLowerCase().includes(term),
+        )
+      return matchesProject && matchesStatus && matchesSearch
+    })
+  }, [filterProjectId, items, search, statusFilter])
 
-  const stats = useMemo(() => {
-    return {
-      total: items.length,
-      open: items.filter((s) => s.status !== "approved" && s.status !== "rejected").length,
-      approved: items.filter((s) => s.status === "approved").length,
-    }
-  }, [items])
 
   async function handleCreate(values: SubmittalInput) {
     startTransition(async () => {
@@ -84,45 +90,7 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Submittals</h1>
-          <p className="text-muted-foreground text-sm">Track product data, shop drawings, and approvals.</p>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <Badge variant="secondary" className="text-xs">
-              Total {stats.total}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Open {stats.open}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Approved {stats.approved}
-            </Badge>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-full sm:w-[220px]">
-              <SelectValue placeholder="Filter by project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-2" />
-            New submittal
-          </Button>
-        </div>
-      </div>
-
+    <div className="space-y-4">
       <SubmittalForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
@@ -139,83 +107,138 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
         onOpenChange={setDetailSheetOpen}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((submittal) => (
-          <Card
-            key={submittal.id}
-            className="h-full flex flex-col cursor-pointer hover:border-primary/50 transition-colors"
-            onClick={() => handleSubmittalClick(submittal)}
-          >
-            <CardHeader className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base font-semibold">
-                  {submittal.submittal_number} — {submittal.title}
-                </CardTitle>
-                <Badge variant="secondary" className={`capitalize border ${statusStyles[submittal.status] ?? ""}`}>
-                  {statusLabels[submittal.status] ?? submittal.status}
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Building2 className="h-4 w-4" />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-1 items-center gap-2">
+          <Input
+            placeholder="Search submittals..."
+            className="w-full sm:w-72"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Project" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All projects</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {(["draft", "submitted", "in_review", "approved", "rejected"] as StatusKey[]).map((status) => (
+                <SelectItem key={status} value={status}>
+                  {statusLabels[status]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button onClick={() => setSheetOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          New submittal
+        </Button>
+      </div>
+
+      <div className="rounded-lg border overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="divide-x">
+              <TableHead className="px-4 py-4">Submittal No.</TableHead>
+              <TableHead className="px-4 py-4">Title</TableHead>
+              <TableHead className="px-4 py-4">Project</TableHead>
+              <TableHead className="px-4 py-4 text-center">Status</TableHead>
+              <TableHead className="px-4 py-4 text-center">Due Date</TableHead>
+              <TableHead className="px-4 py-4 text-center">Spec Section</TableHead>
+              <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.map((submittal) => (
+              <TableRow key={submittal.id} className="divide-x">
+                <TableCell className="px-4 py-4">
+                  <div className="font-semibold">{submittal.submittal_number}</div>
+                </TableCell>
+                <TableCell className="px-4 py-4">
+                  <button
+                    type="button"
+                    onClick={() => handleSubmittalClick(submittal)}
+                    className="font-semibold text-left hover:text-primary transition-colors"
+                    aria-label={`View submittal ${submittal.submittal_number ?? submittal.title ?? ""}`}
+                  >
+                    {submittal.title}
+                  </button>
+                </TableCell>
+                <TableCell className="px-4 py-4 text-muted-foreground">
                   {projects.find((p) => p.id === submittal.project_id)?.name ?? "Unknown project"}
-                </span>
-                {submittal.due_date && (
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-4 w-4" />
-                    Due {formatDate(submittal.due_date)}
-                  </span>
-                )}
-              </div>
-            </CardHeader>
-
-            <CardContent className="flex-1 space-y-3">
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Description</span>
-                  <Badge variant="outline" className="text-[11px]">
-                    {submittal.spec_section || "No spec"}
+                </TableCell>
+                <TableCell className="px-4 py-4 text-center">
+                  <Badge variant="secondary" className={`capitalize border ${statusStyles[submittal.status] ?? ""}`}>
+                    {statusLabels[submittal.status] ?? submittal.status}
                   </Badge>
-                </div>
-                <p className="text-sm text-foreground">
-                  {submittal.description || "No description provided for this submittal."}
-                </p>
-              </div>
-              {submittal.submittal_type && (
-                <div className="text-xs text-muted-foreground">
-                  Type: {submittal.submittal_type}
-                </div>
-              )}
-              {submittal.reviewed_at && (
-                <div className="text-xs text-muted-foreground">
-                  Reviewed {formatDate(submittal.reviewed_at)}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
-
-        {filtered.length === 0 && (
-          <div className="col-span-full rounded-lg border border-dashed p-8 text-center">
-            <p className="text-sm text-muted-foreground">No submittals yet.</p>
-            <Button className="mt-3" onClick={() => setSheetOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create your first submittal
-            </Button>
-          </div>
-        )}
-
-        {isPending && filtered.length === 0 && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {[...Array(3)].map((_, idx) => (
-              <Skeleton key={idx} className="h-44 w-full rounded-lg" />
+                </TableCell>
+                <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                  {submittal.due_date ? format(new Date(submittal.due_date), "MMM d, yyyy") : "—"}
+                </TableCell>
+                <TableCell className="px-4 py-4 text-center">
+                  <Badge variant="outline" className="text-[11px]">
+                    {submittal.spec_section || "—"}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-center w-12 px-4 py-4">
+                  <div className="flex justify-center">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">Submittal actions</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => handleSubmittalClick(submittal)}>
+                          View details
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </TableCell>
+              </TableRow>
             ))}
-          </div>
-        )}
+            {filtered.length === 0 && (
+              <TableRow className="divide-x">
+                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                      <FileText className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="font-medium">No submittals yet</p>
+                      <p className="text-sm">Create your first submittal to get started.</p>
+                    </div>
+                    <Button onClick={() => setSheetOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Create submittal
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
       </div>
     </div>
   )
 }
+
+
 
 
 

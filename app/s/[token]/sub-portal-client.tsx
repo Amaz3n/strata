@@ -68,6 +68,7 @@ export function SubPortalClient({
               <SubDocumentsTab
                 files={data.sharedFiles}
                 canDownload={canDownloadFiles}
+                portalToken={token}
               />
             )}
             {activeTab === "rfis" && (
@@ -81,8 +82,7 @@ export function SubPortalClient({
                 messages={data.messages}
                 token={token}
                 canMessage={canMessage}
-                projectId={data.project.id}
-                companyId={data.company.id}
+                senderName={data.company.name}
               />
             )}
           </main>
@@ -125,6 +125,7 @@ export function SubPortalClient({
               <SubDocumentsTab
                 files={data.sharedFiles}
                 canDownload={canDownloadFiles}
+                portalToken={token}
               />
             </TabsContent>
             <TabsContent value="rfis">
@@ -138,8 +139,7 @@ export function SubPortalClient({
                 messages={data.messages}
                 token={token}
                 canMessage={canMessage}
-                projectId={data.project.id}
-                companyId={data.company.id}
+                senderName={data.company.name}
               />
             </TabsContent>
           </Tabs>

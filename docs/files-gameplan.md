@@ -794,3 +794,45 @@ Start Phase 1 with a concrete scope:
 - Acknowledgement workflows: vendor must acknowledge latest sheets
 - Closeout binder generator: one-click packaging of key artifacts
 
+---
+
+## 12) Finish-Line Checklist (Make Files “Fully Connected”)
+
+This is the minimum integration work needed to make the current implementation feel complete and production‑ready for PMs.
+
+### 12.1 Canonical Documents Experience
+- [x] Unify the **project Files tab** with the **Documents Center** (same UI + metadata + filters).
+  - [x] Expose a project‑scoped Documents Center view and use it in navigation.
+
+### 12.2 True Versioning End‑to‑End
+- [x] Wire `VersionHistoryPanel` into the file viewer.
+- [x] Ensure **initial upload creates a `doc_versions` record** so “version 1” exists.
+- [x] Make version actions consistent across project document views.
+
+### 12.3 Attachments Everywhere
+- Extend `EntityAttachments` to the remaining modules:
+  - [x] Tasks
+  - [x] Daily Logs
+  - [x] Invoices
+  - [x] Commitments
+  - [x] Bills
+  - [x] Selections
+- Ensure attachment lists show in Documents Center (linked entities visible).
+
+### 12.4 Sharing Model Consistency
+- [x] Add per‑file share controls in the Files UI (client/sub/internal).
+- [x] Align Files and Drawings sharing semantics (`share_with_clients`, `share_with_subs`).
+- [x] Ensure portal lists reflect the same sharing rules.
+
+### 12.5 Access Logging
+- [x] Log view/download events into `file_access_events`.
+- [x] Add lightweight audit visibility in file viewer (optional but recommended).
+
+### 12.6 Category + Taxonomy Cleanup
+- [x] Make portal document categories align with file categories.
+- [x] Ensure search includes tags + description + name.
+- [x] Display tags/folder consistently across all file views.
+
+### 12.7 Cross‑Module Visibility
+- [x] Documents Center should show “attached to” context (RFI, Submittal, CO, Task, etc.).
+- [x] From any entity detail, “View in Documents” should deep‑link into file viewer.

@@ -33,7 +33,7 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Badge } from "@/components/ui/badge"
 import { PIN_ENTITY_TYPE_LABELS } from "@/lib/validation/drawings"
-import type { PinEntityType, DrawingSheet } from "@/app/drawings/actions"
+import type { PinEntityType, DrawingSheet } from "@/app/(app)/drawings/actions"
 
 // Entity type icons
 const ENTITY_ICONS: Record<PinEntityType, React.ElementType> = {

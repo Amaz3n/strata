@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useActionState } from "react"
 
-import { signUpAction, type AuthState } from "@/app/auth/actions"
+import { signUpAction, type AuthState } from "@/app/(auth)/auth/actions"
 import { AlertCircle, CheckCircle } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { CheckCircle, Camera, ClipboardList, Receipt, CalendarDays, Clock } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
-import { getOrgActivity } from "@/lib/services/events"
+import { getOrgActivityAction } from "@/app/actions/dashboard"
 
 const activityIcons: Record<string, LucideIcon> = {
   task_completed: CheckCircle,
@@ -59,7 +59,7 @@ export async function ActivityFeed() {
 
 async function loadActivity() {
   try {
-    return await getOrgActivity(12)
+    return await getOrgActivityAction(12)
   } catch (error) {
     console.error("Unable to load activity feed", error)
     return []

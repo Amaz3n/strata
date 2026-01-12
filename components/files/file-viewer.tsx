@@ -15,9 +15,11 @@ import {
   Minimize2,
   FileText,
   Loader2,
+  History,
 } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { type FileWithDetails, isImageFile, isPdfFile, formatFileSize } from "./types"
+import { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
 
 interface FileViewerProps {
   file: FileWithDetails | null
@@ -25,6 +27,14 @@ interface FileViewerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onDownload?: (file: FileWithDetails) => void
+  versions?: FileVersionInfo[]
+  onUploadVersion?: (file: File, label?: string, notes?: string) => Promise<void>
+  onMakeCurrentVersion?: (versionId: string) => Promise<void>
+  onDownloadVersion?: (versionId: string) => Promise<void>
+  onUpdateVersion?: (versionId: string, updates: { label?: string; notes?: string }) => Promise<void>
+  onDeleteVersion?: (versionId: string) => Promise<void>
+  onRefreshVersions?: () => Promise<void>
+  onFileChange?: (file: FileWithDetails) => void
 }
 
 export function FileViewer({
@@ -33,10 +43,19 @@ export function FileViewer({
   open,
   onOpenChange,
   onDownload,
+  versions,
+  onUploadVersion,
+  onMakeCurrentVersion,
+  onDownloadVersion,
+  onUpdateVersion,
+  onDeleteVersion,
+  onRefreshVersions,
+  onFileChange,
 }: FileViewerProps) {
   const [zoom, setZoom] = useState(1)
   const [rotation, setRotation] = useState(0)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showVersions, setShowVersions] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null)
@@ -52,6 +71,8 @@ export function FileViewer({
     }
   }, [file, files])
 
+  const currentFile = files.length > 0 ? files[currentIndex] : file
+
   // Reset state when file changes
   useEffect(() => {
     setZoom(1)
@@ -60,10 +81,24 @@ export function FileViewer({
     setImageDimensions(null)
   }, [file?.id])
 
-  const currentFile = files.length > 0 ? files[currentIndex] : file
+  useEffect(() => {
+    if (currentFile) {
+      onFileChange?.(currentFile)
+    }
+  }, [currentFile?.id, onFileChange])
   const hasMultiple = files.length > 1
   const canPrev = hasMultiple && currentIndex > 0
   const canNext = hasMultiple && currentIndex < files.length - 1
+  const hasVersionsPanel =
+    Boolean(versions) &&
+    Boolean(
+      onUploadVersion &&
+      onMakeCurrentVersion &&
+      onDownloadVersion &&
+      onUpdateVersion &&
+      onDeleteVersion &&
+      onRefreshVersions
+    )
 
   const handlePrev = useCallback(() => {
     if (canPrev) {
@@ -274,6 +309,20 @@ export function FileViewer({
               </Button>
             )}
 
+            {hasVersionsPanel && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  "text-white/80 hover:text-white hover:bg-white/10",
+                  showVersions && "bg-white/10 text-white"
+                )}
+                onClick={() => setShowVersions((prev) => !prev)}
+              >
+                <History className="h-4 w-4" />
+              </Button>
+            )}
+
             <Button
               variant="ghost"
               size="icon"
@@ -330,66 +379,86 @@ export function FileViewer({
         )}
 
         {/* Content */}
-        <div className="flex-1 flex items-center justify-center overflow-hidden relative">
-          {isLoading && (
-            <div className="absolute inset-0 flex items-center justify-center z-10">
-              <Loader2 className="h-8 w-8 animate-spin text-white/60" />
-            </div>
-          )}
+        <div className="flex-1 flex overflow-hidden relative">
+          <div className="flex-1 flex items-center justify-center overflow-hidden relative">
+            {isLoading && (
+              <div className="absolute inset-0 flex items-center justify-center z-10">
+                <Loader2 className="h-8 w-8 animate-spin text-white/60" />
+              </div>
+            )}
 
-          {isImage && currentFile.download_url && (
-            <div
-              className="relative transition-transform duration-200 ease-out flex items-center justify-center"
-              style={{
-                transform: `scale(${zoom}) rotate(${rotation}deg)`,
-              }}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={currentFile.download_url}
-                alt={currentFile.file_name}
+            {isImage && currentFile.download_url && (
+              <div
+                className="relative transition-transform duration-200 ease-out flex items-center justify-center"
+                style={{
+                  transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={currentFile.download_url}
+                  alt={currentFile.file_name}
+                  className={cn(
+                    "max-w-full max-h-full w-auto h-auto object-contain",
+                    isLoading && "opacity-0"
+                  )}
+                  onLoad={handleImageLoad}
+                  style={{
+                    maxHeight: hasMultiple ? "calc(100% - 80px)" : "100%",
+                  }}
+                />
+              </div>
+            )}
+
+            {isPdf && currentFile.download_url && (
+              <iframe
+                src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
                 className={cn(
-                  "max-w-full max-h-full w-auto h-auto object-contain",
+                  "w-full h-full bg-white",
                   isLoading && "opacity-0"
                 )}
-                onLoad={handleImageLoad}
-                style={{
-                  maxHeight: hasMultiple ? "calc(100% - 80px)" : "100%",
-                }}
+                onLoad={() => setIsLoading(false)}
+                title={currentFile.file_name}
               />
-            </div>
-          )}
+            )}
 
-          {isPdf && currentFile.download_url && (
-            <iframe
-              src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
-              className={cn(
-                "w-full h-full bg-white",
-                isLoading && "opacity-0"
-              )}
-              onLoad={() => setIsLoading(false)}
-              title={currentFile.file_name}
-            />
-          )}
+            {!isImage && !isPdf && (
+              <div className="flex flex-col items-center justify-center gap-4 text-white/80">
+                <FileText className="h-16 w-16" />
+                <div className="text-center">
+                  <p className="font-medium">{currentFile.file_name}</p>
+                  <p className="text-sm opacity-60 mt-1">
+                    Preview not available for this file type
+                  </p>
+                  {onDownload && (
+                    <Button
+                      variant="secondary"
+                      className="mt-4"
+                      onClick={() => onDownload(currentFile)}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download to view
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
 
-          {!isImage && !isPdf && (
-            <div className="flex flex-col items-center justify-center gap-4 text-white/80">
-              <FileText className="h-16 w-16" />
-              <div className="text-center">
-                <p className="font-medium">{currentFile.file_name}</p>
-                <p className="text-sm opacity-60 mt-1">
-                  Preview not available for this file type
-                </p>
-                {onDownload && (
-                  <Button
-                    variant="secondary"
-                    className="mt-4"
-                    onClick={() => onDownload(currentFile)}
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    Download to view
-                  </Button>
-                )}
+          {hasVersionsPanel && showVersions && (
+            <div className="w-[360px] bg-background text-foreground border-l border-border overflow-y-auto">
+              <div className="p-4">
+                <VersionHistoryPanel
+                  fileId={currentFile.id}
+                  fileName={currentFile.file_name}
+                  versions={versions ?? []}
+                  onUploadVersion={onUploadVersion!}
+                  onMakeCurrent={onMakeCurrentVersion!}
+                  onDownloadVersion={onDownloadVersion!}
+                  onUpdateVersion={onUpdateVersion!}
+                  onDeleteVersion={onDeleteVersion!}
+                  onRefresh={onRefreshVersions!}
+                />
               </div>
             </div>
           )}
@@ -438,4 +507,3 @@ export function FileViewer({
     </div>
   )
 }
-

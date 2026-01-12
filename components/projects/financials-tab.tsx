@@ -1,27 +1,45 @@
-import type { Contract, DrawSchedule, Retainage } from "@/lib/types"
-import type { ProjectStats } from "@/app/projects/[id]/actions"
+import type { Contract, DrawSchedule, Retainage, ScheduleItem } from "@/lib/types"
+import type { ProjectStats } from "@/app/(app)/projects/[id]/actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContractSummaryCard } from "@/components/projects/contract-summary-card"
-import { DrawScheduleTable } from "@/components/projects/draw-schedule-table"
+import { DrawScheduleManager } from "@/components/projects/draw-schedule-manager"
 import { RetainageTracker } from "@/components/projects/retainage-tracker"
 
 interface FinancialsTabProps {
+  projectId: string
   contract: Contract | null
+  approvedChangeOrdersTotalCents?: number
   draws: DrawSchedule[]
   retainage: Retainage[]
   budgetSummary?: ProjectStats["budgetSummary"]
+  scheduleItems?: ScheduleItem[]
   onViewContract?: () => void
 }
 
-export function FinancialsTab({ contract, draws, retainage, budgetSummary, onViewContract }: FinancialsTabProps) {
+export function FinancialsTab({
+  projectId,
+  contract,
+  approvedChangeOrdersTotalCents,
+  draws,
+  retainage,
+  budgetSummary,
+  scheduleItems,
+  onViewContract,
+}: FinancialsTabProps) {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-2">
-        <ContractSummaryCard contract={contract} onView={onViewContract} />
+        <ContractSummaryCard contract={contract} approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents} onView={onViewContract} />
         <BudgetSummaryCard budgetSummary={budgetSummary} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <DrawScheduleTable draws={draws} />
+        <DrawScheduleManager
+          projectId={projectId}
+          initialDraws={draws}
+          contract={contract}
+          approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
+          scheduleItems={scheduleItems}
+        />
         <RetainageTracker retainage={retainage} />
       </div>
     </div>

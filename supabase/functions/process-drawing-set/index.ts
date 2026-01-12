@@ -19,12 +19,151 @@ const DISCIPLINE_PATTERNS: Record<string, RegExp[]> = {
   D: [/^D\d/, /DETAIL/i],
 }
 
+// Image generation configuration
+const IMAGE_CONFIG = {
+  thumbnail: { width: 400, quality: 80 },
+  medium: { width: 1200, quality: 85 },
+  full: { width: 2400, quality: 90 },
+}
+
 interface ProcessingRequest {
   drawingSetId: string
   orgId: string
   projectId: string
   sourceFileId: string
   storagePath: string
+  generateImages?: boolean // Optional flag to enable image generation
+  generateTiles?: boolean // Optional flag to enable tile generation (Foundation v2)
+}
+
+const DRAWINGS_BUCKET = "drawings-images"
+
+interface ImageGenerationResult {
+  thumbPath: string | null
+  mediumPath: string | null
+  fullPath: string | null
+  thumbnailUrl: string | null
+  mediumUrl: string | null
+  fullUrl: string | null
+  width: number | null
+  height: number | null
+}
+
+/**
+ * Attempt to generate images from a PDF page
+ * This is a best-effort operation - if it fails, we fall back to PDF-only
+ *
+ * NOTE: Full image generation requires a Node.js environment with sharp/canvas.
+ * In Deno edge functions, this may not work. A separate migration function
+ * (Phase 4) handles image generation for existing PDFs.
+ */
+async function tryGenerateImages(
+  supabase: ReturnType<typeof createClient>,
+  pdfBytes: Uint8Array,
+  pageIndex: number,
+  orgId: string,
+  projectId: string,
+  drawingSetId: string,
+  sheetVersionId: string
+): Promise<ImageGenerationResult> {
+  const result: ImageGenerationResult = {
+    thumbPath: null,
+    mediumPath: null,
+    fullPath: null,
+    thumbnailUrl: null,
+    mediumUrl: null,
+    fullUrl: null,
+    width: null,
+    height: null,
+  }
+
+  try {
+    // Try to dynamically import pdf-to-img (may not work in all Deno environments)
+    // This is wrapped in a try-catch because esm.sh imports can fail
+    const pdfToImg = await import("https://esm.sh/pdf-to-img@4.2.0")
+
+    // Convert PDF page to PNG buffer
+    const document = await pdfToImg.pdf(new Uint8Array(pdfBytes), {
+      scale: 3.0, // High DPI for quality
+    })
+
+    // Get the specific page
+    let pageBuffer: Uint8Array | null = null
+    let pageNum = 0
+    for await (const page of document) {
+      if (pageNum === pageIndex) {
+        pageBuffer = page
+        break
+      }
+      pageNum++
+    }
+
+    if (!pageBuffer) {
+      console.log(`[Image Gen] Page ${pageIndex} not found`)
+      return result
+    }
+
+    // Try to get image dimensions
+    // For now, we'll estimate based on typical drawing sizes
+    // Full implementation would use sharp to get actual dimensions
+    result.width = 2400 // Estimated
+    result.height = 1800 // Estimated (typical 4:3 aspect ratio)
+
+    const hash = await hashBytes(pageBuffer)
+    const basePath = `${orgId}/${projectId}/drawings/${drawingSetId}/${sheetVersionId}/${hash}`
+
+    // Upload the full-size PNG (best-effort)
+    const fullPath = `${basePath}/full.png`
+
+    const { error: uploadError } = await supabase.storage
+      .from(DRAWINGS_BUCKET)
+      .upload(fullPath, pageBuffer, {
+        contentType: "image/png",
+        cacheControl: "31536000", // 1 year immutable
+        upsert: false,
+      })
+
+    if (uploadError) {
+      console.error(`[Image Gen] Upload failed:`, uploadError)
+      return result
+    }
+
+    // Build public URL
+    const publicUrl = buildPublicUrl(fullPath)
+
+    // Use same path for all sizes for now (tiling handled elsewhere)
+    result.fullPath = fullPath
+    result.mediumPath = fullPath
+    result.thumbPath = fullPath
+    result.fullUrl = publicUrl
+    result.mediumUrl = publicUrl
+    result.thumbnailUrl = publicUrl
+
+    console.log(`[Image Gen] Successfully generated images for page ${pageIndex}`)
+
+  } catch (error) {
+    // Image generation failed - this is expected in some environments
+    // The system will fall back to PDF rendering
+    console.log(`[Image Gen] Skipped (not available in this environment):`,
+      error instanceof Error ? error.message : "Unknown error")
+  }
+
+  return result
+}
+
+async function hashBytes(buffer: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buffer)
+  const hashArray = Array.from(new Uint8Array(digest))
+  const hex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("")
+  return hex.slice(0, 16) // short but content-addressed for immutability
+}
+
+function buildPublicUrl(path: string | null): string | null {
+  if (!path) return null
+  const base = Deno.env.get("SUPABASE_URL")
+  if (!base) return null
+  const normalized = path.startsWith("/") ? path.slice(1) : path
+  return `${base}/storage/v1/object/public/${DRAWINGS_BUCKET}/${encodeURI(normalized)}`
 }
 
 serve(async (req) => {
@@ -45,6 +184,8 @@ serve(async (req) => {
       projectId,
       sourceFileId,
       storagePath,
+      generateImages = true, // Enable by default
+      generateTiles = true, // Enable by default
     }: ProcessingRequest = await req.json()
 
     console.log(`Processing drawing set ${drawingSetId}`)
@@ -95,6 +236,9 @@ serve(async (req) => {
       throw new Error(`Failed to create revision: ${revisionError?.message}`)
     }
 
+    let imagesGenerated = 0
+    let imageGenerationAvailable = true // Track if image gen works in this environment
+
     // Process each page
     for (let i = 0; i < totalPages; i++) {
       const pageNumber = i + 1
@@ -106,6 +250,10 @@ serve(async (req) => {
         const [copiedPage] = await singlePageDoc.copyPages(pdfDoc, [i])
         singlePageDoc.addPage(copiedPage)
         const singlePageBytes = await singlePageDoc.save()
+
+        // Get page dimensions from the PDF
+        const page = pdfDoc.getPage(i)
+        const { width: pdfWidth, height: pdfHeight } = page.getSize()
 
         // Generate sheet number (will be refined with OCR later)
         const sheetNumber = `Sheet-${String(pageNumber).padStart(3, "0")}`
@@ -174,8 +322,8 @@ serve(async (req) => {
           continue
         }
 
-        // Create the sheet version
-        const { error: versionError } = await supabase
+        // Create the sheet version first (without image URLs)
+        const { data: sheetVersion, error: versionError } = await supabase
           .from("drawing_sheet_versions")
           .insert({
             org_id: orgId,
@@ -186,11 +334,81 @@ serve(async (req) => {
             extracted_metadata: {
               original_page: pageNumber,
               auto_classified: true,
+              pdf_width: pdfWidth,
+              pdf_height: pdfHeight,
             },
           })
+          .select("id")
+          .single()
 
-        if (versionError) {
+        if (versionError || !sheetVersion) {
           console.error(`Failed to create sheet version for page ${pageNumber}:`, versionError)
+          continue
+        }
+
+        // Foundation v2: enqueue tile generation as an outbox job (processed by a cron worker)
+        if (generateTiles) {
+          try {
+            await supabase.from("outbox").insert({
+              org_id: orgId,
+              // Some environments have NOT NULL constraints on these columns; set them defensively.
+              // NOTE: outbox.event_id may have an FK to events; leave null to avoid violations.
+              event_id: null,
+              job_type: "generate_drawing_tiles",
+              status: "pending",
+              run_at: new Date().toISOString(),
+              retry_count: 0,
+              last_error: "",
+              payload: {
+                sheetVersionId: sheetVersion.id,
+              },
+            })
+          } catch (e) {
+            console.error(`[Tiles] Failed to enqueue tile job for sheetVersion ${sheetVersion.id}:`, e)
+          }
+        }
+
+        // Try to generate images (if enabled and available in this environment)
+        if (generateImages && imageGenerationAvailable) {
+          const images = await tryGenerateImages(
+            supabase,
+            new Uint8Array(singlePageBytes),
+            0, // Always page 0 since this is a single-page PDF
+            orgId,
+            projectId,
+            drawingSetId,
+            sheetVersion.id
+          )
+
+          // If we got images, update the sheet version
+          if (images.fullPath) {
+            const { error: updateError } = await supabase
+              .from("drawing_sheet_versions")
+              .update({
+                thumb_path: images.thumbPath,
+                medium_path: images.mediumPath,
+                full_path: images.fullPath,
+                tile_manifest_path: null,
+                tiles_base_path: null,
+                thumbnail_url: images.thumbnailUrl,
+                medium_url: images.mediumUrl,
+                full_url: images.fullUrl,
+                image_width: images.width || Math.round(pdfWidth * 3), // Estimate from PDF
+                image_height: images.height || Math.round(pdfHeight * 3),
+                images_generated_at: new Date().toISOString(),
+              })
+              .eq("id", sheetVersion.id)
+
+            if (!updateError) {
+              imagesGenerated++
+            }
+          } else {
+            // Image generation not available, skip for remaining pages
+            if (i === 0) {
+              console.log("[Image Gen] Not available in this environment, falling back to PDF-only")
+              imageGenerationAvailable = false
+            }
+          }
         }
 
         // Update progress
@@ -215,14 +433,36 @@ serve(async (req) => {
       })
       .eq("id", drawingSetId)
 
+    // Refresh the denormalized sheets list (if present) via outbox job.
+    // We enqueue once per set instead of per sheet to avoid expensive refresh storms.
+    try {
+      await supabase.from("outbox").insert({
+        org_id: orgId,
+        // NOTE: outbox.event_id may have an FK to events; leave null to avoid violations.
+        event_id: null,
+        job_type: "refresh_drawing_sheets_list",
+        status: "pending",
+        run_at: new Date().toISOString(),
+        retry_count: 0,
+        last_error: "",
+        payload: { projectId },
+      })
+    } catch (e) {
+      console.error("[Sheets List] Failed to enqueue refresh job:", e)
+    }
+
     console.log(`Drawing set ${drawingSetId} processing complete`)
+    console.log(`Images generated: ${imagesGenerated}/${totalPages}`)
 
     return new Response(
       JSON.stringify({
         success: true,
         drawingSetId,
         totalPages,
-        message: "Processing complete",
+        imagesGenerated,
+        message: imagesGenerated > 0
+          ? "Processing complete with images"
+          : "Processing complete (images pending migration)",
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },

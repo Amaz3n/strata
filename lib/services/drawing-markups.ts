@@ -23,6 +23,25 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
+async function enqueueSheetsListRefresh(orgId: string) {
+  try {
+    const { supabase } = await requireOrgContext(orgId)
+    await supabase.from("outbox").insert({
+      org_id: orgId,
+      // outbox.event_id may have an FK to events; leave null unless you have a real event row
+      event_id: null,
+      job_type: "refresh_drawing_sheets_list",
+      status: "pending",
+      run_at: new Date().toISOString(),
+      retry_count: 0,
+      last_error: "",
+      payload: {},
+    })
+  } catch (e) {
+    console.error("[drawings] Failed to enqueue drawing_sheets_list refresh:", e)
+  }
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -67,6 +86,19 @@ export interface DrawingPin {
   // Related entity data (populated on fetch)
   entity_title?: string
   entity_status?: string
+}
+
+/**
+ * Aggregated status counts for a sheet's pins.
+ * Used for status indicator dots on sheet cards.
+ */
+export interface SheetStatusCounts {
+  open: number
+  inProgress: number
+  completed: number
+  total: number
+  byType: Record<string, number>    // e.g., { task: 3, rfi: 1 }
+  byStatus: Record<string, number>  // e.g., { open: 2, in_progress: 1 }
 }
 
 // ============================================================================
@@ -257,6 +289,9 @@ export async function createDrawingMarkup(
     },
   })
 
+  // Keep denormalized list counts fresh (best-effort).
+  await enqueueSheetsListRefresh(resolvedOrgId)
+
   return mapDrawingMarkup(data)
 }
 
@@ -316,6 +351,8 @@ export async function updateDrawingMarkup(
     after: data,
   })
 
+  await enqueueSheetsListRefresh(resolvedOrgId)
+
   return mapDrawingMarkup(data)
 }
 
@@ -354,6 +391,8 @@ export async function deleteDrawingMarkup(markupId: string, orgId?: string): Pro
     entityId: markupId,
     before: existing,
   })
+
+  await enqueueSheetsListRefresh(resolvedOrgId)
 }
 
 /**
@@ -630,6 +669,8 @@ export async function createDrawingPin(
     },
   })
 
+  await enqueueSheetsListRefresh(resolvedOrgId)
+
   return mapDrawingPin(data)
 }
 
@@ -692,6 +733,8 @@ export async function updateDrawingPin(
     after: data,
   })
 
+  await enqueueSheetsListRefresh(resolvedOrgId)
+
   return mapDrawingPin(data)
 }
 
@@ -730,6 +773,8 @@ export async function deleteDrawingPin(pinId: string, orgId?: string): Promise<v
     entityId: pinId,
     before: existing,
   })
+
+  await enqueueSheetsListRefresh(resolvedOrgId)
 }
 
 /**
@@ -865,4 +910,70 @@ export async function getPinCountsByEntityType(
   }
 
   return counts as Record<PinEntityType, number>
+}
+
+/**
+ * Get aggregated pin status counts for multiple sheets.
+ * Optimized for batch loading in grid/list views.
+ */
+export async function getSheetStatusCounts({
+  sheetIds,
+  orgId,
+}: {
+  sheetIds: string[]
+  orgId?: string
+}): Promise<Record<string, SheetStatusCounts>> {
+  if (sheetIds.length === 0) {
+    return {}
+  }
+
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("drawing_pins")
+    .select("drawing_sheet_id, status, entity_type")
+    .eq("org_id", resolvedOrgId)
+    .in("drawing_sheet_id", sheetIds)
+
+  if (error) {
+    throw new Error(`Failed to get sheet status counts: ${error.message}`)
+  }
+
+  // Initialize counts for all sheets
+  const counts: Record<string, SheetStatusCounts> = {}
+
+  for (const sheetId of sheetIds) {
+    counts[sheetId] = {
+      open: 0,
+      inProgress: 0,
+      completed: 0,
+      total: 0,
+      byType: {},
+      byStatus: {},
+    }
+  }
+
+  // Aggregate by sheet
+  for (const pin of data ?? []) {
+    const sheetCounts = counts[pin.drawing_sheet_id]
+    if (!sheetCounts) continue
+
+    sheetCounts.total++
+
+    // Aggregate by status category
+    const status = pin.status ?? "unknown"
+    if (["open", "pending"].includes(status)) {
+      sheetCounts.open++
+    } else if (status === "in_progress") {
+      sheetCounts.inProgress++
+    } else if (["closed", "approved"].includes(status)) {
+      sheetCounts.completed++
+    }
+
+    // Detailed breakdowns
+    sheetCounts.byType[pin.entity_type] = (sheetCounts.byType[pin.entity_type] || 0) + 1
+    sheetCounts.byStatus[status] = (sheetCounts.byStatus[status] || 0) + 1
+  }
+
+  return counts
 }

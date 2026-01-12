@@ -1,0 +1,1 @@
+ALTER TABLE estimates ADD COLUMN IF NOT EXISTS valid_until DATE;;

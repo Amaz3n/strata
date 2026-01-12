@@ -1,0 +1,1 @@
+ALTER TABLE estimates ALTER COLUMN project_id DROP NOT NULL;;

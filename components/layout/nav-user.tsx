@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { signOutAction } from "@/app/auth/actions"
+import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   Bell,
   ChevronsUpDown,

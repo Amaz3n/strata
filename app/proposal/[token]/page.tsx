@@ -18,25 +18,35 @@ export default async function ProposalPage({ params }: Params) {
   }
 
   const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
+  console.log("Looking up proposal with token:", token.substring(0, 10) + "...", "hash:", tokenHash.substring(0, 10) + "...")
+
   const supabase = createServiceSupabaseClient()
 
-  const { data: proposal } = await supabase
+  const { data: proposal, error: proposalError } = await supabase
     .from("proposals")
     .select(
       `
         *,
-        lines:proposal_lines(* order by sort_order),
-        project:projects(name, address),
-        org:orgs(name, logo_url),
+        lines:proposal_lines(*),
+        project:projects(name, location),
+        org:orgs(name),
         recipient:contacts(full_name, email)
       `,
     )
-    .or(`token.eq.${token},token_hash.eq.${tokenHash}`)
+    .eq("token_hash", tokenHash)
     .maybeSingle()
 
+  if (proposalError) {
+    console.error("Proposal query error:", proposalError)
+    throw new Error(`Database error: ${proposalError.message}`)
+  }
+
   if (!proposal) {
+    console.log("Proposal not found for token:", token, "hash:", tokenHash)
     notFound()
   }
+
+  console.log("Found proposal:", proposal.id, "status:", proposal.status)
 
   if (!proposal.viewed_at) {
     await supabase.from("proposals").update({ viewed_at: new Date().toISOString() }).eq("id", proposal.id)
@@ -72,5 +82,7 @@ export default async function ProposalPage({ params }: Params) {
 
   return <ProposalViewClient proposal={proposal as any} token={token} />
 }
+
+
 
 

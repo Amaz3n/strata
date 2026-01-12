@@ -10,6 +10,7 @@ import { recordEvent } from "@/lib/services/events"
 import { sendEmail } from "@/lib/services/mailer"
 import { markReservationUsed } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
+import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 
 type InvoiceRow = {
   id: string
@@ -207,7 +208,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     issue_date: input.issue_date ?? null,
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
-    client_visible: input.client_visible ?? false,
+    client_visible: shouldGenerateToken,
     subtotal_cents: totals.subtotal_cents,
     tax_cents: totals.tax_cents,
     total_cents: totals.total_cents,
@@ -222,7 +223,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       customer_name: input.customer_name,
       customer_email: input.sent_to_emails?.[0],
     },
-    sent_at: input.status === "sent" || input.client_visible ? new Date().toISOString() : null,
+    sent_at: shouldGenerateToken ? new Date().toISOString() : null,
     sent_to_emails: input.sent_to_emails ?? null,
   }
 
@@ -268,6 +269,22 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents },
   })
 
+  if (payload.client_visible || payload.status === "sent") {
+    await recordEvent({
+      orgId: resolvedOrgId,
+      eventType: "invoice_sent",
+      entityType: "invoice",
+      entityId: data.id,
+      payload: {
+        invoice_number: input.invoice_number,
+        project_id: input.project_id,
+        total_cents: totals.total_cents,
+        sent_to_emails: payload.sent_to_emails,
+      },
+      channel: "notification",
+    })
+  }
+
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -303,7 +320,7 @@ export async function updateInvoice({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error: existingError } = await supabase
     .from("invoices")
-    .select("id, org_id, token, client_visible, status, sent_at, sent_to_emails, metadata")
+    .select("id, org_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata")
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -314,9 +331,11 @@ export async function updateInvoice({
 
   const lines = normalizeLines(input.lines)
   const totals = calculateTotals(input.lines, input.tax_rate)
-  const shouldGenerateToken = input.client_visible === true || input.status === "sent"
+  const shouldGenerateToken =
+    existing.token != null || existing.client_visible === true || input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? existing.token ?? randomUUID() : existing.token ?? null
   const sentAt = shouldGenerateToken ? existing.sent_at ?? new Date().toISOString() : existing.sent_at ?? null
+  const isFirstSend = shouldGenerateToken && !existing.sent_at
   const sentTo =
     input.sent_to_emails && input.sent_to_emails.length > 0 ? input.sent_to_emails : existing.sent_to_emails ?? null
 
@@ -333,7 +352,6 @@ export async function updateInvoice({
     subtotal_cents: totals.subtotal_cents,
     tax_cents: totals.tax_cents,
     total_cents: totals.total_cents,
-    balance_due_cents: totals.total_cents,
     metadata: {
       ...(existing.metadata ?? {}),
       lines,
@@ -381,6 +399,8 @@ export async function updateInvoice({
     throw new Error(`Failed to update invoice lines: ${linesError.message}`)
   }
 
+  await recalcInvoiceBalanceAndStatus({ supabase, orgId: resolvedOrgId, invoiceId })
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "invoice_updated",
@@ -388,6 +408,22 @@ export async function updateInvoice({
     entityId: invoiceId,
     payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents },
   })
+
+  if (isFirstSend) {
+    await recordEvent({
+      orgId: resolvedOrgId,
+      eventType: "invoice_sent",
+      entityType: "invoice",
+      entityId: invoiceId,
+      payload: {
+        invoice_number: input.invoice_number,
+        project_id: input.project_id,
+        total_cents: totals.total_cents,
+        sent_to_emails: sentTo,
+      },
+      channel: "notification",
+    })
+  }
 
   await recordAudit({
     orgId: resolvedOrgId,

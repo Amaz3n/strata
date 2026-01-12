@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 
 export async function POST() {
   const supabase = createServiceSupabaseClient()
@@ -19,7 +20,7 @@ export async function POST() {
       .from("invoices")
       .select("id, org_id, project_id, due_date, balance_due_cents, total_cents")
       .eq("org_id", rule.org_id)
-      .in("status", ["sent", "overdue"])
+      .in("status", ["sent", "overdue", "partial"])
       .gt("balance_due_cents", 0)
       .lt("due_date", now.toISOString().split("T")[0])
 
@@ -79,8 +80,7 @@ export async function POST() {
           description: `Late Fee (${daysOverdue} days overdue)`,
           quantity: 1,
           unit_price_cents: feeAmountCents,
-          taxable: false,
-          metadata: { late_fee_rule_id: rule.id, days_overdue: daysOverdue },
+          metadata: { taxable: false, late_fee_rule_id: rule.id, days_overdue: daysOverdue },
         })
         .select("id")
         .single()
@@ -106,6 +106,13 @@ export async function POST() {
         })
         .eq("id", invoice.id)
         .eq("org_id", invoice.org_id)
+
+      // Ensure status/balance reflect any existing payments (partial payments should not reset balance).
+      try {
+        await recalcInvoiceBalanceAndStatus({ supabase, orgId: invoice.org_id, invoiceId: invoice.id })
+      } catch (err) {
+        console.warn("Failed to recalc invoice after late fee", err)
+      }
 
       applied += 1
     }

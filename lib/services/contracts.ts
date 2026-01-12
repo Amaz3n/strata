@@ -29,7 +29,20 @@ function mapContract(row: any): Contract {
 export async function getProjectContract(projectId: string, orgId?: string): Promise<Contract | null> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
-  const { data, error } = await supabase
+  const active = await supabase
+    .from("contracts")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (active.error) throw new Error(`Failed to get contract: ${active.error.message}`)
+  if (active.data) return mapContract(active.data)
+
+  const fallback = await supabase
     .from("contracts")
     .select("*")
     .eq("org_id", resolvedOrgId)
@@ -38,8 +51,8 @@ export async function getProjectContract(projectId: string, orgId?: string): Pro
     .limit(1)
     .maybeSingle()
 
-  if (error) throw new Error(`Failed to get contract: ${error.message}`)
-  return data ? mapContract(data) : null
+  if (fallback.error) throw new Error(`Failed to get contract: ${fallback.error.message}`)
+  return fallback.data ? mapContract(fallback.data) : null
 }
 
 export async function listProjectContracts(projectId: string, orgId?: string): Promise<Contract[]> {

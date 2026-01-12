@@ -17,12 +17,13 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Calendar, Building2, FileText, Clock, Tag } from "@/components/icons"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { LinkedDrawings } from "@/components/drawings"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/files/actions"
+} from "@/app/(app)/files/actions"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -65,7 +66,22 @@ export function SubmittalDetailSheet({
   // Load attachments when sheet opens
   useEffect(() => {
     if (open && submittal) {
-      loadAttachments()
+      ;(async () => {
+        if (submittal.attachment_file_id) {
+          try {
+            await attachFileAction(
+              submittal.attachment_file_id,
+              "submittal",
+              submittal.id,
+              submittal.project_id,
+              "legacy_attachment",
+            )
+          } catch (error) {
+            console.warn("Failed to backfill legacy submittal attachment link", error)
+          }
+        }
+        await loadAttachments()
+      })()
     }
   }, [open, submittal?.id])
 
@@ -231,6 +247,8 @@ export function SubmittalDetailSheet({
             title="Submittal Package"
             description="Shop drawings, product data, samples, or other submittal documents"
           />
+
+          <LinkedDrawings projectId={submittal.project_id} entityType="submittal" entityId={submittal.id} />
 
           {/* Timestamps */}
           <div className="text-xs text-muted-foreground space-y-1 pt-4 border-t">

@@ -6,22 +6,21 @@ import { Send, MessageCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
+import { loadPortalMessagesAction, sendPortalMessageAction } from "@/app/p/[token]/messages/actions"
 import type { PortalMessage } from "@/lib/types"
 
 interface SubMessagesTabProps {
   messages: PortalMessage[]
   token: string
   canMessage: boolean
-  projectId: string
-  companyId: string
+  senderName?: string
 }
 
 export function SubMessagesTab({
   messages: initialMessages,
   token,
   canMessage,
-  projectId,
-  companyId,
+  senderName,
 }: SubMessagesTabProps) {
   const [messages, setMessages] = useState(initialMessages)
   const [body, setBody] = useState("")
@@ -39,20 +38,26 @@ export function SubMessagesTab({
 
     startTransition(async () => {
       try {
-        // For now, create a local optimistic message
-        // TODO: Implement sendSubPortalMessageAction when ready
-        const optimisticMessage: PortalMessage = {
-          id: crypto.randomUUID(),
-          conversation_id: `sub-${projectId}-${companyId}`,
-          sender_name: "Sub Portal",
+        const message = await sendPortalMessageAction({
+          token,
           body: body.trim(),
-          sent_at: new Date().toISOString(),
-          read_at: null,
-        }
-        setMessages((prev) => [...prev, optimisticMessage])
+          senderName: senderName ?? "Subcontractor",
+        })
+        setMessages((prev) => [...prev, message])
         setBody("")
       } catch (error) {
         console.error("Failed to send message", error)
+      }
+    })
+  }
+
+  const handleRefresh = () => {
+    startTransition(async () => {
+      try {
+        const latest = await loadPortalMessagesAction(token)
+        setMessages(latest)
+      } catch (error) {
+        console.error("Failed to refresh messages", error)
       }
     })
   }
@@ -114,7 +119,11 @@ export function SubMessagesTab({
             }
           }}
         />
-        <div className="flex items-center justify-end">
+        <div className="flex items-center justify-between">
+          <Button variant="ghost" size="sm" onClick={handleRefresh} disabled={isPending}>
+            {isPending && <Spinner className="mr-2 h-3 w-3" />}
+            Refresh
+          </Button>
           <Button onClick={handleSend} disabled={isPending || !body.trim()} size="sm">
             {isPending && <Spinner className="mr-2 h-4 w-4" />}
             <Send className="h-4 w-4 mr-1" />

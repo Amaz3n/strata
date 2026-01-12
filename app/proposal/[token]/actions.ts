@@ -1,6 +1,7 @@
 "use server"
 
 import { headers } from "next/headers"
+import { revalidatePath } from "next/cache"
 
 import { acceptProposal } from "@/lib/services/proposals"
 
@@ -15,7 +16,7 @@ export async function acceptProposalAction(input: { token: string; signature?: s
   }
 
   const signaturePayload = input.signature ?? null
-  const forwardedFor = headers().get("x-forwarded-for")
+  const forwardedFor = (await headers()).get("x-forwarded-for")
   const signerIp = forwardedFor?.split(",")?.[0]?.trim() ?? undefined
 
   await acceptProposal(input.token, {
@@ -24,8 +25,13 @@ export async function acceptProposalAction(input: { token: string; signature?: s
     signer_ip: signerIp,
   })
 
+  // Revalidate the proposal page to show the accepted status
+  revalidatePath(`/proposal/${input.token}`)
+
   return { success: true }
 }
+
+
 
 
 

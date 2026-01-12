@@ -23,7 +23,7 @@ import {
   resendInviteAction,
   suspendMemberAction,
   updateMemberRoleAction,
-} from "@/app/team/actions"
+} from "@/app/(app)/team/actions"
 import { MoreHorizontal } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 

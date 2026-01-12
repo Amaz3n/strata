@@ -4,7 +4,7 @@ import Link from "next/link"
 import { useActionState } from "react"
 import { GalleryVerticalEnd } from "lucide-react"
 
-import { signInAction, type AuthState } from "@/app/auth/actions"
+import { signInAction, type AuthState } from "@/app/(auth)/auth/actions"
 import { AlertCircle } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"

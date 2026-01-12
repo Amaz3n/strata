@@ -27,7 +27,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
@@ -310,12 +310,12 @@ export function DailyLogsTab({
             </SheetTrigger>
             <SheetContent side="right" className="sm:max-w-md w-full flex flex-col">
               <div className="flex-1 overflow-y-auto">
-                <SheetHeader className="pt-6 pb-4 px-4">
-                  <SheetTitle className="text-lg font-semibold">New Daily Log</SheetTitle>
-                  <SheetDescription className="text-sm text-muted-foreground">
+                <div className="pt-6 pb-4 px-1">
+                  <h2 className="text-lg font-semibold">New Daily Log</h2>
+                  <p className="text-sm text-muted-foreground mt-1">
                     Record site activity, weather, and attach photos.
-                  </SheetDescription>
-                </SheetHeader>
+                  </p>
+                </div>
                 <Form {...logForm}>
                   <form className="space-y-5 px-1">
                     {/* Date Field */}
@@ -673,6 +673,7 @@ export function DailyLogsTab({
     </div>
   )
 }
+
 
 
 

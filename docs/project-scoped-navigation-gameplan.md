@@ -199,3 +199,33 @@ Goal: Make the app feel simpler than Procore by defaulting to a **project worksp
 - Only global views are Projects and Directory.
 - No duplicate “global vs project” module confusion.
 - Empty state handles missing project context gracefully.
+
+---
+
+## Appendix A) Navigation Labels + Breadcrumb Wording
+
+### A.1 Global Sidebar Labels
+- Projects
+- Directory
+
+### A.2 Project Sidebar Labels
+- Overview
+- Drawings
+- RFIs
+- Submittals
+- Files
+- Tasks
+- Daily Logs
+- Financials
+- Directory
+
+### A.3 Breadcrumb Wording Examples
+- Global: `Org / Projects`
+- Project: `Org / Smith Residence / Drawings`
+- Empty state: `Org / Select project`
+
+### A.4 Project Switcher Dropdown Copy
+- Title: “Switch project”
+- Search placeholder: “Find a project...”
+- Section headers: “Active projects”, “Archived projects”
+- Footer link: “Back to Projects”

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react"
 
+import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import type { Company, Contact } from "@/lib/types"
-import { getContactAction } from "@/app/contacts/actions"
+import { getContactAction } from "@/app/(app)/contacts/actions"
 import { Mail, Phone, Link2, Loader2 } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
@@ -86,6 +87,13 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
                   {contact.notes && (
                     <div className="text-muted-foreground text-sm whitespace-pre-wrap">{contact.notes}</div>
                   )}
+                  {(contact.crm_source || contact.external_crm_id) && (
+                    <div className="text-xs text-muted-foreground">
+                      {contact.crm_source && <span>CRM: {contact.crm_source}</span>}
+                      {contact.crm_source && contact.external_crm_id ? " · " : ""}
+                      {contact.external_crm_id && <span>ID: {contact.external_crm_id}</span>}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -142,7 +150,10 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
               </Card>
 
               <Separator />
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" asChild>
+                  <Link href={`/estimates?recipient=${contact.id}`}>Create estimate</Link>
+                </Button>
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Close
                 </Button>
@@ -154,6 +165,8 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
     </Sheet>
   )
 }
+
+
 
 
 

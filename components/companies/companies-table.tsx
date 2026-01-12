@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { archiveCompanyAction } from "@/app/companies/actions"
+import { archiveCompanyAction } from "@/app/(app)/companies/actions"
 import type { Company, Contact, TeamMember } from "@/lib/types"
 import { CompanyForm } from "@/components/companies/company-form"
 import { TradeBadge } from "@/components/companies/trade-badge"

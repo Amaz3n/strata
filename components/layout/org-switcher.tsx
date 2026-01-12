@@ -3,8 +3,8 @@
 import * as React from "react"
 import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { ChevronsUpDown, Loader2, Plus } from "lucide-react"
 import Link from "next/link"
+import { ChevronsUpDown, FolderOpen, Loader2, Plus, Users } from "@/components/icons"
 
 import {
   DropdownMenu,
@@ -21,7 +21,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { listMembershipsAction, switchOrgAction, type OrgMembershipSummary } from "@/app/actions/orgs"
+import { switchOrgAction, type OrgMembershipSummary } from "@/app/actions/orgs"
 import { Skeleton } from "@/components/ui/skeleton"
 
 export function OrgSwitcher({
@@ -37,24 +37,43 @@ export function OrgSwitcher({
   const router = useRouter()
   const [orgs, setOrgs] = useState<OrgMembershipSummary[]>([])
   const [activeOrgId, setActiveOrgId] = useState<string | null>(null)
-  const [isLoading, startTransition] = useTransition()
+  const [isPending, startTransition] = useTransition()
+  const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadOrgs() {
-      const data = await listMembershipsAction()
-      setOrgs(data)
+      try {
+        const response = await fetch("/api/orgs", { next: { revalidate: 300 } }) // Cache for 5 minutes
+        if (!response.ok) {
+          const text = await response.text()
+          throw new Error(`Org fetch failed (${response.status}): ${text}`)
+        }
+        const payload = await response.json()
+        const memberships = (payload?.orgs ?? []) as OrgMembershipSummary[]
 
-      const cookieOrg =
-        typeof document !== "undefined"
-          ? document.cookie
-              .split(";")
-              .map((c) => c.trim())
-              .find((c) => c.startsWith("org_id="))
-              ?.split("=")?.[1]
-          : null
+        setOrgs(memberships)
 
-      const resolvedOrg = cookieOrg || data[0]?.org_id || null
-      setActiveOrgId(resolvedOrg)
+        const cookieOrg =
+          typeof document !== "undefined"
+            ? document.cookie
+                .split(";")
+                .map((c) => c.trim())
+                .find((c) => c.startsWith("org_id="))
+                ?.split("=")?.[1]
+            : null
+
+        const resolvedOrg = cookieOrg || memberships[0]?.org_id || null
+        setActiveOrgId(resolvedOrg)
+        setLoadError(null)
+      } catch (error) {
+        console.error("Failed to load organizations", error)
+        setLoadError(error instanceof Error ? error.message : "Unknown error")
+        setOrgs([])
+        setActiveOrgId(null)
+      } finally {
+        setIsLoading(false)
+      }
     }
 
     loadOrgs()
@@ -71,7 +90,7 @@ export function OrgSwitcher({
   }
 
   const renderCurrent = () => {
-    if (isLoading || !activeOrg) {
+    if (isLoading) {
       return (
         <>
           <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-6 items-center justify-center rounded-lg">
@@ -82,6 +101,25 @@ export function OrgSwitcher({
               <Skeleton className="h-4 w-28" />
               <Skeleton className="h-3 w-16" />
             </div>
+          )}
+        </>
+      )
+    }
+
+    if (!activeOrg) {
+      return (
+        <>
+          <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-6 items-center justify-center rounded-lg">
+            <org.logo className="size-3" />
+          </div>
+          {state !== "collapsed" && (
+            <>
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">No organization</span>
+                <span className="truncate text-xs">Select org</span>
+              </div>
+              <ChevronsUpDown className="ml-auto" />
+            </>
           )}
         </>
       )
@@ -98,7 +136,7 @@ export function OrgSwitcher({
               <span className="truncate font-medium">{activeOrg.org_name}</span>
               <span className="truncate text-xs">{activeOrg.billing_model ?? org.plan}</span>
             </div>
-            {isLoading ? <Loader2 className="ml-auto animate-spin" /> : <ChevronsUpDown className="ml-auto" />}
+            {isPending ? <Loader2 className="ml-auto animate-spin" /> : <ChevronsUpDown className="ml-auto" />}
           </>
         )}
       </>
@@ -106,7 +144,7 @@ export function OrgSwitcher({
   }
 
   return (
-    <SidebarMenu>
+    <SidebarMenu suppressHydrationWarning>
       <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -126,7 +164,12 @@ export function OrgSwitcher({
             <DropdownMenuLabel className="text-muted-foreground text-xs">
               Organizations
             </DropdownMenuLabel>
-            {orgs.length === 0 && (
+            {loadError && (
+              <div className="text-destructive px-2 py-3 text-xs whitespace-pre-wrap">
+                {loadError}
+              </div>
+            )}
+            {!loadError && orgs.length === 0 && (
               <div className="text-muted-foreground px-2 py-3 text-sm">No organizations found.</div>
             )}
 
@@ -146,6 +189,26 @@ export function OrgSwitcher({
                 {item.org_id === activeOrgId && <DropdownMenuShortcut>Current</DropdownMenuShortcut>}
               </DropdownMenuItem>
             ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-muted-foreground text-xs">
+              Organization
+            </DropdownMenuLabel>
+            <DropdownMenuItem className="gap-2 p-2" asChild>
+              <Link href="/projects" className="flex items-center gap-2">
+                <div className="flex size-6 items-center justify-center rounded-md border bg-transparent">
+                  <FolderOpen className="size-4" />
+                </div>
+                <div className="font-medium">All Projects</div>
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem className="gap-2 p-2" asChild>
+              <Link href="/directory" className="flex items-center gap-2">
+                <div className="flex size-6 items-center justify-center rounded-md border bg-transparent">
+                  <Users className="size-4" />
+                </div>
+                <div className="font-medium">Directory</div>
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem className="gap-2 p-2" asChild>
               <Link href="/admin/provision" className="flex items-center gap-2">

@@ -5,7 +5,7 @@ import type { ProjectInput } from "@/lib/validation/projects"
 import { projectUpdateSchema } from "@/lib/validation/projects"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
-import { requireOrgContext } from "@/lib/services/context"
+import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 
 function mapProject(row: any): Project {
@@ -30,8 +30,8 @@ function mapProject(row: any): Project {
   }
 }
 
-export async function listProjects(orgId?: string): Promise<Project[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
+  const { supabase, orgId: resolvedOrgId } = context || await requireOrgContext(orgId)
   return listProjectsWithClient(supabase, resolvedOrgId)
 }
 
@@ -49,8 +49,8 @@ export async function listProjectsWithClient(supabase: SupabaseClient, orgId: st
   return (data ?? []).map(mapProject)
 }
 
-export async function createProject({ input, orgId }: { input: ProjectInput; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function createProject({ input, orgId, context }: { input: ProjectInput; orgId?: string; context?: OrgServiceContext }) {
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const payload = {
@@ -102,13 +102,15 @@ export async function updateProject({
   projectId,
   input,
   orgId,
+  context,
 }: {
   projectId: string
   input: Partial<ProjectInput>
   orgId?: string
+  context?: OrgServiceContext
 }) {
   const parsed = projectUpdateSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const existing = await supabase
@@ -169,10 +171,11 @@ export async function updateProject({
   return mapProject(data)
 }
 
-export async function archiveProject(projectId: string, orgId?: string) {
+export async function archiveProject(projectId: string, orgId?: string, context?: OrgServiceContext) {
   return updateProject({
     projectId,
     orgId,
+    context,
     input: { status: "cancelled" },
   })
 }

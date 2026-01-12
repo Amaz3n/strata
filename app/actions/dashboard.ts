@@ -5,10 +5,15 @@ import { createFileRecord, listFiles } from "@/lib/services/files"
 import { fileInputSchema } from "@/lib/validation/files"
 import { listProjects } from "@/lib/services/projects"
 import { listTasks } from "@/lib/services/tasks"
+import { getOrgActivity } from "@/lib/services/events"
 import { revalidatePath } from "next/cache"
 
 export async function getDashboardSnapshotAction() {
   return getDashboardSnapshot()
+}
+
+export async function getOrgActivityAction(limit = 15) {
+  return getOrgActivity(limit)
 }
 
 export async function listFilesAction() {

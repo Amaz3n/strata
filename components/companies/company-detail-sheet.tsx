@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import type { Company, Contact } from "@/lib/types"
-import { getCompanyAction } from "@/app/companies/actions"
+import { getCompanyAction } from "@/app/(app)/companies/actions"
 import { TradeBadge } from "@/components/companies/trade-badge"
 import { MapPin, Phone, Mail, Link2, Loader2 } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
@@ -165,6 +165,10 @@ export function CompanyDetailSheet({ companyId, open, onOpenChange }: CompanyDet
     </Sheet>
   )
 }
+
+
+
+
 
 
 

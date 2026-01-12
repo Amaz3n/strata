@@ -1,0 +1,3 @@
+ALTER TABLE estimates ADD COLUMN IF NOT EXISTS valid_until DATE;
+ALTER TABLE estimates ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE estimates ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES app_users(id);

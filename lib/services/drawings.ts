@@ -1,6 +1,4 @@
 import type {
-  DrawingSetStatus,
-  DrawingDiscipline,
   DrawingSetInput,
   DrawingSetUpdate,
   DrawingRevisionInput,
@@ -11,6 +9,8 @@ import type {
   DrawingSetListFilters,
   DrawingSheetListFilters,
   DrawingRevisionListFilters,
+  DrawingSetStatus,
+  DrawingDiscipline,
 } from "@/lib/validation/drawings"
 import {
   drawingSetInputSchema,
@@ -81,9 +81,34 @@ export interface DrawingSheet {
   share_with_subs: boolean
   created_at: string
   updated_at: string
-  // Related data
+  // Denormalized list info (Foundation v2)
+  set_title?: string | null
+  set_status?: string | null
+  open_pins_count?: number | null
+  in_progress_pins_count?: number | null
+  completed_pins_count?: number | null
+  total_pins_count?: number | null
+  pins_by_type?: Record<string, number> | null
+  pins_by_status?: Record<string, number> | null
+  markups_count?: number | null
+  // Related data (legacy PDF URLs)
   thumbnail_url?: string
   file_url?: string
+  // Optimized image URLs for fast rendering (Phase 1 performance)
+  image_thumbnail_url?: string | null
+  image_medium_url?: string | null
+  image_full_url?: string | null
+  image_width?: number | null
+  image_height?: number | null
+  // Foundation v2 tiles (preferred for viewer)
+  tile_base_url?: string | null
+  tile_manifest?: Record<string, any> | null
+  // Canonical storage paths (Option A public bucket)
+  image_thumbnail_path?: string | null
+  image_medium_path?: string | null
+  image_full_path?: string | null
+  tile_manifest_path?: string | null
+  tiles_base_path?: string | null
 }
 
 export interface DrawingSheetVersion {
@@ -97,14 +122,40 @@ export interface DrawingSheetVersion {
   page_index?: number
   extracted_metadata: Record<string, any>
   created_at: string
-  // URLs
+  // Legacy PDF URLs (signed)
   file_url?: string
   thumbnail_url?: string
+  // Optimized image URLs (public, for fast rendering)
+  image_thumbnail_url?: string | null
+  image_medium_url?: string | null
+  image_full_url?: string | null
+  image_width?: number | null
+  image_height?: number | null
+  images_generated_at?: string | null
+  // Canonical storage paths (Option A)
+  image_thumbnail_path?: string | null
+  image_medium_path?: string | null
+  image_full_path?: string | null
+  tile_manifest_path?: string | null
+  tiles_base_path?: string | null
 }
 
 // ============================================================================
 // MAPPERS
 // ============================================================================
+
+const DRAWING_IMAGES_BUCKET = "drawings-images"
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
+
+function toPublicImageUrl(path?: string | null): string | null {
+  if (!path) return null
+  if (!SUPABASE_URL) {
+    console.error("[drawings] Missing NEXT_PUBLIC_SUPABASE_URL; cannot build image URL")
+    return null
+  }
+  const normalized = path.startsWith("/") ? path.slice(1) : path
+  return `${SUPABASE_URL}/storage/v1/object/public/${DRAWING_IMAGES_BUCKET}/${encodeURI(normalized)}`
+}
 
 function mapDrawingSet(row: any): DrawingSet {
   return {
@@ -144,6 +195,10 @@ function mapDrawingRevision(row: any): DrawingRevision {
 }
 
 function mapDrawingSheet(row: any): DrawingSheet {
+  const thumbPath = row.thumb_path ?? row.image_thumbnail_path ?? row.image_thumb_path ?? null
+  const mediumPath = row.medium_path ?? row.image_medium_path ?? null
+  const fullPath = row.full_path ?? row.image_full_path ?? null
+
   return {
     id: row.id,
     org_id: row.org_id,
@@ -159,10 +214,86 @@ function mapDrawingSheet(row: any): DrawingSheet {
     share_with_subs: row.share_with_subs ?? false,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    // Denormalized list fields (if present)
+    set_title: row.set_title ?? null,
+    set_status: row.set_status ?? null,
+    open_pins_count: row.open_pins_count ?? null,
+    in_progress_pins_count: row.in_progress_pins_count ?? null,
+    completed_pins_count: row.completed_pins_count ?? null,
+    total_pins_count: row.total_pins_count ?? null,
+    pins_by_type: row.pins_by_type ?? null,
+    pins_by_status: row.pins_by_status ?? null,
+    markups_count: row.markups_count ?? null,
+    image_thumbnail_path: thumbPath,
+    image_medium_path: mediumPath,
+    image_full_path: fullPath,
+    tile_manifest_path: row.tile_manifest_path ?? null,
+    tiles_base_path: row.tiles_base_path ?? null,
+    tile_base_url: row.tile_base_url ?? null,
+    tile_manifest: row.tile_manifest ?? null,
+    image_thumbnail_url:
+      toPublicImageUrl(thumbPath) ?? row.image_thumbnail_url ?? row.thumbnail_url ?? null,
+    image_medium_url: toPublicImageUrl(mediumPath) ?? row.image_medium_url ?? row.medium_url ?? null,
+    image_full_url: toPublicImageUrl(fullPath) ?? row.image_full_url ?? row.full_url ?? null,
+    image_width: row.image_width ?? null,
+    image_height: row.image_height ?? null,
   }
 }
 
+async function listDrawingSheetsOptimized(
+  filters: Partial<DrawingSheetListFilters> = {},
+  orgId?: string
+): Promise<DrawingSheet[]> {
+  const parsed = drawingSheetListFiltersSchema.parse(filters)
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  let query = supabase
+    .from("drawing_sheets_list")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+
+  if (parsed.project_id) {
+    query = query.eq("project_id", parsed.project_id)
+  }
+
+  if (parsed.drawing_set_id) {
+    query = query.eq("drawing_set_id", parsed.drawing_set_id)
+  }
+
+  if (parsed.discipline) {
+    query = query.eq("discipline", parsed.discipline)
+  }
+
+  if (parsed.share_with_clients !== undefined) {
+    query = query.eq("share_with_clients", parsed.share_with_clients)
+  }
+
+  if (parsed.share_with_subs !== undefined) {
+    query = query.eq("share_with_subs", parsed.share_with_subs)
+  }
+
+  if (parsed.search) {
+    const searchPattern = `%${parsed.search}%`
+    query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+  }
+
+  const { data, error } = await query
+    .order("sort_order", { ascending: true })
+    .order("sheet_number", { ascending: true })
+    .range(parsed.offset, parsed.offset + parsed.limit - 1)
+
+  if (error) {
+    throw new Error(`Failed to list drawing sheets (optimized): ${error.message}`)
+  }
+
+  return (data ?? []).map(mapDrawingSheet)
+}
+
 function mapDrawingSheetVersion(row: any): DrawingSheetVersion {
+  const thumbPath = row.thumb_path ?? row.image_thumbnail_path ?? row.image_thumb_path ?? null
+  const mediumPath = row.medium_path ?? row.image_medium_path ?? null
+  const fullPath = row.full_path ?? row.image_full_path ?? null
+
   return {
     id: row.id,
     org_id: row.org_id,
@@ -174,6 +305,18 @@ function mapDrawingSheetVersion(row: any): DrawingSheetVersion {
     page_index: row.page_index ?? undefined,
     extracted_metadata: row.extracted_metadata ?? {},
     created_at: row.created_at,
+    // Optimized image URLs
+    image_thumbnail_path: thumbPath,
+    image_medium_path: mediumPath,
+    image_full_path: fullPath,
+    tile_manifest_path: row.tile_manifest_path ?? null,
+    tiles_base_path: row.tiles_base_path ?? null,
+    image_thumbnail_url: toPublicImageUrl(thumbPath) ?? row.thumbnail_url ?? null,
+    image_medium_url: toPublicImageUrl(mediumPath) ?? row.medium_url ?? null,
+    image_full_url: toPublicImageUrl(fullPath) ?? row.full_url ?? null,
+    image_width: row.image_width ?? null,
+    image_height: row.image_height ?? null,
+    images_generated_at: row.images_generated_at ?? null,
   }
 }
 
@@ -703,70 +846,99 @@ export async function listDrawingSheets(
 
 /**
  * List sheets with signed URLs for display
+ * Includes optimized image URLs when available (Phase 1 performance)
  */
 export async function listDrawingSheetsWithUrls(
   filters: Partial<DrawingSheetListFilters> = {},
   orgId?: string
 ): Promise<DrawingSheet[]> {
+  // Foundation v2: prefer the denormalized list view (single query, counts included).
+  if (process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true") {
+    try {
+      return await listDrawingSheetsOptimized(filters, orgId)
+    } catch (e) {
+      console.error("[drawings] Optimized sheets list failed; falling back:", e)
+    }
+  }
+
   const sheets = await listDrawingSheets(filters, orgId)
   const { supabase } = await requireOrgContext(orgId)
 
-  // Get the current versions for each sheet
+  // Get the current versions for each sheet (including optimized image URLs).
+  // IMPORTANT: Do NOT generate signed URLs here. This function is used for
+  // rendering the sheets list/grid, and doing N signed-url calls (per sheet)
+  // destroys performance on Vercel/server actions.
   const sheetIds = sheets.map((s) => s.id)
   if (sheetIds.length === 0) return sheets
 
-  const { data: versions } = await supabase
+  const { data: versions, error: versionsError } = await supabase
     .from("drawing_sheet_versions")
     .select(`
-      drawing_sheet_id, file_id, thumbnail_file_id,
-      files!drawing_sheet_versions_file_id_fkey(storage_path),
-      thumbnail:files!drawing_sheet_versions_thumbnail_file_id_fkey(storage_path)
+      drawing_sheet_id,
+      thumb_path, medium_path, full_path,
+      tile_manifest_path, tiles_base_path,
+      thumbnail_url, medium_url, full_url,
+      image_width, image_height,
+      created_at
     `)
     .in("drawing_sheet_id", sheetIds)
+    .order("created_at", { ascending: false })
+
+  if (versionsError) {
+    throw new Error(`Failed to load sheet versions: ${versionsError.message}`)
+  }
 
   // Build a map of sheet ID to version data
-  const versionMap = new Map<string, { filePath?: string; thumbPath?: string }>()
+  const versionMap = new Map<string, {
+    imageThumbnailUrl?: string | null
+    imageMediumUrl?: string | null
+    imageFullUrl?: string | null
+    imageWidth?: number | null
+    imageHeight?: number | null
+    imageThumbnailPath?: string | null
+    imageMediumPath?: string | null
+    imageFullPath?: string | null
+    tileManifestPath?: string | null
+    tilesBasePath?: string | null
+  }>()
   for (const v of versions ?? []) {
     const existing = versionMap.get(v.drawing_sheet_id)
     if (!existing) {
       versionMap.set(v.drawing_sheet_id, {
-        filePath: (v.files as any)?.storage_path,
-        thumbPath: (v.thumbnail as any)?.storage_path,
+        imageThumbnailPath: (v as any).thumb_path ?? null,
+        imageMediumPath: (v as any).medium_path ?? null,
+        imageFullPath: (v as any).full_path ?? null,
+        tileManifestPath: (v as any).tile_manifest_path ?? null,
+        tilesBasePath: (v as any).tiles_base_path ?? null,
+        imageThumbnailUrl:
+          toPublicImageUrl((v as any).thumb_path) ?? (v as any).thumbnail_url ?? null,
+        imageMediumUrl: toPublicImageUrl((v as any).medium_path) ?? (v as any).medium_url ?? null,
+        imageFullUrl: toPublicImageUrl((v as any).full_path) ?? (v as any).full_url ?? null,
+        imageWidth: (v as any).image_width ?? null,
+        imageHeight: (v as any).image_height ?? null,
       })
     }
   }
 
-  // Generate signed URLs
-  return Promise.all(
-    sheets.map(async (sheet) => {
-      const paths = versionMap.get(sheet.id)
-      let file_url: string | undefined
-      let thumbnail_url: string | undefined
-
-      if (paths?.filePath) {
-        const { data: urlData } = await supabase.storage
-          .from("project-files")
-          .createSignedUrl(paths.filePath, 3600)
-        file_url = urlData?.signedUrl
-      }
-
-      if (paths?.thumbPath) {
-        const { data: urlData } = await supabase.storage
-          .from("project-files")
-          .createSignedUrl(paths.thumbPath, 3600)
-        thumbnail_url = urlData?.signedUrl
-      } else if (file_url) {
-        // Use file URL as thumbnail if no dedicated thumbnail
-        thumbnail_url = file_url
-      }
-
-      return {
-        ...sheet,
-        file_url,
-        thumbnail_url,
-      }
-    })
-  )
+  // Include optimized image URLs only. Signed URLs should be generated on-demand
+  // (e.g. when the user clicks Download, or when we must fall back to PDF viewer).
+  return sheets.map((sheet) => {
+    const versionData = versionMap.get(sheet.id)
+    return {
+      ...sheet,
+      // Include optimized image URLs (Phase 1 performance)
+      image_thumbnail_path: versionData?.imageThumbnailPath ?? null,
+      image_medium_path: versionData?.imageMediumPath ?? null,
+      image_full_path: versionData?.imageFullPath ?? null,
+      tile_manifest_path: versionData?.tileManifestPath ?? null,
+      tiles_base_path: versionData?.tilesBasePath ?? null,
+      image_thumbnail_url: versionData?.imageThumbnailUrl ?? null,
+      image_medium_url: versionData?.imageMediumUrl ?? null,
+      image_full_url: versionData?.imageFullUrl ?? null,
+      image_width: versionData?.imageWidth ?? null,
+      image_height: versionData?.imageHeight ?? null,
+    }
+  })
 }
 
 /**
@@ -1005,6 +1177,8 @@ export async function listSheetVersions(
     .select(`
       id, org_id, drawing_sheet_id, drawing_revision_id,
       file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
+      thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
+      thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
       drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label)
     `)
     .eq("org_id", resolvedOrgId)
@@ -1016,6 +1190,65 @@ export async function listSheetVersions(
   }
 
   return (data ?? []).map(mapDrawingSheetVersion)
+}
+
+/**
+ * List sheet versions with signed URLs for comparison mode
+ * Prioritizes optimized images if available, falls back to PDF signed URLs
+ */
+export async function listSheetVersionsWithUrls(
+  sheetId: string,
+  expiresIn: number = 3600,
+  orgId?: string
+): Promise<DrawingSheetVersion[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("drawing_sheet_versions")
+    .select(`
+      id, org_id, drawing_sheet_id, drawing_revision_id,
+      file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
+      thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
+      thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
+      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label),
+      files!drawing_sheet_versions_file_id_fkey(storage_path),
+      thumbnail:files!drawing_sheet_versions_thumbnail_file_id_fkey(storage_path)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_sheet_id", sheetId)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to list sheet versions: ${error.message}`)
+  }
+
+  // Generate signed URLs for each version
+  const versions: DrawingSheetVersion[] = []
+  for (const row of data ?? []) {
+    const version = mapDrawingSheetVersion(row)
+
+    // Get file URL
+    const fileStoragePath = (row.files as any)?.storage_path
+    if (fileStoragePath) {
+      const { data: urlData } = await supabase.storage
+        .from("project-files")
+        .createSignedUrl(fileStoragePath, expiresIn)
+      version.file_url = urlData?.signedUrl
+    }
+
+    // Get thumbnail URL
+    const thumbStoragePath = (row.thumbnail as any)?.storage_path
+    if (thumbStoragePath) {
+      const { data: urlData } = await supabase.storage
+        .from("project-files")
+        .createSignedUrl(thumbStoragePath, expiresIn)
+      version.thumbnail_url = urlData?.signedUrl
+    }
+
+    versions.push(version)
+  }
+
+  return versions
 }
 
 /**

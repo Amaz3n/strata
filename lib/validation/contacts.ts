@@ -14,6 +14,8 @@ export const contactInputSchema = z.object({
   has_portal_access: z.boolean().optional(),
   preferred_contact_method: z.enum(["phone", "email", "text"]).optional(),
   notes: z.string().max(2000).optional(),
+  external_crm_id: z.string().optional(),
+  crm_source: z.string().optional(),
 })
 
 export const contactUpdateSchema = contactInputSchema.partial()
@@ -36,6 +38,9 @@ export type ContactInput = z.infer<typeof contactInputSchema>
 export type ContactUpdateInput = z.infer<typeof contactUpdateSchema>
 export type ContactFilters = z.infer<typeof contactFiltersSchema>
 export type ContactCompanyLinkInput = z.infer<typeof contactCompanyLinkSchema>
+
+
+
 
 
 

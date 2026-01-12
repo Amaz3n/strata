@@ -4,9 +4,9 @@ import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { ChangeOrder, Project } from "@/lib/types"
+import type { ChangeOrder, CostCode, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
-import { createChangeOrderAction, publishChangeOrderAction } from "@/app/change-orders/actions"
+import { createChangeOrderAction, publishChangeOrderAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
 import { Badge } from "@/components/ui/badge"
@@ -52,9 +52,10 @@ function resolveStatusKey(status?: string | null): StatusKey {
 interface ChangeOrdersClientProps {
   changeOrders: ChangeOrder[]
   projects: Project[]
+  costCodes?: CostCode[]
 }
 
-export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClientProps) {
+export function ChangeOrdersClient({ changeOrders, projects, costCodes }: ChangeOrdersClientProps) {
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
@@ -69,6 +70,11 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
     setDetailSheetOpen(true)
   }
 
+  const handleUpdate = (updated: ChangeOrder) => {
+    setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+    setSelectedChangeOrder(updated)
+  }
+
   const projectLookup = useMemo(() => {
     return projects.reduce<Record<string, Project>>((acc, project) => {
       acc[project.id] = project
@@ -77,8 +83,9 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
   }, [projects])
 
   const filtered = useMemo(() => {
+    const safeItems = items ?? []
     const term = searchTerm.trim().toLowerCase()
-    return items.filter((item) => {
+    return safeItems.filter((item) => {
       const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
       const resolvedStatus = resolveStatusKey(item.status)
       const matchesStatus = statusFilter === "all" || resolvedStatus === statusFilter
@@ -171,6 +178,7 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         projects={projects}
+        costCodes={costCodes}
         defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
         onSubmit={handleCreate}
         isSubmitting={isPending}
@@ -181,6 +189,7 @@ export function ChangeOrdersClient({ changeOrders, projects }: ChangeOrdersClien
         project={projects.find((p) => p.id === selectedChangeOrder?.project_id)}
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
+        onUpdate={handleUpdate}
       />
 
       <div className="rounded-lg border bg-card overflow-hidden">

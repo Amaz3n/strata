@@ -1,13 +1,13 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { format } from "date-fns"
 import { cn } from "@/lib/utils"
-import type { ScheduleItem, Project } from "@/lib/types"
-import { 
-  scheduleItemInputSchema, 
+import type { ScheduleItem, Project, ScheduleItemChangeOrder, DrawSchedule, CostCode } from "@/lib/types"
+import {
+  scheduleItemInputSchema,
   type ScheduleItemInput,
   scheduleItemTypes,
   scheduleStatuses,
@@ -18,8 +18,17 @@ import {
 } from "@/lib/validation/schedule"
 import { useSchedule } from "./schedule-context"
 import { PHASE_COLORS, parseDate, toDateString } from "./types"
-import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/projects/[id]/actions"
-import { setScheduleAssigneeAction } from "@/app/schedule/assignment-actions"
+import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/(app)/projects/[id]/actions"
+import { setScheduleAssigneeAction } from "@/app/(app)/schedule/assignment-actions"
+import { inspectionMetadataSchema, type InspectionChecklistItem, type InspectionResult } from "@/lib/validation/inspections"
+import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/files/actions"
+import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
+import { ChangeOrderImpactBadge } from "./change-order-impact-badge"
+import { DrawMilestoneOverlay } from "./draw-milestone-overlay"
+import { CostCodeSelector } from "./cost-code-selector"
+import { formatAmount } from "@/components/midday/format-amount"
+import { useIsMobile } from "@/hooks/use-mobile"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -82,6 +91,10 @@ import {
   User,
   Users,
   Building2,
+  FileText,
+  DollarSign,
+  ChevronRight,
+  ExternalLink,
 } from "lucide-react"
 import { DateRange } from "react-day-picker"
 
@@ -117,12 +130,31 @@ export function ScheduleItemSheet({
   initialDates,
   projects,
 }: ScheduleItemSheetProps) {
+  const isMobile = useIsMobile()
   const { items, onItemCreate, onItemUpdate, onItemDelete, isLoading } = useSchedule()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [dateRange, setDateRange] = useState<DateRange | undefined>()
   const [assignableResources, setAssignableResources] = useState<AssignableResource[]>([])
   const [loadingResources, setLoadingResources] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projectId)
+  const [inspectionResult, setInspectionResult] = useState<InspectionResult>("pending")
+  const [inspectionNotes, setInspectionNotes] = useState("")
+  const [inspectionChecklist, setInspectionChecklist] = useState<InspectionChecklistItem[]>([])
+  const [inspectionSignedBy, setInspectionSignedBy] = useState("")
+  const [inspectionSignedAt, setInspectionSignedAt] = useState<string | undefined>(undefined)
+  const [inspectionAttachments, setInspectionAttachments] = useState<AttachedFile[]>([])
+  const [inspectionAttachmentsLoading, setInspectionAttachmentsLoading] = useState(false)
+  const [shareInspectionAttachmentsWithClients, setShareInspectionAttachmentsWithClients] = useState(false)
+  const [newChecklistItem, setNewChecklistItem] = useState("")
+
+  // CO/Draw integration state
+  const [changeOrderImpacts, setChangeOrderImpacts] = useState<ScheduleItemChangeOrder[]>([])
+  const [linkedDraws, setLinkedDraws] = useState<DrawSchedule[]>([])
+  const [loadingCOData, setLoadingCOData] = useState(false)
+
+  // Cost code state
+  const [costCodes, setCostCodes] = useState<CostCode[]>([])
+  const [loadingCostCodes, setLoadingCostCodes] = useState(false)
 
   const isEditing = !!item
   const isMasterScheduleMode = !!projects && projects.length > 0
@@ -145,6 +177,17 @@ export function ScheduleItemSheet({
         .finally(() => setLoadingResources(false))
     }
   }, [open, activeProjectId])
+
+  // Load cost codes when sheet opens
+  useEffect(() => {
+    if (open) {
+      setLoadingCostCodes(true)
+      listCostCodesAction()
+        .then(setCostCodes)
+        .catch(console.error)
+        .finally(() => setLoadingCostCodes(false))
+    }
+  }, [open])
 
   // Group resources by type for display
   const groupedResources = {
@@ -206,12 +249,31 @@ export function ScheduleItemSheet({
         color: item.color || undefined,
         notes: item.metadata?.notes || "",
         dependencies: item.dependencies || [],
+        // Cost tracking fields
+        cost_code_id: item.cost_code_id || undefined,
+        budget_cents: item.budget_cents || undefined,
+        actual_cost_cents: item.actual_cost_cents || undefined,
       })
 
       const startDate = parseDate(item.start_date)
       const endDate = parseDate(item.end_date)
       if (startDate) {
         setDateRange({ from: startDate, to: endDate || startDate })
+      }
+
+      const inspectionMeta = inspectionMetadataSchema.safeParse((item.metadata as any)?.inspection ?? {})
+      if (item.item_type === "inspection" && inspectionMeta.success) {
+        setInspectionResult(inspectionMeta.data.result)
+        setInspectionNotes(inspectionMeta.data.notes ?? "")
+        setInspectionChecklist(inspectionMeta.data.checklist ?? [])
+        setInspectionSignedBy(inspectionMeta.data.signed_by ?? "")
+        setInspectionSignedAt(inspectionMeta.data.signed_at ?? undefined)
+      } else {
+        setInspectionResult("pending")
+        setInspectionNotes("")
+        setInspectionChecklist([])
+        setInspectionSignedBy("")
+        setInspectionSignedAt(undefined)
       }
     } else {
       form.reset({
@@ -231,8 +293,81 @@ export function ScheduleItemSheet({
       } else {
         setDateRange(undefined)
       }
+
+      setInspectionResult("pending")
+      setInspectionNotes("")
+      setInspectionChecklist([])
+      setInspectionSignedBy("")
+      setInspectionSignedAt(undefined)
     }
   }, [item, activeProjectId, form, initialDates])
+
+  const isInspection = form.watch("item_type") === "inspection"
+
+  useEffect(() => {
+    if (!open || !isEditing || !item || !isInspection) return
+    setInspectionAttachmentsLoading(true)
+    listAttachmentsAction("schedule_item", item.id)
+      .then((links) =>
+        setInspectionAttachments(
+          links.map((link) => ({
+            id: link.file.id,
+            linkId: link.id,
+            file_name: link.file.file_name,
+            mime_type: link.file.mime_type,
+            size_bytes: link.file.size_bytes,
+            download_url: link.file.download_url,
+            thumbnail_url: link.file.thumbnail_url,
+            created_at: link.created_at,
+            link_role: link.link_role,
+          })),
+        ),
+      )
+      .catch((error) => console.error("Failed to load inspection attachments", error))
+      .finally(() => setInspectionAttachmentsLoading(false))
+  }, [open, isEditing, item, isInspection])
+
+  // Load CO impacts and linked draws when editing
+  useEffect(() => {
+    if (!open || !isEditing || !item) {
+      setChangeOrderImpacts([])
+      setLinkedDraws([])
+      return
+    }
+
+    setLoadingCOData(true)
+
+    // Fetch CO impacts for this schedule item
+    const fetchCOData = async () => {
+      try {
+        const response = await fetch(`/api/schedule/${item.id}/impacts`)
+        if (response.ok) {
+          const data = await response.json()
+          setChangeOrderImpacts(data.impacts ?? [])
+          setLinkedDraws(data.draws ?? [])
+        }
+      } catch (error) {
+        console.error("Failed to load CO/Draw data:", error)
+      } finally {
+        setLoadingCOData(false)
+      }
+    }
+
+    fetchCOData()
+  }, [open, isEditing, item])
+
+  // Helper for CO impact totals
+  const coImpactTotals = {
+    total: changeOrderImpacts.reduce((sum, co) => sum + (co.days_adjusted ?? 0), 0),
+    pending: changeOrderImpacts
+      .filter((co) => !co.applied_at)
+      .reduce((sum, co) => sum + (co.days_adjusted ?? 0), 0),
+    applied: changeOrderImpacts
+      .filter((co) => co.applied_at)
+      .reduce((sum, co) => sum + (co.days_adjusted ?? 0), 0),
+  }
+
+  const isMilestone = form.watch("item_type") === "milestone"
 
   // Update form project_id when selected project changes
   useEffect(() => {
@@ -260,14 +395,40 @@ export function ScheduleItemSheet({
         }
       }
 
+      const existingMetadata = isEditing && item ? (item.metadata ?? {}) : {}
+      const selectedAssignee = assigneeValue ? getSelectedResource(assigneeValue) : null
+
+      const nextMetadata: Record<string, any> = {
+        ...existingMetadata,
+        ...(formattedValues.metadata ?? {}),
+        notes: formattedValues.notes || "",
+      }
+
+      if (formattedValues.item_type === "inspection") {
+        const parsedInspection = inspectionMetadataSchema.parse({
+          result: inspectionResult,
+          inspector: selectedAssignee
+            ? { type: selectedAssignee.type, id: selectedAssignee.id, label: selectedAssignee.name }
+            : undefined,
+          notes: inspectionNotes || undefined,
+          checklist: inspectionChecklist,
+          signed_by: inspectionSignedBy || undefined,
+          signed_at: inspectionSignedAt,
+        })
+        nextMetadata.inspection = parsedInspection
+      } else if (nextMetadata.inspection) {
+        delete nextMetadata.inspection
+      }
+
       // For contact/company, we can't set assigned_to FK. Strip it before sending to server.
       const payload =
         assignee?.type === "user"
-          ? { ...formattedValues, assigned_to: assignee.id }
-          : { ...formattedValues, assigned_to: undefined }
+          ? { ...formattedValues, assigned_to: assignee.id, metadata: nextMetadata }
+          : { ...formattedValues, assigned_to: undefined, metadata: nextMetadata }
 
       if (isEditing && item) {
-        await onItemUpdate(item.id, payload)
+        const { notes: _ignoredNotes, ...payloadWithoutNotes } = payload as any
+        await onItemUpdate(item.id, payloadWithoutNotes)
         if (assignee) {
           await setScheduleAssigneeAction({
             scheduleItemId: item.id,
@@ -278,8 +439,9 @@ export function ScheduleItemSheet({
           await setScheduleAssigneeAction({ scheduleItemId: item.id, projectId: item.project_id, assignee: null })
         }
       } else {
-        const created = await onItemCreate(payload)
-        if (created && assignee) {
+        const { notes: _ignoredNotes, ...payloadWithoutNotes } = payload as any
+        const created = await onItemCreate(payloadWithoutNotes)
+        if (assignee) {
           await setScheduleAssigneeAction({
             scheduleItemId: created.id,
             projectId: created.project_id,
@@ -312,13 +474,67 @@ export function ScheduleItemSheet({
   }
 
   // Get other items for dependencies (excluding current item)
-  const availableDependencies = items.filter((i) => i.id !== item?.id)
+  const availableDependencies = items?.filter((i) => i.id !== item?.id) ?? []
+
+  const handleAttachInspection = async (files: File[], linkRole?: string) => {
+    if (!item) return
+
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("projectId", item.project_id)
+      formData.append("category", file.type.startsWith("image/") ? "photos" : "other")
+      formData.append("shareWithClients", shareInspectionAttachmentsWithClients ? "true" : "false")
+
+      const uploaded = await uploadFileAction(formData)
+      await attachFileAction(uploaded.id, "schedule_item", item.id, item.project_id, linkRole)
+    }
+
+    const links = await listAttachmentsAction("schedule_item", item.id)
+    setInspectionAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      })),
+    )
+  }
+
+  const handleDetachInspection = async (linkId: string) => {
+    await detachFileLinkAction(linkId)
+    if (!item) return
+    const links = await listAttachmentsAction("schedule_item", item.id)
+    setInspectionAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      })),
+    )
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="sm:max-w-lg w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation"
+        className={cn(
+          "flex flex-col p-0 fast-sheet-animation",
+          isMobile 
+            ? "w-full h-screen max-w-full m-0 rounded-none border-0 shadow-2xl" 
+            : "sm:max-w-lg w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl"
+        )}
         style={{
           animationDuration: '150ms',
           transitionDuration: '150ms'
@@ -541,7 +757,7 @@ export function ScheduleItemSheet({
                     control={form.control}
                     name="assigned_to"
                     render={({ field }) => {
-                      const selected = getSelectedResource(field.value)
+                      const selected = getSelectedResource(field.value ?? undefined)
                       return (
                         <FormItem>
                         <FormLabel>Assign To</FormLabel>
@@ -660,7 +876,7 @@ export function ScheduleItemSheet({
 
                               {!loadingResources && assignableResources.length === 0 && (
                                 <div className="p-2 text-center text-sm text-muted-foreground">
-                                  No team members or contacts found. Add them in the Team tab.
+                                  No team members or contacts found. Add them from Manage Team in the project overview.
                                 </div>
                               )}
                             </SelectContent>
@@ -918,6 +1134,548 @@ export function ScheduleItemSheet({
                       />
                     </AccordionContent>
                   </AccordionItem>
+
+                  {/* Budget & Costs Section */}
+                  <AccordionItem value="budget-costs">
+                    <AccordionTrigger className="text-sm">
+                      <div className="flex items-center gap-2">
+                        <DollarSign className="h-4 w-4" />
+                        Budget & Costs
+                        {form.watch("budget_cents") && (
+                          <Badge variant="secondary" className="ml-1 font-mono text-[10px]">
+                            {formatAmount({
+                              amount: (form.watch("budget_cents") ?? 0) / 100,
+                              currency: "USD",
+                              minimumFractionDigits: 0,
+                            })}
+                          </Badge>
+                        )}
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-4 pt-2">
+                      {/* Cost Code Selector */}
+                      <FormField
+                        control={form.control}
+                        name="cost_code_id"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Cost Code</FormLabel>
+                            <FormControl>
+                              <CostCodeSelector
+                                costCodes={costCodes}
+                                value={field.value ?? null}
+                                onValueChange={field.onChange}
+                                placeholder="Select cost code"
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              {loadingCostCodes ? "Loading cost codes..." : "Assign a cost code for budget tracking"}
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {/* Budget Amount */}
+                      <FormField
+                        control={form.control}
+                        name="budget_cents"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Budget Amount</FormLabel>
+                            <FormControl>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+                                  $
+                                </span>
+                                <Input
+                                  type="number"
+                                  placeholder="0.00"
+                                  className="pl-7"
+                                  value={field.value ? (field.value / 100).toFixed(2) : ""}
+                                  onChange={(e) => {
+                                    const value = e.target.value
+                                    if (value === "") {
+                                      field.onChange(undefined)
+                                    } else {
+                                      const dollars = parseFloat(value)
+                                      if (!isNaN(dollars)) {
+                                        field.onChange(Math.round(dollars * 100))
+                                      }
+                                    }
+                                  }}
+                                  step="0.01"
+                                  min="0"
+                                />
+                              </div>
+                            </FormControl>
+                            <FormDescription>Planned budget for this item</FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {/* Actual Cost - Only show when editing */}
+                      {isEditing && (
+                        <FormField
+                          control={form.control}
+                          name="actual_cost_cents"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Actual Cost</FormLabel>
+                              <FormControl>
+                                <div className="relative">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+                                    $
+                                  </span>
+                                  <Input
+                                    type="number"
+                                    placeholder="0.00"
+                                    className="pl-7"
+                                    value={field.value ? (field.value / 100).toFixed(2) : ""}
+                                    onChange={(e) => {
+                                      const value = e.target.value
+                                      if (value === "") {
+                                        field.onChange(undefined)
+                                      } else {
+                                        const dollars = parseFloat(value)
+                                        if (!isNaN(dollars)) {
+                                          field.onChange(Math.round(dollars * 100))
+                                        }
+                                      }
+                                    }}
+                                    step="0.01"
+                                    min="0"
+                                  />
+                                </div>
+                              </FormControl>
+                              <FormDescription>Actual cost incurred for this item</FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+
+                      {/* Variance Display - Only show when both budget and actual are set */}
+                      {isEditing &&
+                        form.watch("budget_cents") &&
+                        form.watch("actual_cost_cents") && (
+                          <div className="rounded-lg border p-3 bg-muted/30">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium">Variance</span>
+                              <span
+                                className={cn(
+                                  "font-semibold",
+                                  (form.watch("budget_cents") ?? 0) -
+                                    (form.watch("actual_cost_cents") ?? 0) <
+                                    0
+                                    ? "text-red-600 dark:text-red-400"
+                                    : "text-emerald-600 dark:text-emerald-400"
+                                )}
+                              >
+                                {formatAmount({
+                                  amount:
+                                    ((form.watch("budget_cents") ?? 0) -
+                                      (form.watch("actual_cost_cents") ?? 0)) /
+                                    100,
+                                  currency: "USD",
+                                  minimumFractionDigits: 0,
+                                  signDisplay: "always",
+                                })}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {(form.watch("budget_cents") ?? 0) -
+                                (form.watch("actual_cost_cents") ?? 0) <
+                              0
+                                ? "Over budget"
+                                : "Under budget"}
+                            </div>
+                          </div>
+                        )}
+                    </AccordionContent>
+                  </AccordionItem>
+
+                  {/* Change Orders Section - Only show when editing */}
+                  {isEditing && (
+                    <AccordionItem value="change-orders">
+                      <AccordionTrigger className="text-sm">
+                        <div className="flex items-center gap-2">
+                          <FileText className="h-4 w-4" />
+                          Change Orders
+                          {changeOrderImpacts.length > 0 && (
+                            <ChangeOrderImpactBadge
+                              totalDays={coImpactTotals.total}
+                              appliedDays={coImpactTotals.applied}
+                              pendingDays={coImpactTotals.pending}
+                              size="sm"
+                            />
+                          )}
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <div className="space-y-3">
+                          {loadingCOData ? (
+                            <div className="text-sm text-muted-foreground text-center py-4">
+                              Loading change orders...
+                            </div>
+                          ) : changeOrderImpacts.length > 0 ? (
+                            <>
+                              <div className="space-y-2">
+                                {changeOrderImpacts.map((impact) => (
+                                  <div
+                                    key={impact.id}
+                                    className="flex items-center justify-between p-3 rounded-lg border bg-muted/30"
+                                  >
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <Badge variant="outline" className="shrink-0">
+                                          CO-{impact.change_order?.co_number ?? "?"}
+                                        </Badge>
+                                        <span className="font-medium truncate">
+                                          {impact.change_order?.title ?? "Change Order"}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                                        {impact.change_order?.amount_cents && (
+                                          <span>
+                                            {formatAmount({
+                                              amount: impact.change_order.amount_cents / 100,
+                                              currency: "USD",
+                                              minimumFractionDigits: 0,
+                                            })}
+                                          </span>
+                                        )}
+                                        <span
+                                          className={cn(
+                                            "font-medium",
+                                            impact.days_adjusted > 0
+                                              ? "text-red-600 dark:text-red-400"
+                                              : impact.days_adjusted < 0
+                                                ? "text-emerald-600 dark:text-emerald-400"
+                                                : ""
+                                          )}
+                                        >
+                                          {impact.days_adjusted > 0 ? "+" : ""}
+                                          {impact.days_adjusted}d impact
+                                        </span>
+                                        {impact.applied_at ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                                          >
+                                            Applied
+                                          </Badge>
+                                        ) : (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                                          >
+                                            Pending
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      {impact.notes && (
+                                        <p className="text-xs text-muted-foreground mt-1 truncate">
+                                          {impact.notes}
+                                        </p>
+                                      )}
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="shrink-0"
+                                      asChild
+                                    >
+                                      <a
+                                        href={`/change-orders?id=${impact.change_order_id}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                      >
+                                        <ExternalLink className="h-4 w-4" />
+                                      </a>
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                              {coImpactTotals.pending !== 0 && (
+                                <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                                  <span className="text-xs text-amber-800 dark:text-amber-300">
+                                    {Math.abs(coImpactTotals.pending)} day
+                                    {Math.abs(coImpactTotals.pending) !== 1 ? "s" : ""}{" "}
+                                    {coImpactTotals.pending > 0 ? "delay" : "acceleration"} pending
+                                    application
+                                  </span>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="text-sm text-muted-foreground text-center py-4">
+                              No change orders linked to this item.
+                              <br />
+                              <span className="text-xs">
+                                Link change orders from the Change Orders page.
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  {/* Draw Schedule Section - Only show for milestones when editing */}
+                  {isEditing && isMilestone && (
+                    <AccordionItem value="draw-schedule">
+                      <AccordionTrigger className="text-sm">
+                        <div className="flex items-center gap-2">
+                          <DollarSign className="h-4 w-4" />
+                          Draw Schedule
+                          {linkedDraws.length > 0 && (
+                            <Badge variant="secondary" className="ml-1">
+                              {linkedDraws.length}
+                            </Badge>
+                          )}
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <div className="space-y-3">
+                          {loadingCOData ? (
+                            <div className="text-sm text-muted-foreground text-center py-4">
+                              Loading draw schedule...
+                            </div>
+                          ) : linkedDraws.length > 0 ? (
+                            <div className="space-y-2">
+                              {linkedDraws.map((draw) => (
+                                <div
+                                  key={draw.id}
+                                  className="flex items-center justify-between p-3 rounded-lg border bg-muted/30"
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <Badge variant="outline" className="shrink-0">
+                                        Draw #{draw.draw_number}
+                                      </Badge>
+                                      <span
+                                        className={cn(
+                                          "font-medium",
+                                          draw.status === "paid"
+                                            ? "text-emerald-600 dark:text-emerald-400"
+                                            : draw.status === "approved"
+                                              ? "text-blue-600 dark:text-blue-400"
+                                              : ""
+                                        )}
+                                      >
+                                        {formatAmount({
+                                          amount: (draw.amount_cents ?? 0) / 100,
+                                          currency: "USD",
+                                          minimumFractionDigits: 0,
+                                        })}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                                      {draw.scheduled_date && (
+                                        <span>
+                                          Scheduled: {format(new Date(draw.scheduled_date), "MMM d, yyyy")}
+                                        </span>
+                                      )}
+                                      <Badge
+                                        variant="outline"
+                                        className={cn(
+                                          "text-[10px]",
+                                          draw.status === "paid"
+                                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                                            : draw.status === "approved"
+                                              ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                                              : "bg-slate-50 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300"
+                                        )}
+                                      >
+                                        {draw.status ?? "scheduled"}
+                                      </Badge>
+                                    </div>
+                                    {draw.description && (
+                                      <p className="text-xs text-muted-foreground mt-1 truncate">
+                                        {draw.description}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                                </div>
+                              ))}
+                              <div className="flex justify-between items-center pt-2 border-t">
+                                <span className="text-xs text-muted-foreground">Total</span>
+                                <span className="font-semibold">
+                                  {formatAmount({
+                                    amount:
+                                      linkedDraws.reduce((sum, d) => sum + (d.amount_cents ?? 0), 0) /
+                                      100,
+                                    currency: "USD",
+                                    minimumFractionDigits: 0,
+                                  })}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-sm text-muted-foreground text-center py-4">
+                              No draws linked to this milestone.
+                              <br />
+                              <span className="text-xs">
+                                Link milestones to draws from the Draw Schedule page.
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  {isInspection && (
+                    <AccordionItem value="inspection">
+                      <AccordionTrigger className="text-sm">Inspection</AccordionTrigger>
+                      <AccordionContent>
+                        <div className="space-y-4">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label>Result</Label>
+                              <Select value={inspectionResult} onValueChange={(v) => setInspectionResult(v as InspectionResult)}>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select result" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="pending">Pending</SelectItem>
+                                  <SelectItem value="pass">Pass</SelectItem>
+                                  <SelectItem value="fail">Fail</SelectItem>
+                                  <SelectItem value="partial">Partial</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Signoff</Label>
+                              <div className="flex gap-2">
+                                <Input
+                                  value={inspectionSignedBy}
+                                  onChange={(e) => setInspectionSignedBy(e.target.value)}
+                                  placeholder="Signer name"
+                                />
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => {
+                                    if (!inspectionSignedBy.trim()) return
+                                    setInspectionSignedAt(new Date().toISOString())
+                                  }}
+                                >
+                                  Sign
+                                </Button>
+                              </div>
+                              {inspectionSignedAt ? (
+                                <p className="text-xs text-muted-foreground">
+                                  Signed {new Date(inspectionSignedAt).toLocaleString()}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>Inspection notes</Label>
+                            <Textarea
+                              value={inspectionNotes}
+                              onChange={(e) => setInspectionNotes(e.target.value)}
+                              placeholder="Notes, corrections, reinspection details..."
+                              className="min-h-[90px] resize-none"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>Checklist</Label>
+                            <div className="flex gap-2">
+                              <Input
+                                value={newChecklistItem}
+                                onChange={(e) => setNewChecklistItem(e.target.value)}
+                                placeholder="Add checklist item"
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                  const label = newChecklistItem.trim()
+                                  if (!label) return
+                                  setInspectionChecklist((prev) => [
+                                    ...prev,
+                                    { id: `${Date.now()}_${Math.random().toString(16).slice(2)}`, label, checked: false },
+                                  ])
+                                  setNewChecklistItem("")
+                                }}
+                              >
+                                Add
+                              </Button>
+                            </div>
+
+                            <div className="space-y-2 pt-2">
+                              {inspectionChecklist.map((entry) => (
+                                <div key={entry.id} className="flex items-center justify-between gap-2 rounded-md border p-2">
+                                  <Label className="flex items-center gap-2 text-sm font-normal">
+                                    <Checkbox
+                                      checked={entry.checked}
+                                      onCheckedChange={(checked) =>
+                                        setInspectionChecklist((prev) =>
+                                          prev.map((i) => (i.id === entry.id ? { ...i, checked: Boolean(checked) } : i)),
+                                        )
+                                      }
+                                    />
+                                    {entry.label}
+                                  </Label>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      setInspectionChecklist((prev) => prev.filter((i) => i.id !== entry.id))
+                                    }
+                                  >
+                                    Remove
+                                  </Button>
+                                </div>
+                              ))}
+                              {inspectionChecklist.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">No checklist items yet.</p>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          {isEditing && item ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <Checkbox
+                                  checked={shareInspectionAttachmentsWithClients}
+                                  onCheckedChange={(value) => setShareInspectionAttachmentsWithClients(Boolean(value))}
+                                  id="share-inspection-attachments"
+                                />
+                                <Label htmlFor="share-inspection-attachments" className="text-xs font-normal text-muted-foreground">
+                                  Share new attachments with client portal
+                                </Label>
+                              </div>
+                              <EntityAttachments
+                                entityType="schedule_item"
+                                entityId={item.id}
+                                projectId={item.project_id}
+                                attachments={inspectionAttachments}
+                                onAttach={handleAttachInspection}
+                                onDetach={handleDetachInspection}
+                                readOnly={inspectionAttachmentsLoading}
+                                compact
+                                acceptedTypes=".pdf,.png,.jpg,.jpeg,.webp,.heic"
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              Create the inspection first to add attachments.
+                            </p>
+                          )}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
                 </Accordion>
               </div>
             </ScrollArea>
@@ -960,4 +1718,3 @@ export function ScheduleItemSheet({
     </Sheet>
   )
 }
-

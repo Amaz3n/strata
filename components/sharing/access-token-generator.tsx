@@ -5,7 +5,7 @@ import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 
 import type { PortalAccessToken, PortalPermissions, ProjectVendor } from "@/lib/types"
-import { createPortalTokenAction, loadProjectVendorsAction } from "@/app/sharing/actions"
+import { createPortalTokenAction, loadProjectVendorsAction } from "@/app/(app)/sharing/actions"
 import { PermissionToggles } from "./permission-toggles"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -256,6 +256,10 @@ export function AccessTokenGenerator({ projectId, onCreated }: AccessTokenGenera
     </div>
   )
 }
+
+
+
+
 
 
 

@@ -1,10 +1,15 @@
 import { z } from "zod"
+import { paymentMethodInputSchema } from "@/lib/validation/payments"
 
-export const vendorBillStatusEnum = z.enum(["pending", "approved", "paid"]).default("pending")
+export const vendorBillStatusEnum = z.enum(["pending", "approved", "partial", "paid"]).default("pending")
 
 export const vendorBillStatusUpdateSchema = z.object({
   status: vendorBillStatusEnum,
+  payment_method: paymentMethodInputSchema.optional(),
   payment_reference: z.string().max(200).optional(),
+  payment_amount_cents: z.number().int().min(1).optional(),
+  retainage_percent: z.number().min(0).max(25).optional(),
+  lien_waiver_status: z.enum(["not_required", "requested", "received"]).optional(),
 })
 
 export type VendorBillStatusUpdate = z.infer<typeof vendorBillStatusUpdateSchema>

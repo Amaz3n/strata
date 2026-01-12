@@ -57,6 +57,8 @@ function mapContact(row: any): Contact {
     has_portal_access: metadata.has_portal_access ?? false,
     preferred_contact_method: metadata.preferred_contact_method ?? undefined,
     notes: metadata.notes ?? undefined,
+    external_crm_id: row.external_crm_id ?? undefined,
+    crm_source: row.crm_source ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
     companies,
@@ -104,7 +106,7 @@ export async function listContactsWithClient(
     .from("contacts")
     .select(
       `
-      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at,
+      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
       primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, metadata),
       contact_company_links(id, org_id, contact_id, company_id, relationship, created_at)
     `,
@@ -142,7 +144,7 @@ export async function getContact(contactId: string, orgId?: string): Promise<Con
     .from("contacts")
     .select(
       `
-      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at,
+      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
       primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, metadata),
       contact_company_links(
         id, org_id, contact_id, company_id, relationship, created_at,
@@ -176,6 +178,8 @@ function buildContactInsert(input: ContactInput, orgId: string) {
     phone: input.phone ?? null,
     role: input.role ?? null,
     contact_type: input.contact_type ?? "subcontractor",
+    external_crm_id: input.external_crm_id ?? null,
+    crm_source: input.crm_source ?? null,
     metadata: {
       has_portal_access: input.has_portal_access ?? false,
       preferred_contact_method: input.preferred_contact_method,
@@ -194,7 +198,7 @@ export async function createContact({ input, orgId }: { input: ContactInput; org
     .insert(buildContactInsert(parsed, resolvedOrgId))
     .select(
       `
-      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at,
+      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
       primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, metadata),
       contact_company_links(id, org_id, contact_id, company_id, relationship, created_at)
     `,
@@ -259,7 +263,7 @@ export async function updateContact({
   const { data: existing, error: existingError } = await supabase
     .from("contacts")
     .select(
-      "id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at",
+      "id, org_id, full_name, email, phone, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at",
     )
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
@@ -289,13 +293,15 @@ export async function updateContact({
       role: parsed.role ?? existing.role,
       contact_type: parsed.contact_type ?? existing.contact_type,
       primary_company_id: parsed.primary_company_id ?? existing.primary_company_id,
+      external_crm_id: parsed.external_crm_id ?? existing.external_crm_id,
+      crm_source: parsed.crm_source ?? existing.crm_source,
       metadata,
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
     .select(
       `
-      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at,
+      id, org_id, full_name, email, phone, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
       primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, metadata),
       contact_company_links(id, org_id, contact_id, company_id, relationship, created_at)
     `,

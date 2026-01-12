@@ -29,6 +29,7 @@ type ChangeOrderRow = {
 
 function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
   return lines.map((line) => ({
+    cost_code_id: line.cost_code_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",
@@ -201,6 +202,28 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     throw new Error(`Failed to create change order: ${error?.message}`)
   }
 
+  const linePayload = normalizedLines.map((line, idx) => ({
+    org_id: resolvedOrgId,
+    change_order_id: data.id,
+    cost_code_id: line.cost_code_id ?? null,
+    description: line.description,
+    quantity: line.quantity,
+    unit: line.unit ?? "unit",
+    unit_cost_cents: line.unit_cost_cents,
+    sort_order: idx,
+    metadata: {
+      allowance_cents: line.allowance_cents ?? 0,
+      taxable: line.taxable ?? true,
+    },
+  }))
+
+  if (linePayload.length > 0) {
+    const { error: lineError } = await supabase.from("change_order_lines").insert(linePayload)
+    if (lineError) {
+      throw new Error(`Failed to create change order lines: ${lineError.message}`)
+    }
+  }
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "change_order_created",
@@ -215,7 +238,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     action: "insert",
     entityType: "change_order",
     entityId: data.id,
-    after: payload,
+    after: { ...payload, lines: linePayload },
   })
 
   return mapChangeOrderRow(data as ChangeOrderRow)
@@ -329,6 +352,160 @@ export async function approveChangeOrderFromPortal({
     throw new Error(`Failed to update change order status: ${updateError.message}`)
   }
 
+  await applyChangeOrderFinancialImpact({
+    supabase,
+    orgId: existing.org_id,
+    projectId: existing.project_id,
+  })
+
   return { success: true }
 }
 
+export async function approveChangeOrder({
+  changeOrderId,
+  orgId,
+}: {
+  changeOrderId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) {
+    throw new Error("Change order not found")
+  }
+
+  const nowIso = new Date().toISOString()
+  const { data, error } = await supabase
+    .from("change_orders")
+    .update({
+      status: "approved",
+      approved_at: nowIso,
+      approved_by: userId,
+      metadata: { ...(existing.metadata ?? {}), approved_by_user: userId },
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+    .select(
+      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+    )
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to approve change order: ${error?.message}`)
+  }
+
+  await applyChangeOrderFinancialImpact({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: data.project_id,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_approved",
+    entityType: "change_order",
+    entityId: data.id,
+    payload: { project_id: data.project_id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "change_order",
+    entityId: data.id,
+    after: data,
+  })
+
+  return mapChangeOrderRow(data as ChangeOrderRow)
+}
+
+async function applyChangeOrderFinancialImpact({
+  supabase,
+  orgId,
+  projectId,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+}) {
+  const { data: contract, error: contractError } = await supabase
+    .from("contracts")
+    .select("id, total_cents, snapshot")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (contractError) {
+    throw new Error(`Failed to load contract: ${contractError.message}`)
+  }
+  if (!contract) return
+
+  const { data: approvedOrders, error: approvedError } = await supabase
+    .from("change_orders")
+    .select("total_cents")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "approved")
+
+  if (approvedError) {
+    throw new Error(`Failed to load approved change orders: ${approvedError.message}`)
+  }
+
+  const approvedTotal = (approvedOrders ?? []).reduce((sum, row: any) => sum + (row.total_cents ?? 0), 0)
+  const snapshot = contract.snapshot ?? {}
+  const baseTotal = snapshot.base_total_cents ?? contract.total_cents ?? 0
+  const revisedTotal = baseTotal + approvedTotal
+
+  const { error: updateContractError } = await supabase
+    .from("contracts")
+    .update({
+      total_cents: revisedTotal,
+      snapshot: {
+        ...snapshot,
+        base_total_cents: snapshot.base_total_cents ?? baseTotal,
+        approved_change_orders_cents: approvedTotal,
+        revised_total_cents: revisedTotal,
+      },
+    })
+    .eq("id", contract.id)
+    .eq("org_id", orgId)
+
+  if (updateContractError) {
+    throw new Error(`Failed to update contract totals: ${updateContractError.message}`)
+  }
+
+  const { data: draws, error: drawsError } = await supabase
+    .from("draw_schedules")
+    .select("id, percent_of_contract, status")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "pending")
+
+  if (drawsError) {
+    throw new Error(`Failed to load draw schedules: ${drawsError.message}`)
+  }
+
+  const updates = (draws ?? [])
+    .filter((draw: any) => draw.percent_of_contract != null)
+    .map((draw: any) => ({
+      id: draw.id,
+      amount_cents: Math.round(revisedTotal * Number(draw.percent_of_contract) / 100),
+    }))
+
+  for (const update of updates) {
+    const { error: drawUpdateError } = await supabase
+      .from("draw_schedules")
+      .update({ amount_cents: update.amount_cents })
+      .eq("id", update.id)
+      .eq("org_id", orgId)
+
+    if (drawUpdateError) {
+      throw new Error(`Failed to update draw schedule amounts: ${drawUpdateError.message}`)
+    }
+  }
+}

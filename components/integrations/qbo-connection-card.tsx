@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw } from "lucide-react"
 
-import { connectQBOAction, disconnectQBOAction, updateQBOSettingsAction } from "@/app/settings/integrations/actions"
+import { connectQBOAction, disconnectQBOAction, updateQBOSettingsAction } from "@/app/(app)/settings/integrations/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"

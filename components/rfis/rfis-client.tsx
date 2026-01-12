@@ -1,21 +1,22 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useMemo, useState, useTransition, useCallback } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { Project, Rfi } from "@/lib/types"
 import type { RfiInput } from "@/lib/validation/rfis"
-import { createRfiAction, listRfisAction } from "@/app/rfis/actions"
+import { createRfiAction, listRfisAction } from "@/app/(app)/rfis/actions"
 import { RfiForm } from "@/components/rfis/rfi-form"
 import { RfiDetailSheet } from "@/components/rfis/rfi-detail-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Plus, Calendar, FileText, Building2 } from "@/components/icons"
+import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
 
 type StatusKey = "open" | "in_review" | "answered" | "closed" | string
 
@@ -45,7 +46,9 @@ interface RfisClientProps {
 
 export function RfisClient({ rfis, projects }: RfisClientProps) {
   const [items, setItems] = useState<Rfi[]>(rfis)
+  const [search, setSearch] = useState("")
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
   const [selectedRfi, setSelectedRfi] = useState<Rfi | null>(null)
@@ -57,17 +60,20 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
   }
 
   const filtered = useMemo(() => {
-    if (filterProjectId === "all") return items
-    return items.filter((item) => item.project_id === filterProjectId)
-  }, [filterProjectId, items])
+    const safeItems = items ?? []
+    const term = search.toLowerCase()
+    return safeItems.filter((item) => {
+      const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
+      const matchesStatus = statusFilter === "all" || item.status === statusFilter
+      const matchesSearch =
+        term.length === 0 ||
+        [item.rfi_number ?? "", item.subject ?? "", item.question ?? ""].some((value) =>
+          value.toLowerCase().includes(term),
+        )
+      return matchesProject && matchesStatus && matchesSearch
+    })
+  }, [filterProjectId, items, search, statusFilter])
 
-  const stats = useMemo(() => {
-    return {
-      total: items.length,
-      open: items.filter((rfi) => rfi.status === "open").length,
-      answered: items.filter((rfi) => rfi.status === "answered" || rfi.status === "closed").length,
-    }
-  }, [items])
 
   async function handleCreate(values: RfiInput) {
     startTransition(async () => {
@@ -83,46 +89,19 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
     })
   }
 
+  const refreshRfis = useCallback(async () => {
+    startTransition(async () => {
+      try {
+        const updatedRfis = await listRfisAction()
+        setItems(updatedRfis)
+      } catch (error) {
+        console.error("Failed to refresh RFIs:", error)
+      }
+    })
+  }, [])
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">RFIs</h1>
-          <p className="text-muted-foreground text-sm">Track questions, due dates, and responses.</p>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <Badge variant="secondary" className="text-xs">
-              Total {stats.total}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Open {stats.open}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Answered {stats.answered}
-            </Badge>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-full sm:w-[220px]">
-              <SelectValue placeholder="Filter by project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-2" />
-            New RFI
-          </Button>
-        </div>
-      </div>
-
+    <div className="space-y-4">
       <RfiForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
@@ -137,78 +116,141 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
         project={projects.find((p) => p.id === selectedRfi?.project_id)}
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
+        onUpdate={refreshRfis}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((rfi) => (
-          <Card
-            key={rfi.id}
-            className="h-full flex flex-col cursor-pointer hover:border-primary/50 transition-colors"
-            onClick={() => handleRfiClick(rfi)}
-          >
-            <CardHeader className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base font-semibold">
-                  {rfi.rfi_number} — {rfi.subject}
-                </CardTitle>
-                <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
-                  {statusLabels[rfi.status] ?? rfi.status}
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Building2 className="h-4 w-4" />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-1 items-center gap-2">
+          <Input
+            placeholder="Search RFIs..."
+            className="w-full sm:w-72"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Project" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All projects</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {(["open", "in_review", "answered", "closed"] as StatusKey[]).map((status) => (
+                <SelectItem key={status} value={status}>
+                  {statusLabels[status]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button onClick={() => setSheetOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          New RFI
+        </Button>
+      </div>
+
+      <div className="rounded-lg border overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="divide-x">
+              <TableHead className="px-4 py-4">RFI Number</TableHead>
+              <TableHead className="px-4 py-4">Subject</TableHead>
+              <TableHead className="px-4 py-4">Project</TableHead>
+              <TableHead className="px-4 py-4 text-center">Status</TableHead>
+              <TableHead className="px-4 py-4 text-center">Due Date</TableHead>
+              <TableHead className="px-4 py-4 text-center">Priority</TableHead>
+              <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.map((rfi) => (
+              <TableRow key={rfi.id} className="divide-x">
+                <TableCell className="px-4 py-4">
+                  <div className="font-semibold">{rfi.rfi_number}</div>
+                </TableCell>
+                <TableCell className="px-4 py-4">
+                  <button
+                    type="button"
+                    onClick={() => handleRfiClick(rfi)}
+                    className="font-semibold text-left hover:text-primary transition-colors"
+                    aria-label={`View RFI ${rfi.rfi_number ?? rfi.subject ?? ""}`}
+                  >
+                    {rfi.subject}
+                  </button>
+                </TableCell>
+                <TableCell className="px-4 py-4 text-muted-foreground">
                   {projects.find((p) => p.id === rfi.project_id)?.name ?? "Unknown project"}
-                </span>
-                {rfi.due_date && (
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-4 w-4" />
-                    Due {formatDate(rfi.due_date)}
-                  </span>
-                )}
-              </div>
-            </CardHeader>
-
-            <CardContent className="flex-1 space-y-3">
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Question</span>
-                  <Badge variant="outline" className="text-[11px]">
-                    Priority {rfi.priority ?? "medium"}
+                </TableCell>
+                <TableCell className="px-4 py-4 text-center">
+                  <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
+                    {statusLabels[rfi.status] ?? rfi.status}
                   </Badge>
-                </div>
-                <p className="text-sm text-foreground">{rfi.question}</p>
-              </div>
-              {rfi.answered_at && (
-                <div className="text-xs text-muted-foreground">
-                  Answered {formatDate(rfi.answered_at)}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
-
-        {filtered.length === 0 && (
-          <div className="col-span-full rounded-lg border border-dashed p-8 text-center">
-            <p className="text-sm text-muted-foreground">No RFIs yet.</p>
-            <Button className="mt-3" onClick={() => setSheetOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create your first RFI
-            </Button>
-          </div>
-        )}
-
-        {isPending && filtered.length === 0 && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {[...Array(3)].map((_, idx) => (
-              <Skeleton key={idx} className="h-44 w-full rounded-lg" />
+                </TableCell>
+                <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                  {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
+                </TableCell>
+                <TableCell className="px-4 py-4 text-center">
+                  <Badge variant="outline" className="text-[11px] capitalize">
+                    {rfi.priority ?? "medium"}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-center w-12 px-4 py-4">
+                  <div className="flex justify-center">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">RFI actions</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => handleRfiClick(rfi)}>
+                          View details
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </TableCell>
+              </TableRow>
             ))}
-          </div>
-        )}
+            {filtered.length === 0 && (
+              <TableRow className="divide-x">
+                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                      <FileText className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="font-medium">No RFIs yet</p>
+                      <p className="text-sm">Create your first RFI to get started.</p>
+                    </div>
+                    <Button onClick={() => setSheetOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Create RFI
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
       </div>
     </div>
   )
 }
+
+
 
 
 

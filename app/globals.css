@@ -198,6 +198,40 @@
     background: transparent;
   }
   
+  @keyframes skeleton-slide {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  .skeleton-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .skeleton-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.35),
+      transparent
+    );
+    animation: skeleton-slide 0.6s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-shimmer::after {
+      animation: none;
+    }
+  }
+
   .schedule-scroll::-webkit-scrollbar-thumb {
     background-color: var(--muted-foreground);
     border-radius: 4px;
@@ -284,4 +318,3 @@
     }
   }
 }
-

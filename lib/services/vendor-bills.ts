@@ -3,14 +3,16 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import {
   vendorBillStatusUpdateSchema,
   vendorBillCreateSchema,
   type VendorBillStatusUpdate,
   type VendorBillCreate,
 } from "@/lib/validation/vendor-bills"
+import { getComplianceRules } from "@/lib/services/compliance"
 
-export type VendorBillStatus = "pending" | "approved" | "paid"
+export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
 export interface VendorBillSummary {
   id: string
@@ -20,6 +22,11 @@ export interface VendorBillSummary {
   commitment_id?: string
   commitment_title?: string
   commitment_total_cents?: number
+  company_id?: string
+  company_name?: string
+  company_insurance_expiry?: string
+  company_license_expiry?: string
+  company_w9_on_file?: boolean
   bill_number?: string
   status: VendorBillStatus | string
   bill_date?: string
@@ -31,11 +38,28 @@ export interface VendorBillSummary {
   created_at: string
   updated_at?: string
   payment_reference?: string
+  payment_method?: string
   paid_at?: string
+  approved_at?: string
+  approved_by?: string
+  paid_cents?: number
+  retainage_percent?: number
+  retainage_cents?: number
+  lien_waiver_status?: string
+  lien_waiver_received_at?: string
+  over_budget?: boolean
 }
 
 function mapVendorBill(row: any): VendorBillSummary {
   const metadata = row?.metadata ?? {}
+  const company = row?.commitment?.company ?? row?.company ?? {}
+  const companyMetadata = company?.metadata ?? {}
+  const paidCents =
+    typeof row.paid_cents === "number"
+      ? row.paid_cents
+      : row.status === "paid"
+        ? row.total_cents ?? 0
+        : 0
   return {
     id: row.id,
     org_id: row.org_id,
@@ -44,6 +68,15 @@ function mapVendorBill(row: any): VendorBillSummary {
     commitment_id: row.commitment_id ?? undefined,
     commitment_title: row.commitment?.title ?? undefined,
     commitment_total_cents: row.commitment?.total_cents ?? undefined,
+    company_id: company.id ?? row.company_id ?? undefined,
+    company_name: company.name ?? row.company?.name ?? undefined,
+    company_insurance_expiry: company.insurance_expiry ?? companyMetadata.insurance_expiry ?? undefined,
+    company_license_expiry: company.license_expiry ?? companyMetadata.license_expiry ?? undefined,
+    company_w9_on_file: typeof company.w9_on_file === "boolean"
+      ? company.w9_on_file
+      : typeof companyMetadata.w9_on_file === "boolean"
+        ? companyMetadata.w9_on_file
+        : undefined,
     bill_number: row.bill_number ?? undefined,
     status: row.status ?? "pending",
     bill_date: row.bill_date ?? undefined,
@@ -54,8 +87,17 @@ function mapVendorBill(row: any): VendorBillSummary {
     file_id: row.file_id ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
-    payment_reference: metadata.payment_reference ?? undefined,
-    paid_at: metadata.paid_at ?? undefined,
+    payment_reference: row.payment_reference ?? metadata.payment_reference ?? undefined,
+    payment_method: row.payment_method ?? metadata.payment_method ?? undefined,
+    paid_at: row.paid_at ?? metadata.paid_at ?? undefined,
+    approved_at: row.approved_at ?? metadata.approved_at ?? undefined,
+    approved_by: row.approved_by ?? metadata.approved_by ?? undefined,
+    paid_cents: paidCents,
+    retainage_percent: row.retainage_percent ?? undefined,
+    retainage_cents: row.retainage_cents ?? undefined,
+    lien_waiver_status: row.lien_waiver_status ?? undefined,
+    lien_waiver_received_at: row.lien_waiver_received_at ?? undefined,
+    over_budget: typeof metadata.over_budget === "boolean" ? metadata.over_budget : undefined,
   }
 }
 
@@ -80,13 +122,38 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents)
+      commitment:commitments(id, title, total_cents, company:companies(id, name, insurance_expiry, license_expiry, w9_on_file, metadata))
     `,
     )
     .eq("org_id", resolvedOrgId)
     .in("commitment_id", commitmentIds)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to list vendor bills: ${error.message}`)
+  }
+
+  return (data ?? []).map(mapVendorBill)
+}
+
+export async function listVendorBillsForProject(projectId: string, orgId?: string): Promise<VendorBillSummary[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+
+  const { data, error } = await supabase
+    .from("vendor_bills")
+    .select(
+      `
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
+      project:projects(id, name),
+      commitment:commitments(id, title, total_cents, company:companies(id, name, insurance_expiry, license_expiry, w9_on_file, metadata))
+    `,
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
 
   if (error) {
@@ -111,7 +178,7 @@ export async function updateVendorBillStatus({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, status, metadata")
+    .select("id, org_id, project_id, commitment_id, status, total_cents, currency, metadata, approved_at, paid_at, paid_cents, lien_waiver_status")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -120,22 +187,153 @@ export async function updateVendorBillStatus({
     throw new Error("Vendor bill not found")
   }
 
-  const metadata = {
-    ...(existing.metadata ?? {}),
-    payment_reference: parsed.payment_reference ?? existing.metadata?.payment_reference,
-    paid_at: parsed.status === "paid" ? new Date().toISOString() : existing.metadata?.paid_at,
+  if (
+    (parsed.status === "paid" || parsed.status === "partial") &&
+    existing.status !== "approved" &&
+    existing.status !== "partial" &&
+    existing.status !== "paid"
+  ) {
+    throw new Error("Bill must be approved before it can be marked paid")
+  }
+
+  if (parsed.status === "paid" || parsed.status === "partial") {
+    const rules = await getComplianceRules(resolvedOrgId).catch(() => ({
+      require_w9: true,
+      require_insurance: true,
+      require_license: false,
+      require_lien_waiver: false,
+      block_payment_on_missing_docs: true,
+    }))
+
+    if (rules.block_payment_on_missing_docs) {
+      if (rules.require_lien_waiver && existing.lien_waiver_status !== "received") {
+        throw new Error("Lien waiver required before payment")
+      }
+
+      if (existing.commitment_id) {
+        const { data: commitment } = await supabase
+          .from("commitments")
+          .select("company:companies(id, w9_on_file, insurance_expiry, license_expiry)")
+          .eq("id", existing.commitment_id)
+          .eq("org_id", resolvedOrgId)
+          .maybeSingle()
+
+        const company = (commitment as any)?.company
+        if (company) {
+          if (rules.require_w9 && company.w9_on_file === false) {
+            throw new Error("W-9 required before payment")
+          }
+          if (rules.require_insurance) {
+            const expiry = company.insurance_expiry ? new Date(company.insurance_expiry) : null
+            if (!expiry || Number.isNaN(expiry.getTime()) || expiry.getTime() < Date.now()) {
+              throw new Error("Insurance required before payment")
+            }
+          }
+          if (rules.require_license) {
+            const expiry = company.license_expiry ? new Date(company.license_expiry) : null
+            if (!expiry || Number.isNaN(expiry.getTime()) || expiry.getTime() < Date.now()) {
+              throw new Error("License required before payment")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (parsed.status === "partial" && parsed.payment_amount_cents == null && existing.status !== "partial") {
+    throw new Error("Payment amount required to mark bill as partial")
+  }
+
+  // Build update object with column values.
+  const updateData: any = { status: parsed.status }
+  const totalCents = existing.total_cents ?? 0
+  const existingPaid = typeof existing.paid_cents === "number" ? existing.paid_cents : 0
+  const remainingCents = Math.max(0, totalCents - existingPaid)
+
+  if (parsed.payment_reference) {
+    updateData.payment_reference = parsed.payment_reference
+  }
+
+  if (parsed.payment_method) {
+    updateData.payment_method = parsed.payment_method
+  }
+
+  if (parsed.status === "approved" && !existing.approved_at) {
+    updateData.approved_at = new Date().toISOString()
+    updateData.approved_by = userId
+  }
+
+  const shouldProcessPayment = parsed.status === "paid" || (parsed.status === "partial" && parsed.payment_amount_cents != null)
+
+  if (shouldProcessPayment) {
+    let paymentAmount = parsed.payment_amount_cents
+    if (paymentAmount == null && parsed.status === "paid") {
+      paymentAmount = remainingCents
+    }
+
+    if (paymentAmount == null) {
+      throw new Error("Payment amount required for partial payments")
+    }
+
+    if (paymentAmount <= 0 && remainingCents > 0) {
+      throw new Error("Payment amount must be positive")
+    }
+
+    if (paymentAmount > remainingCents) {
+      throw new Error("Payment amount exceeds remaining balance")
+    }
+
+    if (paymentAmount > 0) {
+      const { error: paymentInsertError } = await supabase.from("payments").insert({
+        org_id: resolvedOrgId,
+        project_id: existing.project_id,
+        bill_id: billId,
+        amount_cents: paymentAmount,
+        currency: existing.currency ?? "usd",
+        method: parsed.payment_method ?? "check",
+        reference: parsed.payment_reference ?? null,
+        received_at: new Date().toISOString(),
+        status: "succeeded",
+        provider: "manual",
+        net_cents: paymentAmount,
+        metadata: {},
+      })
+
+      if (paymentInsertError) {
+        throw new Error(`Failed to record bill payment: ${paymentInsertError.message}`)
+      }
+    }
+
+    const nextPaid = existingPaid + (paymentAmount ?? 0)
+    const isPaid = totalCents > 0 ? nextPaid >= totalCents : parsed.status === "paid"
+    updateData.status = isPaid ? "paid" : "partial"
+    updateData.paid_cents = nextPaid
+    if (isPaid && !existing.paid_at) {
+      updateData.paid_at = new Date().toISOString()
+    }
+  }
+
+  if (parsed.retainage_percent != null) {
+    updateData.retainage_percent = parsed.retainage_percent
+    updateData.retainage_cents = Math.round((totalCents * parsed.retainage_percent) / 100)
+  }
+
+  if (parsed.lien_waiver_status) {
+    updateData.lien_waiver_status = parsed.lien_waiver_status
+    updateData.lien_waiver_received_at =
+      parsed.lien_waiver_status === "received" ? new Date().toISOString() : null
   }
 
   const { data, error } = await supabase
     .from("vendor_bills")
-    .update({ status: parsed.status, metadata })
+    .update(updateData)
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents)
+      commitment:commitments(id, title, total_cents, company:companies(id, name, insurance_expiry, license_expiry, w9_on_file, metadata))
     `,
     )
     .single()
@@ -152,6 +350,23 @@ export async function updateVendorBillStatus({
     entityId: billId,
     before: existing,
     after: data,
+  })
+
+  const finalStatus = updateData.status ?? parsed.status
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: finalStatus === "paid" ? "vendor_bill_paid" : "vendor_bill_updated",
+    entityType: "vendor_bill",
+    entityId: billId,
+    payload: {
+      status: finalStatus,
+      payment_reference: parsed.payment_reference,
+      payment_method: parsed.payment_method,
+      payment_amount_cents: parsed.payment_amount_cents,
+      lien_waiver_status: parsed.lien_waiver_status,
+      retainage_percent: parsed.retainage_percent,
+    },
   })
 
   return mapVendorBill(data)
@@ -233,7 +448,7 @@ export async function createVendorBillFromPortal({
     })
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
       commitment:commitments(id, title, total_cents)
     `,
@@ -242,6 +457,22 @@ export async function createVendorBillFromPortal({
 
   if (error || !data) {
     throw new Error(`Failed to create vendor bill: ${error?.message}`)
+  }
+
+  if (parsed.file_id) {
+    try {
+      await attachFileWithServiceRole({
+        orgId,
+        fileId: parsed.file_id,
+        projectId,
+        entityType: "vendor_bill",
+        entityId: data.id as string,
+        linkRole: "invoice",
+        createdBy: null,
+      })
+    } catch (error) {
+      console.warn("Failed to attach vendor bill file to file_links", error)
+    }
   }
 
   // Record event for activity feed
@@ -263,4 +494,3 @@ export async function createVendorBillFromPortal({
 
   return mapVendorBill(data)
 }
-

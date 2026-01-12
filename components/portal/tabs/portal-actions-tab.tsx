@@ -109,6 +109,36 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
           )}
         </CardContent>
       </Card>
+
+      {portalType === "client" && (
+        <Card>
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Warranty requests</CardTitle>
+            <a href={`/p/${token}/warranty`} className="text-sm text-primary">
+              Submit request
+            </a>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {data.warrantyRequests && data.warrantyRequests.length > 0 ? (
+              data.warrantyRequests.slice(0, 3).map((req) => (
+                <div key={req.id} className="flex items-center justify-between py-2 border-b last:border-0">
+                  <div>
+                    <p className="text-sm font-medium">{req.title}</p>
+                    {req.description ? (
+                      <p className="text-xs text-muted-foreground">{req.description}</p>
+                    ) : null}
+                  </div>
+                  <Badge variant="outline" className="capitalize text-xs">
+                    {req.status}
+                  </Badge>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">No warranty requests</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

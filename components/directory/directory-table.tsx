@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { Company, Contact } from "@/lib/types"
-import { getCompanyContactsForDirectoryAction } from "@/app/directory/actions"
+import { getCompanyContactsForDirectoryAction } from "@/app/(app)/directory/actions"
 import { Building2, ChevronDown, ChevronRight, User, Loader2 } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 

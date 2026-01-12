@@ -1,7 +1,7 @@
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
 
-// View types
-export type ScheduleViewType = "gantt" | "list" | "calendar" | "lookahead"
+// View types (List view removed - redundant with Gantt)
+export type ScheduleViewType = "gantt" | "lookahead"
 
 // Zoom levels for Gantt
 export type GanttZoomLevel = "day" | "week" | "month" | "quarter"
@@ -81,8 +81,8 @@ export interface ScheduleContextValue {
   setSelectedItem: (item: ScheduleItem | null) => void
   
   // Actions
-  onItemUpdate: (id: string, updates: Partial<ScheduleItem>) => Promise<void>
-  onItemCreate: (item: Partial<ScheduleItem>) => Promise<void>
+  onItemUpdate: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
+  onItemCreate: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete: (id: string) => Promise<void>
   onDependencyCreate: (from: string, to: string, type?: string) => Promise<void>
   onDependencyDelete: (id: string) => Promise<void>
@@ -105,14 +105,74 @@ export const GANTT_BAR_HEIGHT = 28
 export const GANTT_BAR_PADDING = 6
 export const GANTT_MILESTONE_SIZE = 16
 
-// Colors
-export const STATUS_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  planned: { bg: "bg-slate-100 dark:bg-slate-800", text: "text-slate-600 dark:text-slate-400", border: "border-slate-300 dark:border-slate-600" },
-  in_progress: { bg: "bg-blue-100 dark:bg-blue-900/30", text: "text-blue-700 dark:text-blue-300", border: "border-blue-300 dark:border-blue-700" },
-  at_risk: { bg: "bg-amber-100 dark:bg-amber-900/30", text: "text-amber-700 dark:text-amber-300", border: "border-amber-300 dark:border-amber-700" },
-  blocked: { bg: "bg-red-100 dark:bg-red-900/30", text: "text-red-700 dark:text-red-300", border: "border-red-300 dark:border-red-700" },
-  completed: { bg: "bg-emerald-100 dark:bg-emerald-900/30", text: "text-emerald-700 dark:text-emerald-300", border: "border-emerald-300 dark:border-emerald-700" },
-  cancelled: { bg: "bg-gray-100 dark:bg-gray-800", text: "text-gray-500 dark:text-gray-500", border: "border-gray-300 dark:border-gray-600" },
+// Animation constants
+export const ANIMATION = {
+  fast: "150ms",
+  normal: "200ms",
+  slow: "300ms",
+  spring: "cubic-bezier(0.34, 1.56, 0.64, 1)",
+  ease: "cubic-bezier(0.4, 0, 0.2, 1)",
+  easeOut: "cubic-bezier(0, 0, 0.2, 1)",
+  easeIn: "cubic-bezier(0.4, 0, 1, 1)",
+}
+
+// Colors with improved dark mode support
+export const STATUS_COLORS: Record<string, {
+  bg: string
+  text: string
+  border: string
+  ganttBar: string
+  ganttProgress: string
+  pdfColor: string
+}> = {
+  planned: {
+    bg: "bg-slate-100 dark:bg-slate-800/60",
+    text: "text-slate-600 dark:text-slate-300",
+    border: "border-slate-300 dark:border-slate-600",
+    ganttBar: "bg-slate-200 dark:bg-slate-700",
+    ganttProgress: "bg-slate-400 dark:bg-slate-500",
+    pdfColor: "#94a3b8",
+  },
+  in_progress: {
+    bg: "bg-blue-50 dark:bg-blue-950/40",
+    text: "text-blue-700 dark:text-blue-300",
+    border: "border-blue-200 dark:border-blue-800",
+    ganttBar: "bg-blue-100 dark:bg-blue-900/50",
+    ganttProgress: "bg-blue-500 dark:bg-blue-400",
+    pdfColor: "#3b82f6",
+  },
+  at_risk: {
+    bg: "bg-amber-50 dark:bg-amber-950/40",
+    text: "text-amber-700 dark:text-amber-300",
+    border: "border-amber-200 dark:border-amber-800",
+    ganttBar: "bg-amber-100 dark:bg-amber-900/50",
+    ganttProgress: "bg-amber-500 dark:bg-amber-400",
+    pdfColor: "#f59e0b",
+  },
+  blocked: {
+    bg: "bg-red-50 dark:bg-red-950/40",
+    text: "text-red-700 dark:text-red-300",
+    border: "border-red-200 dark:border-red-800",
+    ganttBar: "bg-red-100 dark:bg-red-900/50",
+    ganttProgress: "bg-red-500 dark:bg-red-400",
+    pdfColor: "#ef4444",
+  },
+  completed: {
+    bg: "bg-emerald-50 dark:bg-emerald-950/40",
+    text: "text-emerald-700 dark:text-emerald-300",
+    border: "border-emerald-200 dark:border-emerald-800",
+    ganttBar: "bg-emerald-100 dark:bg-emerald-900/50",
+    ganttProgress: "bg-emerald-500 dark:bg-emerald-400",
+    pdfColor: "#10b981",
+  },
+  cancelled: {
+    bg: "bg-gray-50 dark:bg-gray-900/60",
+    text: "text-gray-500 dark:text-gray-400",
+    border: "border-gray-200 dark:border-gray-700",
+    ganttBar: "bg-gray-100 dark:bg-gray-800",
+    ganttProgress: "bg-gray-400 dark:bg-gray-600",
+    pdfColor: "#6b7280",
+  },
 }
 
 export const ITEM_TYPE_ICONS: Record<string, string> = {
@@ -217,4 +277,3 @@ export function parseDate(dateString?: string): Date | null {
 export function toDateString(date: Date): string {
   return date.toISOString().split("T")[0]
 }
-

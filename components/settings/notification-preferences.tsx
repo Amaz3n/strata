@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useUser } from '@/lib/auth/client'
 import { toast } from 'sonner'
-import { getNotificationPreferencesAction, updateNotificationPreferencesAction } from '@/app/settings/actions'
+import { getNotificationPreferencesAction, updateNotificationPreferencesAction } from '@/app/(app)/settings/actions'
 
 export function NotificationPreferences() {
   const [emailEnabled, setEmailEnabled] = useState(true)

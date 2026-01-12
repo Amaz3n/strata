@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
@@ -14,7 +14,7 @@ import {
   manualResyncInvoiceAction,
   syncPendingInvoicesNowAction,
   updateInvoiceAction,
-} from "@/app/invoices/actions"
+} from "@/app/(app)/invoices/actions"
 import { MiddayInvoiceSheet } from "@/components/invoices/midday/midday-invoice-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -39,13 +39,14 @@ import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
 import { Skeleton } from "@/components/ui/skeleton"
 
-type StatusKey = "draft" | "sent" | "paid" | "overdue" | "void"
+type StatusKey = "draft" | "sent" | "partial" | "paid" | "overdue" | "void"
 type StatusFilter = StatusKey | "all"
 type DueFilter = "any" | "due_soon" | "overdue" | "no_due"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
   sent: "Sent",
+  partial: "Partial",
   paid: "Paid",
   overdue: "Overdue",
   void: "Void",
@@ -54,6 +55,7 @@ const statusLabels: Record<StatusKey, string> = {
 const statusStyles: Record<StatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
   sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
+  partial: "bg-purple-500/15 text-purple-700 border-purple-500/30",
   paid: "bg-success/20 text-success border-success/30",
   overdue: "bg-destructive/20 text-destructive border-destructive/30",
   void: "bg-muted text-muted-foreground border-muted",
@@ -66,13 +68,14 @@ function formatMoneyFromCents(cents?: number | null) {
 
 function resolveStatusKey(status?: string | null): StatusKey {
   if (!status) return "draft"
-  const allowed: StatusKey[] = ["draft", "sent", "paid", "overdue", "void"]
+  const allowed: StatusKey[] = ["draft", "sent", "partial", "paid", "overdue", "void"]
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
 }
 
 interface InvoicesClientProps {
   invoices: Invoice[]
   projects: Project[]
+  initialOpenInvoiceId?: string
   builderInfo?: {
     name?: string | null
     email?: string | null
@@ -82,7 +85,7 @@ interface InvoicesClientProps {
   costCodes?: CostCode[]
 }
 
-export function InvoicesClient({ invoices, projects, builderInfo, contacts, costCodes }: InvoicesClientProps) {
+export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, builderInfo, contacts, costCodes }: InvoicesClientProps) {
   const [items, setItems] = useState<Invoice[]>(invoices)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
@@ -105,6 +108,13 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
   const [isSyncingAll, setIsSyncingAll] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
+  const didAutoOpen = useRef(false)
+
+  useEffect(() => {
+    if (!initialOpenInvoiceId || didAutoOpen.current) return
+    didAutoOpen.current = true
+    void handleOpenDetail(initialOpenInvoiceId)
+  }, [initialOpenInvoiceId])
 
   const projectLookup = useMemo(() => {
     return projects.reduce<Record<string, Project>>((acc, project) => {
@@ -306,7 +316,7 @@ export function InvoicesClient({ invoices, projects, builderInfo, contacts, cost
                       onValueChange={(value) => setStatusFilter(value as StatusFilter)}
                     >
                       <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
-                      {(["draft", "sent", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
+                      {(["draft", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
                         <DropdownMenuRadioItem key={status} value={status}>
                           {statusLabels[status]}
                         </DropdownMenuRadioItem>

@@ -26,6 +26,30 @@ export function SubDashboard({
     .slice(0, 3)
 
   const needsAttention = data.pendingRfiCount + data.pendingSubmittalCount
+  const complianceAlerts = (() => {
+    const alerts: { label: string; detail?: string }[] = []
+    const insuranceExpiry = data.company.insurance_expiry ? new Date(data.company.insurance_expiry) : null
+    if (!insuranceExpiry || Number.isNaN(insuranceExpiry.getTime())) {
+      alerts.push({ label: "Insurance not on file" })
+    } else {
+      const days = Math.ceil((insuranceExpiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      if (days < 0) alerts.push({ label: "Insurance expired", detail: format(insuranceExpiry, "MMM d, yyyy") })
+      else if (days <= 30) alerts.push({ label: "Insurance expiring soon", detail: format(insuranceExpiry, "MMM d, yyyy") })
+    }
+
+    if (!data.company.w9_on_file) {
+      alerts.push({ label: "W-9 missing" })
+    }
+
+    const licenseExpiry = data.company.license_expiry ? new Date(data.company.license_expiry) : null
+    if (licenseExpiry && !Number.isNaN(licenseExpiry.getTime())) {
+      const days = Math.ceil((licenseExpiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      if (days < 0) alerts.push({ label: "License expired", detail: format(licenseExpiry, "MMM d, yyyy") })
+      else if (days <= 30) alerts.push({ label: "License expiring soon", detail: format(licenseExpiry, "MMM d, yyyy") })
+    }
+
+    return alerts
+  })()
 
   return (
     <div className="space-y-4">
@@ -46,6 +70,24 @@ export function SubDashboard({
           </Button>
         )}
       </div>
+
+      {complianceAlerts.length > 0 && (
+        <Card className="border-warning/50 bg-warning/5">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Compliance warnings</p>
+                {complianceAlerts.map((alert) => (
+                  <p key={alert.label} className="text-sm text-muted-foreground">
+                    {alert.label}{alert.detail ? ` · ${alert.detail}` : ""}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Financial Summary */}
       <SubFinancialSummary summary={data.financialSummary} />
@@ -196,7 +238,7 @@ export function SubDashboard({
         <Card>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground mb-1">Project Manager</p>
-            <p className="text-sm font-medium">{data.projectManager.name}</p>
+            <p className="text-sm font-medium">{data.projectManager.full_name}</p>
             {data.projectManager.phone && (
               <a
                 href={`tel:${data.projectManager.phone}`}

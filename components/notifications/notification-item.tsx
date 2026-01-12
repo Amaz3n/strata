@@ -2,8 +2,9 @@
 
 import { formatDistanceToNow } from 'date-fns'
 import { Check, CheckCheck } from 'lucide-react'
+import { useRouter } from "next/navigation"
 import { Button } from '@/components/ui/button'
-import { NotificationRecord } from '@/lib/services/notifications'
+import type { NotificationRecord } from '@/lib/types/notifications'
 import { useNotifications } from '@/hooks/use-notifications'
 
 interface NotificationItemProps {
@@ -13,18 +14,22 @@ interface NotificationItemProps {
 
 export function NotificationItem({ notification, isRead }: NotificationItemProps) {
   const { markAsRead } = useNotifications()
+  const router = useRouter()
   const payload = notification.payload as any
+  const href = getNotificationHref(payload)
 
   const handleClick = () => {
     if (!isRead) {
       markAsRead(notification.id)
     }
-    // TODO: Navigate to the relevant page based on entity_type/entity_id
+    if (href) {
+      router.push(href)
+    }
   }
 
   return (
     <div
-      className={`p-3 rounded-lg border cursor-pointer transition-colors hover:bg-muted/50 ${
+      className={`group p-3 rounded-lg border cursor-pointer transition-colors hover:bg-muted/50 ${
         !isRead ? 'bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800' : 'bg-background'
       }`}
       onClick={handleClick}
@@ -72,6 +77,38 @@ export function NotificationItem({ notification, isRead }: NotificationItemProps
     </div>
   )
 }
+
+function getNotificationHref(payload: any): string | null {
+  const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
+  const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
+  const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
+
+  if (!projectId) return null
+
+  switch (entityType) {
+    case "rfi":
+      return `/projects/${projectId}/rfis`
+    case "submittal":
+      return `/projects/${projectId}/submittals`
+    case "invoice":
+      return `/projects/${projectId}/invoices`
+    case "change_order":
+      return `/projects/${projectId}/change-orders`
+    case "file":
+      return entityId ? `/projects/${projectId}/files?fileId=${entityId}` : `/projects/${projectId}/files`
+    case "drawing_set":
+    case "drawing_sheet":
+    case "drawing_revision":
+      return `/projects/${projectId}/drawings`
+    case "task":
+      return `/projects/${projectId}/tasks`
+    case "daily_log":
+      return `/projects/${projectId}/daily-logs`
+    default:
+      return `/projects/${projectId}`
+  }
+}
+
 
 
 

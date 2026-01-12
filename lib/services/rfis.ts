@@ -3,6 +3,8 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { sendEmail } from "@/lib/services/mailer"
+import { attachFileWithServiceRole } from "@/lib/services/file-links"
+import { attachFile } from "@/lib/services/file-links"
 import type { Rfi } from "@/lib/types"
 import type { RfiDecisionInput, RfiInput, RfiResponseInput } from "@/lib/validation/rfis"
 
@@ -68,6 +70,23 @@ export async function createRfi({ input, orgId }: { input: RfiInput; orgId?: str
     after: payload,
   })
 
+  if (payload.attachment_file_id) {
+    try {
+      await attachFile(
+        {
+          file_id: payload.attachment_file_id,
+          project_id: payload.project_id,
+          entity_type: "rfi",
+          entity_id: data.id,
+          link_role: "legacy_attachment",
+        },
+        resolvedOrgId,
+      )
+    } catch (error) {
+      console.warn("Failed to attach legacy RFI attachment to file_links", error)
+    }
+  }
+
   await sendRfiEmail({
     orgId: resolvedOrgId,
     rfiId: data.id,
@@ -124,6 +143,22 @@ export async function addRfiResponse({ orgId, input }: { orgId: string; input: R
     entityId: data?.id ?? input.rfi_id,
     after: input,
   })
+
+  if (input.file_id) {
+    try {
+      await attachFileWithServiceRole({
+        orgId,
+        fileId: input.file_id,
+        projectId: undefined,
+        entityType: "rfi",
+        entityId: input.rfi_id,
+        linkRole: "response",
+        createdBy: input.responder_user_id ?? null,
+      })
+    } catch (error) {
+      console.warn("Failed to attach RFI response file to file_links", error)
+    }
+  }
 
   await sendRfiEmail({
     orgId,
@@ -289,9 +324,7 @@ async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: s
     return null
   }
   return data
-}
-
-async function fetchContactEmail(
+}async function fetchContactEmail(
   supabase: any,
   contactId: string,
 ): Promise<{ email: string | null; full_name?: string } | null> {

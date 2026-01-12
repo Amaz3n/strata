@@ -13,15 +13,16 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { NotificationPreferences } from "@/components/settings/notification-preferences"
+import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
 import { Spinner } from "@/components/ui/spinner"
 import { AlertCircle, Bell, Building2, CreditCard, Link2, Settings, User as UserIcon, Users } from "@/components/icons"
 import { Info } from "lucide-react"
-import { getQBOConnectionAction } from "@/app/settings/integrations/actions"
-import { getBillingAction } from "@/app/settings/actions"
+import { getQBOConnectionAction } from "@/app/(app)/settings/integrations/actions"
+import { getBillingAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
-import type { TeamMember, User } from "@/lib/types"
+import type { ComplianceRules, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
 import { InviteMemberDialog } from "@/components/team/invite-member-dialog"
 import Link from "next/link"
@@ -34,6 +35,7 @@ const sections = [
   { value: "notifications", label: "Notifications", description: "How you get updates", icon: Bell },
   { value: "integrations", label: "Integrations", description: "Connect your tools", icon: Link2 },
   { value: "team", label: "Team", description: "Manage internal members", icon: Users },
+  { value: "compliance", label: "Compliance", description: "Payment gating rules", icon: Settings },
   { value: "about", label: "About", description: "About this workspace", icon: Info },
   { value: "danger", label: "Danger zone", description: "Destructive actions", icon: AlertCircle },
 ]
@@ -78,6 +80,8 @@ interface SettingsWindowProps {
   canEditRoles?: boolean
   initialBilling?: BillingDetails
   canManageBilling?: boolean
+  initialComplianceRules?: ComplianceRules
+  canManageCompliance?: boolean
 }
 
 function getInitials(user: User | null) {
@@ -100,6 +104,14 @@ export function SettingsWindow({
   canEditRoles = false,
   initialBilling = null,
   canManageBilling = true,
+  initialComplianceRules = {
+    require_w9: true,
+    require_insurance: true,
+    require_license: false,
+    require_lien_waiver: false,
+    block_payment_on_missing_docs: true,
+  },
+  canManageCompliance = false,
 }: SettingsWindowProps) {
   const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
   const [tab, setTab] = useState<string>(defaultTab)
@@ -454,6 +466,12 @@ export function SettingsWindow({
                     <InviteMemberDialog canInvite={canManageMembers} />
                   </div>
                   <TeamTable members={teamMembers} canManageMembers={canManageMembers} canEditRoles={canEditRoles} />
+                </div>
+              </TabsContent>
+
+              <TabsContent value="compliance" className="m-0 mt-0">
+                <div className="space-y-6">
+                  <ComplianceSettings initialRules={initialComplianceRules} canManage={canManageCompliance} />
                 </div>
               </TabsContent>
 

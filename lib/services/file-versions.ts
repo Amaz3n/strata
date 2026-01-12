@@ -21,6 +21,89 @@ export interface FileVersion {
   is_current: boolean
 }
 
+export async function createInitialVersion(
+  input: {
+    fileId: string
+    storagePath: string
+    fileName: string
+    mimeType?: string
+    sizeBytes?: number
+    checksum?: string
+  },
+  orgId?: string
+): Promise<FileVersion | null> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing } = await supabase
+    .from("doc_versions")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("file_id", input.fileId)
+    .limit(1)
+    .maybeSingle()
+
+  if (existing?.id) {
+    return null
+  }
+
+  const { data: version, error } = await supabase
+    .from("doc_versions")
+    .insert({
+      org_id: resolvedOrgId,
+      file_id: input.fileId,
+      version_number: 1,
+      storage_path: input.storagePath,
+      file_name: input.fileName,
+      mime_type: input.mimeType,
+      size_bytes: input.sizeBytes,
+      checksum: input.checksum,
+      created_by: userId,
+    })
+    .select(`
+      id, org_id, file_id, version_number, label, notes,
+      storage_path, file_name, mime_type, size_bytes, checksum,
+      created_by, created_at,
+      app_users!doc_versions_created_by_fkey(full_name, avatar_url)
+    `)
+    .single()
+
+  if (error || !version) {
+    throw new Error(`Failed to create initial version: ${error?.message}`)
+  }
+
+  const { error: updateError } = await supabase
+    .from("files")
+    .update({ current_version_id: version.id })
+    .eq("id", input.fileId)
+
+  if (updateError) {
+    console.error("Failed to update current version:", updateError.message)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "doc_version",
+    entityId: version.id as string,
+    after: version,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "file_version_created",
+    entityType: "file",
+    entityId: input.fileId,
+    payload: {
+      version_number: 1,
+      file_name: input.fileName,
+      label: "Initial version",
+    },
+  })
+
+  return mapVersion(version, version.id)
+}
+
 function mapVersion(row: any, currentVersionId?: string): FileVersion {
   return {
     id: row.id,

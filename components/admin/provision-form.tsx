@@ -2,7 +2,7 @@
 
 import { useActionState } from "react"
 
-import { provisionOrgAction } from "@/app/admin/provision/actions"
+import { provisionOrgAction } from "@/app/(app)/admin/provision/actions"
 import { AlertCircle, CheckCircle } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

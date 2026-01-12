@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import type { Invoice as CoreInvoice } from "@/lib/types"
 import type { Invoice as MiddayInvoice, LineItem, Template } from "@/packages/invoice/src/types"
@@ -54,6 +54,8 @@ function mapStatus(status?: string | null): MiddayInvoice["status"] {
   switch (status) {
     case "paid":
       return "paid"
+    case "partial":
+      return "unpaid"
     case "overdue":
       return "overdue"
     case "void":
@@ -134,14 +136,16 @@ function toMiddayInvoice(invoice: CoreInvoice): MiddayInvoice {
 
 export function InvoicePublicMiddayView({ invoice }: Props) {
   const mapped = useMemo(() => toMiddayInvoice(invoice), [invoice])
+  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"}/i/${invoice.token}`
+  const [shareUrl, setShareUrl] = useState(fallbackShareUrl)
 
   const width = mapped.template.size === "letter" ? 750 : 595
   const height = mapped.template.size === "letter" ? 1056 : 842
 
-  const shareUrl =
-    typeof window !== "undefined"
-      ? window.location.href
-      : `${process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"}/i/${invoice.token}`
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    setShareUrl(window.location.href)
+  }, [])
 
   return (
     <div className="invoice-grid-bg min-h-screen flex flex-col items-center p-4 sm:p-6">
@@ -211,5 +215,6 @@ export function InvoicePublicMiddayView({ invoice }: Props) {
     </div>
   )
 }
+
 
 

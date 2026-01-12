@@ -2,6 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { NotificationService } from "@/lib/services/notifications"
+import type { NotificationType } from "@/lib/services/notifications"
 
 type EventChannel = "activity" | "integration" | "notification"
 
@@ -207,90 +208,352 @@ async function createNotificationsFromEvent(event: EventRecord, orgId: string) {
 async function getNotificationRecipients(event: EventRecord, orgId: string): Promise<string[]> {
   const supabase = createServiceSupabaseClient()
 
-  // For now, notify all org members for relevant events
-  // TODO: Make this more sophisticated based on roles, project membership, etc.
-  switch (event.event_type) {
-    case 'task_completed':
-    case 'daily_log_submitted':
-    case 'photo_uploaded':
-    case 'schedule_changed':
-      // Get all org members
-      const { data: members, error } = await supabase
-        .from('memberships')
-        .select('user_id')
-        .eq('org_id', orgId)
-        .eq('status', 'active')
+  const actorId = typeof (event.payload as any)?.actor_id === "string" ? ((event.payload as any).actor_id as string) : null
+  const projectId = extractProjectIdFromEvent(event)
 
-      if (error) {
-        console.error('Failed to get org members:', error)
-        return []
-      }
+  const projectScopedEvents = new Set<string>([
+    "task_created",
+    "task_updated",
+    "task_completed",
+    "daily_log_created",
+    "schedule_item_created",
+    "schedule_item_updated",
+    "schedule_risk",
+    "rfi_created",
+    "rfi_response_added",
+    "rfi_decided",
+    "submittal_created",
+    "submittal_item_added",
+    "submittal_decided",
+    "change_order_created",
+    "change_order_published",
+    "invoice_created",
+    "invoice_updated",
+    "invoice_sent",
+    "payment_recorded",
+    "vendor_bill_submitted",
+    "selection_created",
+    "portal_message",
+    "file_created",
+    "file_archived",
+    "file_deleted",
+    "drawing_set_created",
+    "drawing_set_deleted",
+    "drawing_markup_created",
+    "drawing_pin_created",
+    "lien_waiver_created",
+    "lien_waiver_signed",
+  ])
 
-      return members?.map(m => m.user_id) || []
+  const orgScopedEvents = new Set<string>([
+    "team_member_invited",
+    "company_created",
+    "company_updated",
+    "contact_created",
+    "contact_updated",
+    "project_created",
+    "project_updated",
+    "project_vendor_added",
+    "commitment_created",
+    "budget_created",
+    "invoice_number_changed",
+    "qbo_connected",
+    "qbo_disconnected",
+  ])
 
-    case 'message_received':
-      // For messages, we might want different logic
-      // For now, just return empty array (no notifications for messages)
-      return []
+  if (projectId && projectScopedEvents.has(event.event_type)) {
+    const { data: members, error } = await supabase
+      .from("project_members")
+      .select("user_id")
+      .eq("project_id", projectId)
 
-    default:
-      return []
+    if (!error && members?.length) {
+      return uniqUserIds(members.map((m: any) => m.user_id)).filter((id) => id && id !== actorId)
+    }
   }
+
+  if (!projectScopedEvents.has(event.event_type) && !orgScopedEvents.has(event.event_type)) {
+    return []
+  }
+
+  const { data: members, error } = await supabase
+    .from("memberships")
+    .select("user_id")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+
+  if (error) {
+    console.error("Failed to get org members:", error)
+    return []
+  }
+
+  return uniqUserIds((members ?? []).map((m: any) => m.user_id)).filter((id) => id && id !== actorId)
 }
 
 function buildNotificationFromEvent(event: EventRecord, userId: string) {
   const { event_type, payload, entity_type, entity_id } = event
+  const safePayload = (payload ?? {}) as Record<string, any>
+  const projectId = extractProjectIdFromEvent(event)
+
+  const fallbackTitle = titleForEventType(event_type)
+  const fallbackMessage =
+    typeof safePayload.message === "string"
+      ? safePayload.message
+      : typeof safePayload.title === "string"
+        ? safePayload.title
+        : fallbackTitle
 
   switch (event_type) {
-    case 'task_completed':
+    case "task_completed":
       return {
         orgId: event.org_id,
         userId,
-        type: 'task_completed',
-        title: 'Task Completed',
-        message: payload.message || 'A task has been completed',
+        type: "task_completed" as NotificationType,
+        title: "Task completed",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
         entityType: entity_type,
         entityId: entity_id,
-        eventId: event.id
+        eventId: event.id,
       }
 
-    case 'daily_log_submitted':
+    case "daily_log_created":
       return {
         orgId: event.org_id,
         userId,
-        type: 'daily_log_submitted',
-        title: 'Daily Log Submitted',
-        message: payload.message || 'A daily log has been submitted',
+        type: "daily_log_created" as NotificationType,
+        title: "Daily log added",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
         entityType: entity_type,
         entityId: entity_id,
-        eventId: event.id
+        eventId: event.id,
       }
 
-    case 'photo_uploaded':
+    case "rfi_created":
       return {
         orgId: event.org_id,
         userId,
-        type: 'photo_uploaded',
-        title: 'Photos Uploaded',
-        message: payload.message || 'New photos have been uploaded',
+        type: "rfi_created" as NotificationType,
+        title: "New RFI",
+        message:
+          typeof safePayload.subject === "string"
+            ? safePayload.subject
+            : typeof safePayload.rfi_number === "number"
+              ? `RFI #${safePayload.rfi_number} created`
+              : fallbackMessage,
+        projectId: projectId ?? undefined,
         entityType: entity_type,
         entityId: entity_id,
-        eventId: event.id
+        eventId: event.id,
       }
 
-    case 'schedule_changed':
+    case "rfi_response_added":
       return {
         orgId: event.org_id,
         userId,
-        type: 'schedule_changed',
-        title: 'Schedule Updated',
-        message: payload.message || 'The project schedule has been updated',
+        type: "rfi_response_added" as NotificationType,
+        title: "RFI updated",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
         entityType: entity_type,
         entityId: entity_id,
-        eventId: event.id
+        eventId: event.id,
+      }
+
+    case "rfi_decided":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "rfi_decided" as NotificationType,
+        title: "RFI decision",
+        message:
+          typeof safePayload.decision_status === "string"
+            ? `Decision: ${safePayload.decision_status.replace(/_/g, " ")}`
+            : fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "submittal_created":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "submittal_created" as NotificationType,
+        title: "New submittal",
+        message:
+          typeof safePayload.title === "string"
+            ? safePayload.title
+            : typeof safePayload.submittal_number === "number"
+              ? `Submittal #${safePayload.submittal_number} created`
+              : fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "submittal_item_added":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "submittal_item_added" as NotificationType,
+        title: "Submittal updated",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "submittal_decided":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "submittal_decided" as NotificationType,
+        title: "Submittal decision",
+        message:
+          typeof safePayload.decision_status === "string"
+            ? `Decision: ${safePayload.decision_status.replace(/_/g, " ")}`
+            : fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "change_order_published":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "change_order_published" as NotificationType,
+        title: "Change order published",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "invoice_sent":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "invoice_sent" as NotificationType,
+        title: "Invoice sent",
+        message:
+          typeof safePayload.invoice_number === "string"
+            ? `Invoice #${safePayload.invoice_number} sent`
+            : fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "payment_recorded":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_recorded" as NotificationType,
+        title: "Payment received",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "portal_message":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "portal_message" as NotificationType,
+        title: "New portal message",
+        message:
+          typeof safePayload.body === "string"
+          ? safePayload.body
+          : fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
       }
 
     default:
-      return null
+      // Generic fallback for supported event types
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: fallbackTitle,
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+  }
+}
+
+function extractProjectIdFromEvent(event: EventRecord): string | null {
+  const payload = (event.payload ?? {}) as any
+  if (typeof payload.project_id === "string") return payload.project_id
+  if (typeof payload.projectId === "string") return payload.projectId
+  if (typeof payload.project?.id === "string") return payload.project.id
+  if (typeof payload.project?.project_id === "string") return payload.project.project_id
+  return null
+}
+
+function uniqUserIds(userIds: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(userIds.filter(Boolean) as string[]))
+}
+
+function titleForEventType(eventType: string): string {
+  switch (eventType) {
+    case "task_created":
+      return "New task"
+    case "task_updated":
+      return "Task updated"
+    case "task_completed":
+      return "Task completed"
+    case "daily_log_created":
+      return "Daily log added"
+    case "schedule_item_created":
+      return "Schedule item created"
+    case "schedule_item_updated":
+      return "Schedule updated"
+    case "schedule_risk":
+      return "Schedule risk"
+    case "rfi_created":
+      return "New RFI"
+    case "rfi_response_added":
+      return "RFI updated"
+    case "rfi_decided":
+      return "RFI decision"
+    case "submittal_created":
+      return "New submittal"
+    case "submittal_item_added":
+      return "Submittal updated"
+    case "submittal_decided":
+      return "Submittal decision"
+    case "change_order_created":
+      return "Change order created"
+    case "change_order_published":
+      return "Change order published"
+    case "invoice_created":
+      return "Invoice created"
+    case "invoice_updated":
+      return "Invoice updated"
+    case "invoice_sent":
+      return "Invoice sent"
+    case "payment_recorded":
+      return "Payment received"
+    case "portal_message":
+      return "New portal message"
+    default:
+      return eventType.replace(/_/g, " ")
   }
 }

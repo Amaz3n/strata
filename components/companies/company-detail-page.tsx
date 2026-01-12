@@ -20,7 +20,7 @@ import { CompanyInvoicesTab } from "@/components/companies/company-invoices-tab"
 import { CompanyComplianceTab } from "@/components/companies/company-compliance-tab"
 import { CompanyProjectsTab } from "@/components/companies/company-projects-tab"
 import { CompanyContactsTab } from "@/components/companies/company-contacts-tab"
-import { archiveCompanyAction } from "@/app/companies/actions"
+import { archiveCompanyAction } from "@/app/(app)/companies/actions"
 import { useToast } from "@/hooks/use-toast"
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -79,7 +79,7 @@ export function CompanyDetailPage({
   const totals = useMemo(() => {
     const committed = commitments.reduce((sum, c) => sum + (c.total_cents ?? 0), 0)
     const billed = vendorBills.reduce((sum, b) => sum + (b.total_cents ?? 0), 0)
-    const paid = vendorBills.filter((b) => b.status === "paid").reduce((sum, b) => sum + (b.total_cents ?? 0), 0)
+    const paid = vendorBills.reduce((sum, b) => sum + (b.paid_cents ?? (b.status === "paid" ? b.total_cents ?? 0 : 0)), 0)
     return { committed, billed, paid }
   }, [commitments, vendorBills])
 

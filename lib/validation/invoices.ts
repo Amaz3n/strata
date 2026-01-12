@@ -22,7 +22,7 @@ export const invoiceInputSchema = z.object({
     .or(z.literal(""))
     .transform((val) => (val === "" ? undefined : val ?? undefined)),
   title: z.string().min(3, "Title is required"),
-  status: z.enum(["draft", "sent", "paid", "overdue", "void"]).default("draft"),
+  status: z.enum(["draft", "sent", "partial", "paid", "overdue", "void"]).default("draft"),
   issue_date: z.string().optional(),
   due_date: z.string().optional(),
   notes: z

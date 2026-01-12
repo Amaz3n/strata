@@ -28,6 +28,7 @@ export const companyInputSchema = z.object({
   license_expiry: z.string().optional(),
   license_verified: z.boolean().optional(),
   insurance_expiry: z.string().optional(),
+  insurance_provider: z.string().max(200).optional(),
   insurance_document_id: z.string().uuid().optional(),
   w9_on_file: z.boolean().optional(),
   w9_file_id: z.string().uuid().optional(),
@@ -52,6 +53,9 @@ export const companyFiltersSchema = z
 export type CompanyInput = z.infer<typeof companyInputSchema>
 export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
+
+
+
 
 
 

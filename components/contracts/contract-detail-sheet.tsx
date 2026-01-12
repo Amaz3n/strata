@@ -32,11 +32,11 @@ export function ContractDetailSheet({ contract, open, onOpenChange }: ContractDe
             <Card>
               <CardHeader className="flex flex-row items-start justify-between space-y-0">
                 <div>
-                  <CardTitle className="text-base">{contract.title}</CardTitle>
+                  <CardTitle className="text-base">{contract.title || "Untitled Contract"}</CardTitle>
                   <p className="text-sm text-muted-foreground">{contract.number ?? "Unnumbered"}</p>
                 </div>
                 <Badge variant="secondary" className="capitalize">
-                  {contract.status.replace("_", " ")}
+                  {contract.status ? contract.status.replace("_", " ") : "Unknown"}
                 </Badge>
               </CardHeader>
               <CardContent className="grid grid-cols-2 gap-4 text-sm">
@@ -44,7 +44,7 @@ export function ContractDetailSheet({ contract, open, onOpenChange }: ContractDe
                 <Info
                   label="Value"
                   value={
-                    typeof contract.total_cents === "number"
+                    typeof contract.total_cents === "number" && contract.currency
                       ? formatCurrency(contract.total_cents, contract.currency)
                       : "—"
                   }

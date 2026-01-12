@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useMemo } from "react"
+import { useMemo, useEffect, useState } from "react"
 import { format } from "date-fns"
 import { Copy, ExternalLink, Download, RefreshCw } from "lucide-react"
 
@@ -15,6 +15,13 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
+import { EntityAttachments, type AttachedFile } from "@/components/files"
+import {
+  listAttachmentsAction,
+  detachFileLinkAction,
+  uploadFileAction,
+  attachFileAction,
+} from "@/app/(app)/files/actions"
 
 type Props = {
   trigger?: React.ReactNode
@@ -80,6 +87,81 @@ export function InvoiceDetailSheet({
   manualResyncing,
   onEdit,
 }: Props) {
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+
+  useEffect(() => {
+    if (!open || !invoice?.id) return
+    setAttachmentsLoading(true)
+    listAttachmentsAction("invoice", invoice.id)
+      .then((links) =>
+        setAttachments(
+          links.map((link) => ({
+            id: link.file.id,
+            linkId: link.id,
+            file_name: link.file.file_name,
+            mime_type: link.file.mime_type,
+            size_bytes: link.file.size_bytes,
+            download_url: link.file.download_url,
+            thumbnail_url: link.file.thumbnail_url,
+            created_at: link.created_at,
+            link_role: link.link_role,
+          }))
+        )
+      )
+      .catch((error) => console.error("Failed to load invoice attachments", error))
+      .finally(() => setAttachmentsLoading(false))
+  }, [open, invoice?.id])
+
+  const handleAttach = async (files: File[], linkRole?: string) => {
+    if (!invoice) return
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append("file", file)
+      if (invoice.project_id) {
+        formData.append("projectId", invoice.project_id)
+      }
+      formData.append("category", "financials")
+
+      const uploaded = await uploadFileAction(formData)
+      await attachFileAction(uploaded.id, "invoice", invoice.id, invoice.project_id ?? undefined, linkRole)
+    }
+
+    const links = await listAttachmentsAction("invoice", invoice.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
+  }
+
+  const handleDetach = async (linkId: string) => {
+    if (!invoice) return
+    await detachFileLinkAction(linkId)
+    const links = await listAttachmentsAction("invoice", invoice.id)
+    setAttachments(
+      links.map((link) => ({
+        id: link.file.id,
+        linkId: link.id,
+        file_name: link.file.file_name,
+        mime_type: link.file.mime_type,
+        size_bytes: link.file.size_bytes,
+        download_url: link.file.download_url,
+        thumbnail_url: link.file.thumbnail_url,
+        created_at: link.created_at,
+        link_role: link.link_role,
+      }))
+    )
+  }
+
   const loadingView = (
     <div className="px-5 pt-6 pb-4 space-y-4 animate-pulse">
       <div className="flex items-center justify-between gap-3">
@@ -325,39 +407,54 @@ export function InvoiceDetailSheet({
 
           {!loading && (
             <Accordion type="multiple" className="px-5 pb-8" defaultValue={[]}>
-            <AccordionItem value="internal-notes">
-              <AccordionTrigger>Internal notes</AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-2">
-                  <Textarea
-                    placeholder="Add internal notes for your team"
-                    defaultValue={invoice?.notes ?? ""}
-                    className="min-h-[120px]"
+              <AccordionItem value="attachments">
+                <AccordionTrigger>Attachments</AccordionTrigger>
+                <AccordionContent>
+                  <EntityAttachments
+                    entityType="invoice"
+                    entityId={invoice?.id ?? ""}
+                    projectId={invoice?.project_id ?? undefined}
+                    attachments={attachments}
+                    onAttach={handleAttach}
+                    onDetach={handleDetach}
+                    readOnly={attachmentsLoading}
+                    compact
                   />
-                  <p className="text-xs text-muted-foreground">Clients will not see these notes.</p>
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-            <AccordionItem value="activity">
-              <AccordionTrigger>Activity</AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-3 text-sm">
-                  {activity.length === 0 && <p className="text-muted-foreground">No views yet.</p>}
-                  {activity.map((a) => (
-                    <div key={a.id} className="border-b pb-2 last:border-b-0 last:pb-0">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium">
-                          {format(new Date(a.viewed_at), "MMM d, yyyy, h:mm a")}
-                        </span>
-                        {a.ip && <span className="text-xs text-muted-foreground">{a.ip}</span>}
+                </AccordionContent>
+              </AccordionItem>
+              <AccordionItem value="internal-notes">
+                <AccordionTrigger>Internal notes</AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-2">
+                    <Textarea
+                      placeholder="Add internal notes for your team"
+                      defaultValue={invoice?.notes ?? ""}
+                      className="min-h-[120px]"
+                    />
+                    <p className="text-xs text-muted-foreground">Clients will not see these notes.</p>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+              <AccordionItem value="activity">
+                <AccordionTrigger>Activity</AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-3 text-sm">
+                    {activity.length === 0 && <p className="text-muted-foreground">No views yet.</p>}
+                    {activity.map((a) => (
+                      <div key={a.id} className="border-b pb-2 last:border-b-0 last:pb-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">
+                            {format(new Date(a.viewed_at), "MMM d, yyyy, h:mm a")}
+                          </span>
+                          {a.ip && <span className="text-xs text-muted-foreground">{a.ip}</span>}
+                        </div>
+                        {a.ua && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{a.ua}</p>}
                       </div>
-                      {a.ua && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{a.ua}</p>}
-                    </div>
-                  ))}
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
+                    ))}
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           )}
         </div>
       </SheetContent>

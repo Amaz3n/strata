@@ -1,11 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import type { 
-  ScheduleItem, 
-  ScheduleAssignment, 
-  ScheduleDependency, 
+import type {
+  ScheduleItem,
+  ScheduleAssignment,
+  ScheduleDependency,
   ScheduleBaseline,
-  ScheduleTemplate 
+  ScheduleTemplate,
+  ScheduleItemChangeOrder,
+  DrawSchedule,
+  ChangeOrder,
 } from "@/lib/types"
 import type { 
   ScheduleItemInput, 
@@ -20,6 +23,7 @@ import {
   scheduleAssignmentInputSchema,
   scheduleDependencyInputSchema,
 } from "@/lib/validation/schedule"
+import { inspectionMetadataSchema } from "@/lib/validation/inspections"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -56,6 +60,10 @@ function mapScheduleItem(row: any, dependencyMap: Record<string, string[]>): Sch
     float_days: row.float_days ?? 0,
     color: row.color ?? undefined,
     sort_order: row.sort_order ?? 0,
+    // Cost tracking fields
+    cost_code_id: row.cost_code_id ?? undefined,
+    budget_cents: row.budget_cents ?? undefined,
+    actual_cost_cents: row.actual_cost_cents ?? undefined,
   }
 }
 
@@ -108,10 +116,11 @@ export async function listScheduleItemsWithClient(supabase: SupabaseClient, orgI
   const { data, error } = await supabase
     .from("schedule_items")
     .select(`
-      id, org_id, project_id, name, item_type, status, start_date, end_date, 
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
-      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
     `)
     .eq("org_id", orgId)
     .order("sort_order", { ascending: true })
@@ -131,10 +140,11 @@ export async function listScheduleItemsByProject(projectId: string, orgId?: stri
   const { data, error } = await supabase
     .from("schedule_items")
     .select(`
-      id, org_id, project_id, name, item_type, status, start_date, end_date, 
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
-      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
     `)
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
@@ -157,10 +167,11 @@ export async function getScheduleItemWithDetails(itemId: string, orgId?: string)
   const { data, error } = await supabase
     .from("schedule_items")
     .select(`
-      id, org_id, project_id, name, item_type, status, start_date, end_date, 
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
-      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
     `)
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
@@ -213,10 +224,11 @@ export async function createScheduleItem({ input, orgId }: { input: ScheduleItem
       sort_order: input.sort_order ?? 0,
     })
     .select(`
-      id, org_id, project_id, name, item_type, status, start_date, end_date, 
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
-      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
     `)
     .single()
 
@@ -277,10 +289,11 @@ export async function updateScheduleItem({
   const existing = await supabase
     .from("schedule_items")
     .select(`
-      id, org_id, project_id, name, item_type, status, start_date, end_date, 
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
-      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
     `)
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
@@ -324,10 +337,11 @@ export async function updateScheduleItem({
           .eq("org_id", resolvedOrgId)
           .eq("id", itemId)
           .select(`
-            id, org_id, project_id, name, item_type, status, start_date, end_date, 
+            id, org_id, project_id, name, item_type, status, start_date, end_date,
             progress, assigned_to, metadata, created_at, updated_at,
             phase, trade, location, planned_hours, actual_hours,
-            constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+            constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+            cost_code_id, budget_cents, actual_cost_cents
           `)
           .single()
 
@@ -388,12 +402,84 @@ export async function updateScheduleItem({
     after: data,
   })
 
+  await maybeCreatePunchItemFromInspection({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    existing: existing.data,
+    updated: data,
+  })
+
   const dependencyMap =
     parsed.dependencies !== undefined 
       ? { [data.id]: parsed.dependencies } 
       : await loadDependencies(supabase, resolvedOrgId)
 
   return mapScheduleItem(data, dependencyMap)
+}
+
+async function maybeCreatePunchItemFromInspection({
+  supabase,
+  orgId,
+  userId,
+  existing,
+  updated,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  existing: any
+  updated: any
+}) {
+  if (updated.item_type !== "inspection") return
+
+  const prevInspection = inspectionMetadataSchema.safeParse(existing?.metadata?.inspection ?? {})
+  const nextInspection = inspectionMetadataSchema.safeParse(updated?.metadata?.inspection ?? {})
+  if (!nextInspection.success) return
+
+  const prevResult = prevInspection.success ? prevInspection.data.result : "pending"
+  const nextResult = nextInspection.data.result
+
+  if (nextResult !== "fail" || prevResult === "fail") return
+
+  const { data: existingPunch } = await supabase
+    .from("punch_items")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("schedule_item_id", updated.id)
+    .eq("created_from_inspection", true)
+    .maybeSingle()
+
+  if (existingPunch) return
+
+  const failedChecklist = (nextInspection.data.checklist ?? [])
+    .filter((item) => !item.checked)
+    .map((item) => item.label)
+
+  const descriptionParts: string[] = []
+  if (nextInspection.data.notes) {
+    descriptionParts.push(nextInspection.data.notes)
+  }
+  if (failedChecklist.length > 0) {
+    descriptionParts.push(`Failed checklist: ${failedChecklist.join(", ")}`)
+  }
+
+  await supabase
+    .from("punch_items")
+    .insert({
+      org_id: orgId,
+      project_id: updated.project_id,
+      title: `Failed inspection: ${updated.name}`,
+      description: descriptionParts.length > 0 ? descriptionParts.join("\n") : "Inspection failed.",
+      status: "open",
+      severity: "High",
+      location: updated.location ?? null,
+      assigned_to: updated.assigned_to ?? null,
+      created_by: userId,
+      schedule_item_id: updated.id,
+      created_from_inspection: true,
+      verification_required: true,
+    })
 }
 
 // Set a single assignment (user/contact/company) for a schedule item.
@@ -501,10 +587,11 @@ export async function bulkUpdateScheduleItems(updates: ScheduleBulkUpdate, orgId
         .eq("org_id", resolvedOrgId)
         .eq("id", item.id)
         .select(`
-          id, org_id, project_id, name, item_type, status, start_date, end_date, 
+          id, org_id, project_id, name, item_type, status, start_date, end_date,
           progress, assigned_to, metadata, created_at, updated_at,
           phase, trade, location, planned_hours, actual_hours,
-          constraint_type, constraint_date, is_critical_path, float_days, color, sort_order
+          constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+          cost_code_id, budget_cents, actual_cost_cents
         `)
         .single()
 
@@ -978,5 +1065,610 @@ export async function deleteTemplate(templateId: string, orgId?: string): Promis
 
   if (error) {
     throw new Error(`Failed to delete template: ${error.message}`)
+  }
+}
+
+// ============================================================================
+// CHANGE ORDER INTEGRATION
+// ============================================================================
+
+function mapScheduleItemChangeOrder(row: any): ScheduleItemChangeOrder {
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    schedule_item_id: row.schedule_item_id,
+    change_order_id: row.change_order_id,
+    days_adjusted: row.days_adjusted ?? 0,
+    notes: row.notes ?? undefined,
+    applied_at: row.applied_at ?? undefined,
+    created_at: row.created_at,
+    change_order: row.change_order ?? undefined,
+  }
+}
+
+/**
+ * Get all change order impacts for a schedule item
+ */
+export async function getScheduleChangeOrderImpacts(
+  scheduleItemId: string,
+  orgId?: string
+): Promise<ScheduleItemChangeOrder[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("schedule_item_change_orders")
+    .select(`
+      id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at,
+      change_order:change_orders(id, co_number, title, status, amount_cents, days_impact)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("schedule_item_id", scheduleItemId)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to get change order impacts: ${error.message}`)
+  }
+
+  return (data ?? []).map(mapScheduleItemChangeOrder)
+}
+
+/**
+ * Get all change order impacts for a project's schedule items
+ */
+export async function getScheduleChangeOrderImpactsByProject(
+  projectId: string,
+  orgId?: string
+): Promise<ScheduleItemChangeOrder[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  // Get all schedule items for this project
+  const { data: scheduleItems } = await supabase
+    .from("schedule_items")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+
+  if (!scheduleItems?.length) return []
+
+  const itemIds = scheduleItems.map((item) => item.id)
+
+  const { data, error } = await supabase
+    .from("schedule_item_change_orders")
+    .select(`
+      id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at,
+      change_order:change_orders(id, co_number, title, status, amount_cents, days_impact)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .in("schedule_item_id", itemIds)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to get change order impacts by project: ${error.message}`)
+  }
+
+  return (data ?? []).map(mapScheduleItemChangeOrder)
+}
+
+/**
+ * Link a change order to a schedule item with an optional days adjustment
+ */
+export async function applyChangeOrderToSchedule({
+  changeOrderId,
+  scheduleItemId,
+  daysAdjusted,
+  notes,
+  applyNow = false,
+  orgId,
+}: {
+  changeOrderId: string
+  scheduleItemId: string
+  daysAdjusted: number
+  notes?: string
+  applyNow?: boolean
+  orgId?: string
+}): Promise<ScheduleItemChangeOrder> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  // Verify the schedule item exists
+  const { data: scheduleItem, error: itemError } = await supabase
+    .from("schedule_items")
+    .select("id, name, project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", scheduleItemId)
+    .single()
+
+  if (itemError || !scheduleItem) {
+    throw new Error("Schedule item not found")
+  }
+
+  // Verify the change order exists
+  const { data: changeOrder, error: coError } = await supabase
+    .from("change_orders")
+    .select("id, co_number, title, status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+    .single()
+
+  if (coError || !changeOrder) {
+    throw new Error("Change order not found")
+  }
+
+  // Insert the link
+  const { data, error } = await supabase
+    .from("schedule_item_change_orders")
+    .upsert(
+      {
+        org_id: resolvedOrgId,
+        schedule_item_id: scheduleItemId,
+        change_order_id: changeOrderId,
+        days_adjusted: daysAdjusted,
+        notes: notes || null,
+        applied_at: applyNow ? new Date().toISOString() : null,
+      },
+      { onConflict: "schedule_item_id,change_order_id" }
+    )
+    .select(`
+      id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at
+    `)
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to apply change order to schedule: ${error?.message}`)
+  }
+
+  // If applying now, also adjust the schedule item dates
+  if (applyNow && daysAdjusted !== 0) {
+    await adjustScheduleItemDates(scheduleItemId, daysAdjusted, resolvedOrgId)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "schedule_co_applied",
+    entityType: "schedule_item",
+    entityId: scheduleItemId,
+    payload: {
+      change_order_id: changeOrderId,
+      co_number: changeOrder.co_number,
+      days_adjusted: daysAdjusted,
+      applied: applyNow,
+    },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "schedule_item_change_order",
+    entityId: data.id,
+    after: data,
+  })
+
+  return mapScheduleItemChangeOrder({ ...data, change_order: changeOrder })
+}
+
+/**
+ * Remove a change order link from a schedule item
+ */
+export async function removeChangeOrderFromSchedule(
+  scheduleItemChangeOrderId: string,
+  orgId?: string
+): Promise<void> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("schedule_item_change_orders")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", scheduleItemChangeOrderId)
+    .single()
+
+  if (fetchError || !existing) {
+    throw new Error("Schedule change order link not found")
+  }
+
+  const { error } = await supabase
+    .from("schedule_item_change_orders")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("id", scheduleItemChangeOrderId)
+
+  if (error) {
+    throw new Error(`Failed to remove change order link: ${error.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "schedule_item_change_order",
+    entityId: scheduleItemChangeOrderId,
+    before: existing,
+  })
+}
+
+/**
+ * Helper to adjust schedule item dates by a number of days
+ */
+async function adjustScheduleItemDates(
+  scheduleItemId: string,
+  daysToAdd: number,
+  orgId: string
+): Promise<void> {
+  const { supabase } = await requireOrgContext(orgId)
+
+  const { data: item } = await supabase
+    .from("schedule_items")
+    .select("start_date, end_date")
+    .eq("org_id", orgId)
+    .eq("id", scheduleItemId)
+    .single()
+
+  if (!item) return
+
+  const updateData: Record<string, string> = {}
+
+  if (item.start_date) {
+    const newStart = new Date(item.start_date)
+    newStart.setDate(newStart.getDate() + daysToAdd)
+    updateData.start_date = newStart.toISOString().split("T")[0]
+  }
+
+  if (item.end_date) {
+    const newEnd = new Date(item.end_date)
+    newEnd.setDate(newEnd.getDate() + daysToAdd)
+    updateData.end_date = newEnd.toISOString().split("T")[0]
+  }
+
+  if (Object.keys(updateData).length > 0) {
+    await supabase
+      .from("schedule_items")
+      .update(updateData)
+      .eq("org_id", orgId)
+      .eq("id", scheduleItemId)
+  }
+}
+
+/**
+ * Get the total days impact from all change orders on a schedule item
+ */
+export async function getTotalScheduleImpact(
+  scheduleItemId: string,
+  orgId?: string
+): Promise<{ total_days: number; pending_days: number; applied_days: number }> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("schedule_item_change_orders")
+    .select("days_adjusted, applied_at")
+    .eq("org_id", resolvedOrgId)
+    .eq("schedule_item_id", scheduleItemId)
+
+  if (error) {
+    throw new Error(`Failed to get total schedule impact: ${error.message}`)
+  }
+
+  const impacts = data ?? []
+  const pending_days = impacts
+    .filter((i) => !i.applied_at)
+    .reduce((sum, i) => sum + (i.days_adjusted ?? 0), 0)
+  const applied_days = impacts
+    .filter((i) => i.applied_at)
+    .reduce((sum, i) => sum + (i.days_adjusted ?? 0), 0)
+
+  return {
+    total_days: pending_days + applied_days,
+    pending_days,
+    applied_days,
+  }
+}
+
+// ============================================================================
+// DRAW SCHEDULE INTEGRATION
+// ============================================================================
+
+/**
+ * Get all milestone items in a project that can be linked to draws
+ */
+export async function getDrawMilestones(
+  projectId: string,
+  orgId?: string
+): Promise<ScheduleItem[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
+
+  const { data, error } = await supabase
+    .from("schedule_items")
+    .select(`
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
+      progress, assigned_to, metadata, created_at, updated_at,
+      phase, trade, location, planned_hours, actual_hours,
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("item_type", "milestone")
+    .order("start_date", { ascending: true })
+
+  if (error) {
+    throw new Error(`Failed to get draw milestones: ${error.message}`)
+  }
+
+  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+}
+
+/**
+ * Link a milestone schedule item to a draw schedule
+ */
+export async function linkMilestoneToDraw({
+  milestoneId,
+  drawScheduleId,
+  orgId,
+}: {
+  milestoneId: string
+  drawScheduleId: string
+  orgId?: string
+}): Promise<void> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  // Verify the milestone exists and is a milestone type
+  const { data: milestone, error: milestoneError } = await supabase
+    .from("schedule_items")
+    .select("id, name, item_type")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", milestoneId)
+    .single()
+
+  if (milestoneError || !milestone) {
+    throw new Error("Milestone not found")
+  }
+
+  if (milestone.item_type !== "milestone") {
+    throw new Error("Only milestone items can be linked to draws")
+  }
+
+  // Update the draw schedule with the milestone reference
+  const { error } = await supabase
+    .from("draw_schedules")
+    .update({ milestone_id: milestoneId })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", drawScheduleId)
+
+  if (error) {
+    throw new Error(`Failed to link milestone to draw: ${error.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "draw_milestone_linked",
+    entityType: "draw_schedule",
+    entityId: drawScheduleId,
+    payload: { milestone_id: milestoneId, milestone_name: milestone.name },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "draw_schedule",
+    entityId: drawScheduleId,
+    after: { milestone_id: milestoneId },
+  })
+}
+
+/**
+ * Remove milestone link from a draw schedule
+ */
+export async function unlinkMilestoneFromDraw(
+  drawScheduleId: string,
+  orgId?: string
+): Promise<void> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { error } = await supabase
+    .from("draw_schedules")
+    .update({ milestone_id: null })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", drawScheduleId)
+
+  if (error) {
+    throw new Error(`Failed to unlink milestone from draw: ${error.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "draw_schedule",
+    entityId: drawScheduleId,
+    after: { milestone_id: null },
+  })
+}
+
+/**
+ * Get draws linked to a specific milestone
+ */
+export async function getDrawsByMilestone(
+  milestoneId: string,
+  orgId?: string
+): Promise<DrawSchedule[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("draw_schedules")
+    .select(`
+      id, org_id, project_id, draw_number, description, amount_cents,
+      scheduled_date, status, milestone_id, created_at, updated_at
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("milestone_id", milestoneId)
+    .order("draw_number", { ascending: true })
+
+  if (error) {
+    throw new Error(`Failed to get draws by milestone: ${error.message}`)
+  }
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    org_id: row.org_id,
+    project_id: row.project_id,
+    draw_number: row.draw_number,
+    description: row.description ?? undefined,
+    amount_cents: row.amount_cents,
+    scheduled_date: row.scheduled_date ?? undefined,
+    status: row.status ?? "scheduled",
+    milestone_id: row.milestone_id ?? undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }))
+}
+
+// ============================================================================
+// COST CODE INTEGRATION
+// ============================================================================
+
+/**
+ * Update schedule item cost tracking fields
+ */
+export async function updateScheduleItemCosts({
+  itemId,
+  costCodeId,
+  budgetCents,
+  actualCostCents,
+  orgId,
+}: {
+  itemId: string
+  costCodeId?: string | null
+  budgetCents?: number | null
+  actualCostCents?: number | null
+  orgId?: string
+}): Promise<ScheduleItem> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const updateData: Record<string, any> = {}
+  if (costCodeId !== undefined) updateData.cost_code_id = costCodeId
+  if (budgetCents !== undefined) updateData.budget_cents = budgetCents
+  if (actualCostCents !== undefined) updateData.actual_cost_cents = actualCostCents
+
+  if (Object.keys(updateData).length === 0) {
+    throw new Error("No cost fields to update")
+  }
+
+  const { data, error } = await supabase
+    .from("schedule_items")
+    .update(updateData)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", itemId)
+    .select(`
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
+      progress, assigned_to, metadata, created_at, updated_at,
+      phase, trade, location, planned_hours, actual_hours,
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
+    `)
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update schedule item costs: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "schedule_item",
+    entityId: itemId,
+    after: updateData,
+  })
+
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
+  return mapScheduleItem(data, dependencyMap)
+}
+
+/**
+ * Get budget summary for schedule items grouped by cost code
+ */
+export async function getScheduleBudgetSummary(
+  projectId: string,
+  orgId?: string
+): Promise<{
+  total_budget_cents: number
+  total_actual_cents: number
+  variance_cents: number
+  by_cost_code: Array<{
+    cost_code_id: string | null
+    cost_code_name?: string
+    cost_code_number?: string
+    budget_cents: number
+    actual_cents: number
+    item_count: number
+  }>
+}> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data: items, error } = await supabase
+    .from("schedule_items")
+    .select(`
+      id, cost_code_id, budget_cents, actual_cost_cents,
+      cost_code:cost_codes(id, name, code)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+
+  if (error) {
+    throw new Error(`Failed to get schedule budget summary: ${error.message}`)
+  }
+
+  // Aggregate by cost code
+  const byCostCode = new Map<
+    string | null,
+    {
+      cost_code_id: string | null
+      cost_code_name?: string
+      cost_code_number?: string
+      budget_cents: number
+      actual_cents: number
+      item_count: number
+    }
+  >()
+
+  let total_budget_cents = 0
+  let total_actual_cents = 0
+
+  for (const item of items ?? []) {
+    const costCodeId = item.cost_code_id ?? null
+    const costCode = item.cost_code as any
+
+    if (!byCostCode.has(costCodeId)) {
+      byCostCode.set(costCodeId, {
+        cost_code_id: costCodeId,
+        cost_code_name: costCode?.name,
+        cost_code_number: costCode?.code,
+        budget_cents: 0,
+        actual_cents: 0,
+        item_count: 0,
+      })
+    }
+
+    const entry = byCostCode.get(costCodeId)!
+    entry.budget_cents += item.budget_cents ?? 0
+    entry.actual_cents += item.actual_cost_cents ?? 0
+    entry.item_count += 1
+
+    total_budget_cents += item.budget_cents ?? 0
+    total_actual_cents += item.actual_cost_cents ?? 0
+  }
+
+  return {
+    total_budget_cents,
+    total_actual_cents,
+    variance_cents: total_budget_cents - total_actual_cents,
+    by_cost_code: Array.from(byCostCode.values()).sort((a, b) => {
+      // Sort by cost code number, with null at the end
+      if (!a.cost_code_number && !b.cost_code_number) return 0
+      if (!a.cost_code_number) return 1
+      if (!b.cost_code_number) return -1
+      return a.cost_code_number.localeCompare(b.cost_code_number)
+    }),
   }
 }

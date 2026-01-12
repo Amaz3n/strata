@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/lib/auth/client'
 import { toast } from 'sonner'
-import { getUserNotificationsAction, getUnreadCountAction, markNotificationAsReadAction } from '@/app/settings/actions'
+import { getUserNotificationsAction, getUnreadCountAction, markNotificationAsReadAction } from '@/app/(app)/settings/actions'
 
 interface NotificationRecord {
   id: string
@@ -120,43 +120,86 @@ export function useNotifications() {
 
 function showNotificationToast(notification: NotificationRecord) {
   const payload = notification.payload as any
+  const href = getNotificationHref(payload)
+  const viewAction = href
+    ? {
+        label: "View",
+        onClick: () => {
+          if (typeof window !== "undefined") {
+            window.location.assign(href)
+          }
+        },
+      }
+    : undefined
 
   // Show different toast types based on notification type
   switch (notification.notification_type) {
     case 'task_completed':
       toast.success(payload.title, {
         description: payload.message,
-        action: {
-          label: 'View',
-          onClick: () => {
-            // TODO: Navigate to the task/project
-            console.log('Navigate to task:', notification)
-          }
-        }
+        action: viewAction,
       })
       break
 
     case 'daily_log_submitted':
+    case 'daily_log_created':
       toast.info(payload.title, {
         description: payload.message,
+        action: viewAction,
       })
       break
 
     case 'photo_uploaded':
       toast.success(payload.title, {
         description: payload.message,
+        action: viewAction,
       })
       break
 
     case 'schedule_changed':
+    case 'schedule_item_updated':
+    case 'schedule_risk':
       toast.warning(payload.title, {
         description: payload.message,
+        action: viewAction,
       })
       break
 
     default:
       toast(payload.title, {
         description: payload.message,
+        action: viewAction,
       })
+  }
+}
+
+function getNotificationHref(payload: any): string | null {
+  const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
+  const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
+  const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
+
+  if (!projectId) return null
+
+  switch (entityType) {
+    case "rfi":
+      return `/projects/${projectId}/rfis`
+    case "submittal":
+      return `/projects/${projectId}/submittals`
+    case "invoice":
+      return `/projects/${projectId}/invoices`
+    case "change_order":
+      return `/projects/${projectId}/change-orders`
+    case "file":
+      return entityId ? `/projects/${projectId}/files?fileId=${entityId}` : `/projects/${projectId}/files`
+    case "drawing_set":
+    case "drawing_sheet":
+    case "drawing_revision":
+      return `/projects/${projectId}/drawings`
+    case "task":
+      return `/projects/${projectId}?tab=tasks`
+    case "daily_log":
+      return `/projects/${projectId}?tab=daily-logs`
+    default:
+      return `/projects/${projectId}`
   }
 }

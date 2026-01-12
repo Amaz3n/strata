@@ -79,7 +79,14 @@ export const scheduleItemInputSchema = z.object({
   start_date: z.string().optional(),
   end_date: z.string().optional(),
   progress: z.number().int().min(0).max(100).optional().default(0),
-  assigned_to: z.string().uuid().optional().nullable(),
+  // Supports UI-scoped assignment selector values like "user:{uuid}" (the server strips this before persistence).
+  assigned_to: z
+    .union([
+      z.string().uuid(),
+      z.string().regex(/^(user|contact|company):[0-9a-fA-F-]{36}$/),
+    ])
+    .optional()
+    .nullable(),
   metadata: z.record(z.any()).optional(),
   dependencies: z.array(z.string().uuid()).optional(),
   notes: z.string().max(2000).optional(),
@@ -95,6 +102,10 @@ export const scheduleItemInputSchema = z.object({
   float_days: z.number().int().optional().default(0),
   color: z.string().optional().nullable(),
   sort_order: z.number().int().optional().default(0),
+  // Cost tracking fields
+  cost_code_id: z.string().uuid().optional().nullable(),
+  budget_cents: z.number().int().min(0).optional().nullable(),
+  actual_cost_cents: z.number().int().min(0).optional().nullable(),
 })
 
 export const scheduleItemUpdateSchema = scheduleItemInputSchema.partial()
