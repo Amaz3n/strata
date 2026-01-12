@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/jobs/process-outbox",
-      "schedule": "*/1 * * * *"
+      "schedule": "0 2 * * *"
     }
   ],
   "functions": {
