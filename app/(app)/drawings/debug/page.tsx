@@ -5,6 +5,8 @@ import { CheckCircle2, XCircle, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { queueTileGenerationForExistingSheetsAction } from "@/app/(app)/drawings/actions"
 
+export const dynamic = 'force-dynamic'
+
 export default async function DrawingsDebugPage() {
   const { supabase, orgId } = await requireOrgContext()
 
