@@ -188,6 +188,9 @@ importers:
       openseadragon:
         specifier: ^5.0.1
         version: 5.0.1
+      pdf-to-img:
+        specifier: ^5.0.0
+        version: 5.0.0
       pdfjs-dist:
         specifier: ^5.4.449
         version: 5.4.449
@@ -2281,6 +2284,11 @@ packages:
   path-exists@4.0.0:
     resolution: {integrity: sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w==}
     engines: {node: '>=8'}
+
+  pdf-to-img@5.0.0:
+    resolution: {integrity: sha512-QJy7P2Qbk86lntPPIC3HVZAyw/CvM+CP592UbO7grborOJ74Icspb8A2sdHO33MDb/WHwHZpSJxd771rQTlZKA==}
+    engines: {node: '>=20'}
+    hasBin: true
 
   pdfjs-dist@5.4.296:
     resolution: {integrity: sha512-DlOzet0HO7OEnmUmB6wWGJrrdvbyJKftI1bhMitK7O2N8W2gc757yyYBbINy9IDafXAV9wmKr9t7xsTaNKRG5Q==}
@@ -4679,6 +4687,10 @@ snapshots:
   parse-svg-path@0.1.2: {}
 
   path-exists@4.0.0: {}
+
+  pdf-to-img@5.0.0:
+    dependencies:
+      pdfjs-dist: 5.4.449
 
   pdfjs-dist@5.4.296:
     optionalDependencies:
