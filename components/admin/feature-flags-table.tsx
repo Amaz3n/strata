@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Settings, Loader2 } from "@/components/icons"
-import { getFeatureFlags, toggleFeatureFlag } from "@/lib/services/admin"
+import { getFeatureFlags, toggleFeatureFlag } from "@/app/(app)/admin/features/actions"
 import { useToast } from "@/hooks/use-toast"
 
 interface FeatureFlag {

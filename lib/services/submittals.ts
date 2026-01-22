@@ -312,7 +312,9 @@ async function sendSubmittalEmail({
         <a href="${APP_URL}/submittals" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Open in Strata</a>
       </div>
     </div>
-  `  await sendEmail({
+  `
+
+  await sendEmail({
     to: recipients,
     subject,
     html,
