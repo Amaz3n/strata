@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { cn } from "@/lib/utils"
 
 type OpenSeadragonNS = any
@@ -73,12 +73,27 @@ export function TiledDrawingViewer({
   const containerRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<any | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const imageSizeRef = useRef<{ width: number; height: number } | null>(null)
 
   const imageSize = useMemo(() => {
     const w = tileManifest?.Image?.Size?.Width ?? 1
     const h = tileManifest?.Image?.Size?.Height ?? 1
     return { width: w, height: h }
   }, [tileManifest])
+
+  useEffect(() => {
+    imageSizeRef.current = imageSize
+  }, [imageSize])
+
+  const buildTileSource = useCallback(
+    (baseUrl: string) => ({
+      // Phase P0: single tile image source
+      type: "image",
+      url: `${baseUrl}/tiles/0/0_0.png`,
+      buildPyramid: false,
+    }),
+    []
+  )
 
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return
@@ -95,12 +110,7 @@ export function TiledDrawingViewer({
 
       viewer = OSD({
         element: containerRef.current,
-        tileSources: [{
-          // Simple image tile source - just one image
-          type: "image",
-          url: `${tileBaseUrl}/tiles/0/0_0.png`,
-          buildPyramid: false,
-        }],
+        tileSources: [buildTileSource(tileBaseUrl)],
         // Interaction
         gestureSettingsMouse: {
           clickToZoom: false,
@@ -135,19 +145,20 @@ export function TiledDrawingViewer({
 
         // Derive affine matrix image(px) -> screen(px) from 3 points.
         const p00 = viewer.viewport.imageToViewerElementCoordinates(new OSD.Point(0, 0))
+        const currentSize = imageSizeRef.current ?? { width: 1, height: 1 }
         const p10 = viewer.viewport.imageToViewerElementCoordinates(
-          new OSD.Point(imageSize.width, 0)
+          new OSD.Point(currentSize.width, 0)
         )
         const p01 = viewer.viewport.imageToViewerElementCoordinates(
-          new OSD.Point(0, imageSize.height)
+          new OSD.Point(0, currentSize.height)
         )
 
         const matrix = buildMatrix({
           p00,
           p10,
           p01,
-          imageWidth: imageSize.width,
-          imageHeight: imageSize.height,
+          imageWidth: currentSize.width,
+          imageHeight: currentSize.height,
         })
 
         const zoom = viewer.viewport.getZoom(true)
@@ -173,7 +184,17 @@ export function TiledDrawingViewer({
       viewerRef.current = null
       onReady?.(null)
     }
-  }, [imageSize.height, imageSize.width, onReady, onTransformChange, tileBaseUrl, tileManifest])
+  }, [buildTileSource, onReady, onTransformChange, tileBaseUrl])
+
+  useEffect(() => {
+    if (!viewerRef.current) return
+    try {
+      viewerRef.current.open(buildTileSource(tileBaseUrl))
+      console.log('[TiledViewer] Updated tile source:', `${tileBaseUrl}/tiles/0/0_0.png`)
+    } catch (e) {
+      console.error('[TiledViewer] Failed to update tile source:', e)
+    }
+  }, [buildTileSource, tileBaseUrl])
 
   return <div ref={containerRef} className={cn("h-full w-full", className)} />
 }

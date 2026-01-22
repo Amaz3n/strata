@@ -15,14 +15,11 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { cn } from "@/lib/utils"
-import { ProjectSwitcher } from "./project-switcher"
 import { usePageTitle } from "./page-title-context"
 
 export type AppBreadcrumbItem = {
   label: string
   href?: string
-  isProject?: boolean
-  projectId?: string
 }
 
 interface AppHeaderProps {
@@ -32,9 +29,10 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
-  const { title: contextTitle } = usePageTitle()
+  const { title: contextTitle, breadcrumbs: contextBreadcrumbs } = usePageTitle()
   const effectiveTitle = title || contextTitle
-  const breadcrumbItems = breadcrumbs?.length ? breadcrumbs : effectiveTitle ? [{ label: effectiveTitle }] : []
+  const effectiveBreadcrumbs = breadcrumbs || contextBreadcrumbs
+  const breadcrumbItems = effectiveBreadcrumbs?.length ? effectiveBreadcrumbs : effectiveTitle ? [{ label: effectiveTitle }] : [{ label: "Home" }]
 
   // Get current page title for mobile display
   const currentPage = breadcrumbItems.length > 0 ? breadcrumbItems[breadcrumbItems.length - 1] : null
@@ -53,17 +51,13 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
 
-          {breadcrumbItems.length > 0 && (
-            <Breadcrumb className="flex min-w-0 items-center">
-              <BreadcrumbList className="flex min-w-0 items-center">
-                {breadcrumbItems.map((item, index) => {
+          {/* Always show breadcrumbs for debugging */}
+          <Breadcrumb className="flex min-w-0 items-center">
+            <BreadcrumbList className="flex min-w-0 items-center">
+              {breadcrumbItems.length > 0 ? (
+                breadcrumbItems.map((item, index) => {
                   const isLast = index === breadcrumbItems.length - 1
-                  const content = item.isProject ? (
-                    <ProjectSwitcher
-                      currentProjectId={item.projectId}
-                      currentProjectLabel={item.label}
-                    />
-                  ) : isLast ? (
+                  const content = isLast ? (
                     <BreadcrumbPage className="truncate">{item.label}</BreadcrumbPage>
                   ) : item.href ? (
                     <BreadcrumbLink href={item.href} className="truncate">
@@ -79,10 +73,14 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
                       {index < breadcrumbItems.length - 1 && <BreadcrumbSeparator />}
                     </React.Fragment>
                   )
-                })}
-              </BreadcrumbList>
-            </Breadcrumb>
-          )}
+                })
+              ) : (
+                <BreadcrumbItem className="min-w-0">
+                  <BreadcrumbPage className="truncate">No breadcrumbs</BreadcrumbPage>
+                </BreadcrumbItem>
+              )}
+            </BreadcrumbList>
+          </Breadcrumb>
         </div>
 
         {/* Center section - Search */}

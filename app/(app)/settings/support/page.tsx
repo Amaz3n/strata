@@ -8,12 +8,12 @@ import { requirePermissionGuard } from "@/lib/auth/guards"
 export default async function SupportPage() {
   await requirePermissionGuard("billing.manage")
 
+  const support = await getOrgSupport()
   const tier = (support?.details as any)?.tier ?? "standard"
 
   return (
-    <PageLayout title="Page"
+    <PageLayout
       title="Support"
-      user={currentUser}
       breadcrumbs={[
         { label: "Settings", href: "/settings" },
         { label: "Support" },

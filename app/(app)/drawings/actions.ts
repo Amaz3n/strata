@@ -176,6 +176,7 @@ export async function deleteDrawingSetAction(setId: string): Promise<void> {
 export async function createDrawingSetFromUpload(input: {
   projectId: string
   title?: string
+  setType?: string
   fileName: string
   storagePath: string
   fileSize: number
@@ -199,35 +200,42 @@ export async function createDrawingSetFromUpload(input: {
   const drawingSet = await createDrawingSet({
     project_id: input.projectId,
     title: input.title || input.fileName.replace(/\.pdf$/i, ""),
+    set_type: input.setType,
     source_file_id: fileRecord.id,
   })
 
-  // Trigger processing (this will be done by an edge function)
+  // Trigger processing via outbox system
   try {
-    const useTiles = process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true"
-    // Call the edge function to process the PDF
-    const { error: fnError } = await supabase.functions.invoke("process-drawing-set", {
-      body: {
-        drawingSetId: drawingSet.id,
-        orgId,
-        projectId: input.projectId,
-        sourceFileId: fileRecord.id,
-        storagePath: input.storagePath,
-        generateImages: !useTiles,
-        generateTiles: useTiles,
-      },
-    })
+    console.log(`[Upload] Queueing processing jobs for drawing set: ${drawingSet.id}`)
 
-    if (fnError) {
-      console.error("Failed to trigger drawing processing:", fnError)
+    // Queue a job to process the drawing set and create individual sheets
+    const { error: jobError } = await supabase
+      .from("outbox")
+      .insert({
+        org_id: orgId,
+        job_type: "process_drawing_set",
+        payload: {
+          drawingSetId: drawingSet.id,
+          projectId: input.projectId,
+          sourceFileId: fileRecord.id,
+          storagePath: input.storagePath,
+          orgId: orgId,
+        },
+        run_at: new Date().toISOString(),
+      })
+
+    if (jobError) {
+      console.error("Failed to queue processing job:", jobError)
       // Update set status to failed
       await updateDrawingSet(drawingSet.id, {
         status: "failed",
-        error_message: "Failed to start processing",
+        error_message: "Failed to queue processing job",
       })
+    } else {
+      console.log(`[Upload] Successfully queued processing job for drawing set: ${drawingSet.id}`)
     }
   } catch (error) {
-    console.error("Failed to invoke edge function:", error)
+    console.error("Failed to queue processing job:", error)
     // The set stays in "processing" status - can be retried manually
   }
 

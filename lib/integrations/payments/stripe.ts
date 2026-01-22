@@ -81,6 +81,44 @@ export async function attachPaymentMethod(customerId: string, paymentMethodId: s
   return getStripe().paymentMethods.attach(paymentMethodId, { customer: customerId })
 }
 
+export function getAppBaseUrl() {
+  return process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_URL || "https://app.strata.build"
+}
+
+export async function createStripeCheckoutSession(params: {
+  customerId: string
+  priceId: string
+  successUrl: string
+  cancelUrl: string
+  metadata?: Record<string, string>
+  trialEnd?: string | null
+}) {
+  const trialEndTimestamp =
+    params.trialEnd && new Date(params.trialEnd) > new Date()
+      ? Math.floor(new Date(params.trialEnd).getTime() / 1000)
+      : undefined
+
+  return getStripe().checkout.sessions.create({
+    mode: "subscription",
+    customer: params.customerId,
+    line_items: [{ price: params.priceId, quantity: 1 }],
+    success_url: params.successUrl,
+    cancel_url: params.cancelUrl,
+    subscription_data: {
+      trial_end: trialEndTimestamp,
+      metadata: params.metadata,
+    },
+    metadata: params.metadata,
+  })
+}
+
+export async function createStripeBillingPortalSession(customerId: string, returnUrl: string) {
+  return getStripe().billingPortal.sessions.create({
+    customer: customerId,
+    return_url: returnUrl,
+  })
+}
+
 export function constructWebhookEvent(payload: string, signature: string) {
   return getStripe().webhooks.constructEvent(payload, signature, process.env.STRIPE_WEBHOOK_SECRET!)
 }

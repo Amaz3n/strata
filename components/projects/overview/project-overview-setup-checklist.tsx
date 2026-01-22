@@ -1,22 +1,10 @@
 "use client"
 
-import { useState, useMemo } from "react"
-import Link from "next/link"
-import type { Contract, DrawSchedule, PortalAccessToken, Project, Proposal, ScheduleItem } from "@/lib/types"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useMemo } from "react"
+import type { Contract, DrawSchedule, PortalAccessToken, Project, Proposal } from "@/lib/types"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { CheckCircle, Circle, ArrowRight, Settings, Share2, FileText, ChevronDown, ChevronUp } from "@/components/icons"
+import { CheckCircle2, Circle, ArrowRight, Sparkles } from "@/components/icons"
 import { cn } from "@/lib/utils"
-
-type ChecklistItem = {
-  key: string
-  label: string
-  done: boolean
-  hint?: string
-}
 
 interface ProjectOverviewSetupChecklistProps {
   project: Project
@@ -26,8 +14,6 @@ interface ProjectOverviewSetupChecklistProps {
   scheduleItemCount: number
   portalTokens: PortalAccessToken[]
   onOpenSetupWizard: () => void
-  onOpenProjectSettings: () => void
-  onOpenShare: () => void
 }
 
 export function ProjectOverviewSetupChecklist({
@@ -38,8 +24,6 @@ export function ProjectOverviewSetupChecklist({
   scheduleItemCount,
   portalTokens,
   onOpenSetupWizard,
-  onOpenProjectSettings,
-  onOpenShare,
 }: ProjectOverviewSetupChecklistProps) {
   const hasClient = !!project.client_id
   const hasProposal = proposals.length > 0
@@ -50,105 +34,114 @@ export function ProjectOverviewSetupChecklist({
   const hasSchedule = scheduleItemCount > 0
   const hasClientPortal = portalTokens.some((t) => t.portal_type === "client" && !t.revoked_at)
 
-  const items: ChecklistItem[] = useMemo(() => [
-    { key: "client", label: "Add client contact", done: hasClient, hint: "Sets up portal + signatures" },
-    { key: "proposal", label: "Create proposal", done: hasProposal },
-    { key: "proposal_sent", label: "Send proposal link", done: hasSentProposal, hint: "Copy link or mark sent" },
-    { key: "proposal_accepted", label: "Client accepts proposal", done: hasAcceptedProposal, hint: "Generates contract + budget" },
-    { key: "contract", label: "Contract active", done: hasContract, hint: hasAcceptedProposal ? "Should appear automatically" : undefined },
-    { key: "schedule", label: "Create schedule", done: hasSchedule, hint: "Apply a template in the setup wizard" },
-    { key: "draws", label: "Create draw schedule", done: hasDrawSchedule, hint: "Template-based (5-draw is common)" },
-    { key: "portal", label: "Invite client to portal", done: hasClientPortal },
+  const items = useMemo(() => [
+    { key: "client", label: "Client", done: hasClient },
+    { key: "proposal", label: "Proposal", done: hasProposal },
+    { key: "sent", label: "Sent", done: hasSentProposal },
+    { key: "accepted", label: "Accepted", done: hasAcceptedProposal },
+    { key: "contract", label: "Contract", done: hasContract },
+    { key: "schedule", label: "Schedule", done: hasSchedule },
+    { key: "draws", label: "Draws", done: hasDrawSchedule },
+    { key: "portal", label: "Portal", done: hasClientPortal },
   ], [hasClient, hasProposal, hasSentProposal, hasAcceptedProposal, hasContract, hasSchedule, hasDrawSchedule, hasClientPortal])
 
   const doneCount = items.filter((i) => i.done).length
   const progress = Math.round((doneCount / items.length) * 100)
   const isComplete = progress === 100
 
-  // Default to collapsed if setup is complete
-  const [isOpen, setIsOpen] = useState(!isComplete)
-
-  // If all items are complete, don't show at all (or show minimal)
+  // If all items are complete, don't show
   if (isComplete) {
     return null
   }
 
+  // Find the next incomplete step
+  const nextStep = items.find((item) => !item.done)
+
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <Card className="border-dashed">
-        <CollapsibleTrigger asChild>
-          <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors py-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="space-y-0.5">
-                  <CardTitle className="text-sm font-medium">Project Setup</CardTitle>
-                  <CardDescription className="text-xs">
-                    {doneCount}/{items.length} complete
-                  </CardDescription>
+    <div className="border-t border-border/50 bg-muted/20">
+      <div className="px-4 py-3 sm:px-5">
+        <div className="flex items-center justify-between gap-3">
+          {/* Left: Progress info */}
+          <div className="flex items-center gap-2.5 min-w-0">
+            {/* Circular progress indicator */}
+            <div className="relative size-7 shrink-0">
+              <svg className="size-7 -rotate-90" viewBox="0 0 28 28">
+                <circle
+                  cx="14"
+                  cy="14"
+                  r="12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  className="text-border"
+                />
+                <circle
+                  cx="14"
+                  cy="14"
+                  r="12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeDasharray={75.4}
+                  strokeDashoffset={75.4 - (progress / 100) * 75.4}
+                  strokeLinecap="round"
+                  className="text-primary transition-all duration-500"
+                />
+              </svg>
+              <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold text-foreground">
+                {doneCount}/{items.length}
+              </span>
+            </div>
+
+            {/* Steps display */}
+            <div className="hidden sm:flex items-center gap-1 overflow-x-auto">
+              {items.map((item, index) => (
+                <div
+                  key={item.key}
+                  className={cn(
+                    "flex items-center gap-1 text-xs px-2 py-1 rounded-full transition-colors",
+                    item.done
+                      ? "text-muted-foreground"
+                      : item.key === nextStep?.key
+                      ? "text-primary bg-primary/10 font-medium"
+                      : "text-muted-foreground/60"
+                  )}
+                >
+                  {item.done ? (
+                    <CheckCircle2 className="size-3 text-emerald-500" />
+                  ) : (
+                    <Circle className={cn(
+                      "size-3",
+                      item.key === nextStep?.key ? "text-primary" : "text-muted-foreground/40"
+                    )} />
+                  )}
+                  <span className={item.done ? "line-through decoration-muted-foreground/50" : ""}>
+                    {item.label}
+                  </span>
                 </div>
-                <Progress value={progress} className="w-24 h-2" />
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">
-                  {progress}%
-                </Badge>
-                {isOpen ? (
-                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                )}
-              </div>
+              ))}
             </div>
-          </CardHeader>
-        </CollapsibleTrigger>
 
-        <CollapsibleContent>
-          <CardContent className="pt-0 pb-4">
-            <div className="space-y-4">
-              {/* Compact Checklist Grid */}
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {items.map((item) => (
-                  <div
-                    key={item.key}
-                    className={cn(
-                      "flex items-center gap-2 rounded-md border px-3 py-2 text-sm",
-                      item.done ? "bg-muted/50 border-muted" : "border-dashed"
-                    )}
-                  >
-                    {item.done ? (
-                      <CheckCircle className="h-4 w-4 text-success flex-shrink-0" />
-                    ) : (
-                      <Circle className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                    )}
-                    <span className={cn(
-                      "truncate",
-                      item.done && "text-muted-foreground line-through"
-                    )}>
-                      {item.label}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Action buttons */}
-              <div className="flex items-center gap-2 pt-2 border-t">
-                <Button size="sm" onClick={onOpenSetupWizard}>
-                  Continue setup
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-                <Button variant="outline" size="sm" onClick={onOpenProjectSettings}>
-                  <Settings className="mr-2 h-4 w-4" />
-                  Settings
-                </Button>
-                <Button variant="outline" size="sm" onClick={onOpenShare}>
-                  <Share2 className="mr-2 h-4 w-4" />
-                  Share
-                </Button>
-              </div>
+            {/* Mobile: Show next step only */}
+            <div className="sm:hidden flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Next:</span>
+              <span className="font-medium text-foreground">{nextStep?.label}</span>
             </div>
-          </CardContent>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
+          </div>
+
+          {/* Right: Continue button */}
+          <Button
+            size="sm"
+            onClick={onOpenSetupWizard}
+            className="shrink-0 gap-2 h-8"
+          >
+            <Sparkles className="size-3.5" />
+            <span className="hidden sm:inline">Continue Setup</span>
+            <span className="sm:hidden">Continue</span>
+            <ArrowRight className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }

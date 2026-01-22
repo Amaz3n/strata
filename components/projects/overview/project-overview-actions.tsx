@@ -4,19 +4,21 @@ import { useState, useEffect, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { toast } from "sonner"
+import { format, parseISO } from "date-fns"
 
-import type { Project, Contact, PortalAccessToken, Proposal, Contract, DrawSchedule, ScheduleItem, Company, ProjectVendor } from "@/lib/types"
+import type { Project, Contact, PortalAccessToken, Proposal, Contract, DrawSchedule, ScheduleItem } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
-import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
 import { loadSharingDataAction, revokePortalTokenAction, setPortalTokenPinAction, removePortalTokenPinAction } from "@/app/(app)/sharing/actions"
 import { updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
 
+import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu"
+import { ProjectAvatar } from "@/components/ui/project-avatar"
 
 import { PortalLinkCreator } from "@/components/sharing/portal-link-creator"
 import { AccessTokenList } from "@/components/sharing/access-token-list"
@@ -31,16 +33,14 @@ import {
   Settings,
   Users,
   CalendarDays,
-  Plus,
-  Upload,
-  ClipboardList,
-  Building2,
-  Clock,
   DollarSign,
   Link2,
   User,
   ShieldCheck,
+  MapPin,
+  Building2,
 } from "@/components/icons"
+import { cn } from "@/lib/utils"
 
 interface ProjectOverviewActionsProps {
   project: Project
@@ -52,22 +52,27 @@ interface ProjectOverviewActionsProps {
   scheduleItemCount: number
 }
 
-const statusColors: Record<string, string> = {
-  planning: "bg-chart-3/20 text-chart-3 border-chart-3/30",
-  bidding: "bg-blue-500/20 text-blue-600 border-blue-500/30",
-  active: "bg-success/20 text-success border-success/30",
-  on_hold: "bg-warning/20 text-warning border-warning/30",
-  completed: "bg-muted text-muted-foreground border-muted",
-  cancelled: "bg-destructive/20 text-destructive border-destructive/30",
+const statusConfig: Record<string, { label: string; color: string; dot: string }> = {
+  planning: { label: "Planning", color: "bg-amber-500/10 text-amber-600 dark:text-amber-400", dot: "bg-amber-500" },
+  bidding: { label: "Bidding", color: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500" },
+  active: { label: "Active", color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400", dot: "bg-emerald-500" },
+  on_hold: { label: "On Hold", color: "bg-orange-500/10 text-orange-600 dark:text-orange-400", dot: "bg-orange-500" },
+  completed: { label: "Completed", color: "bg-slate-500/10 text-slate-600 dark:text-slate-400", dot: "bg-slate-500" },
+  cancelled: { label: "Cancelled", color: "bg-red-500/10 text-red-600 dark:text-red-400", dot: "bg-red-500" },
 }
 
-const statusLabels: Record<string, string> = {
-  planning: "Planning",
-  bidding: "Bidding",
-  active: "Active",
-  on_hold: "On Hold",
-  completed: "Completed",
-  cancelled: "Cancelled",
+function formatCurrency(value: number): string {
+  if (value >= 1000000) {
+    return `$${(value / 1000000).toFixed(1)}M`
+  }
+  if (value >= 1000) {
+    return `$${(value / 1000).toFixed(0)}K`
+  }
+  return `$${value.toLocaleString()}`
+}
+
+function formatProjectType(type: string): string {
+  return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
 export function ProjectOverviewActions({
@@ -103,7 +108,6 @@ export function ProjectOverviewActions({
     const actives = portalTokensState.filter((token) => !token.revoked_at)
     return { clientActiveLinks: activeClient, subActiveLinks: activeSubs, activeTokens: actives }
   }, [portalTokensState])
-  const activePortalLinks = clientActiveLinks + subActiveLinks
 
   async function refreshPortalTokens() {
     setSharingLoading(true)
@@ -186,166 +190,249 @@ export function ProjectOverviewActions({
     router.refresh()
   }
 
-  // Create schedule items array for the checklist (just need count for validation)
   const scheduleItems = scheduleItemCount > 0 ? [{ id: "placeholder" } as ScheduleItem] : []
+  const status = statusConfig[project.status] || statusConfig.planning
+
+  // Check if we have any metadata to show
+  const hasTimeline = project.start_date && project.end_date
+  const hasValue = project.total_value
+  const hasType = project.property_type || project.project_type
+  const hasMetadata = hasTimeline || hasValue || hasType
 
   return (
     <>
-      {/* Header with project info */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-1">
+      <Card className="overflow-hidden py-0 gap-0">
+        {/* Header Section */}
+        <div className="px-4 pt-3.5 pb-2.5 sm:px-5 sm:pt-4 sm:pb-3">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight">{project.name}</h1>
-            <Badge variant="outline" className={statusColors[project.status]}>
-              {statusLabels[project.status]}
-            </Badge>
-          </div>
-          {project.address && (
-            <p className="text-muted-foreground flex items-center gap-2">
-              <Building2 className="h-4 w-4" />
-              {project.address}
-            </p>
-          )}
-          <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-            {project.start_date && project.end_date && (
-              <span className="flex items-center gap-1.5">
-                <CalendarDays className="h-4 w-4" />
-                {new Date(project.start_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} – {new Date(project.end_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-              </span>
-            )}
-            {project.total_value && (
-              <span className="flex items-center gap-1.5">
-                <DollarSign className="h-4 w-4" />
-                ${project.total_value.toLocaleString()}
-              </span>
-            )}
-            {project.property_type && (
-              <span className="capitalize">
-                {project.property_type}
-              </span>
-            )}
-            {project.project_type && (
-              <span className="capitalize">
-                {project.project_type.replace("_", " ")}
-              </span>
-            )}
-          </div>
-          {project.description && (
-            <p className="text-sm text-muted-foreground mt-2 max-w-2xl">
-              {project.description}
-            </p>
-          )}
-        </div>
+            {/* Project Avatar */}
+            <ProjectAvatar projectId={project.id} size="xl" />
 
-        <div className="flex items-center gap-2">
-          {/* Share Button */}
-          <Sheet open={sharingSheetOpen} onOpenChange={setSharingSheetOpen}>
-            <SheetTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <Share2 className="h-4 w-4" />
-                Share
-              </Button>
-            </SheetTrigger>
-            <SheetContent
-              side="right"
-              className="w-full sm:max-w-md overflow-hidden border-l bg-background p-0 flex min-h-0 flex-col"
-            >
-              <div className="flex h-full min-h-0 flex-col">
-                {/* Header */}
-                <div className="border-b px-4 py-3 sm:px-5 sm:py-4">
-                  <SheetHeader className="text-left">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center bg-primary/10">
-                        <Link2 className="h-4 w-4 text-primary" />
-                      </div>
-                      <div>
-                        <SheetTitle className="text-base font-semibold">Share access</SheetTitle>
-                        <SheetDescription className="text-xs text-muted-foreground">
-                          Create a portal link for clients or subs
-                        </SheetDescription>
-                      </div>
-                    </div>
-                  </SheetHeader>
+            {/* Project Info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  {/* Project Name + Status */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-lg sm:text-xl font-semibold tracking-tight text-foreground truncate">
+                      {project.name}
+                    </h1>
+                    <Badge
+                      variant="secondary"
+                      className={cn(
+                        "font-medium text-xs px-2 py-0.5 gap-1.5 shrink-0",
+                        status.color
+                      )}
+                    >
+                      <span className={cn("size-1.5 rounded-full", status.dot)} />
+                      {status.label}
+                    </Badge>
+                  </div>
+
                 </div>
 
-                <ScrollArea className="flex-1 min-h-0">
-                  <div className="space-y-4 p-4 sm:p-5">
-                    {/* Link Creator */}
-                    <div className="border bg-card p-4">
-                      <PortalLinkCreator projectId={project.id} onCreated={handleTokenCreated} />
-                    </div>
+                {/* Actions */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {/* Share Button */}
+                  <Sheet open={sharingSheetOpen} onOpenChange={setSharingSheetOpen}>
+                    <SheetTrigger asChild>
+                      <Button variant="outline" size="sm" className="gap-1.5 h-8 px-2.5">
+                        <Share2 className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline text-xs">Share</span>
+                      </Button>
+                    </SheetTrigger>
+                    <SheetContent
+                      side="right"
+                      className="w-full sm:max-w-md overflow-hidden border-l bg-background p-0 flex min-h-0 flex-col"
+                    >
+                      <div className="flex h-full min-h-0 flex-col">
+                        <div className="border-b px-4 py-3 sm:px-5 sm:py-4">
+                          <SheetHeader className="text-left">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-9 w-9 items-center justify-center bg-primary/10 rounded-lg">
+                                <Link2 className="h-4 w-4 text-primary" />
+                              </div>
+                              <div>
+                                <SheetTitle className="text-base font-semibold">Share access</SheetTitle>
+                                <SheetDescription className="text-xs text-muted-foreground">
+                                  Create a portal link for clients or subs
+                                </SheetDescription>
+                              </div>
+                            </div>
+                          </SheetHeader>
+                        </div>
 
-                    {/* Active Links */}
-                    <Accordion type="single" collapsible className="border bg-card">
-                      <AccordionItem value="active-access" className="border-none">
-                        <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                          <div className="flex w-full items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-medium">Active links</span>
+                        <ScrollArea className="flex-1 min-h-0">
+                          <div className="space-y-4 p-4 sm:p-5">
+                            <div className="border bg-card p-4 rounded-lg">
+                              <PortalLinkCreator projectId={project.id} onCreated={handleTokenCreated} />
                             </div>
-                            <div className="flex items-center gap-1.5">
-                              {activePortalLinks > 0 ? (
-                                <>
-                                  <Badge variant="secondary" className="gap-1 px-2 py-0.5 text-xs">
-                                    <User className="h-3 w-3" />
-                                    {clientActiveLinks}
-                                  </Badge>
-                                  <Badge variant="secondary" className="gap-1 px-2 py-0.5 text-xs">
-                                    <Users className="h-3 w-3" />
-                                    {subActiveLinks}
-                                  </Badge>
-                                </>
-                              ) : (
-                                <Badge variant="outline" className="text-xs text-muted-foreground">
-                                  None
-                                </Badge>
-                              )}
-                            </div>
+
+                            <Accordion type="single" collapsible className="border bg-card rounded-lg">
+                              <AccordionItem value="active-access" className="border-none">
+                                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                                  <div className="flex w-full items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+                                      <span className="text-sm font-medium">Active links</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      {clientActiveLinks + subActiveLinks > 0 ? (
+                                        <>
+                                          <Badge variant="secondary" className="gap-1 px-2 py-0.5 text-xs">
+                                            <User className="h-3 w-3" />
+                                            {clientActiveLinks}
+                                          </Badge>
+                                          <Badge variant="secondary" className="gap-1 px-2 py-0.5 text-xs">
+                                            <Users className="h-3 w-3" />
+                                            {subActiveLinks}
+                                          </Badge>
+                                        </>
+                                      ) : (
+                                        <Badge variant="outline" className="text-xs text-muted-foreground">
+                                          None
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  </div>
+                                </AccordionTrigger>
+                                <AccordionContent className="px-4 pb-4">
+                                  <AccessTokenList
+                                    projectId={project.id}
+                                    tokens={activeTokens}
+                                    onRevoke={handleTokenRevoke}
+                                    isLoading={sharingLoading}
+                                    onSetPin={handleSetPin}
+                                    onClearPin={handleClearPin}
+                                  />
+                                </AccordionContent>
+                              </AccordionItem>
+                            </Accordion>
                           </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-4 pb-4">
-                          <AccessTokenList
-                            projectId={project.id}
-                            tokens={activeTokens}
-                            onRevoke={handleTokenRevoke}
-                            isLoading={sharingLoading}
-                            onSetPin={handleSetPin}
-                            onClearPin={handleClearPin}
-                          />
-                        </AccordionContent>
-                      </AccordionItem>
-                    </Accordion>
-                  </div>
-                </ScrollArea>
-              </div>
-            </SheetContent>
-          </Sheet>
+                        </ScrollArea>
+                      </div>
+                    </SheetContent>
+                  </Sheet>
 
-          {/* More Actions Menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSettingsSheetOpen(true) }}>
-                <Settings className="mr-2 h-4 w-4" />
-                Project Settings
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <Link href={`/projects/${project.id}/team`}>
-                  <Users className="mr-2 h-4 w-4" />
-                  Manage Team
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-destructive">Archive Project</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                  {/* More Actions Menu */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="icon" className="h-8 w-8">
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSettingsSheetOpen(true) }}>
+                        <Settings className="mr-2 h-4 w-4" />
+                        Project Settings
+                      </DropdownMenuItem>
+                      <DropdownMenuItem asChild>
+                        <Link href={`/projects/${project.id}/team`}>
+                          <Users className="mr-2 h-4 w-4" />
+                          Manage Team
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem className="text-destructive">Archive Project</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+
+        {/* Metadata Grid */}
+        {hasMetadata && (
+          <div className="border-t border-border/50 bg-muted/30">
+            <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-border/50">
+              {/* Address */}
+              <div className="px-4 py-3 sm:px-5">
+                <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
+                  <MapPin className="h-3 w-3" />
+                  <span className="text-[11px] font-medium uppercase tracking-wider">Address</span>
+                </div>
+                {project.address ? (
+                  <Link
+                    href={`https://maps.google.com/?q=${encodeURIComponent(project.address)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-medium text-foreground hover:text-primary transition-colors"
+                  >
+                    {project.address}
+                  </Link>
+                ) : (
+                  <span className="text-sm text-muted-foreground">No address set</span>
+                )}
+              </div>
+
+              {/* Timeline */}
+              {hasTimeline && (
+                <div className="px-4 py-3 sm:px-5">
+                  <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
+                    <CalendarDays className="h-3 w-3" />
+                    <span className="text-[11px] font-medium uppercase tracking-wider">Timeline</span>
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {format(parseISO(project.start_date!), "MMM d")} — {format(parseISO(project.end_date!), "MMM d, yyyy")}
+                  </p>
+                </div>
+              )}
+
+              {/* Value */}
+              {hasValue && (
+                <div className="px-4 py-3 sm:px-5">
+                  <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
+                    <DollarSign className="h-3 w-3" />
+                    <span className="text-[11px] font-medium uppercase tracking-wider">Value</span>
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {formatCurrency(project.total_value!)}
+                  </p>
+                </div>
+              )}
+
+              {/* Type */}
+              {hasType && (
+                <div className="px-4 py-3 sm:px-5">
+                  <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
+                    <Building2 className="h-3 w-3" />
+                    <span className="text-[11px] font-medium uppercase tracking-wider">Type</span>
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {[
+                      project.property_type && formatProjectType(project.property_type),
+                      project.project_type && formatProjectType(project.project_type),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Description */}
+        {project.description && (
+          <div className="border-t border-border/50 px-4 py-3 sm:px-5">
+            <p className="text-sm text-muted-foreground leading-relaxed pl-3 border-l-2 border-border/60 italic">
+              {project.description}
+            </p>
+          </div>
+        )}
+
+        {/* Setup Checklist */}
+        <ProjectOverviewSetupChecklist
+          project={project}
+          proposals={proposals}
+          contract={contract}
+          draws={draws}
+          scheduleItemCount={scheduleItemCount}
+          portalTokens={portalTokensState}
+          onOpenSetupWizard={() => setSetupWizardOpen(true)}
+        />
+      </Card>
 
       {/* Sheets */}
       <ProjectSettingsSheet
@@ -368,19 +455,6 @@ export function ProjectOverviewActions({
         portalTokens={portalTokensState}
       />
       <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
-
-      {/* Collapsible Setup Checklist - only shown when incomplete */}
-      <ProjectOverviewSetupChecklist
-        project={project}
-        proposals={proposals}
-        contract={contract}
-        draws={draws}
-        scheduleItemCount={scheduleItemCount}
-        portalTokens={portalTokensState}
-        onOpenSetupWizard={() => setSetupWizardOpen(true)}
-        onOpenProjectSettings={() => setSettingsSheetOpen(true)}
-        onOpenShare={() => setSharingSheetOpen(true)}
-      />
     </>
   )
 }

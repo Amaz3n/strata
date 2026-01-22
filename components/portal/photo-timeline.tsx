@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { format } from "date-fns"
 import { Card, CardContent } from "@/components/ui/card"
-import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import type { PhotoTimelineEntry, Photo } from "@/lib/types"
 
 interface PhotoTimelineProps {
@@ -65,6 +65,7 @@ export function PhotoTimeline({ entries }: PhotoTimelineProps) {
 
       <Dialog open={!!selectedPhoto} onOpenChange={() => setSelectedPhoto(null)}>
         <DialogContent className="max-w-3xl p-0">
+          <DialogTitle className="sr-only">Photo preview</DialogTitle>
           {selectedPhoto && (
             <img
               src={selectedPhoto.url}

@@ -27,72 +27,32 @@ export async function createFileRecordAction(input: unknown) {
   return file
 }
 
-export async function searchAction(query: string) {
+export async function searchAction(query: string, filters?: any, options?: any) {
   if (!query.trim()) return []
 
   try {
-    // Fetch data from all services
-    const [projects, tasks, files] = await Promise.all([
-      listProjects(),
-      listTasks(),
-      listFiles(),
-    ])
+    // Import the new search service
+    const { searchAll } = await import("@/lib/services/search")
 
-    const results = []
-
-    // Add projects
-    projects.forEach(project => {
-      if (
-        project.name.toLowerCase().includes(query.toLowerCase()) ||
-        project.address?.toLowerCase().includes(query.toLowerCase())
-      ) {
-        results.push({
-          id: project.id,
-          type: "project",
-          title: project.name,
-          subtitle: `${project.status.charAt(0).toUpperCase() + project.status.slice(1)}${project.address ? ` • ${project.address}` : ""}`,
-          href: `/projects/${project.id}`,
-        })
-      }
+    // Use the enhanced search service
+    const results = await searchAll(query, filters, {
+      limit: options?.limit || 50,
+      sortBy: 'relevance',
+      ...options
     })
 
-    // Add tasks
-    tasks.forEach(task => {
-      if (
-        task.title.toLowerCase().includes(query.toLowerCase()) ||
-        task.description?.toLowerCase().includes(query.toLowerCase())
-      ) {
-        const project = projects.find(p => p.id === task.project_id)
-        const priority = task.priority.charAt(0).toUpperCase() + task.priority.slice(1)
-        results.push({
-          id: task.id,
-          type: "task",
-          title: task.title,
-          subtitle: `${project?.name || "Unknown Project"} • ${priority} Priority`,
-          href: `/tasks/${task.id}`,
-        })
-      }
-    })
-
-    // Add files
-    files.forEach(file => {
-      if (file.file_name.toLowerCase().includes(query.toLowerCase())) {
-        const project = projects.find(p => p.id === file.project_id)
-        const sizeFormatted = file.size_bytes
-          ? `${(file.size_bytes / (1024 * 1024)).toFixed(1)} MB`
-          : "Unknown size"
-        results.push({
-          id: file.id,
-          type: "file",
-          title: file.file_name,
-          subtitle: `${project?.name || "Unknown Project"} • ${sizeFormatted}`,
-          href: `/files/${file.id}`,
-        })
-      }
-    })
-
-    // Limit results to prevent UI overload
-    return results.slice(0, 20)
+    // Transform results to match the old format for backward compatibility
+    return results.map(result => ({
+      id: result.id,
+      type: result.type,
+      title: result.title,
+      subtitle: result.subtitle,
+      href: result.href,
+      project_id: result.project_id,
+      project_name: result.project_name,
+      created_at: result.created_at,
+      updated_at: result.updated_at,
+    }))
   } catch (error) {
     console.error("Search failed:", error)
     return []

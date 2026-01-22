@@ -15,7 +15,7 @@ export default async function ResetPasswordPage({ searchParams }: ResetPageProps
     redirect("/auth/signin")
   }
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const { error } = await supabase.auth.exchangeCodeForSession(code)
 
   if (error) {

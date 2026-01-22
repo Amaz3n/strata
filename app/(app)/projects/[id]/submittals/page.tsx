@@ -23,7 +23,13 @@ export default async function ProjectSubmittalsPage({ params }: ProjectSubmittal
   }
 
   return (
-    <PageLayout title="Submittals">
+    <PageLayout
+      title="Submittals"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "Submittals" },
+      ]}
+    >
       <div className="space-y-6">
         <SubmittalsClient submittals={submittals} projects={[project]} />
       </div>

@@ -41,9 +41,7 @@ export async function loadPortalEntityMessagesAction(input: { token: string; ent
     entityType: input.entityType,
     entityId: input.entityId,
   })
-}
-
-export async function sendPortalEntityMessageAction(input: {
+}export async function sendPortalEntityMessageAction(input: {
   token: string
   entityType: "rfi" | "submittal"
   entityId: string

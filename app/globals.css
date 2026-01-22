@@ -241,7 +241,17 @@
   .schedule-scroll::-webkit-scrollbar-thumb:hover {
     background-color: var(--foreground);
   }
-  
+
+  /* Hide scrollbar utility */
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Drag ghost styling */
   .dragging {
     opacity: 0.8;

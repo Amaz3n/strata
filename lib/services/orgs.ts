@@ -1,7 +1,7 @@
 import { requireOrgContext } from "@/lib/services/context"
 
 export async function getOrgBilling(orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId, { allowLocked: true })
 
   const { data: org, error: orgError } = await supabase
     .from("orgs")

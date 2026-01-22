@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { constructWebhookEvent, mapStripeEventToDomain } from "@/lib/integrations/payments/stripe"
 import { recordPayment } from "@/lib/services/payments"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { upsertSubscriptionFromStripe } from "@/lib/services/subscriptions"
 
 export async function POST(request: NextRequest) {
   const payload = await request.text()
@@ -28,6 +29,15 @@ export async function POST(request: NextRequest) {
   const supabase = createServiceSupabaseClient()
 
   try {
+    if (
+      event.type === "customer.subscription.created" ||
+      event.type === "customer.subscription.updated" ||
+      event.type === "customer.subscription.deleted"
+    ) {
+      await upsertSubscriptionFromStripe(event.data.object as any)
+      return NextResponse.json({ received: true })
+    }
+
     if (domainEvent.type === "payment_succeeded") {
       const { data: existing } = await supabase
         .from("payments")

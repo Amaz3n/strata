@@ -1,10 +1,13 @@
 "use client"
 
 import React, { createContext, useContext, useEffect } from "react"
+import type { AppBreadcrumbItem } from "./app-header"
 
 interface PageTitleContextType {
   title: string | undefined
+  breadcrumbs: AppBreadcrumbItem[] | undefined
   setTitle: (title: string) => void
+  setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
 }
 
 const PageTitleContext = createContext<PageTitleContextType | undefined>(undefined)
@@ -12,10 +15,12 @@ const PageTitleContext = createContext<PageTitleContextType | undefined>(undefin
 interface PageTitleProviderProps {
   children: React.ReactNode
   title?: string
+  breadcrumbs?: AppBreadcrumbItem[]
 }
 
-export function PageTitleProvider({ children, title: initialTitle }: PageTitleProviderProps) {
+export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: initialBreadcrumbs }: PageTitleProviderProps) {
   const [title, setTitle] = React.useState<string | undefined>(initialTitle)
+  const [breadcrumbs, setBreadcrumbs] = React.useState<AppBreadcrumbItem[] | undefined>(initialBreadcrumbs)
 
   useEffect(() => {
     if (initialTitle) {
@@ -23,8 +28,14 @@ export function PageTitleProvider({ children, title: initialTitle }: PageTitlePr
     }
   }, [initialTitle])
 
+  useEffect(() => {
+    if (initialBreadcrumbs) {
+      setBreadcrumbs(initialBreadcrumbs)
+    }
+  }, [initialBreadcrumbs])
+
   return (
-    <PageTitleContext.Provider value={{ title, setTitle }}>
+    <PageTitleContext.Provider value={{ title, breadcrumbs, setTitle, setBreadcrumbs }}>
       {children}
     </PageTitleContext.Provider>
   )

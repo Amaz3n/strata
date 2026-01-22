@@ -23,7 +23,13 @@ export default async function ProjectRfisPage({ params }: ProjectRfisPageProps) 
   }
 
   return (
-    <PageLayout title="RFIs">
+    <PageLayout
+      title="RFIs"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "RFIs" },
+      ]}
+    >
       <div className="space-y-6">
         <RfisClient rfis={rfis} projects={[project]} />
       </div>

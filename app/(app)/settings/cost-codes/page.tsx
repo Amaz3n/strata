@@ -4,11 +4,11 @@ import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { listCostCodesAction } from "./actions"
 
 export default async function CostCodesPage() {
+  const costCodes = await listCostCodesAction()
 
   return (
-    <PageLayout title="Page"
+    <PageLayout
       title="Cost Codes"
-      user={user}
       breadcrumbs={[
         { label: "Settings", href: "/settings" },
         { label: "Cost Codes" },

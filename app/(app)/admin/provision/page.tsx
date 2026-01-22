@@ -1,32 +1,28 @@
 import { PageLayout } from "@/components/layout/page-layout"
-export const dynamic = 'force-dynamic'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { ProvisionOrgForm } from "@/components/admin/provision-form"
 import { requirePermissionGuard } from "@/lib/auth/guards"
+import { ProvisionOrgForm } from "@/components/admin/provision-form"
+
+export const dynamic = "force-dynamic"
 
 export default async function ProvisionPage() {
   await requirePermissionGuard("billing.manage")
 
   return (
-    <PageLayout title="Provision Organization">
+    <PageLayout
+      title="Provision Organization"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Provision Organization" },
+      ]}
+    >
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold">Provision a new customer org</h1>
-          <p className="text-muted-foreground mt-1">
-            Create an organization, set billing model, and invite the primary owner. This is restricted to admins with
-            billing permissions.
+          <h1 className="text-3xl font-bold">Provision Organization</h1>
+          <p className="text-muted-foreground mt-2">
+            Create a new builder org, invite the primary owner, and start a trial.
           </p>
         </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Workspace details</CardTitle>
-            <CardDescription>We will create the org, subscription, support contract, and send the invite.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ProvisionOrgForm />
-          </CardContent>
-        </Card>
+        <ProvisionOrgForm />
       </div>
     </PageLayout>
   )

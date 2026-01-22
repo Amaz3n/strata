@@ -21,8 +21,19 @@ export function ProvisionOrgForm() {
           <Input id="orgName" name="orgName" placeholder="Acme Builders" required />
         </div>
         <div className="space-y-2">
+          <Label htmlFor="orgSlug">Organization slug</Label>
+          <Input id="orgSlug" name="orgSlug" placeholder="acme-builders" required />
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2">
           <Label htmlFor="region">Region (optional)</Label>
           <Input id="region" name="region" placeholder="TX, SoCal, etc." />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="trialDays">Trial days</Label>
+          <Input id="trialDays" name="trialDays" type="number" min="1" max="30" defaultValue="7" />
         </div>
       </div>
 

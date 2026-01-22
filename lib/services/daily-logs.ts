@@ -62,6 +62,36 @@ export async function createDailyLog({ input, orgId }: { input: DailyLogInput; o
     throw new Error(`Failed to create daily log: ${error?.message}`)
   }
 
+  if (input.entries?.length) {
+    const { error: entryError } = await supabase
+      .from("daily_log_entries")
+      .insert(
+        input.entries.map((entry) => ({
+          org_id: resolvedOrgId,
+          project_id: input.project_id,
+          daily_log_id: data.id,
+          entry_type: entry.entry_type,
+          description: entry.description ?? null,
+          quantity: entry.quantity ?? null,
+          hours: entry.hours ?? null,
+          progress: entry.progress ?? null,
+          schedule_item_id: entry.schedule_item_id ?? null,
+          task_id: entry.task_id ?? null,
+          punch_item_id: entry.punch_item_id ?? null,
+          cost_code_id: entry.cost_code_id ?? null,
+          location: entry.location ?? null,
+          trade: entry.trade ?? null,
+          labor_type: entry.labor_type ?? null,
+          inspection_result: entry.inspection_result ?? null,
+          metadata: entry.metadata ?? {},
+        }))
+      )
+
+    if (entryError) {
+      throw new Error(`Failed to create daily log entries: ${entryError.message}`)
+    }
+  }
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "daily_log_created",

@@ -312,16 +312,12 @@ async function sendSubmittalEmail({
         <a href="${APP_URL}/submittals" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Open in Strata</a>
       </div>
     </div>
-  `
-
-  await sendEmail({
+  `  await sendEmail({
     to: recipients,
     subject,
     html,
   })
-}
-
-async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: string | null; full_name?: string } | null> {
+}async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: string | null; full_name?: string } | null> {
   const { data, error } = await supabase.from("app_users").select("email, full_name").eq("id", userId).maybeSingle()
   if (error) {
     console.warn("Failed to fetch user email", error)

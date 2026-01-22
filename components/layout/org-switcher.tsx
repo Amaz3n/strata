@@ -97,10 +97,7 @@ export function OrgSwitcher({
             <org.logo className="size-3" />
           </div>
           {state !== "collapsed" && (
-            <div className="grid flex-1 text-left text-sm leading-tight">
-              <Skeleton className="h-4 w-28" />
-              <Skeleton className="h-3 w-16" />
-            </div>
+            <Skeleton className="h-4 w-28" />
           )}
         </>
       )
@@ -114,11 +111,8 @@ export function OrgSwitcher({
           </div>
           {state !== "collapsed" && (
             <>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">No organization</span>
-                <span className="truncate text-xs">Select org</span>
-              </div>
-              <ChevronsUpDown className="ml-auto" />
+              <span className="truncate font-medium text-sm">No organization</span>
+              <ChevronsUpDown className="ml-auto size-4" />
             </>
           )}
         </>
@@ -132,11 +126,8 @@ export function OrgSwitcher({
         </div>
         {state !== "collapsed" && (
           <>
-            <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium">{activeOrg.org_name}</span>
-              <span className="truncate text-xs">{activeOrg.billing_model ?? org.plan}</span>
-            </div>
-            {isPending ? <Loader2 className="ml-auto animate-spin" /> : <ChevronsUpDown className="ml-auto" />}
+            <span className="truncate font-medium text-sm">{activeOrg.org_name}</span>
+            {isPending ? <Loader2 className="ml-auto size-4 animate-spin" /> : <ChevronsUpDown className="ml-auto size-4" />}
           </>
         )}
       </>
@@ -144,13 +135,12 @@ export function OrgSwitcher({
   }
 
   return (
-    <SidebarMenu suppressHydrationWarning>
-      <SidebarMenuItem>
+    <SidebarMenu suppressHydrationWarning className="w-full">
+      <SidebarMenuItem className="w-full">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
-              size="lg"
-              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
+              className="h-10 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
               {renderCurrent()}
             </SidebarMenuButton>

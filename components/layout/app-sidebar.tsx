@@ -17,21 +17,25 @@ import {
   FolderOpen,
   Building2,
   Settings,
+  Contact,
 } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
 import { OrgSwitcher } from "./org-switcher"
+import { SidebarProjectSwitcher } from "./sidebar-project-switcher"
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
   SidebarRail,
+  SidebarSeparator,
 } from "@/components/ui/sidebar"
 import type { User } from "@/lib/types"
 
 interface AppSidebarProps {
   user?: User | null
+  pipelineBadgeCount?: number
 }
 
 function getProjectIdFromPath(pathname: string): string | null {
@@ -62,11 +66,24 @@ function getProjectSection(pathname: string): string {
   return "overview"
 }
 
-function buildGlobalNavigation(pathname: string) {
+function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number) {
   return [
     {
       label: "Workspace",
       items: [
+        {
+          title: "Pipeline",
+          url: "/pipeline",
+          icon: Contact,
+          isActive: pathname === "/pipeline",
+          badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
+        },
+        {
+          title: "Prospects",
+          url: "/prospects",
+          icon: Contact,
+          isActive: pathname.startsWith("/prospects"),
+        },
         {
           title: "Projects",
           url: "/projects",
@@ -113,7 +130,6 @@ function buildProjectNavigation(projectId: string, section: string) {
   const financialSections = ["financials", "budget", "commitments", "payables", "invoices", "reports"]
   return [
     {
-      label: "Core",
       items: [
         {
           title: "Overview",
@@ -121,11 +137,6 @@ function buildProjectNavigation(projectId: string, section: string) {
           icon: LayoutDashboard,
           isActive: section === "overview",
         },
-      ],
-    },
-    {
-      label: "Planning",
-      items: [
         {
           title: "Schedule",
           url: `${base}/schedule`,
@@ -138,11 +149,6 @@ function buildProjectNavigation(projectId: string, section: string) {
           icon: CheckSquare,
           isActive: section === "tasks",
         },
-      ],
-    },
-    {
-      label: "Documentation",
-      items: [
         {
           title: "Drawings",
           url: `${base}/drawings`,
@@ -155,11 +161,6 @@ function buildProjectNavigation(projectId: string, section: string) {
           icon: FileText,
           isActive: section === "files",
         },
-      ],
-    },
-    {
-      label: "Communication",
-      items: [
         {
           title: "Messages",
           url: `${base}/messages`,
@@ -184,11 +185,6 @@ function buildProjectNavigation(projectId: string, section: string) {
           icon: CheckSquare,
           isActive: section === "decisions",
         },
-      ],
-    },
-    {
-      label: "Field",
-      items: [
         {
           title: "Daily Logs",
           url: `${base}/daily-logs`,
@@ -201,28 +197,6 @@ function buildProjectNavigation(projectId: string, section: string) {
           icon: ClipboardList,
           isActive: section === "punch",
         },
-      ],
-    },
-    {
-      label: "Closeout",
-      items: [
-        {
-          title: "Closeout",
-          url: `${base}/closeout`,
-          icon: CheckSquare,
-          isActive: section === "closeout",
-        },
-        {
-          title: "Warranty",
-          url: `${base}/warranty`,
-          icon: ClipboardCheck,
-          isActive: section === "warranty",
-        },
-      ],
-    },
-    {
-      label: "Financials",
-      items: [
         {
           title: "Financials",
           url: `${base}/financials`,
@@ -241,17 +215,29 @@ function buildProjectNavigation(projectId: string, section: string) {
           icon: ClipboardList,
           isActive: section === "change-orders",
         },
+        {
+          title: "Closeout",
+          url: `${base}/closeout`,
+          icon: CheckSquare,
+          isActive: section === "closeout",
+        },
+        {
+          title: "Warranty",
+          url: `${base}/warranty`,
+          icon: ClipboardCheck,
+          isActive: section === "warranty",
+        },
       ],
     },
   ]
 }
 
-export function AppSidebar({ user }: AppSidebarProps) {
+export function AppSidebar({ user, pipelineBadgeCount }: AppSidebarProps) {
   const pathname = usePathname()
   const projectId = getProjectIdFromPath(pathname)
   const section = getProjectSection(pathname)
 
-  const navMain = (projectId ? buildProjectNavigation(projectId, section) : buildGlobalNavigation(pathname)).map((group) => ({
+  const navMain = (projectId ? buildProjectNavigation(projectId, section) : buildGlobalNavigation(pathname, pipelineBadgeCount)).map((group) => ({
     ...group,
     items: group.items.map((item) => ({
       ...item,
@@ -267,9 +253,17 @@ export function AppSidebar({ user }: AppSidebarProps) {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader>
+      <SidebarHeader className="h-14 flex items-center justify-center p-2">
         <OrgSwitcher org={orgData} />
       </SidebarHeader>
+      {projectId && (
+        <>
+          <SidebarSeparator className="mx-0" />
+          <div className="px-2 py-2">
+            <SidebarProjectSwitcher projectId={projectId} />
+          </div>
+        </>
+      )}
       <SidebarContent>
         <NavMain items={navMain} />
       </SidebarContent>

@@ -6,9 +6,13 @@ const PUBLIC_ROUTES = ["/proposal", "/i/", "/p/", "/s/"]
 const PUBLIC_API_ROUTES = ["/api/jobs/process-outbox"]
 
 export async function middleware(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set("x-pathname", request.nextUrl.pathname)
+  requestHeaders.set("x-search", request.nextUrl.search)
+
   const response = NextResponse.next({
     request: {
-      headers: request.headers,
+      headers: requestHeaders,
     },
   })
 

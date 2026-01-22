@@ -14,6 +14,7 @@ import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -31,6 +32,7 @@ export function NavMain({
       url: string
       icon?: LucideIcon
       isActive?: boolean
+      badge?: number
       items?: {
         title: string
         url: string
@@ -77,12 +79,19 @@ export function NavMain({
                       </SidebarMenuButton>
                     </CollapsibleTrigger>
                   ) : (
-                    <SidebarMenuButton tooltip={item.title} isActive={item.isActive} asChild>
-                      <Link href={item.url}>
-                        {item.icon && <item.icon />}
-                        <span>{item.title}</span>
-                      </Link>
-                    </SidebarMenuButton>
+                    <>
+                      <SidebarMenuButton tooltip={item.title} isActive={item.isActive} asChild>
+                        <Link href={item.url}>
+                          {item.icon && <item.icon />}
+                          <span>{item.title}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                      {item.badge !== undefined && item.badge > 0 && (
+                        <SidebarMenuBadge className="bg-red-500 text-white">
+                          {item.badge > 99 ? "99+" : item.badge}
+                        </SidebarMenuBadge>
+                      )}
+                    </>
                   )}
                   {item.items?.length ? (
                     <CollapsibleContent>

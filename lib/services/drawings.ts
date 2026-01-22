@@ -38,6 +38,7 @@ export interface DrawingSet {
   project_id: string
   title: string
   description?: string
+  set_type?: string
   status: DrawingSetStatus
   source_file_id?: string
   total_pages?: number
@@ -164,6 +165,7 @@ function mapDrawingSet(row: any): DrawingSet {
     project_id: row.project_id,
     title: row.title,
     description: row.description ?? undefined,
+    set_type: row.set_type ?? undefined,
     status: row.status,
     source_file_id: row.source_file_id ?? undefined,
     total_pages: row.total_pages ?? undefined,
@@ -337,7 +339,7 @@ export async function listDrawingSets(
   let query = supabase
     .from("drawing_sets")
     .select(`
-      id, org_id, project_id, title, description, status,
+      id, org_id, project_id, title, description, set_type, status,
       source_file_id, total_pages, processed_pages, error_message,
       created_by, created_at, processed_at, updated_at,
       app_users!drawing_sets_created_by_fkey(full_name, avatar_url),
@@ -383,7 +385,7 @@ export async function getDrawingSet(
   const { data, error } = await supabase
     .from("drawing_sets")
     .select(`
-      id, org_id, project_id, title, description, status,
+      id, org_id, project_id, title, description, set_type, status,
       source_file_id, total_pages, processed_pages, error_message,
       created_by, created_at, processed_at, updated_at,
       app_users!drawing_sets_created_by_fkey(full_name, avatar_url),
@@ -421,12 +423,13 @@ export async function createDrawingSet(
       project_id: parsed.project_id,
       title: parsed.title,
       description: parsed.description,
+      set_type: parsed.set_type,
       source_file_id: parsed.source_file_id,
       status: "processing",
       created_by: userId,
     })
     .select(`
-      id, org_id, project_id, title, description, status,
+      id, org_id, project_id, title, description, set_type, status,
       source_file_id, total_pages, processed_pages, error_message,
       created_by, created_at, processed_at, updated_at,
       app_users!drawing_sets_created_by_fkey(full_name, avatar_url)
@@ -485,6 +488,7 @@ export async function updateDrawingSet(
   const updateData: Record<string, any> = {}
   if (parsed.title !== undefined) updateData.title = parsed.title
   if (parsed.description !== undefined) updateData.description = parsed.description
+  if (parsed.set_type !== undefined) updateData.set_type = parsed.set_type
   if (parsed.status !== undefined) updateData.status = parsed.status
   if (parsed.processed_at !== undefined) updateData.processed_at = parsed.processed_at
   if (parsed.error_message !== undefined) updateData.error_message = parsed.error_message
@@ -497,7 +501,7 @@ export async function updateDrawingSet(
     .eq("org_id", resolvedOrgId)
     .eq("id", setId)
     .select(`
-      id, org_id, project_id, title, description, status,
+      id, org_id, project_id, title, description, set_type, status,
       source_file_id, total_pages, processed_pages, error_message,
       created_by, created_at, processed_at, updated_at,
       app_users!drawing_sets_created_by_fkey(full_name, avatar_url)

@@ -40,7 +40,7 @@ export async function listMembershipsAction(): Promise<OrgMembershipSummary[]> {
     }))
   }
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
 
   const { data, error } = await supabase
     .from("memberships")
@@ -72,7 +72,7 @@ export async function listMembershipsAction(): Promise<OrgMembershipSummary[]> {
 export async function switchOrgAction(orgId: string) {
   if (!orgId) return
   const { user } = await requireAuth()
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
 
   // Verify membership to avoid setting an invalid org.
   const { data, error } = await supabase

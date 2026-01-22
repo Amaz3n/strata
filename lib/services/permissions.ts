@@ -52,7 +52,7 @@ export async function getUserPermissions(userId: string, orgId: string, supabase
 }
 
 export async function getCurrentUserPermissions(orgId?: string) {
-  const ctx = await requireOrgContext(orgId)
+  const ctx = await requireOrgContext(orgId, { allowLocked: true })
   const permissions = await getUserPermissions(ctx.userId, ctx.orgId, ctx.supabase)
   return { permissions, orgId: ctx.orgId, userId: ctx.userId }
 }

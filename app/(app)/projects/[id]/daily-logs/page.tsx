@@ -4,6 +4,10 @@ import {
   getProjectAction,
   getProjectDailyLogsAction,
   getProjectFilesAction,
+  getProjectScheduleAction,
+  getProjectTasksAction,
+  listProjectPunchItemsAction,
+  getProjectActivityAction,
 } from "../actions"
 import { ProjectDailyLogsClient } from "./project-daily-logs-client"
 
@@ -16,10 +20,14 @@ interface ProjectDailyLogsPageProps {
 export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsPageProps) {
   const { id } = await params
 
-  const [project, dailyLogs, files] = await Promise.all([
+  const [project, dailyLogs, files, scheduleItems, tasks, punchItems, activity] = await Promise.all([
     getProjectAction(id),
     getProjectDailyLogsAction(id),
     getProjectFilesAction(id),
+    getProjectScheduleAction(id),
+    getProjectTasksAction(id),
+    listProjectPunchItemsAction(id),
+    getProjectActivityAction(id),
   ])
 
   if (!project) {
@@ -29,7 +37,15 @@ export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsP
   return (
     <PageLayout title="Daily Logs">
       <div className="space-y-6">
-        <ProjectDailyLogsClient projectId={project.id} initialDailyLogs={dailyLogs} initialFiles={files} />
+        <ProjectDailyLogsClient
+          projectId={project.id}
+          initialDailyLogs={dailyLogs}
+          initialFiles={files}
+          scheduleItems={scheduleItems}
+          tasks={tasks}
+          punchItems={punchItems}
+          activity={activity}
+        />
       </div>
     </PageLayout>
   )

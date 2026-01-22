@@ -295,6 +295,29 @@ export interface DailyLog {
   created_by?: string
   created_at: string
   updated_at: string
+  entries?: DailyLogEntry[]
+}
+
+export interface DailyLogEntry {
+  id: string
+  org_id: string
+  project_id: string
+  daily_log_id: string
+  entry_type: string
+  description?: string
+  quantity?: number
+  hours?: number
+  progress?: number
+  schedule_item_id?: string
+  task_id?: string
+  punch_item_id?: string
+  cost_code_id?: string
+  location?: string
+  trade?: string
+  labor_type?: string
+  inspection_result?: string
+  metadata?: Record<string, unknown>
+  created_at: string
 }
 
 export interface ScheduleItem {
@@ -1076,6 +1099,8 @@ export interface FileMetadata {
   id: string
   org_id: string
   project_id?: string
+  daily_log_id?: string
+  schedule_item_id?: string
   file_name: string
   storage_path: string
   mime_type?: string

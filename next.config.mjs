@@ -8,8 +8,11 @@ const nextConfig = {
   },
   // Native Node addons (prevent bundling so bindings resolve correctly)
   serverExternalPackages: ["@napi-rs/canvas"],
-  serverActions: {
-    bodySizeLimit: '10mb',
+  // Server Actions configuration
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '10mb',
+    },
   },
 }
 

@@ -267,7 +267,6 @@ export function DrawingViewer({
   imageWidth,
   imageHeight,
 }: DrawingViewerProps) {
-  const USE_TILED_VIEWER = process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true"
   // Device detection
   const isMobile = useIsMobile()
   const isTouch = useIsTouchDevice()
@@ -275,7 +274,6 @@ export function DrawingViewer({
   // Check if optimized images are available (Phase 1 performance optimization)
   const hasOptimizedImages = !!(imageFullUrl && imageMediumUrl && imageThumbnailUrl)
   const hasTiles =
-    USE_TILED_VIEWER &&
     !!sheet.tile_base_url &&
     !!sheet.tile_manifest &&
     !!((sheet.tile_manifest as any)?.Image?.Size?.Width ?? sheet.image_width) &&

@@ -19,7 +19,7 @@ import type {
 } from "@/lib/types"
 import type { ScheduleItemInput } from "@/lib/validation/schedule"
 import type { TaskInput } from "@/lib/validation/tasks"
-import type { DailyLogInput } from "@/lib/validation/daily-logs"
+import type { DailyLogEntryInput, DailyLogInput } from "@/lib/validation/daily-logs"
 import { scheduleItemInputSchema } from "@/lib/validation/schedule"
 import { taskInputSchema } from "@/lib/validation/tasks"
 import { dailyLogInputSchema } from "@/lib/validation/daily-logs"
@@ -1252,11 +1252,54 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("log_date", { ascending: false })
-    .limit(20)
+    .limit(50)
 
   if (error) {
     console.error("Failed to fetch daily logs:", error.message)
     return []
+  }
+
+  const logIds = (data ?? []).map((row) => row.id)
+  const entriesByLogId: Record<string, DailyLog["entries"]> = {}
+
+  if (logIds.length > 0) {
+    const { data: entries, error: entriesError } = await supabase
+      .from("daily_log_entries")
+      .select("id, org_id, project_id, daily_log_id, entry_type, description, quantity, hours, progress, schedule_item_id, task_id, punch_item_id, cost_code_id, location, trade, labor_type, inspection_result, metadata, created_at")
+      .eq("org_id", orgId)
+      .in("daily_log_id", logIds)
+      .order("created_at", { ascending: true })
+
+    if (entriesError) {
+      console.error("Failed to fetch daily log entries:", entriesError.message)
+    } else {
+      for (const entry of entries ?? []) {
+        if (!entriesByLogId[entry.daily_log_id]) {
+          entriesByLogId[entry.daily_log_id] = []
+        }
+        entriesByLogId[entry.daily_log_id]?.push({
+          id: entry.id,
+          org_id: entry.org_id,
+          project_id: entry.project_id,
+          daily_log_id: entry.daily_log_id,
+          entry_type: entry.entry_type,
+          description: entry.description ?? undefined,
+          quantity: entry.quantity ?? undefined,
+          hours: entry.hours ?? undefined,
+          progress: entry.progress ?? undefined,
+          schedule_item_id: entry.schedule_item_id ?? undefined,
+          task_id: entry.task_id ?? undefined,
+          punch_item_id: entry.punch_item_id ?? undefined,
+          cost_code_id: entry.cost_code_id ?? undefined,
+          location: entry.location ?? undefined,
+          trade: entry.trade ?? undefined,
+          labor_type: entry.labor_type ?? undefined,
+          inspection_result: entry.inspection_result ?? undefined,
+          metadata: entry.metadata ?? undefined,
+          created_at: entry.created_at,
+        })
+      }
+    }
   }
 
   return (data ?? []).map(row => {
@@ -1275,6 +1318,7 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
       created_by: row.created_by ?? undefined,
       created_at: row.created_at,
       updated_at: row.updated_at,
+      entries: entriesByLogId[row.id] ?? [],
     }
   })
 }
@@ -1299,8 +1343,8 @@ export async function getProjectFilesAction(projectId: string): Promise<Enhanced
   const { data, error } = await supabase
     .from("files")
     .select(`
-      id, org_id, project_id, file_name, storage_path, mime_type, size_bytes, visibility, created_at, updated_at,
-      uploaded_by,
+      id, org_id, project_id, daily_log_id, schedule_item_id, file_name, storage_path, mime_type, size_bytes, visibility, created_at, updated_at,
+      uploaded_by, category, tags, description,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
     .eq("org_id", orgId)
@@ -1341,6 +1385,8 @@ export async function getProjectFilesAction(projectId: string): Promise<Enhanced
         id: row.id,
         org_id: row.org_id,
         project_id: row.project_id ?? undefined,
+        daily_log_id: row.daily_log_id ?? undefined,
+        schedule_item_id: row.schedule_item_id ?? undefined,
         file_name: row.file_name,
         storage_path: row.storage_path,
         mime_type: row.mime_type ?? undefined,
@@ -1351,8 +1397,9 @@ export async function getProjectFilesAction(projectId: string): Promise<Enhanced
         uploader_avatar: uploader?.avatar_url,
         download_url: downloadUrl,
         thumbnail_url: thumbnailUrl,
-        // These would come from file metadata in a full implementation
-        category: inferFileCategory(row.file_name, row.mime_type),
+        category: (row.category as FileCategory | null) ?? inferFileCategory(row.file_name, row.mime_type),
+        tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+        description: row.description ?? undefined,
         version_number: 1,
         has_versions: false,
       }
@@ -2446,6 +2493,44 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
     throw new Error(`Failed to create daily log: ${error?.message}`)
   }
 
+  const entries = Array.isArray(parsed.entries) ? parsed.entries : []
+  if (entries.length > 0) {
+    const { error: entryError } = await supabase
+      .from("daily_log_entries")
+      .insert(entries.map((entry: DailyLogEntryInput) => ({
+        org_id: orgId,
+        project_id: projectId,
+        daily_log_id: data.id,
+        entry_type: entry.entry_type,
+        description: entry.description ?? null,
+        quantity: entry.quantity ?? null,
+        hours: entry.hours ?? null,
+        progress: entry.progress ?? null,
+        schedule_item_id: entry.schedule_item_id ?? null,
+        task_id: entry.task_id ?? null,
+        punch_item_id: entry.punch_item_id ?? null,
+        cost_code_id: entry.cost_code_id ?? null,
+        location: entry.location ?? null,
+        trade: entry.trade ?? null,
+        labor_type: entry.labor_type ?? null,
+        inspection_result: entry.inspection_result ?? null,
+        metadata: entry.metadata ?? {},
+      })))
+
+    if (entryError) {
+      throw new Error(`Failed to create daily log entries: ${entryError.message}`)
+    }
+
+    await updateLinkedItemsFromDailyLog({
+      supabase,
+      orgId,
+      userId,
+      projectId,
+      entries,
+      dailyLogId: data.id,
+    })
+  }
+
   await recordEvent({
     orgId,
     eventType: "daily_log_created",
@@ -2480,6 +2565,155 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
     created_by: data.created_by ?? undefined,
     created_at: data.created_at,
     updated_at: data.updated_at,
+    entries: entries.map((entry, index) => ({
+      id: `temp-${index}`,
+      org_id: orgId,
+      project_id: projectId,
+      daily_log_id: data.id,
+      entry_type: entry.entry_type,
+      description: entry.description,
+      quantity: entry.quantity,
+      hours: entry.hours,
+      progress: entry.progress,
+      schedule_item_id: entry.schedule_item_id,
+      task_id: entry.task_id,
+      punch_item_id: entry.punch_item_id,
+      cost_code_id: entry.cost_code_id,
+      location: entry.location,
+      trade: entry.trade,
+      labor_type: entry.labor_type,
+      inspection_result: entry.inspection_result,
+      metadata: entry.metadata,
+      created_at: data.created_at,
+    })),
+  }
+}
+
+async function updateLinkedItemsFromDailyLog({
+  supabase,
+  orgId,
+  userId,
+  projectId,
+  entries,
+  dailyLogId,
+}: {
+  supabase: any
+  orgId: string
+  userId: string
+  projectId: string
+  entries: DailyLogEntryInput[]
+  dailyLogId: string
+}) {
+  for (const entry of entries) {
+    if (entry.schedule_item_id && (entry.progress !== undefined || entry.hours !== undefined || entry.inspection_result)) {
+      const { data: scheduleItem } = await supabase
+        .from("schedule_items")
+        .select("id, actual_hours, progress, status")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("id", entry.schedule_item_id)
+        .single()
+
+      if (scheduleItem) {
+        const nextActualHours =
+          typeof entry.hours === "number"
+            ? (scheduleItem.actual_hours ?? 0) + entry.hours
+            : undefined
+        const nextProgress =
+          typeof entry.progress === "number" ? entry.progress : undefined
+        const nextStatus =
+          typeof nextProgress === "number" && nextProgress >= 100
+            ? "completed"
+            : typeof nextProgress === "number" && nextProgress > 0
+            ? "in_progress"
+            : scheduleItem.status
+
+        const updatePayload: Record<string, any> = {}
+        if (typeof nextActualHours === "number") updatePayload.actual_hours = nextActualHours
+        if (typeof nextProgress === "number") updatePayload.progress = nextProgress
+        if (nextStatus && nextStatus !== scheduleItem.status) updatePayload.status = nextStatus
+
+        if (entry.inspection_result) {
+          updatePayload.inspection_result = entry.inspection_result
+          updatePayload.inspected_at = new Date().toISOString()
+          updatePayload.inspected_by = userId
+        }
+
+        if (Object.keys(updatePayload).length > 0) {
+          await supabase
+            .from("schedule_items")
+            .update(updatePayload)
+            .eq("org_id", orgId)
+            .eq("project_id", projectId)
+            .eq("id", entry.schedule_item_id)
+
+          await recordEvent({
+            orgId,
+            eventType: "schedule_item_updated",
+            entityType: "schedule_item",
+            entityId: entry.schedule_item_id,
+            payload: { project_id: projectId, source: "daily_log" },
+          })
+        }
+      }
+    }
+
+    if (entry.task_id && entry.entry_type === "task_update") {
+      const markDone = Boolean((entry.metadata as any)?.mark_complete)
+      const updatePayload: Record<string, any> = {}
+      if (markDone) {
+        updatePayload.status = "done"
+        updatePayload.completed_at = new Date().toISOString()
+      }
+      updatePayload.metadata = {
+        ...(entry.metadata ?? {}),
+        linked_daily_log_id: dailyLogId,
+      }
+
+      await supabase
+        .from("tasks")
+        .update(updatePayload)
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("id", entry.task_id)
+
+      if (markDone) {
+        await recordEvent({
+          orgId,
+          eventType: "task_completed",
+          entityType: "task",
+          entityId: entry.task_id,
+          payload: { project_id: projectId, source: "daily_log" },
+        })
+      }
+    }
+
+    if (entry.punch_item_id && entry.entry_type === "punch_update") {
+      const markClosed = Boolean((entry.metadata as any)?.mark_closed)
+      const updatePayload: Record<string, any> = {}
+      if (markClosed) {
+        updatePayload.status = "closed"
+        updatePayload.resolved_at = new Date().toISOString()
+        updatePayload.resolved_by = userId
+      }
+
+      if (Object.keys(updatePayload).length > 0) {
+        await supabase
+          .from("punch_items")
+          .update(updatePayload)
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("id", entry.punch_item_id)
+
+        await recordEvent({
+          orgId,
+          eventType: "punch_item_updated",
+          entityType: "punch_item",
+          entityId: entry.punch_item_id,
+          payload: { project_id: projectId, status: "closed", source: "daily_log" },
+        })
+      }
+    }
   }
 }
 
@@ -2616,6 +2850,21 @@ export async function uploadProjectFileAction(
     throw new Error("No file provided")
   }
 
+  const dailyLogId = formData.get("daily_log_id")?.toString() ?? null
+  const scheduleItemId = formData.get("schedule_item_id")?.toString() ?? null
+  const category = formData.get("category")?.toString() ?? null
+  const description = formData.get("description")?.toString() ?? null
+  const tagsRaw = formData.get("tags")?.toString()
+  let tags: string[] = []
+  if (tagsRaw) {
+    try {
+      const parsed = JSON.parse(tagsRaw)
+      tags = Array.isArray(parsed) ? parsed.map(String) : []
+    } catch (parseError) {
+      console.warn("Failed to parse tags", parseError)
+    }
+  }
+
   // Generate unique storage path
   const timestamp = Date.now()
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
@@ -2639,15 +2888,20 @@ export async function uploadProjectFileAction(
     .insert({
       org_id: orgId,
       project_id: projectId,
+      daily_log_id: dailyLogId,
+      schedule_item_id: scheduleItemId,
       file_name: file.name,
       storage_path: storagePath,
       mime_type: file.type,
       size_bytes: file.size,
       visibility: "private",
       uploaded_by: userId,
+      category: category ?? undefined,
+      description: description ?? undefined,
+      tags: tags ?? [],
     })
     .select(`
-      id, org_id, project_id, file_name, storage_path, mime_type, size_bytes, visibility, created_at,
+      id, org_id, project_id, daily_log_id, schedule_item_id, file_name, storage_path, mime_type, size_bytes, visibility, created_at, category, description, tags,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
     .single()
@@ -2706,6 +2960,8 @@ export async function uploadProjectFileAction(
     id: data.id,
     org_id: data.org_id,
     project_id: data.project_id ?? undefined,
+    daily_log_id: data.daily_log_id ?? undefined,
+    schedule_item_id: data.schedule_item_id ?? undefined,
     file_name: data.file_name,
     storage_path: data.storage_path,
     mime_type: data.mime_type ?? undefined,
@@ -2716,7 +2972,9 @@ export async function uploadProjectFileAction(
     uploader_avatar: uploader?.avatar_url,
     download_url: downloadUrl,
     thumbnail_url: thumbnailUrl,
-    category: inferFileCategory(data.file_name, data.mime_type),
+    category: (data.category as FileCategory | null) ?? inferFileCategory(data.file_name, data.mime_type),
+    tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
+    description: data.description ?? undefined,
     version_number: 1,
     has_versions: false,
   }

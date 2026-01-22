@@ -9,6 +9,33 @@ export const drawingSetStatusSchema = z.enum([
 
 export type DrawingSetStatus = z.infer<typeof drawingSetStatusSchema>
 
+// Drawing set category (high-level plan type)
+export const drawingSetTypeSchema = z.enum([
+  "architectural",
+  "structural",
+  "mep",
+  "civil",
+  "landscape",
+  "interior",
+  "specifications",
+  "general",
+  "other",
+])
+
+export type DrawingSetType = z.infer<typeof drawingSetTypeSchema>
+
+export const DRAWING_SET_TYPE_LABELS: Record<DrawingSetType, string> = {
+  architectural: "Architectural",
+  structural: "Structural",
+  mep: "MEP",
+  civil: "Civil",
+  landscape: "Landscape",
+  interior: "Interior",
+  specifications: "Specifications",
+  general: "General",
+  other: "Other",
+}
+
 // Drawing discipline codes
 export const drawingDisciplineSchema = z.enum([
   "A",   // Architectural
@@ -55,6 +82,7 @@ export const drawingSetInputSchema = z.object({
   project_id: z.string().uuid(),
   title: z.string().min(1).max(255),
   description: z.string().max(1000).optional(),
+  set_type: drawingSetTypeSchema.optional(),
   source_file_id: z.string().uuid().optional(),
 })
 
@@ -63,6 +91,7 @@ export type DrawingSetInput = z.infer<typeof drawingSetInputSchema>
 export const drawingSetUpdateSchema = z.object({
   title: z.string().min(1).max(255).optional(),
   description: z.string().max(1000).optional().nullable(),
+  set_type: drawingSetTypeSchema.optional().nullable(),
   status: drawingSetStatusSchema.optional(),
   processed_at: z.string().datetime().optional(),
   error_message: z.string().optional().nullable(),

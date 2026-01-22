@@ -1,8 +1,11 @@
+"use client"
+
+import { useState } from "react"
 import Link from "next/link"
-import { format, formatDistanceToNow, parseISO } from "date-fns"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { formatDistanceToNow, parseISO } from "date-fns"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   CheckCircle,
   CalendarDays,
@@ -11,9 +14,12 @@ import {
   ClipboardList,
   AlertCircle,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   File,
   Image,
   FileSpreadsheet,
+  Activity,
 } from "@/components/icons"
 import type { ProjectActivity } from "@/app/(app)/projects/[id]/actions"
 import type { RecentFile } from "@/app/(app)/projects/[id]/overview-actions"
@@ -26,38 +32,38 @@ interface ProjectOverviewRecentProps {
 
 function formatActivityEvent(event: ProjectActivity): { icon: React.ReactNode; title: string; description: string } {
   const eventMap: Record<string, { icon: React.ReactNode; title: string }> = {
-    task_created: { icon: <CheckCircle className="h-4 w-4 text-success" />, title: "Task created" },
-    task_updated: { icon: <CheckCircle className="h-4 w-4 text-primary" />, title: "Task updated" },
-    task_completed: { icon: <CheckCircle className="h-4 w-4 text-success" />, title: "Task completed" },
-    daily_log_created: { icon: <ClipboardList className="h-4 w-4 text-chart-2" />, title: "Daily log added" },
-    schedule_item_created: { icon: <CalendarDays className="h-4 w-4 text-chart-3" />, title: "Schedule item added" },
-    schedule_item_updated: { icon: <CalendarDays className="h-4 w-4 text-primary" />, title: "Schedule updated" },
-    file_uploaded: { icon: <FileText className="h-4 w-4 text-chart-4" />, title: "File uploaded" },
-    project_updated: { icon: <Building2 className="h-4 w-4 text-primary" />, title: "Project updated" },
-    project_created: { icon: <Building2 className="h-4 w-4 text-success" />, title: "Project created" },
-    rfi_created: { icon: <FileText className="h-4 w-4 text-chart-1" />, title: "RFI created" },
-    rfi_response_added: { icon: <FileText className="h-4 w-4 text-chart-1" />, title: "RFI response" },
-    rfi_decided: { icon: <FileText className="h-4 w-4 text-success" />, title: "RFI decided" },
-    submittal_created: { icon: <FileText className="h-4 w-4 text-chart-2" />, title: "Submittal created" },
-    submittal_decided: { icon: <FileText className="h-4 w-4 text-success" />, title: "Submittal decided" },
-    punch_item_created: { icon: <AlertCircle className="h-4 w-4 text-warning" />, title: "Punch item added" },
-    warranty_request_created: { icon: <AlertCircle className="h-4 w-4 text-chart-4" />, title: "Warranty request" },
-    closeout_item_created: { icon: <FileText className="h-4 w-4 text-chart-5" />, title: "Closeout item added" },
-    closeout_item_updated: { icon: <FileText className="h-4 w-4 text-chart-5" />, title: "Closeout item updated" },
+    task_created: { icon: <CheckCircle className="h-3.5 w-3.5 text-success" />, title: "Task created" },
+    task_updated: { icon: <CheckCircle className="h-3.5 w-3.5 text-primary" />, title: "Task updated" },
+    task_completed: { icon: <CheckCircle className="h-3.5 w-3.5 text-success" />, title: "Task completed" },
+    daily_log_created: { icon: <ClipboardList className="h-3.5 w-3.5 text-chart-2" />, title: "Daily log added" },
+    schedule_item_created: { icon: <CalendarDays className="h-3.5 w-3.5 text-chart-3" />, title: "Schedule item added" },
+    schedule_item_updated: { icon: <CalendarDays className="h-3.5 w-3.5 text-primary" />, title: "Schedule updated" },
+    file_uploaded: { icon: <FileText className="h-3.5 w-3.5 text-chart-4" />, title: "File uploaded" },
+    project_updated: { icon: <Building2 className="h-3.5 w-3.5 text-primary" />, title: "Project updated" },
+    project_created: { icon: <Building2 className="h-3.5 w-3.5 text-success" />, title: "Project created" },
+    rfi_created: { icon: <FileText className="h-3.5 w-3.5 text-chart-1" />, title: "RFI created" },
+    rfi_response_added: { icon: <FileText className="h-3.5 w-3.5 text-chart-1" />, title: "RFI response" },
+    rfi_decided: { icon: <FileText className="h-3.5 w-3.5 text-success" />, title: "RFI decided" },
+    submittal_created: { icon: <FileText className="h-3.5 w-3.5 text-chart-2" />, title: "Submittal created" },
+    submittal_decided: { icon: <FileText className="h-3.5 w-3.5 text-success" />, title: "Submittal decided" },
+    punch_item_created: { icon: <AlertCircle className="h-3.5 w-3.5 text-warning" />, title: "Punch item added" },
+    warranty_request_created: { icon: <AlertCircle className="h-3.5 w-3.5 text-chart-4" />, title: "Warranty request" },
+    closeout_item_created: { icon: <FileText className="h-3.5 w-3.5 text-chart-5" />, title: "Closeout item added" },
+    closeout_item_updated: { icon: <FileText className="h-3.5 w-3.5 text-chart-5" />, title: "Closeout item updated" },
   }
 
-  const config = eventMap[event.event_type] ?? { icon: <AlertCircle className="h-4 w-4" />, title: event.event_type.replace(/_/g, " ") }
+  const config = eventMap[event.event_type] ?? { icon: <AlertCircle className="h-3.5 w-3.5" />, title: event.event_type.replace(/_/g, " ") }
   const description = event.payload?.title ?? event.payload?.name ?? event.payload?.summary ?? ""
 
   return { ...config, description }
 }
 
 function getFileIcon(mimeType?: string | null) {
-  if (!mimeType) return <File className="h-4 w-4" />
-  if (mimeType.startsWith("image/")) return <Image className="h-4 w-4" />
-  if (mimeType.includes("spreadsheet") || mimeType.includes("excel")) return <FileSpreadsheet className="h-4 w-4" />
-  if (mimeType.includes("pdf")) return <FileText className="h-4 w-4 text-destructive" />
-  return <File className="h-4 w-4" />
+  if (!mimeType) return <File className="h-3.5 w-3.5" />
+  if (mimeType.startsWith("image/")) return <Image className="h-3.5 w-3.5" />
+  if (mimeType.includes("spreadsheet") || mimeType.includes("excel")) return <FileSpreadsheet className="h-3.5 w-3.5" />
+  if (mimeType.includes("pdf")) return <FileText className="h-3.5 w-3.5 text-destructive" />
+  return <File className="h-3.5 w-3.5" />
 }
 
 function formatFileSize(bytes?: number | null): string {
@@ -72,87 +78,85 @@ export function ProjectOverviewRecent({
   activity,
   recentFiles,
 }: ProjectOverviewRecentProps) {
-  return (
-    <div className="grid gap-6 lg:grid-cols-3">
-      {/* Recent Activity */}
-      <Card className="lg:col-span-2">
-        <CardHeader>
-          <CardTitle className="text-base">Recent Activity</CardTitle>
-          <CardDescription>Latest updates on this project</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ScrollArea className="h-[320px] pr-4">
-            <div className="space-y-4">
-              {activity.length > 0 ? activity.map((event) => {
-                const { icon, title, description } = formatActivityEvent(event)
-                return (
-                  <div key={event.id} className="flex gap-3">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                      {icon}
-                    </div>
-                    <div className="flex-1 space-y-1">
-                      <p className="text-sm font-medium leading-none">{title}</p>
-                      {description && (
-                        <p className="text-sm text-muted-foreground truncate">{description}</p>
-                      )}
-                      <p className="text-xs text-muted-foreground">
-                        {formatDistanceToNow(parseISO(event.created_at), { addSuffix: true })}
-                      </p>
-                    </div>
-                  </div>
-                )
-              }) : (
-                <p className="text-sm text-muted-foreground text-center py-8">No recent activity</p>
-              )}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
+  const [isOpen, setIsOpen] = useState(false)
 
-      {/* Recent Files */}
-      <Card className="flex flex-col">
-        <CardHeader className="flex flex-row items-center justify-between pb-2">
-          <div>
-            <CardTitle className="text-base">Recent Files</CardTitle>
-            <CardDescription>Latest uploads</CardDescription>
-          </div>
-          <Link href={`/projects/${projectId}/files`}>
-            <Button variant="ghost" size="sm" className="gap-1">
-              All files
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </Link>
-        </CardHeader>
-        <CardContent className="flex-1">
-          <ScrollArea className="h-[320px] pr-4">
-            <div className="space-y-3">
-              {recentFiles.length > 0 ? recentFiles.map((file) => (
-                <Link
-                  key={file.id}
-                  href={file.link}
-                  className="block"
-                >
-                  <div className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50 transition-colors">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
-                      {getFileIcon(file.mime_type)}
-                    </div>
-                    <div className="flex-1 min-w-0 space-y-1">
-                      <p className="text-sm font-medium leading-none truncate">{file.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatFileSize(file.size)}
-                        {file.size && " \u00b7 "}
-                        {formatDistanceToNow(parseISO(file.uploaded_at), { addSuffix: true })}
-                      </p>
-                    </div>
-                  </div>
+  const displayActivity = activity.slice(0, 8)
+  const displayFiles = recentFiles.slice(0, 4)
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <Card className="border-dashed">
+        <CollapsibleTrigger asChild>
+          <div className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-muted/50 transition-colors">
+            <div className="flex items-center gap-2">
+              <Activity className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Recent Activity</span>
+              <span className="text-xs text-muted-foreground">
+                {activity.length} events &bull; {recentFiles.length} files
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" className="h-7 px-2" asChild onClick={(e) => e.stopPropagation()}>
+                <Link href={`/projects/${projectId}/files`}>
+                  Files
+                  <ChevronRight className="h-3.5 w-3.5 ml-1" />
                 </Link>
-              )) : (
-                <p className="text-sm text-muted-foreground text-center py-8">No recent files</p>
+              </Button>
+              {isOpen ? (
+                <ChevronUp className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
               )}
             </div>
-          </ScrollArea>
-        </CardContent>
+          </div>
+        </CollapsibleTrigger>
+
+        <CollapsibleContent>
+          <CardContent className="pt-0 pb-4">
+            <div className="grid gap-4 lg:grid-cols-3">
+              {/* Recent Activity */}
+              <div className="lg:col-span-2 space-y-2">
+                {displayActivity.length > 0 ? displayActivity.map((event) => {
+                  const { icon, title, description } = formatActivityEvent(event)
+                  return (
+                    <div key={event.id} className="flex items-center gap-2 text-sm">
+                      <div className="flex-shrink-0 opacity-70">{icon}</div>
+                      <span className="font-medium">{title}</span>
+                      {description && (
+                        <span className="text-muted-foreground truncate flex-1">{description}</span>
+                      )}
+                      <span className="text-xs text-muted-foreground flex-shrink-0">
+                        {formatDistanceToNow(parseISO(event.created_at), { addSuffix: true })}
+                      </span>
+                    </div>
+                  )
+                }) : (
+                  <p className="text-sm text-muted-foreground">No recent activity</p>
+                )}
+              </div>
+
+              {/* Recent Files */}
+              <div className="space-y-2">
+                {displayFiles.length > 0 ? displayFiles.map((file) => (
+                  <Link key={file.id} href={file.link} className="block">
+                    <div className="flex items-center gap-2 text-sm rounded-md px-2 py-1.5 hover:bg-muted/80 transition-colors">
+                      <div className="flex-shrink-0 opacity-70">
+                        {getFileIcon(file.mime_type)}
+                      </div>
+                      <span className="font-medium truncate flex-1">{file.name}</span>
+                      <span className="text-xs text-muted-foreground flex-shrink-0">
+                        {formatFileSize(file.size)}
+                      </span>
+                    </div>
+                  </Link>
+                )) : (
+                  <p className="text-sm text-muted-foreground">No recent files</p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </CollapsibleContent>
       </Card>
-    </div>
+    </Collapsible>
   )
 }

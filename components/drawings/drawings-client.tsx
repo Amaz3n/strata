@@ -8,20 +8,19 @@ import {
   Upload,
   FileText,
   Search,
-  Filter,
-  Grid,
+  LayoutGrid,
   List,
   RefreshCw,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  Download,
-  Share2,
-  Eye,
   MoreHorizontal,
   Trash2,
-  ChevronDown,
   X,
+  Share2,
+  ChevronLeft,
+  ChevronDown,
+  Check,
+  Users,
+  Building2,
+  Layers,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -32,13 +31,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuCheckboxItem,
 } from "@/components/ui/dropdown-menu"
 import {
   AlertDialog,
@@ -60,10 +60,9 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import { DISCIPLINE_LABELS } from "@/lib/validation/drawings"
+import { DISCIPLINE_LABELS, DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings"
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
 import {
   getSheetVersionsForImageGeneration,
@@ -76,6 +75,7 @@ import type {
   DrawingMarkup,
   DrawingPin,
   SheetStatusCounts,
+  DrawingRevision,
 } from "@/app/(app)/drawings/actions"
 import {
   listDrawingSetsAction,
@@ -88,27 +88,25 @@ import {
   getSheetDownloadUrlAction,
   getSheetOptimizedImageUrlsAction,
   retryProcessingAction,
+  listDrawingRevisionsAction,
   listDrawingMarkupsAction,
   listDrawingPinsWithEntitiesAction,
   createDrawingMarkupAction,
-  updateDrawingMarkupAction,
   deleteDrawingMarkupAction,
   createDrawingPinAction,
   createTaskFromDrawingAction,
   createRfiFromDrawingAction,
   createPunchItemFromDrawingAction,
-  updateDrawingPinAction,
-  deleteDrawingPinAction,
+  getSheetStatusCountsAction,
 } from "@/app/(app)/drawings/actions"
 import { DrawingViewer } from "./drawing-viewer"
 import { CreateFromDrawingDialog } from "./index"
 import { SheetStatusDots } from "./sheet-status-dots"
 import { KeyboardShortcutsHelp } from "./keyboard-shortcuts-help"
 import { useDrawingKeyboardShortcuts } from "./use-drawing-keyboard-shortcuts"
-import { DisciplineTabs } from "./discipline-tabs"
 import { RecentSheetsSection, useRecentSheets } from "./recent-sheets-section"
-import { SheetThumbnailStrip } from "./sheet-thumbnail-strip"
-import { getSheetStatusCountsAction } from "@/app/(app)/drawings/actions"
+import { SheetCard } from "./sheet-card"
+import { DrawingsEmptyState } from "./drawings-empty-state"
 
 type ViewMode = "grid" | "list"
 type TabMode = "sets" | "sheets"
@@ -117,22 +115,45 @@ interface DrawingsClientProps {
   initialSets: DrawingSet[]
   initialSheets: DrawingSheet[]
   initialDisciplineCounts: Record<string, number>
+  initialRevisions?: DrawingRevision[]
   projects: Array<{ id: string; name: string }>
   defaultProjectId?: string
   lockProject?: boolean
+  initialTabMode?: TabMode
+  initialSelectedSetId?: string
+  lockSet?: boolean
+  hideTabs?: boolean
 }
+
+// Discipline config for filter chips
+const DISCIPLINE_CONFIG: { value: DrawingDiscipline; label: string; color: string }[] = [
+  { value: "A", label: "Arch", color: "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20" },
+  { value: "S", label: "Struct", color: "bg-orange-500/10 text-orange-600 hover:bg-orange-500/20" },
+  { value: "M", label: "Mech", color: "bg-green-500/10 text-green-600 hover:bg-green-500/20" },
+  { value: "E", label: "Elec", color: "bg-yellow-500/10 text-yellow-700 hover:bg-yellow-500/20" },
+  { value: "P", label: "Plumb", color: "bg-purple-500/10 text-purple-600 hover:bg-purple-500/20" },
+]
+
+const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS).map(([value, label]) => ({
+  value,
+  label,
+}))
 
 export function DrawingsClient({
   initialSets,
   initialSheets,
   initialDisciplineCounts,
+  initialRevisions = [],
   projects,
   defaultProjectId,
   lockProject = false,
+  initialTabMode,
+  initialSelectedSetId,
+  lockSet = false,
+  hideTabs = false,
 }: DrawingsClientProps) {
   const USE_TILED_VIEWER = process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true"
-  const ENABLE_CLIENT_IMAGE_GEN =
-    process.env.NEXT_PUBLIC_FEATURE_DRAWINGS_CLIENT_IMAGE_GEN === "true"
+  const ENABLE_CLIENT_IMAGE_GEN = process.env.NEXT_PUBLIC_FEATURE_DRAWINGS_CLIENT_IMAGE_GEN === "true"
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -140,13 +161,15 @@ export function DrawingsClient({
   const [sets, setSets] = useState<DrawingSet[]>(initialSets)
   const [sheets, setSheets] = useState<DrawingSheet[]>(initialSheets)
   const [disciplineCounts, setDisciplineCounts] = useState(initialDisciplineCounts)
+  const [revisions, setRevisions] = useState<DrawingRevision[]>(initialRevisions)
 
   // Filter state
   const [selectedProject, setSelectedProject] = useState<string | undefined>(defaultProjectId)
   const [selectedDiscipline, setSelectedDiscipline] = useState<DrawingDiscipline | "all">("all")
-  const [selectedSet, setSelectedSet] = useState<string | undefined>(undefined)
+  const [selectedSet, setSelectedSet] = useState<string | undefined>(initialSelectedSetId)
+  const [selectedRevision, setSelectedRevision] = useState<string>("all")
   const [searchQuery, setSearchQuery] = useState("")
-  const [tabMode, setTabMode] = useState<TabMode>("sheets")
+  const [tabMode, setTabMode] = useState<TabMode>(initialTabMode ?? "sets")
 
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>("grid")
@@ -156,13 +179,16 @@ export function DrawingsClient({
   const [isUploading, setIsUploading] = useState(false)
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   const [uploadTitle, setUploadTitle] = useState("")
+  const [uploadSetType, setUploadSetType] = useState<string>("general")
   const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [isDragActive, setIsDragActive] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<{
     stage: string
     current: number
     total: number
   } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const dragCounterRef = useRef(0)
 
   // Viewer state
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -218,7 +244,6 @@ export function DrawingsClient({
             )
           )
 
-          // If processing complete, refresh sheets
           if (status.status === "ready") {
             await fetchSheets()
           }
@@ -245,6 +270,12 @@ export function DrawingsClient({
   }, [selectedProject, searchQuery])
 
   const fetchSheets = useCallback(async () => {
+    if (!lockSet && tabMode !== "sheets") {
+      setSheets([])
+      setDisciplineCounts({})
+      return
+    }
+
     if (!selectedProject) {
       setSheets([])
       setDisciplineCounts({})
@@ -258,10 +289,12 @@ export function DrawingsClient({
           discipline: selectedDiscipline === "all" ? undefined : selectedDiscipline,
           search: searchQuery || undefined,
           drawing_set_id: selectedSet,
+          revision_id: selectedRevision === "all" ? undefined : selectedRevision,
         }),
         getDisciplineCountsAction(selectedProject),
       ])
       const derivedCounts = selectedSet
+        || selectedRevision !== "all"
         ? sheetsData.reduce<Record<string, number>>(
             (acc, sheet) => {
               const disc = sheet.discipline ?? "X"
@@ -275,7 +308,6 @@ export function DrawingsClient({
       setSheets(sheetsData)
       setDisciplineCounts(derivedCounts)
 
-      // Foundation v2: status counts are already denormalized into the list row.
       if (USE_TILED_VIEWER) {
         const derived: Record<string, SheetStatusCounts> = {}
         for (const s of sheetsData as any[]) {
@@ -295,7 +327,34 @@ export function DrawingsClient({
     } catch (error) {
       console.error("Failed to fetch sheets:", error)
     }
-  }, [selectedProject, selectedDiscipline, searchQuery, selectedSet, USE_TILED_VIEWER])
+  }, [
+    selectedProject,
+    selectedDiscipline,
+    searchQuery,
+    selectedSet,
+    selectedRevision,
+    USE_TILED_VIEWER,
+    lockSet,
+    tabMode,
+  ])
+
+  const fetchRevisions = useCallback(async () => {
+    if (!selectedSet) {
+      setRevisions([])
+      return
+    }
+
+    try {
+      const data = await listDrawingRevisionsAction({
+        project_id: selectedProject,
+        drawing_set_id: selectedSet,
+        limit: 50,
+      })
+      setRevisions(data)
+    } catch (error) {
+      console.error("Failed to fetch drawing revisions:", error)
+    }
+  }, [selectedProject, selectedSet])
 
   const fetchData = useCallback(async () => {
     const shouldShowSkeleton = sets.length === 0 && sheets.length === 0
@@ -316,6 +375,16 @@ export function DrawingsClient({
     }
   }, [sets, selectedSet])
 
+  useEffect(() => {
+    if (!selectedSet || !lockSet) return
+    if (initialRevisions.length > 0) return
+    fetchRevisions()
+  }, [selectedSet, lockSet, fetchRevisions, initialRevisions.length])
+
+  useEffect(() => {
+    setSelectedRevision("all")
+  }, [selectedSet])
+
   // Debounce search
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -324,7 +393,7 @@ export function DrawingsClient({
     return () => clearTimeout(timeout)
   }, [fetchData])
 
-  // Fetch status counts when sheets change (legacy path only).
+  // Fetch status counts when sheets change (legacy path only)
   useEffect(() => {
     if (USE_TILED_VIEWER) return
     async function loadStatusCounts() {
@@ -380,7 +449,6 @@ export function DrawingsClient({
     setSelectedSet(undefined)
     setSelectedIds(new Set())
 
-    // Update URL
     if (newProject) {
       router.push(`/drawings?project=${newProject}`)
     } else {
@@ -403,6 +471,74 @@ export function DrawingsClient({
     setUploadDialogOpen(true)
   }
 
+  const handleDroppedFile = (file: File) => {
+    if (!selectedProject) {
+      toast.error("Select a project to upload a plan set")
+      return
+    }
+
+    if (file.type !== "application/pdf") {
+      toast.error("Only PDF files are supported")
+      return
+    }
+
+    setUploadFile(file)
+    setUploadTitle(file.name.replace(/\.pdf$/i, ""))
+    setUploadDialogOpen(true)
+  }
+
+  const isPdfDrag = (event: React.DragEvent) =>
+    Array.from(event.dataTransfer.items).some(
+      (item) => item.kind === "file" && item.type === "application/pdf"
+    )
+
+  useEffect(() => {
+    const handleDragEnter = (event: DragEvent) => {
+      if (!event.dataTransfer) return
+      const hasPdf = Array.from(event.dataTransfer.items).some(
+        (item) => item.kind === "file" && item.type === "application/pdf"
+      )
+      if (!hasPdf) return
+      dragCounterRef.current += 1
+      setIsDragActive(true)
+    }
+
+    const handleDragOver = (event: DragEvent) => {
+      if (!event.dataTransfer) return
+      const hasPdf = Array.from(event.dataTransfer.items).some(
+        (item) => item.kind === "file" && item.type === "application/pdf"
+      )
+      if (!hasPdf) return
+      event.preventDefault()
+      setIsDragActive(true)
+    }
+
+    const handleDragLeave = () => {
+      dragCounterRef.current -= 1
+      if (dragCounterRef.current <= 0) {
+        dragCounterRef.current = 0
+        setIsDragActive(false)
+      }
+    }
+
+    const handleDrop = () => {
+      dragCounterRef.current = 0
+      setIsDragActive(false)
+    }
+
+    window.addEventListener("dragenter", handleDragEnter)
+    window.addEventListener("dragover", handleDragOver)
+    window.addEventListener("dragleave", handleDragLeave)
+    window.addEventListener("drop", handleDrop)
+
+    return () => {
+      window.removeEventListener("dragenter", handleDragEnter)
+      window.removeEventListener("dragover", handleDragOver)
+      window.removeEventListener("dragleave", handleDragLeave)
+      window.removeEventListener("drop", handleDrop)
+    }
+  }, [])
+
   // Handle upload
   const handleUpload = async () => {
     if (!uploadFile || !selectedProject) return
@@ -411,24 +547,22 @@ export function DrawingsClient({
     setUploadProgress({ stage: "Uploading PDF...", current: 0, total: 1 })
 
     try {
-      // Get orgId from cookie
       const orgId = document.cookie.match(/(?:^|; )org_id=([^;]+)/)?.[1]
       if (!orgId) {
         throw new Error("Organization not found. Please refresh the page.")
       }
 
-      // Step 1: Upload file directly to Supabase Storage
       const { storagePath } = await uploadDrawingFileToStorage(
         uploadFile,
         selectedProject,
         orgId
       )
 
-      // Step 2: Create the drawing set record (triggers edge function)
       setUploadProgress({ stage: "Processing PDF...", current: 0, total: 1 })
       const newSet = await createDrawingSetFromUpload({
         projectId: selectedProject,
         title: uploadTitle,
+      setType: uploadSetType,
         fileName: uploadFile.name,
         storagePath,
         fileSize: uploadFile.size,
@@ -437,20 +571,17 @@ export function DrawingsClient({
 
       setSets((prev) => [newSet, ...prev])
 
-      // Foundation v2: tiles + thumbnails are generated server-side (edge function + outbox).
-      // We skip client-side PDF rendering/image generation entirely.
       if (USE_TILED_VIEWER) {
         setUploadDialogOpen(false)
         setUploadFile(null)
         setUploadTitle("")
+        setUploadSetType("general")
         setUploadProgress(null)
-        toast.success("Plan set uploaded. Processing sheets + tiles in the background.")
+        toast.success("Plan set uploaded. Processing sheets in the background.")
         await fetchSheets()
         return
       }
 
-      // Default behavior going forward: do NOT attempt client-side image generation unless explicitly enabled.
-      // Client-side uploads into `drawings-images` are brittle due to Storage policies / RLS and should be avoided.
       if (!ENABLE_CLIENT_IMAGE_GEN) {
         toast.success("Plan set uploaded. Sheets are processing in the background.")
         setUploadDialogOpen(false)
@@ -461,7 +592,6 @@ export function DrawingsClient({
         return
       }
 
-      // Step 3: Wait for edge function to finish processing
       setUploadProgress({ stage: "Waiting for processing...", current: 0, total: 1 })
       let attempts = 0
       let sheetVersions: Array<{ id: string; pageIndex: number }> = []
@@ -478,15 +608,15 @@ export function DrawingsClient({
       }
 
       if (sheetVersions.length === 0) {
-        toast.warning("PDF processed, but image generation will be skipped. Sheets will use PDF rendering.")
+        toast.warning("PDF processed, but image generation will be skipped.")
         setUploadDialogOpen(false)
         setUploadFile(null)
         setUploadTitle("")
+        setUploadSetType("general")
         setUploadProgress(null)
         return
       }
 
-      // Step 4: Generate images client-side
       setUploadProgress({ stage: "Generating optimized images...", current: 0, total: sheetVersions.length })
       toast.info(`Generating optimized images for ${sheetVersions.length} sheets...`)
 
@@ -502,7 +632,6 @@ export function DrawingsClient({
         }
       )
 
-      // Step 5: Update database with image URLs
       setUploadProgress({ stage: "Saving images...", current: 0, total: imageResults.size })
       let saved = 0
       for (const [versionId, images] of imageResults) {
@@ -518,10 +647,10 @@ export function DrawingsClient({
       setUploadDialogOpen(false)
       setUploadFile(null)
       setUploadTitle("")
+      setUploadSetType("general")
       setUploadProgress(null)
       toast.success(`Plan set uploaded with optimized images! (${saved}/${sheetVersions.length} sheets)`)
 
-      // Refresh sheets to show the new images
       await fetchSheets()
     } catch (error) {
       console.error("Upload failed:", error)
@@ -534,12 +663,9 @@ export function DrawingsClient({
 
   // Handle sheet view
   const handleViewSheet = useCallback(async (sheet: DrawingSheet, highlightPinId?: string | null) => {
-    // Open the viewer immediately. Then load everything else in the background.
-    // This avoids making the UX depend on a signed-url call + extra DB fetches.
     const requestId = ++sheetOpenRequestIdRef.current
 
     trackView(sheet.id)
-    // With the public drawings-images bucket, the list already carries cacheable URLs.
     setViewerSheet(sheet)
     setViewerHighlightedPinId(highlightPinId ?? null)
     setViewerUrl(null)
@@ -559,9 +685,6 @@ export function DrawingsClient({
               return null
             })
           : Promise.resolve(null),
-        // If we have optimized images we don't need the PDF URL to render,
-        // but we still fetch it in the background so Download works.
-        // If we DON'T have images, the viewer will show a loading state until this resolves.
         getSheetDownloadUrlAction(sheet.id).catch((e) => {
           console.error("Failed to get sheet URL:", e)
           return null
@@ -576,7 +699,6 @@ export function DrawingsClient({
         }),
       ])
 
-      // Ignore stale responses if user navigated quickly.
       if (sheetOpenRequestIdRef.current !== requestId) return
 
       if (signedImages && !hasTiles) {
@@ -593,7 +715,6 @@ export function DrawingsClient({
         })
       }
 
-      // If we have no optimized images and couldn't even get the PDF URL, there's nothing to show.
       if (!hasOptimizedImages && !hasTiles && !url) {
         toast.error("Sheet file not available")
         setViewerOpen(false)
@@ -758,7 +879,7 @@ export function DrawingsClient({
     try {
       await deleteDrawingSetAction(setToDelete.id)
       setSets((prev) => prev.filter((s) => s.id !== setToDelete.id))
-      await fetchSheets() // Refresh sheets
+      await fetchSheets()
       toast.success("Drawing set deleted")
     } catch (error) {
       toast.error("Failed to delete drawing set")
@@ -812,476 +933,875 @@ export function DrawingsClient({
     })
   }
 
-  // Select all visible sheets
-  const selectAllVisible = () => {
-    setSelectedIds(new Set(sheets.map((s) => s.id)))
-  }
-
   // Clear selection
   const clearSelection = () => {
     setSelectedIds(new Set())
   }
 
-  // Render sheets content (reused with and without recent section)
-  const renderSheetsContent = () => {
-    if (sheets.length === 0) {
-      return (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <FileText className="h-12 w-12 text-muted-foreground mb-4" />
-          <h2 className="text-lg font-semibold mb-2">No Sheets</h2>
-          <p className="text-muted-foreground">
-            {sets.some((s) => s.status === "processing")
-              ? "Sheets are being processed..."
-              : "Upload a plan set to generate sheets."}
-          </p>
-        </div>
-      )
+  // Check if any filters are active
+  const hasActiveFilters =
+    searchQuery ||
+    selectedDiscipline !== "all" ||
+    (selectedSet && !lockSet) ||
+    selectedRevision !== "all"
+
+  // Get available disciplines from counts
+  const availableDisciplines = DISCIPLINE_CONFIG.filter(
+    (d) => (disciplineCounts[d.value] ?? 0) > 0
+  )
+
+  const resolveSetStatus = (status?: string | null) => {
+    switch (status) {
+      case "processing":
+        return { label: "Processing", className: "bg-blue-500/10 text-blue-600 border-blue-500/30" }
+      case "ready":
+        return { label: "Ready", className: "bg-success/10 text-success border-success/30" }
+      case "failed":
+        return { label: "Failed", className: "bg-destructive/10 text-destructive border-destructive/30" }
+      default:
+        return { label: "Pending", className: "bg-muted text-muted-foreground border-muted" }
     }
+  }
 
-    if (viewMode === "grid") {
-      return (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-          {sheets.map((sheet, index) => (
-            <div
-              key={sheet.id}
-              className={cn(
-                "relative group cursor-pointer border rounded-lg overflow-hidden bg-card",
-                selectedIds.has(sheet.id) && "ring-2 ring-primary",
-                index === selectedIndex && !selectedIds.has(sheet.id) && "ring-2 ring-blue-500"
-              )}
-              onClick={() => handleViewSheet(sheet)}
-            >
-              {/* Thumbnail */}
-              <div className="aspect-[8.5/11] bg-muted flex items-center justify-center">
-                {sheet.image_thumbnail_url || sheet.thumbnail_url ? (
-                  <img
-                    src={
-                      (sheet.image_thumbnail_url ?? sheet.thumbnail_url) as string
-                    }
-                    alt={sheet.sheet_number}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                ) : (
-                  <FileText className="h-12 w-12 text-muted-foreground" />
-                )}
-              </div>
-
-              {/* Selection checkbox */}
-              <button
-                className={cn(
-                  "absolute top-2 left-2 w-5 h-5 rounded border bg-background",
-                  "opacity-0 group-hover:opacity-100 transition-opacity",
-                  selectedIds.has(sheet.id) && "opacity-100 bg-primary border-primary"
-                )}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  toggleSheetSelection(sheet.id)
-                }}
-              >
-                {selectedIds.has(sheet.id) && (
-                  <CheckCircle2 className="h-4 w-4 text-primary-foreground" />
-                )}
-              </button>
-
-              {/* Sharing badges */}
-              <div className="absolute top-2 right-2 flex gap-1">
-                {sheet.share_with_clients && (
-                  <Badge variant="secondary" className="text-xs">C</Badge>
-                )}
-                {sheet.share_with_subs && (
-                  <Badge variant="secondary" className="text-xs">S</Badge>
-                )}
-              </div>
-
-              {/* Info */}
-              <div className="p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="font-medium text-sm truncate">
-                    {sheet.sheet_number}
-                  </p>
-                  {sheet.discipline && (
-                    <Badge variant="outline" className="text-xs shrink-0">
-                      {sheet.discipline}
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground truncate">
-                  {sheet.sheet_title}
-                </p>
-                <SheetStatusDots
-                  counts={statusCounts[sheet.id]}
-                  size="sm"
-                  className="mt-1"
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )
-    }
-
-    // List view
-    return (
-      <div className="border rounded-lg divide-y">
-        <div className="grid grid-cols-[auto,1fr,1fr,1fr,auto,auto] gap-4 p-3 bg-muted font-medium text-sm">
-          <div className="w-5" />
-          <div>Sheet #</div>
-          <div>Title</div>
-          <div>Discipline</div>
-          <div className="w-24 text-center">Status</div>
-          <div className="w-24 text-center">Sharing</div>
-        </div>
-        {sheets.map((sheet, index) => (
-          <div
-            key={sheet.id}
-            className={cn(
-              "grid grid-cols-[auto,1fr,1fr,1fr,auto,auto] gap-4 p-3 items-center hover:bg-muted/50 cursor-pointer",
-              selectedIds.has(sheet.id) && "bg-primary/5",
-              index === selectedIndex && !selectedIds.has(sheet.id) && "bg-blue-500/5"
-            )}
-            onClick={() => handleViewSheet(sheet)}
-          >
-            <button
-              className={cn(
-                "w-5 h-5 rounded border",
-                selectedIds.has(sheet.id) && "bg-primary border-primary"
-              )}
-              onClick={(e) => {
-                e.stopPropagation()
-                toggleSheetSelection(sheet.id)
-              }}
-            >
-              {selectedIds.has(sheet.id) && (
-                <CheckCircle2 className="h-4 w-4 text-primary-foreground" />
-              )}
-            </button>
-            <div className="font-medium">{sheet.sheet_number}</div>
-            <div className="text-muted-foreground">
-              {sheet.sheet_title || "-"}
-            </div>
-            <div>
-              {sheet.discipline ? (
-                <Badge variant="outline">
-                  {sheet.discipline} - {DISCIPLINE_LABELS[sheet.discipline]}
-                </Badge>
-              ) : (
-                <span className="text-muted-foreground">-</span>
-              )}
-            </div>
-            <div className="w-24 flex justify-center">
-              <SheetStatusDots counts={statusCounts[sheet.id]} size="sm" />
-            </div>
-            <div className="w-24 flex justify-center gap-1">
-              {sheet.share_with_clients && (
-                <Badge variant="secondary" className="text-xs">Clients</Badge>
-              )}
-              {sheet.share_with_subs && (
-                <Badge variant="secondary" className="text-xs">Subs</Badge>
-              )}
-              {!sheet.share_with_clients && !sheet.share_with_subs && (
-                <span className="text-muted-foreground text-xs">Private</span>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
+  const formatDate = (value?: string | null) => {
+    if (!value) return "—"
+    return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(
+      new Date(value)
     )
   }
 
+  const resolveSetTypeLabel = (value?: string | null) => {
+    if (!value) return "—"
+    return DRAWING_SET_TYPE_LABELS[value as keyof typeof DRAWING_SET_TYPE_LABELS] ?? value
+  }
+
+  const formatRevisionLabel = (revision?: DrawingRevision | null) => {
+    if (!revision) return "Unknown"
+    if (revision.issued_date) {
+      const issued = formatDate(revision.issued_date)
+      return `${revision.revision_label} · ${issued}`
+    }
+    return revision.revision_label
+  }
+
+  const projectId = selectedProject ?? defaultProjectId ?? projects[0]?.id
+
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="relative flex flex-col h-full"
+      onDragEnter={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!isPdfDrag(event)) return
+        dragCounterRef.current += 1
+        setIsDragActive(true)
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!isPdfDrag(event)) return
+        setIsDragActive(true)
+      }}
+      onDragLeave={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        dragCounterRef.current -= 1
+        if (dragCounterRef.current <= 0) {
+          dragCounterRef.current = 0
+          setIsDragActive(false)
+        }
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        dragCounterRef.current = 0
+        setIsDragActive(false)
+
+        const file = event.dataTransfer.files?.[0]
+        if (!file) return
+        handleDroppedFile(file)
+      }}
+    >
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf"
+        className="hidden"
+        onChange={handleFileSelect}
+      />
+
       {/* Header */}
-      <div className="flex flex-col gap-4 p-4 border-b bg-background">
-        <div className="flex flex-wrap items-center gap-2">
-          {lockProject ? (
-            <div className="rounded-md border px-3 py-2 text-sm">
-              {projects.find((p) => p.id === selectedProject)?.name ?? "Project"}
+      <div className="shrink-0 bg-background">
+        {/* Primary toolbar */}
+        <div className="flex flex-col gap-2 sm:gap-3 px-2 py-2 sm:p-3 lg:p-4">
+          {/* Top row: project selector, search, upload */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Project selector */}
+            {!lockProject && (
+              <Select value={selectedProject ?? "all"} onValueChange={handleProjectChange}>
+                <SelectTrigger className="w-full sm:w-[180px] h-9">
+                  <SelectValue placeholder="Select project" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Projects</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            {/* Search - grows to fill on mobile when no project selector */}
+            <div className={cn(
+              "relative flex-1 min-w-0",
+              !lockProject ? "max-w-xs" : "max-w-sm"
+            )}>
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                ref={searchInputRef}
+                placeholder="Search..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 h-9"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </div>
-          ) : (
-            <Select value={selectedProject ?? "all"} onValueChange={handleProjectChange}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Select project" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Projects</SelectItem>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
 
-          {selectedProject && tabMode === "sheets" && (
-            <Select
-              value={selectedSet ?? "all"}
-              onValueChange={(value) => setSelectedSet(value === "all" ? undefined : value)}
-            >
-              <SelectTrigger className="w-[220px]">
-                <SelectValue placeholder="All plan sets" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Plan Sets</SelectItem>
-                {sets.map((set) => (
-                  <SelectItem key={set.id} value={set.id}>
-                    {set.title}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+            {/* View toggle - visible on tablet+ */}
+            <div className="hidden sm:flex items-center border divide-x shrink-0">
+              <button
+                className={cn(
+                  "h-9 w-9 flex items-center justify-center transition-colors",
+                  viewMode === "grid" ? "bg-muted" : "hover:bg-muted/50"
+                )}
+                onClick={() => setViewMode("grid")}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </button>
+              <button
+                className={cn(
+                  "h-9 w-9 flex items-center justify-center transition-colors",
+                  viewMode === "list" ? "bg-muted" : "hover:bg-muted/50"
+                )}
+                onClick={() => setViewMode("list")}
+              >
+                <List className="h-4 w-4" />
+              </button>
+            </div>
 
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              ref={searchInputRef}
-              placeholder="Search drawings..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
+            {!lockSet && (
+              <Button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!selectedProject}
+                className="h-9 shrink-0"
+                size="sm"
+              >
+                <Upload className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Upload</span>
+              </Button>
+            )}
           </div>
 
-          <div className="flex items-center gap-1 border rounded-md">
-            <Button
-              variant={viewMode === "grid" ? "secondary" : "ghost"}
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setViewMode("grid")}
-            >
-              <Grid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === "list" ? "secondary" : "ghost"}
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setViewMode("list")}
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
+          {/* Secondary row: plan set filter, revision filter (when applicable) */}
+          {selectedProject && (tabMode === "sheets" && (sets.length > 0 && !lockSet) || revisions.length > 0) && (
+            <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto hide-scrollbar -mx-2 px-2 sm:mx-0 sm:px-0">
+              {/* Plan set filter (when viewing sheets) */}
+              {tabMode === "sheets" && sets.length > 0 && !lockSet && (
+                <Select
+                  value={selectedSet ?? "all"}
+                  onValueChange={(value) => setSelectedSet(value === "all" ? undefined : value)}
+                >
+                  <SelectTrigger className="w-[160px] sm:w-[180px] h-9 shrink-0">
+                    <SelectValue placeholder="All plan sets" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Plan Sets</SelectItem>
+                    {sets.map((set) => (
+                      <SelectItem key={set.id} value={set.id}>
+                        {set.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
 
-          <div className="flex-1" />
+              {tabMode === "sheets" && revisions.length > 0 && (
+                <Select value={selectedRevision} onValueChange={setSelectedRevision}>
+                  <SelectTrigger className="h-9 w-[160px] sm:w-[200px] shrink-0">
+                    <SelectValue placeholder="All versions" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All versions</SelectItem>
+                    {revisions.map((rev) => (
+                      <SelectItem key={rev.id} value={rev.id}>
+                        {formatRevisionLabel(rev)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf"
-            className="hidden"
-            onChange={handleFileSelect}
-          />
-
-          <Button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={!selectedProject}
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            Upload Plan Set
-          </Button>
+              {/* Mobile view toggle */}
+              <div className="flex sm:hidden items-center border divide-x shrink-0 ml-auto">
+                <button
+                  className={cn(
+                    "h-9 w-9 flex items-center justify-center transition-colors",
+                    viewMode === "grid" ? "bg-muted" : "hover:bg-muted/50"
+                  )}
+                  onClick={() => setViewMode("grid")}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                </button>
+                <button
+                  className={cn(
+                    "h-9 w-9 flex items-center justify-center transition-colors",
+                    viewMode === "list" ? "bg-muted" : "hover:bg-muted/50"
+                  )}
+                  onClick={() => setViewMode("list")}
+                >
+                  <List className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Tabs and discipline filters */}
+        {/* Secondary toolbar - tabs and filters */}
         {selectedProject && (
-          <div className="flex items-center justify-between">
-            <Tabs value={tabMode} onValueChange={(v) => setTabMode(v as TabMode)}>
-              <TabsList>
-                <TabsTrigger value="sheets">
-                  Sheets {disciplineCounts?.all ? `(${disciplineCounts.all})` : ""}
-                </TabsTrigger>
-                <TabsTrigger value="sets">
-                  Plan Sets ({sets.length})
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-
-            {tabMode === "sheets" && disciplineCounts && (
-              <DisciplineTabs
-                counts={disciplineCounts}
-                selected={selectedDiscipline === "all" ? null : selectedDiscipline}
-                onSelect={(disc) => setSelectedDiscipline(disc === null ? "all" : (disc as DrawingDiscipline))}
-              />
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 px-2 sm:px-3 lg:px-4 pb-2 sm:pb-3">
+            {/* Tabs */}
+            {!hideTabs && (
+              <div className="flex items-center gap-1 border p-0.5 w-fit">
+                <button
+                  className={cn(
+                    "h-8 sm:h-7 px-3 text-sm font-medium transition-colors",
+                    tabMode === "sheets" ? "bg-muted" : "hover:bg-muted/50"
+                  )}
+                  onClick={() => setTabMode("sheets")}
+                >
+                  Sheets
+                  {disciplineCounts?.all ? (
+                    <span className="ml-1.5 text-muted-foreground">{disciplineCounts.all}</span>
+                  ) : null}
+                </button>
+                <button
+                  className={cn(
+                    "h-8 sm:h-7 px-3 text-sm font-medium transition-colors",
+                    tabMode === "sets" ? "bg-muted" : "hover:bg-muted/50"
+                  )}
+                  onClick={() => setTabMode("sets")}
+                >
+                  Plan Sets
+                  <span className="ml-1.5 text-muted-foreground">{sets.length}</span>
+                </button>
+              </div>
             )}
+
+            {/* Discipline filters - horizontally scrollable on mobile */}
+            {tabMode === "sheets" && availableDisciplines.length > 0 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar -mx-2 px-2 sm:mx-0 sm:px-0 pb-1 sm:pb-0">
+                <button
+                  className={cn(
+                    "h-8 sm:h-7 px-3 sm:px-2.5 text-xs font-medium border transition-colors shrink-0",
+                    selectedDiscipline === "all"
+                      ? "bg-foreground text-background border-foreground"
+                      : "hover:bg-muted/50"
+                  )}
+                  onClick={() => setSelectedDiscipline("all")}
+                >
+                  All
+                </button>
+                {availableDisciplines.map((disc) => (
+                  <button
+                    key={disc.value}
+                    className={cn(
+                      "h-8 sm:h-7 px-3 sm:px-2.5 text-xs font-medium border transition-colors shrink-0",
+                      selectedDiscipline === disc.value
+                        ? disc.color.replace("hover:", "") + " border-current"
+                        : "hover:bg-muted/50"
+                    )}
+                    onClick={() => setSelectedDiscipline(disc.value)}
+                  >
+                    {disc.label}
+                    <span className="ml-1 opacity-60">{disciplineCounts[disc.value]}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
           </div>
         )}
 
-        {/* Selection actions */}
+        {/* Selection toolbar */}
         {selectedIds.size > 0 && (
-          <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
-            <span className="text-sm font-medium">
+          <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-3 lg:px-4 py-2 bg-muted/50 border-t">
+            <span className="text-sm font-medium shrink-0">
               {selectedIds.size} selected
             </span>
-            <Button variant="outline" size="sm" onClick={clearSelection}>
-              <X className="h-4 w-4 mr-1" />
-              Clear
+            <div className="h-4 w-px bg-border shrink-0" />
+            <Button variant="ghost" size="sm" onClick={clearSelection} className="h-8 sm:h-7 px-2 shrink-0">
+              <X className="h-3.5 w-3.5 sm:mr-1" />
+              <span className="hidden sm:inline">Clear</span>
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleBulkShare("clients")}
-            >
-              <Share2 className="h-4 w-4 mr-1" />
-              Share with Clients
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleBulkShare("subs")}
-            >
-              <Share2 className="h-4 w-4 mr-1" />
-              Share with Subs
-            </Button>
+            <div className="flex items-center gap-1 ml-auto">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleBulkShare("clients")}
+                className="h-8 sm:h-7 px-2"
+                title="Share with Clients"
+              >
+                <Users className="h-3.5 w-3.5 sm:mr-1.5" />
+                <span className="hidden sm:inline">Clients</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleBulkShare("subs")}
+                className="h-8 sm:h-7 px-2"
+                title="Share with Subs"
+              >
+                <Building2 className="h-3.5 w-3.5 sm:mr-1.5" />
+                <span className="hidden sm:inline">Subs</span>
+              </Button>
+            </div>
           </div>
         )}
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-4">
-        {!selectedProject ? (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <FileText className="h-16 w-16 text-muted-foreground mb-4" />
-            <h2 className="text-xl font-semibold mb-2">Select a Project</h2>
-            <p className="text-muted-foreground max-w-md">
-              Choose a project from the dropdown above to view and manage drawings.
-            </p>
-          </div>
-        ) : isLoading ? (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {Array.from({ length: 12 }).map((_, i) => (
-              <Skeleton key={i} className="aspect-[8.5/11] rounded-md" />
-            ))}
-          </div>
-        ) : tabMode === "sheets" && !searchQuery && selectedDiscipline === "all" && !selectedSet ? (
-          /* Recent sheets + All sheets */
-          <div className="space-y-6">
-            <RecentSheetsSection
-              sheets={sheets}
-              projectId={selectedProject}
-              onSelect={handleViewSheet}
-            />
-            {renderSheetsContent()}
-          </div>
-        ) : tabMode === "sets" ? (
-          /* Drawing Sets View */
-          <div className="space-y-4">
-            {sets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
-                <Upload className="h-12 w-12 text-muted-foreground mb-4" />
-                <h2 className="text-lg font-semibold mb-2">No Plan Sets</h2>
-                <p className="text-muted-foreground mb-4">
-                  Upload a PDF plan set to get started.
-                </p>
-                <Button onClick={() => fileInputRef.current?.click()}>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Upload Plan Set
-                </Button>
-              </div>
-            ) : (
-              sets.map((set) => (
-                <div
-                  key={set.id}
-                  className="flex items-center justify-between p-4 border rounded-lg bg-card"
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="p-2 bg-muted rounded-md">
-                      <FileText className="h-8 w-8 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">{set.title}</h3>
-                      <p className="text-sm text-muted-foreground">
-                        {set.sheet_count ?? 0} sheets
-                        {set.description && ` - ${set.description}`}
-                      </p>
-                    </div>
-                  </div>
+      <div className="flex-1 overflow-auto">
+        <div className="p-2 sm:p-3 lg:p-4">
+          {!selectedProject ? (
+            <DrawingsEmptyState variant="no-project" />
+          ) : isLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-3">
+              {Array.from({ length: 12 }).map((_, i) => (
+                <Skeleton key={i} className="aspect-[8.5/11]" />
+              ))}
+            </div>
+          ) : tabMode === "sets" ? (
+            /* Plan Sets View */
+            <div className="space-y-2">
+              {sets.length === 0 ? (
+                <DrawingsEmptyState
+                  variant="no-sets"
+                  onUpload={() => fileInputRef.current?.click()}
+                />
+              ) : (
+                <>
+                  {/* Mobile: Card layout */}
+                  <div className="md:hidden space-y-2">
+                    {sets.map((set) => {
+                      const status = resolveSetStatus(set.status)
+                      const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
+                      const setLink = projectId
+                        ? `/projects/${projectId}/drawings/sets/${set.id}`
+                        : null
 
-                  <div className="flex items-center gap-4">
-                    {set.status === "processing" && (
-                      <div className="flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-blue-500 animate-pulse" />
-                        <div className="w-32">
-                          <Progress
-                            value={
-                              set.total_pages
-                                ? (set.processed_pages / set.total_pages) * 100
-                                : 0
-                            }
-                          />
+                      return (
+                        <div
+                          key={set.id}
+                          className="bg-card border rounded-lg p-3 space-y-2"
+                        >
+                          {/* Header row */}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              {setLink ? (
+                                <button
+                                  onClick={() => router.push(setLink)}
+                                  className="font-semibold text-sm text-left hover:underline line-clamp-2"
+                                >
+                                  {set.title}
+                                </button>
+                              ) : (
+                                <div className="font-semibold text-sm line-clamp-2">{set.title}</div>
+                              )}
+                              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
+                                <span>{set.sheet_count ?? 0} sheets</span>
+                                <span>·</span>
+                                <span>{resolveSetTypeLabel(set.set_type ?? null)}</span>
+                              </div>
+                            </div>
+                            <Badge variant="secondary" className={`border shrink-0 ${status.className}`}>
+                              {status.label}
+                            </Badge>
+                          </div>
+
+                          {/* Progress bar for processing */}
+                          {set.status === "processing" && (
+                            <div className="flex items-center gap-3">
+                              <Progress value={progress} className="h-1.5 flex-1" />
+                              <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                                {set.processed_pages}/{set.total_pages ?? "?"}
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Error message */}
+                          {set.status === "failed" && set.error_message && (
+                            <p className="text-xs text-destructive line-clamp-2">
+                              {set.error_message}
+                            </p>
+                          )}
+
+                          {/* Actions row */}
+                          <div className="flex items-center justify-between pt-1">
+                            <span className="text-xs text-muted-foreground">
+                              Updated {formatDate(set.updated_at)}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {set.status === "failed" && (
+                                <Button variant="outline" size="sm" onClick={() => handleRetry(set.id)} className="h-8">
+                                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                                  Retry
+                                </Button>
+                              )}
+                              {set.status === "ready" && setLink && (
+                                <Button
+                                  variant="default"
+                                  size="sm"
+                                  onClick={() => router.push(setLink)}
+                                  className="h-8"
+                                >
+                                  View sheets
+                                </Button>
+                              )}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8">
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setSetToDelete(set)
+                                      setDeleteDialogOpen(true)
+                                    }}
+                                    className="text-destructive"
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </div>
                         </div>
-                        <span className="text-sm text-muted-foreground">
-                          {set.processed_pages}/{set.total_pages ?? "?"}
-                        </span>
-                      </div>
-                    )}
-
-                    {set.status === "ready" && (
-                      <Badge variant="default" className="bg-green-500">
-                        <CheckCircle2 className="h-3 w-3 mr-1" />
-                        Ready
-                      </Badge>
-                    )}
-
-                    {set.status === "failed" && (
-                      <div className="flex items-center gap-2">
-                        <Badge variant="destructive">
-                          <AlertCircle className="h-3 w-3 mr-1" />
-                          Failed
-                        </Badge>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRetry(set.id)}
-                        >
-                          <RefreshCw className="h-4 w-4 mr-1" />
-                          Retry
-                        </Button>
-                      </div>
-                    )}
-
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setSetToDelete(set)
-                            setDeleteDialogOpen(true)
-                          }}
-                          className="text-destructive"
-                        >
-                          <Trash2 className="h-4 w-4 mr-2" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                      )
+                    })}
                   </div>
+
+                  {/* Desktop: Table layout */}
+                  <div className="hidden md:block rounded-lg border overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="divide-x">
+                          <TableHead className="px-4 py-4">Plan set</TableHead>
+                          <TableHead className="px-4 py-4 text-center">Type</TableHead>
+                          <TableHead className="px-4 py-4 text-center">Status</TableHead>
+                          <TableHead className="px-4 py-4 text-center">Sheets</TableHead>
+                          <TableHead className="px-4 py-4 text-center">Updated</TableHead>
+                          <TableHead className="px-4 py-4 text-center w-40">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {sets.map((set) => {
+                          const status = resolveSetStatus(set.status)
+                          const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
+                          const setLink = projectId
+                            ? `/projects/${projectId}/drawings/sets/${set.id}`
+                            : null
+
+                          return (
+                            <TableRow key={set.id} className="divide-x">
+                              <TableCell className="px-4 py-4">
+                                {setLink ? (
+                                  <button
+                                    onClick={() => router.push(setLink)}
+                                    className="font-semibold text-left hover:underline"
+                                  >
+                                    {set.title}
+                                  </button>
+                                ) : (
+                                  <div className="font-semibold">{set.title}</div>
+                                )}
+                                {set.description ? (
+                                  <div className="text-xs text-muted-foreground mt-1 truncate">
+                                    {set.description}
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell className="px-4 py-4 text-center text-sm text-muted-foreground">
+                                {resolveSetTypeLabel(set.set_type ?? null)}
+                              </TableCell>
+                              <TableCell className="px-4 py-4 text-center">
+                                <div className="flex flex-col items-center gap-2">
+                                  <Badge variant="secondary" className={`border ${status.className}`}>
+                                    {status.label}
+                                  </Badge>
+                                  {set.status === "processing" && (
+                                    <div className="flex items-center gap-2">
+                                      <Progress value={progress} className="h-1.5 w-20" />
+                                      <span className="text-xs text-muted-foreground tabular-nums">
+                                        {set.processed_pages}/{set.total_pages ?? "?"}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {set.status === "failed" && set.error_message && (
+                                    <span className="text-xs text-destructive line-clamp-1">
+                                      {set.error_message}
+                                    </span>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="px-4 py-4 text-center">
+                                <div className="font-semibold">{set.sheet_count ?? 0}</div>
+                              </TableCell>
+                              <TableCell className="px-4 py-4 text-center text-muted-foreground text-sm">
+                                {formatDate(set.updated_at)}
+                              </TableCell>
+                              <TableCell className="px-4 py-4 text-center w-40">
+                                <div className="flex items-center justify-center gap-2">
+                                  {set.status === "failed" && (
+                                    <Button variant="outline" size="sm" onClick={() => handleRetry(set.id)} className="h-8">
+                                      <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                                      Retry
+                                    </Button>
+                                  )}
+                                  {set.status === "ready" && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => setLink && router.push(setLink)}
+                                      className="h-8"
+                                    >
+                                      View sheets
+                                    </Button>
+                                  )}
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                                        <MoreHorizontal className="h-4 w-4" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end">
+                                      <DropdownMenuItem
+                                        onClick={() => {
+                                          setSetToDelete(set)
+                                          setDeleteDialogOpen(true)
+                                        }}
+                                        className="text-destructive"
+                                      >
+                                        <Trash2 className="h-4 w-4 mr-2" />
+                                        Delete
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : sheets.length === 0 ? (
+            /* Empty sheets state */
+            <DrawingsEmptyState
+              variant={hasActiveFilters ? "no-results" : "no-sheets"}
+              isProcessing={sets.some((s) => s.status === "processing")}
+              onUpload={!hasActiveFilters ? () => fileInputRef.current?.click() : undefined}
+            />
+          ) : (
+            /* Sheets View */
+            <div className="space-y-6">
+              {/* Recent sheets section (only when no filters) */}
+              {!hasActiveFilters && !lockSet && (
+                <RecentSheetsSection
+                  sheets={sheets}
+                  projectId={selectedProject}
+                  onSelect={handleViewSheet}
+                />
+              )}
+
+              {/* Grid or List view */}
+              {viewMode === "grid" ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-3">
+                  {sheets.map((sheet, index) => (
+                    <SheetCard
+                      key={sheet.id}
+                      sheet={sheet}
+                      statusCounts={statusCounts[sheet.id]}
+                      isSelected={selectedIds.has(sheet.id)}
+                      isKeyboardFocused={index === selectedIndex}
+                      onSelect={() => handleViewSheet(sheet)}
+                      onToggleSelection={() => toggleSheetSelection(sheet.id)}
+                    />
+                  ))}
                 </div>
-              ))
-            )}
-          </div>
-        ) : (
-          /* Sheets View (with search/filter active) */
-          renderSheetsContent()
-        )}
+              ) : (
+                /* List view */
+                <>
+                  {/* Mobile: Compact list cards */}
+                  <div className="md:hidden space-y-1.5">
+                    {sheets.map((sheet, index) => {
+                      const tileThumbnailUrl =
+                        sheet.tile_base_url && sheet.thumbnail_url ? sheet.thumbnail_url : null
+                      const thumbnailSrc =
+                        tileThumbnailUrl ?? sheet.image_thumbnail_url ?? sheet.thumbnail_url
+
+                      return (
+                        <div
+                          key={sheet.id}
+                          className={cn(
+                            "flex items-center gap-2.5 p-2.5 bg-card border rounded-lg cursor-pointer",
+                            "active:bg-muted/50",
+                            selectedIds.has(sheet.id) && "ring-2 ring-primary ring-offset-1",
+                            index === selectedIndex && !selectedIds.has(sheet.id) && "ring-1 ring-primary/50"
+                          )}
+                          onClick={() => handleViewSheet(sheet)}
+                        >
+                          {/* Selection checkbox */}
+                          <button
+                            className={cn(
+                              "w-6 h-6 flex items-center justify-center border transition-colors shrink-0",
+                              selectedIds.has(sheet.id) && "bg-primary border-primary"
+                            )}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              toggleSheetSelection(sheet.id)
+                            }}
+                          >
+                            {selectedIds.has(sheet.id) && (
+                              <Check className="h-4 w-4 text-primary-foreground" strokeWidth={2.5} />
+                            )}
+                          </button>
+
+                          {/* Thumbnail */}
+                          <div className="w-12 h-14 bg-muted/50 border overflow-hidden shrink-0">
+                            {thumbnailSrc ? (
+                              <img
+                                src={thumbnailSrc}
+                                alt={sheet.sheet_number}
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                                decoding="async"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <FileText className="h-5 w-5 text-muted-foreground/60" />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm truncate">{sheet.sheet_number}</span>
+                              {sheet.discipline && (
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 shrink-0">
+                                  {sheet.discipline}
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground truncate mt-0.5">
+                              {sheet.sheet_title || "Untitled"}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <SheetStatusDots counts={statusCounts[sheet.id]} size="sm" />
+                              {(sheet.share_with_clients || sheet.share_with_subs) && (
+                                <div className="flex items-center gap-1">
+                                  {sheet.share_with_clients && (
+                                    <Users className="h-3 w-3 text-muted-foreground" />
+                                  )}
+                                  {sheet.share_with_subs && (
+                                    <Building2 className="h-3 w-3 text-muted-foreground" />
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Desktop: Table layout */}
+                  <div className="hidden md:block rounded-lg border overflow-hidden">
+                    <TooltipProvider delayDuration={200}>
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="divide-x">
+                            <TableHead className="px-4 py-4 w-10">‎</TableHead>
+                            <TableHead className="px-4 py-4 w-16">Preview</TableHead>
+                            <TableHead className="px-4 py-4">Sheet</TableHead>
+                            <TableHead className="px-4 py-4">Title</TableHead>
+                            {lockSet && <TableHead className="px-4 py-4 text-center">Revision</TableHead>}
+                            <TableHead className="px-4 py-4 text-center">Discipline</TableHead>
+                            <TableHead className="px-4 py-4 text-center">Status</TableHead>
+                            <TableHead className="px-4 py-4 text-center">Sharing</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {sheets.map((sheet, index) => {
+                            const tileThumbnailUrl =
+                              sheet.tile_base_url && sheet.thumbnail_url ? sheet.thumbnail_url : null
+                            const thumbnailSrc =
+                              tileThumbnailUrl ?? sheet.image_thumbnail_url ?? sheet.thumbnail_url
+
+                            return (
+                              <TableRow
+                                key={sheet.id}
+                                className={cn(
+                                  "divide-x cursor-pointer",
+                                  "hover:bg-muted/30",
+                                  selectedIds.has(sheet.id) && "bg-primary/5",
+                                  index === selectedIndex && !selectedIds.has(sheet.id) && "bg-muted/20"
+                                )}
+                                onClick={() => handleViewSheet(sheet)}
+                              >
+                                <TableCell className="px-4 py-3 w-10">
+                                  <button
+                                    className={cn(
+                                      "w-5 h-5 flex items-center justify-center border transition-colors",
+                                      selectedIds.has(sheet.id) && "bg-primary border-primary"
+                                    )}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      toggleSheetSelection(sheet.id)
+                                    }}
+                                  >
+                                    {selectedIds.has(sheet.id) && (
+                                      <Check className="h-3.5 w-3.5 text-primary-foreground" strokeWidth={2.5} />
+                                    )}
+                                  </button>
+                                </TableCell>
+                                <TableCell className="px-4 py-3">
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <div className="w-10 h-12 bg-muted/50 border overflow-hidden">
+                                        {thumbnailSrc ? (
+                                          <img
+                                            src={thumbnailSrc}
+                                            alt={sheet.sheet_number}
+                                            className="w-full h-full object-cover"
+                                            loading="lazy"
+                                            decoding="async"
+                                          />
+                                        ) : (
+                                          <div className="w-full h-full flex items-center justify-center">
+                                            <FileText className="h-4 w-4 text-muted-foreground/60" />
+                                          </div>
+                                        )}
+                                      </div>
+                                    </TooltipTrigger>
+                                    {thumbnailSrc && (
+                                      <TooltipContent
+                                        side="right"
+                                        sideOffset={12}
+                                        className={cn(
+                                          "bg-background p-2",
+                                          "data-[state=open]:animate-in data-[state=closed]:animate-out",
+                                          "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+                                          "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+                                          "data-[side=right]:slide-in-from-left-2 data-[side=left]:slide-in-from-right-2",
+                                          "data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2"
+                                        )}
+                                      >
+                                        <div className="w-80 h-[28rem] overflow-hidden border bg-muted/50">
+                                          <img
+                                            src={thumbnailSrc}
+                                            alt={sheet.sheet_number}
+                                            className="w-full h-full object-cover"
+                                            loading="lazy"
+                                            decoding="async"
+                                          />
+                                        </div>
+                                      </TooltipContent>
+                                    )}
+                                  </Tooltip>
+                                </TableCell>
+                                <TableCell className="px-4 py-3">
+                                  <div className="font-medium text-sm truncate">{sheet.sheet_number}</div>
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-sm text-muted-foreground truncate">
+                                  {sheet.sheet_title || "—"}
+                                </TableCell>
+                                {lockSet && (
+                                  <TableCell className="px-4 py-3 text-center text-xs text-muted-foreground">
+                                    {sheet.current_revision_label ?? "—"}
+                                  </TableCell>
+                                )}
+                                <TableCell className="px-4 py-3 text-center">
+                                  {sheet.discipline ? (
+                                    <Badge variant="secondary" className="text-xs px-2 py-0 h-5">
+                                      {sheet.discipline}
+                                    </Badge>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">—</span>
+                                  )}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-center">
+                                  <SheetStatusDots counts={statusCounts[sheet.id]} size="sm" />
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-center">
+                                  <div className="flex justify-center gap-1">
+                                    {sheet.share_with_clients && (
+                                      <div className="w-6 h-6 flex items-center justify-center bg-muted/50">
+                                        <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                                      </div>
+                                    )}
+                                    {sheet.share_with_subs && (
+                                      <div className="w-6 h-6 flex items-center justify-center bg-muted/50">
+                                        <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                                      </div>
+                                    )}
+                                    {!sheet.share_with_clients && !sheet.share_with_subs && (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TooltipProvider>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Upload Dialog */}
       <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Upload Plan Set</DialogTitle>
             <DialogDescription>
-              Upload a multi-page PDF plan set. It will be automatically split into individual sheets with optimized images for fast loading.
+              Upload a PDF plan set. It will be automatically split into individual sheets.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
               <Label htmlFor="title">Title</Label>
               <Input
                 id="title"
@@ -1291,14 +1811,31 @@ export function DrawingsClient({
                 disabled={isUploading}
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="set-type">Type</Label>
+              <Select value={uploadSetType} onValueChange={setUploadSetType} disabled={isUploading}>
+                <SelectTrigger id="set-type">
+                  <SelectValue placeholder="Select a type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {DRAWING_SET_TYPES.map((type) => (
+                    <SelectItem key={type.value} value={type.value}>
+                      {type.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
             {uploadFile && (
-              <div className="flex items-center gap-2 p-2 border rounded-md">
-                <FileText className="h-5 w-5 text-muted-foreground" />
-                <span className="text-sm">{uploadFile.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  ({(uploadFile.size / 1024 / 1024).toFixed(2)} MB)
-                </span>
+              <div className="flex items-center gap-3 p-3 bg-muted/50 border">
+                <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">{uploadFile.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {(uploadFile.size / 1024 / 1024).toFixed(2)} MB
+                  </p>
+                </div>
               </div>
             )}
 
@@ -1307,13 +1844,14 @@ export function DrawingsClient({
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">{uploadProgress.stage}</span>
                   {uploadProgress.total > 0 && (
-                    <span className="text-muted-foreground">
+                    <span className="text-muted-foreground tabular-nums">
                       {uploadProgress.current}/{uploadProgress.total}
                     </span>
                   )}
                 </div>
                 <Progress
                   value={uploadProgress.total > 0 ? (uploadProgress.current / uploadProgress.total) * 100 : 0}
+                  className="h-1.5"
                 />
               </div>
             )}
@@ -1331,7 +1869,7 @@ export function DrawingsClient({
               {isUploading ? (
                 <>
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  {uploadProgress?.stage || "Processing..."}
+                  Uploading...
                 </>
               ) : (
                 <>
@@ -1348,9 +1886,9 @@ export function DrawingsClient({
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Drawing Set?</AlertDialogTitle>
+            <AlertDialogTitle>Delete Plan Set</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete &quot;{setToDelete?.title}&quot; and all its sheets.
+              This will permanently delete "{setToDelete?.title}" and all its sheets.
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1382,7 +1920,6 @@ export function DrawingsClient({
           onPinClick={handlePinClick}
           sheets={sheets}
           onNavigateSheet={handleViewSheet}
-          // Phase 1 Performance: Pre-rendered image URLs
           imageThumbnailUrl={viewerSheet.image_thumbnail_url}
           imageMediumUrl={viewerSheet.image_medium_url}
           imageFullUrl={viewerSheet.image_full_url}
@@ -1407,6 +1944,19 @@ export function DrawingsClient({
         onOpenChange={setShowShortcutsHelp}
         context="list"
       />
+
+      {/* Drag and drop overlay */}
+      {isDragActive && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/80 backdrop-blur-sm pointer-events-none">
+          <div className="flex flex-col items-center gap-2 border border-dashed border-muted-foreground/40 bg-card/80 px-6 py-5">
+            <Upload className="h-6 w-6 text-muted-foreground" />
+            <div className="text-sm font-medium">Drop PDF to upload</div>
+            <div className="text-xs text-muted-foreground">
+              We’ll split it into sheets automatically
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

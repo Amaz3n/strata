@@ -10,7 +10,7 @@ export async function GET() {
     const isPlatformAdmin = isPlatformAdminId(user.id, user.email ?? undefined)
 
     if (isPlatformAdmin) {
-      const svc = createServerSupabaseClient()
+      const svc = await createServerSupabaseClient()
       const { data, error } = await svc
         .from("orgs")
         .select("id, name, slug, billing_model")
@@ -31,7 +31,7 @@ export async function GET() {
       })
     }
 
-    const supabase = createServerSupabaseClient()
+    const supabase = await createServerSupabaseClient()
     const { data, error } = await supabase
       .from("memberships")
       .select(

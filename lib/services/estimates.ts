@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
+import { recordEvent } from "@/lib/services/events"
 import { createProposal } from "@/lib/services/proposals"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -196,7 +197,86 @@ export async function createEstimate({
     after: { ...estimate, items: itemsPayload },
   })
 
+  // CRM automation: If estimate has a recipient contact, update their lead status to "estimating"
+  if (recipient_contact_id) {
+    await updateProspectStatusOnEstimateCreation({
+      supabase,
+      orgId: resolvedOrgId,
+      contactId: recipient_contact_id,
+      estimateId: estimate.id,
+      estimateTitle: title,
+    })
+  }
+
   return { estimate, items: itemsPayload }
+}
+
+// Helper function to update prospect status when estimate is created
+async function updateProspectStatusOnEstimateCreation({
+  supabase,
+  orgId,
+  contactId,
+  estimateId,
+  estimateTitle,
+}: {
+  supabase: any
+  orgId: string
+  contactId: string
+  estimateId: string
+  estimateTitle: string
+}) {
+  try {
+    // Get the contact
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("id, full_name, contact_type, metadata")
+      .eq("org_id", orgId)
+      .eq("id", contactId)
+      .maybeSingle()
+
+    if (!contact) return
+
+    // Only update if this is a client contact (CRM prospect)
+    if (contact.contact_type !== "client") return
+
+    const existingMetadata = contact.metadata ?? {}
+    const currentStatus = existingMetadata.lead_status
+
+    // Only update if status is before "estimating" in the pipeline
+    // Don't downgrade from won/lost or already estimating
+    const statusesToUpdate = ["new", "contacted", "qualified", undefined]
+    if (!statusesToUpdate.includes(currentStatus)) return
+
+    // Update the contact's lead status to "estimating"
+    const metadata = {
+      ...existingMetadata,
+      lead_status: "estimating",
+    }
+
+    await supabase
+      .from("contacts")
+      .update({ metadata })
+      .eq("org_id", orgId)
+      .eq("id", contactId)
+
+    // Record the CRM event
+    await recordEvent({
+      orgId,
+      eventType: "crm_estimate_created",
+      entityType: "contact",
+      entityId: contactId,
+      payload: {
+        name: contact.full_name,
+        estimate_id: estimateId,
+        estimate_title: estimateTitle,
+        old_status: currentStatus ?? "new",
+        new_status: "estimating",
+      },
+    })
+  } catch (error) {
+    // Don't fail estimate creation if CRM update fails
+    console.error("Failed to update prospect status on estimate creation:", error)
+  }
 }
 
 export async function updateEstimateLines({

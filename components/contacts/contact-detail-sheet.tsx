@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
@@ -11,7 +12,8 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import type { Company, Contact } from "@/lib/types"
 import { getContactAction } from "@/app/(app)/contacts/actions"
-import { Mail, Phone, Link2, Loader2 } from "@/components/icons"
+import { trackInCrmAction } from "@/app/(app)/pipeline/actions"
+import { Mail, Phone, Loader2, Contact as ContactIcon } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
 interface ContactDetail {
@@ -28,7 +30,9 @@ interface ContactDetailSheetProps {
 export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDetailSheetProps) {
   const [data, setData] = useState<ContactDetail | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [isTrackingCrm, setIsTrackingCrm] = useState(false)
   const { toast } = useToast()
+  const router = useRouter()
 
   useEffect(() => {
     if (!open || !contactId) return
@@ -43,6 +47,21 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
   }, [contactId, open, toast])
 
   const contact = data?.contact
+
+  const handleTrackInPipeline = async () => {
+    if (!contact) return
+    setIsTrackingCrm(true)
+    try {
+      await trackInCrmAction(contact.id)
+      router.refresh()
+      toast({ title: "Contact tracked in Pipeline" })
+      router.push(`/prospects`)
+    } catch (error) {
+      toast({ title: "Failed to track in Pipeline", description: (error as Error).message })
+    } finally {
+      setIsTrackingCrm(false)
+    }
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -150,13 +169,23 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
               </Card>
 
               <Separator />
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" asChild>
-                  <Link href={`/estimates?recipient=${contact.id}`}>Create estimate</Link>
+              <div className="flex justify-between gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleTrackInPipeline}
+                  disabled={isTrackingCrm}
+                >
+                  <ContactIcon className="h-4 w-4 mr-2" />
+                  {isTrackingCrm ? "Tracking..." : "Track in Pipeline"}
                 </Button>
-                <Button variant="outline" onClick={() => onOpenChange(false)}>
-                  Close
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" asChild>
+                    <Link href={`/estimates?recipient=${contact.id}`}>Create estimate</Link>
+                  </Button>
+                  <Button variant="outline" onClick={() => onOpenChange(false)}>
+                    Close
+                  </Button>
+                </div>
               </div>
             </div>
           )}

@@ -13,45 +13,51 @@ function requireEnv(value: string | undefined, name: string) {
   return value
 }
 
-export function createServerSupabaseClient(): SupabaseClient {
+export async function createServerSupabaseClient(): Promise<SupabaseClient> {
   const url = requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL")
   const anonKey = requireEnv(SUPABASE_ANON_KEY, "NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
-  return createServerClient(url, anonKey, {
-    cookies: {
-      get: async (name: string) => {
-        const store = await safeCookies()
-        if (store && typeof (store as any).get === "function") {
-          return (store as any).get(name)?.value
-        }
-        const value = (store as any)?.[name]
-        if (!value) return undefined
-        if (typeof value === "string") return value
-        return value?.value ?? undefined
-      },
-      set: async (name: string, value: string, options: CookieOptions) => {
-        const store = await safeCookies()
-        if (store && typeof (store as any).set === "function") {
-          store.set({ name, value, ...options })
-        }
-      },
-      remove: async (name: string, options: CookieOptions) => {
-        const store = await safeCookies()
-        if (store && typeof (store as any).set === "function") {
-          store.set({ name, value: "", ...options, maxAge: 0 })
-        }
-      },
-    },
-  })
-}
-
-async function safeCookies() {
   try {
-    return await cookies()
-  } catch {
-    return undefined
+    const cookieStore = await cookies()
+
+    return createServerClient(url, anonKey, {
+      cookies: {
+        get: (name: string) => {
+          try {
+            const cookie = cookieStore.get(name)
+            return cookie?.value
+          } catch {
+            return undefined
+          }
+        },
+        set: (name: string, value: string, options: CookieOptions) => {
+          try {
+            cookieStore.set(name, value, options)
+          } catch {
+            // Failed to set cookie
+          }
+        },
+        remove: (name: string, options: CookieOptions) => {
+          try {
+            cookieStore.set(name, "", { ...options, maxAge: 0 })
+          } catch {
+            // Failed to remove cookie
+          }
+        },
+      },
+    })
+  } catch (error) {
+    // If cookies fail, create a client without cookies (for server-side operations)
+    console.warn('Cookies not available, creating client without cookies:', error)
+    return createBrowserlessClient(url, anonKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    })
   }
 }
+
 
 export function createServiceSupabaseClient(): SupabaseClient {
   const url = requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL")

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -19,7 +20,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { AlertCircle, Bell, Building2, CreditCard, Link2, Settings, User as UserIcon, Users } from "@/components/icons"
 import { Info } from "lucide-react"
 import { getQBOConnectionAction } from "@/app/(app)/settings/integrations/actions"
-import { getBillingAction } from "@/app/(app)/settings/actions"
+import { createBillingPortalSessionAction, createCheckoutSessionAction, getBillingAction, getBillingPlansAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
 import type { ComplianceRules, TeamMember, User } from "@/lib/types"
@@ -69,6 +70,15 @@ type BillingDetails = {
     currency?: string | null
   } | null
 } | null
+
+type BillingPlan = {
+  code: string
+  name: string
+  pricingModel: string
+  interval: string | null
+  amountCents: number | null
+  currency: string | null
+}
 
 interface SettingsWindowProps {
   user: User | null
@@ -122,6 +132,13 @@ export function SettingsWindow({
   const [hasFetchedBilling, setHasFetchedBilling] = useState<boolean>(Boolean(initialBilling))
   const [loadingBilling, setLoadingBilling] = useState(false)
   const [billingError, setBillingError] = useState<string | null>(null)
+  const [plans, setPlans] = useState<BillingPlan[]>([])
+  const [hasFetchedPlans, setHasFetchedPlans] = useState(false)
+  const [loadingPlans, setLoadingPlans] = useState(false)
+  const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null)
+  const [checkoutLoading, setCheckoutLoading] = useState(false)
+  const [portalLoading, setPortalLoading] = useState(false)
+  const [billingActionError, setBillingActionError] = useState<string | null>(null)
   const initials = useMemo(() => getInitials(user), [user])
   const isMobile = useIsMobile()
 
@@ -170,6 +187,7 @@ export function SettingsWindow({
 
     if (!canManageBilling) {
       setHasFetchedBilling(true)
+      setHasFetchedPlans(true)
       return
     }
 
@@ -199,6 +217,31 @@ export function SettingsWindow({
     }
   }, [tab, hasFetchedBilling, canManageBilling])
 
+  useEffect(() => {
+    if (tab !== "billing" || hasFetchedPlans || !canManageBilling) return
+
+    let isMounted = true
+    setLoadingPlans(true)
+    getBillingPlansAction()
+      .then((data) => {
+        if (!isMounted) return
+        setPlans(data ?? [])
+        setHasFetchedPlans(true)
+      })
+      .catch((error) => {
+        console.error("Failed to load billing plans", error)
+        if (!isMounted) return
+        setHasFetchedPlans(true)
+      })
+      .finally(() => {
+        if (isMounted) setLoadingPlans(false)
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [tab, hasFetchedPlans, canManageBilling])
+
   const containerHeight =
     variant === "dialog"
       ? "flex h-[70vh] min-h-[520px] max-h-[80vh]"
@@ -216,6 +259,55 @@ export function SettingsWindow({
       ? `$${(billing.plan.amount_cents / 100).toFixed(2)} ${billing.plan.currency ?? "usd"}`
       : "Custom / invoiced"
   const interval = billing?.plan?.interval ?? "monthly"
+  const trialEndsAt = billing?.subscription?.trial_ends_at
+  const isActive = billingStatus === "active"
+  const isTrialing = billingStatus === "trialing"
+  const isPastDue = billingStatus === "past_due"
+  const needsSubscription = !isActive
+
+  useEffect(() => {
+    if (!selectedPlanCode && plans.length > 0) {
+      const defaultCode = billing?.subscription?.plan_code ?? plans[0]?.code
+      if (defaultCode) setSelectedPlanCode(defaultCode)
+    }
+  }, [plans, selectedPlanCode, billing?.subscription?.plan_code])
+
+  const handleSubscribe = async () => {
+    if (!selectedPlanCode) return
+    setCheckoutLoading(true)
+    setBillingActionError(null)
+    try {
+      const { url } = await createCheckoutSessionAction(selectedPlanCode)
+      if (url) {
+        window.location.href = url
+      } else {
+        setBillingActionError("Unable to start checkout. Please try again.")
+      }
+    } catch (error: any) {
+      console.error("Checkout error", error)
+      setBillingActionError(error?.message ?? "Unable to start checkout.")
+    } finally {
+      setCheckoutLoading(false)
+    }
+  }
+
+  const handleManageBilling = async () => {
+    setPortalLoading(true)
+    setBillingActionError(null)
+    try {
+      const { url } = await createBillingPortalSessionAction()
+      if (url) {
+        window.location.href = url
+      } else {
+        setBillingActionError("Unable to open billing portal.")
+      }
+    } catch (error: any) {
+      console.error("Billing portal error", error)
+      setBillingActionError(error?.message ?? "Unable to open billing portal.")
+    } finally {
+      setPortalLoading(false)
+    }
+  }
 
   return (
     <Tabs value={tab} onValueChange={setTab}>
@@ -407,9 +499,7 @@ export function SettingsWindow({
                         </CardHeader>
                         <CardContent className="space-y-2 text-sm text-muted-foreground">
                           {renewal && <div>Current period ends: {new Date(renewal).toLocaleDateString()}</div>}
-                          {billing.subscription?.trial_ends_at && (
-                            <div>Trial ends: {new Date(billing.subscription.trial_ends_at).toLocaleDateString()}</div>
-                          )}
+                          {trialEndsAt && <div>Trial ends: {new Date(trialEndsAt).toLocaleDateString()}</div>}
                           {billing.subscription?.external_customer_id && (
                             <div>External customer: {billing.subscription.external_customer_id}</div>
                           )}
@@ -420,6 +510,70 @@ export function SettingsWindow({
                       </Card>
                     ) : (
                       <div className="text-sm text-muted-foreground">No billing details available.</div>
+                    )}
+
+                    {billingActionError && (
+                      <div className="text-sm text-destructive">{billingActionError}</div>
+                    )}
+
+                    {needsSubscription && (
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle>Start subscription</CardTitle>
+                          <CardDescription>
+                            {isTrialing
+                              ? "Keep your workspace active by choosing a plan."
+                              : "Choose a plan to activate your workspace."}
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          {loadingPlans ? (
+                            <div className="flex items-center gap-3 text-muted-foreground">
+                              <Spinner className="h-4 w-4" />
+                              <span className="text-sm">Loading plans...</span>
+                            </div>
+                          ) : plans.length === 0 ? (
+                            <div className="text-sm text-muted-foreground">
+                              No active plans are available. Please contact support.
+                            </div>
+                          ) : (
+                            <div className="grid gap-3">
+                              <Select
+                                value={selectedPlanCode ?? undefined}
+                                onValueChange={setSelectedPlanCode}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select a plan" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {plans.map((plan) => (
+                                    <SelectItem key={plan.code} value={plan.code}>
+                                      {plan.name} • {plan.amountCents ? `$${(plan.amountCents / 100).toFixed(0)}` : "Custom"}
+                                      {plan.interval ? `/${plan.interval}` : ""}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Button onClick={handleSubscribe} disabled={!selectedPlanCode || checkoutLoading}>
+                                {checkoutLoading ? "Redirecting..." : "Subscribe"}
+                              </Button>
+                            </div>
+                          )}
+                          {isPastDue && (
+                            <div className="text-xs text-muted-foreground">
+                              Your subscription is past due. Update billing to keep access active.
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {isActive && (
+                      <div className="flex justify-start">
+                        <Button variant="outline" onClick={handleManageBilling} disabled={portalLoading}>
+                          {portalLoading ? "Opening portal..." : "Manage billing"}
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>

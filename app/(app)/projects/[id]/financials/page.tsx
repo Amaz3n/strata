@@ -50,11 +50,10 @@ export default async function ProjectFinancialsPage({ params, searchParams }: Pr
   }
 
   return (
-    <PageLayout title="Page"
+    <PageLayout
       title="Financials"
-      user={currentUser}
       breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}`, isProject: true, projectId: project.id },
+        { label: project.name, href: `/projects/${project.id}` },
         { label: "Financials" },
       ]}
     >

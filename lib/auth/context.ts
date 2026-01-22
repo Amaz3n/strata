@@ -107,7 +107,7 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
 }
 
 export async function getAuthContext(): Promise<AuthContext> {
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const {
     data: { user },
   } = await supabase.auth.getUser()

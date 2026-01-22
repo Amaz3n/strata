@@ -46,7 +46,7 @@ export async function signInAction(prevState: AuthState, formData: FormData): Pr
     return { error: "Enter a valid email and password." }
   }
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const { error } = await supabase.auth.signInWithPassword(parsed.data)
 
   if (error) {
@@ -87,7 +87,7 @@ export async function signUpAction(prevState: AuthState, formData: FormData): Pr
     }
   }
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase.auth.signUp({
     email: parsed.data.email,
     password: parsed.data.password,
@@ -142,7 +142,7 @@ export async function signUpAction(prevState: AuthState, formData: FormData): Pr
 }
 
 export async function signOutAction() {
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   await supabase.auth.signOut()
   await clearOrgCookie()
   redirect("/auth/signin")
@@ -157,7 +157,7 @@ export async function requestPasswordResetAction(prevState: AuthState, formData:
     return { error: "Enter a valid email address." }
   }
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
     redirectTo: `${getSiteUrl()}/auth/reset`,
   })
@@ -180,7 +180,7 @@ export async function updatePasswordAction(prevState: AuthState, formData: FormD
     return { error: firstError }
   }
 
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const { error } = await supabase.auth.updateUser({ password: parsed.data.password })
 
   if (error) {

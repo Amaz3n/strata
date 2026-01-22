@@ -32,11 +32,10 @@ export default async function ProjectMessagesPage({ params }: ProjectMessagesPag
   ])
 
   return (
-    <PageLayout title="Page"
-      title={`${project.name} - Messages`}
-      user={currentUser}
+    <PageLayout
+      title="Messages"
       breadcrumbs={[
-        { label: project.name, isProject: true, projectId: project.id },
+        { label: project.name, href: `/projects/${project.id}` },
         { label: "Messages" },
       ]}
     >
