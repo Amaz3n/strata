@@ -1,12 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useCallback, useTransition } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PortalHeader } from "@/components/portal/portal-header"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
 import {
   SubBottomNav,
+  SubComplianceTab,
   SubDashboard,
   SubDocumentsTab,
   type SubPortalTab,
@@ -14,7 +15,7 @@ import {
 import { SubRfisTab } from "./sub-rfis-tab"
 import { SubSubmittalsTab } from "./sub-submittals-tab"
 import { SubMessagesTab } from "./sub-messages-tab"
-import type { SubPortalData } from "@/lib/types"
+import type { ComplianceDocumentType, ComplianceStatusSummary, SubPortalData } from "@/lib/types"
 
 interface SubPortalClientProps {
   data: SubPortalData
@@ -22,22 +23,47 @@ interface SubPortalClientProps {
   canMessage?: boolean
   canSubmitInvoices?: boolean
   canDownloadFiles?: boolean
+  canUploadComplianceDocs?: boolean
   pinRequired?: boolean
+  complianceDocumentTypes?: ComplianceDocumentType[]
 }
 
 export function SubPortalClient({
-  data,
+  data: initialData,
   token,
   canMessage = false,
   canSubmitInvoices = true,
   canDownloadFiles = true,
+  canUploadComplianceDocs = true,
   pinRequired = false,
+  complianceDocumentTypes = [],
 }: SubPortalClientProps) {
   const [activeTab, setActiveTab] = useState<SubPortalTab>("dashboard")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
+  const [data, setData] = useState(initialData)
+  const [complianceStatus, setComplianceStatus] = useState<ComplianceStatusSummary | undefined>(
+    initialData.complianceStatus
+  )
+  const [, startTransition] = useTransition()
   const isMobile = useIsMobile()
 
   const hasAttentionItems = data.pendingRfiCount > 0 || data.pendingSubmittalCount > 0
+  const complianceIssues =
+    (complianceStatus?.missing.length ?? 0) + (complianceStatus?.expired.length ?? 0)
+
+  const refreshCompliance = useCallback(() => {
+    startTransition(async () => {
+      try {
+        const res = await fetch(`/api/portal/s/${token}/compliance`)
+        if (res.ok) {
+          const status = await res.json()
+          setComplianceStatus(status)
+        }
+      } catch {
+        // Silently fail - user can refresh manually
+      }
+    })
+  }, [token])
 
   if (!pinVerified) {
     return (
@@ -77,6 +103,15 @@ export function SubPortalClient({
             {activeTab === "submittals" && (
               <SubSubmittalsTab submittals={data.submittals} token={token} />
             )}
+            {activeTab === "compliance" && (
+              <SubComplianceTab
+                complianceStatus={complianceStatus}
+                documentTypes={complianceDocumentTypes}
+                token={token}
+                canUpload={canUploadComplianceDocs}
+                onRefresh={refreshCompliance}
+              />
+            )}
             {activeTab === "messages" && (
               <SubMessagesTab
                 messages={data.messages}
@@ -92,6 +127,7 @@ export function SubPortalClient({
             hasAttentionItems={hasAttentionItems}
             pendingRfis={data.pendingRfiCount}
             pendingSubmittals={data.pendingSubmittalCount}
+            complianceIssues={complianceIssues}
           />
         </>
       ) : (
@@ -112,7 +148,12 @@ export function SubPortalClient({
                   <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" />
                 )}
               </TabsTrigger>
-              <TabsTrigger value="messages">Messages</TabsTrigger>
+              <TabsTrigger value="compliance" className="relative">
+                Compliance
+                {complianceIssues > 0 && (
+                  <span className="ml-1.5 h-2 w-2 rounded-full bg-orange-500" />
+                )}
+              </TabsTrigger>
             </TabsList>
             <TabsContent value="dashboard">
               <SubDashboard
@@ -134,12 +175,13 @@ export function SubPortalClient({
             <TabsContent value="submittals">
               <SubSubmittalsTab submittals={data.submittals} token={token} />
             </TabsContent>
-            <TabsContent value="messages">
-              <SubMessagesTab
-                messages={data.messages}
+            <TabsContent value="compliance">
+              <SubComplianceTab
+                complianceStatus={complianceStatus}
+                documentTypes={complianceDocumentTypes}
                 token={token}
-                canMessage={canMessage}
-                senderName={data.company.name}
+                canUpload={canUploadComplianceDocs}
+                onRefresh={refreshCompliance}
               />
             </TabsContent>
           </Tabs>

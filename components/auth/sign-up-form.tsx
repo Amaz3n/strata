@@ -27,7 +27,7 @@ export function SignUpForm() {
           <Label htmlFor="orgName" className="text-sm text-muted-foreground">
             Company / org
           </Label>
-          <Input id="orgName" name="orgName" placeholder="Strata Builders" required />
+          <Input id="orgName" name="orgName" placeholder="Arc Builders" required />
         </div>
       </div>
 

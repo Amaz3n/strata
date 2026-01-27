@@ -20,7 +20,13 @@ import { Spinner } from "@/components/ui/spinner"
 import { AlertCircle, Bell, Building2, CreditCard, Link2, Settings, User as UserIcon, Users } from "@/components/icons"
 import { Info } from "lucide-react"
 import { getQBOConnectionAction } from "@/app/(app)/settings/integrations/actions"
-import { createBillingPortalSessionAction, createCheckoutSessionAction, getBillingAction, getBillingPlansAction } from "@/app/(app)/settings/actions"
+import {
+  createBillingPortalSessionAction,
+  createCheckoutSessionAction,
+  getBillingAction,
+  getBillingPlansAction,
+  getTeamSettingsDataAction,
+} from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
 import type { ComplianceRules, TeamMember, User } from "@/lib/types"
@@ -42,8 +48,8 @@ const sections = [
 ]
 
 const appInfo = {
-  name: "Strata",
-  company: "Strata",
+  name: "Arc",
+  company: "Arc",
   version: packageJson.version ?? "0.1.0",
   termsUrl: "/terms",
   logoUrl: "/icon.svg",
@@ -109,9 +115,9 @@ export function SettingsWindow({
   initialTab = "profile",
   initialQboConnection = null,
   variant = "page",
-  teamMembers = [],
-  canManageMembers = false,
-  canEditRoles = false,
+  teamMembers: initialTeamMembers,
+  canManageMembers: initialCanManageMembers,
+  canEditRoles: initialCanEditRoles,
   initialBilling = null,
   canManageBilling = true,
   initialComplianceRules = {
@@ -139,6 +145,16 @@ export function SettingsWindow({
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [portalLoading, setPortalLoading] = useState(false)
   const [billingActionError, setBillingActionError] = useState<string | null>(null)
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>(initialTeamMembers ?? [])
+  const [canManageMembers, setCanManageMembers] = useState<boolean>(initialCanManageMembers ?? false)
+  const [canEditRoles, setCanEditRoles] = useState<boolean>(initialCanEditRoles ?? false)
+  const [hasFetchedTeam, setHasFetchedTeam] = useState<boolean>(
+    initialTeamMembers !== undefined ||
+      initialCanManageMembers !== undefined ||
+      initialCanEditRoles !== undefined,
+  )
+  const [loadingTeam, setLoadingTeam] = useState(false)
+  const [teamError, setTeamError] = useState<string | null>(null)
   const initials = useMemo(() => getInitials(user), [user])
   const isMobile = useIsMobile()
 
@@ -157,6 +173,25 @@ export function SettingsWindow({
     setHasFetchedBilling(Boolean(initialBilling))
     setBillingError(null)
   }, [initialBilling])
+
+  useEffect(() => {
+    if (initialTeamMembers !== undefined) {
+      setTeamMembers(initialTeamMembers)
+    }
+    if (initialCanManageMembers !== undefined) {
+      setCanManageMembers(initialCanManageMembers)
+    }
+    if (initialCanEditRoles !== undefined) {
+      setCanEditRoles(initialCanEditRoles)
+    }
+    if (
+      initialTeamMembers !== undefined ||
+      initialCanManageMembers !== undefined ||
+      initialCanEditRoles !== undefined
+    ) {
+      setHasFetchedTeam(true)
+    }
+  }, [initialTeamMembers, initialCanManageMembers, initialCanEditRoles])
 
   useEffect(() => {
     if (tab !== "integrations" || hasFetchedIntegrations) return
@@ -242,6 +277,44 @@ export function SettingsWindow({
     }
   }, [tab, hasFetchedPlans, canManageBilling])
 
+  const loadTeam = (forceRefresh = false) => {
+    if ((hasFetchedTeam && !forceRefresh) || loadingTeam) return
+    let isMounted = true
+    setLoadingTeam(true)
+    setTeamError(null)
+    Promise.resolve(getTeamSettingsDataAction())
+      .then((data) => {
+        if (!isMounted) return
+        setTeamMembers(data?.teamMembers ?? [])
+        setCanManageMembers(Boolean(data?.canManageMembers))
+        setCanEditRoles(Boolean(data?.canEditRoles))
+        setHasFetchedTeam(true)
+      })
+      .catch((error) => {
+        console.error("Failed to load team settings", error)
+        if (!isMounted) return
+        setTeamError("Unable to load team members.")
+        setHasFetchedTeam(true)
+      })
+      .finally(() => {
+        if (isMounted) setLoadingTeam(false)
+      })
+    return () => {
+      isMounted = false
+    }
+  }
+
+  const refreshTeam = () => {
+    loadTeam(true)
+  }
+
+  const handleTabChange = (nextTab: string) => {
+    setTab(nextTab)
+    if (nextTab === "team") {
+      loadTeam()
+    }
+  }
+
   const containerHeight =
     variant === "dialog"
       ? "flex h-[70vh] min-h-[520px] max-h-[80vh]"
@@ -310,7 +383,7 @@ export function SettingsWindow({
   }
 
   return (
-    <Tabs value={tab} onValueChange={setTab}>
+    <Tabs value={tab} onValueChange={handleTabChange}>
       <div className={containerHeight}>
         {!isMobile && (
           <div className="w-80 border-r bg-muted/30 p-6">
@@ -617,9 +690,23 @@ export function SettingsWindow({
                         Manage internal teammates, roles, and invites.
                       </p>
                     </div>
-                    <InviteMemberDialog canInvite={canManageMembers} />
+                    <InviteMemberDialog canInvite={canManageMembers} onSuccess={refreshTeam} />
                   </div>
-                  <TeamTable members={teamMembers} canManageMembers={canManageMembers} canEditRoles={canEditRoles} />
+                  {loadingTeam ? (
+                    <div className="flex items-center gap-3 text-muted-foreground">
+                      <Spinner className="h-4 w-4" />
+                      <span className="text-sm">Loading team members...</span>
+                    </div>
+                  ) : teamError ? (
+                    <div className="text-sm text-destructive">{teamError}</div>
+                  ) : (
+                    <TeamTable
+                      members={teamMembers}
+                      canManageMembers={canManageMembers}
+                      canEditRoles={canEditRoles}
+                      onMemberChange={refreshTeam}
+                    />
+                  )}
                 </div>
               </TabsContent>
 

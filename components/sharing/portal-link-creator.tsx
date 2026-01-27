@@ -112,11 +112,37 @@ export function PortalLinkCreator({ projectId, onCreated }: PortalLinkCreatorPro
   }, [permissionPreset])
 
   async function copy(text: string) {
+    // Try modern clipboard API first
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(text)
+        toast.success("Copied to clipboard")
+        return
+      } catch {
+        // Fall through to fallback
+      }
+    }
+
+    // Fallback for iOS and older browsers
     try {
-      await navigator.clipboard.writeText(text)
-      toast.success("Copied to clipboard")
-    } catch (error) {
-      console.error("Failed to copy", error)
+      const textArea = document.createElement("textarea")
+      textArea.value = text
+      textArea.style.position = "fixed"
+      textArea.style.left = "-9999px"
+      textArea.style.top = "0"
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+
+      const successful = document.execCommand("copy")
+      document.body.removeChild(textArea)
+
+      if (successful) {
+        toast.success("Copied to clipboard")
+      } else {
+        toast.error("Unable to copy")
+      }
+    } catch {
       toast.error("Unable to copy")
     }
   }
@@ -424,25 +450,25 @@ export function PortalLinkCreator({ projectId, onCreated }: PortalLinkCreatorPro
 
       {/* Success State */}
       {lastCreated && (
-        <div className="border-2 border-success/30 bg-success/5 p-3">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="flex h-7 w-7 items-center justify-center bg-success/10">
+        <div className="border-2 border-success/30 bg-success/5 p-3 overflow-hidden">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center bg-success/10">
                 <CheckCircle2 className="h-4 w-4 text-success" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-sm font-medium text-success">Link ready</p>
                 <p className="text-[10px] text-muted-foreground">Copy and share</p>
               </div>
             </div>
-            <Badge variant="secondary" className="text-[10px] capitalize">
+            <Badge variant="secondary" className="text-[10px] capitalize shrink-0">
               {lastCreated.portal_type}
             </Badge>
           </div>
 
           <div className="space-y-2">
-            <div className="flex items-center gap-1 border bg-background px-2 py-1 overflow-hidden">
-              <span className="truncate font-mono text-[10px] text-muted-foreground flex-1">
+            <div className="flex items-center gap-1 border bg-background px-2 py-1 overflow-hidden min-w-0">
+              <span className="truncate font-mono text-[10px] text-muted-foreground">
                 {createdUrl}
               </span>
             </div>
@@ -460,7 +486,7 @@ export function PortalLinkCreator({ projectId, onCreated }: PortalLinkCreatorPro
               <Button
                 size="sm"
                 variant="outline"
-                className="gap-1.5 h-8"
+                className="gap-1.5 h-8 shrink-0"
                 onClick={() => createdUrl && window.open(createdUrl, "_blank", "noopener,noreferrer")}
                 disabled={!createdUrl}
               >

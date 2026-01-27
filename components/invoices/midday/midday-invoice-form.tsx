@@ -246,7 +246,7 @@ export function MiddayInvoiceForm({
             <Calendar className="h-4 w-4 text-primary" />
             Midday Invoice Composer
           </SheetTitle>
-          <p className="text-sm text-muted-foreground">Identical layout to Midday’s sheet, wired to Strata data.</p>
+          <p className="text-sm text-muted-foreground">Identical layout to Midday’s sheet, wired to Arc data.</p>
         </SheetHeader>
 
         <Form {...form}>

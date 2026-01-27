@@ -3,7 +3,22 @@
 import { revalidatePath } from "next/cache"
 
 import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, updateCompany } from "@/lib/services/companies"
+import {
+  getCompanyComplianceStatus,
+  getCompanyRequirements,
+  listComplianceDocumentTypes,
+  listComplianceDocuments,
+  reviewComplianceDocument,
+  setCompanyRequirements,
+  uploadComplianceDocument,
+} from "@/lib/services/compliance-documents"
 import { companyFiltersSchema, companyInputSchema, companyUpdateSchema } from "@/lib/validation/companies"
+import {
+  complianceDocumentFiltersSchema,
+  complianceReviewDecisionSchema,
+  type ComplianceRequirementInput,
+  type ComplianceDocumentUploadInput,
+} from "@/lib/validation/compliance-documents"
 
 export async function listCompaniesAction(filters?: unknown) {
   const parsed = companyFiltersSchema.parse(filters ?? undefined) ?? undefined
@@ -39,6 +54,58 @@ export async function getCompanyAction(companyId: string) {
   const company = await getCompany(companyId)
   const projects = await getCompanyProjects(companyId)
   return { company, projects }
+}
+
+// Compliance Document Actions
+
+export async function listComplianceDocumentTypesAction() {
+  return listComplianceDocumentTypes()
+}
+
+export async function getCompanyComplianceStatusAction(companyId: string) {
+  return getCompanyComplianceStatus(companyId)
+}
+
+export async function getCompanyRequirementsAction(companyId: string) {
+  return getCompanyRequirements(companyId)
+}
+
+export async function setCompanyRequirementsAction(
+  companyId: string,
+  requirements: ComplianceRequirementInput[]
+) {
+  const result = await setCompanyRequirements({ companyId, requirements })
+  revalidatePath(`/companies/${companyId}`)
+  return result
+}
+
+export async function listComplianceDocumentsAction(filters?: unknown) {
+  const parsed = complianceDocumentFiltersSchema.parse(filters ?? {}) ?? undefined
+  return listComplianceDocuments(parsed)
+}
+
+export async function uploadComplianceDocumentAction({
+  companyId,
+  input,
+  fileId,
+}: {
+  companyId: string
+  input: ComplianceDocumentUploadInput
+  fileId: string
+}) {
+  const result = await uploadComplianceDocument({ companyId, input, fileId })
+  revalidatePath(`/companies/${companyId}`)
+  return result
+}
+
+export async function reviewComplianceDocumentAction(
+  documentId: string,
+  decision: unknown
+) {
+  const parsed = complianceReviewDecisionSchema.parse(decision)
+  const result = await reviewComplianceDocument({ documentId, decision: parsed })
+  revalidatePath(`/companies`)
+  return result
 }
 
 

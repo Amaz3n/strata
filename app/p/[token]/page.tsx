@@ -22,6 +22,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
     projectId: access.project_id,
     permissions: access.permissions,
     portalType: "client",
+    companyId: access.company_id,
   })
 
   await recordPortalAccess(access.id)

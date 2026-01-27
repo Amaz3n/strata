@@ -19,7 +19,7 @@ import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 const PAY_PATH = `${APP_URL}/p/pay`
 const LINK_SECRET = process.env.PAYMENT_LINK_SECRET
 

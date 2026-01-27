@@ -159,7 +159,7 @@ function PaymentForm({
       <PaymentElement
         options={{
           layout: "tabs",
-          business: { name: "Strata" },
+          business: { name: "Arc" },
         }}
       />
 
@@ -314,23 +314,60 @@ function mapLineItems(invoice: Invoice): LineItem[] {
   const source =
     invoice.lines && invoice.lines.length > 0 ? invoice.lines : ((invoice.metadata as any)?.lines ?? [])
 
-  return (source ?? []).map((line: any) => ({
-    name: line.description ?? line.name ?? "Item",
-    quantity: Number(line.quantity ?? 0),
-    unit: line.unit ?? undefined,
-    price: typeof line.unit_cost_cents === "number" ? line.unit_cost_cents / 100 : Number(line.price ?? 0),
-    productId: line.productId ?? undefined,
-  }))
+  return (source ?? []).map((line: any) => {
+    // Handle both unit_cost_cents (from mapping) and unit_price_cents (raw from DB)
+    const priceCents = line.unit_cost_cents ?? line.unit_price_cents ?? null
+    const price = typeof priceCents === "number" ? priceCents / 100 : Number(line.unit_cost ?? line.price ?? 0)
+
+    return {
+      name: line.description ?? line.name ?? "Item",
+      quantity: Number(line.quantity ?? 0),
+      unit: line.unit ?? undefined,
+      price,
+      productId: line.productId ?? undefined,
+    }
+  })
+}
+
+// Helper to convert plain text to EditorDoc format for the invoice template
+function textToEditorDoc(text: string | null | undefined): import("@/packages/invoice/src/types").EditorDoc | null {
+  if (!text) return null
+  const lines = text.split("\n").filter(Boolean)
+  if (lines.length === 0) return null
+
+  return {
+    type: "doc",
+    content: lines.map(line => ({
+      type: "paragraph",
+      content: [{ type: "text", text: line }]
+    }))
+  }
 }
 
 function toMiddayInvoice(invoice: Invoice): MiddayInvoice {
   const lineItems = mapLineItems(invoice)
   const totalCents = invoice.total_cents ?? invoice.totals?.total_cents ?? 0
   const amount = totalCents ? totalCents / 100 : null
+  const metadata = invoice.metadata as any
+
+  // Build customer details from metadata
+  const customerName = metadata?.customer_name ?? null
+  const customerEmail = metadata?.customer_email ?? null
+  const customerDetailsText = [customerName, customerEmail].filter(Boolean).join("\n")
+
+  // Build from details from org info if available
+  const orgName = metadata?.org_name ?? null
+  const orgEmail = metadata?.org_email ?? null
+  const orgPhone = metadata?.org_phone ?? null
+  const orgAddress = metadata?.org_address ?? null
+  const fromDetailsText = [orgName, orgAddress, orgPhone, orgEmail].filter(Boolean).join("\n")
+
+  // Payment details from metadata
+  const paymentDetailsText = metadata?.payment_details ?? null
 
   const template: Template = {
     ...defaultTemplate,
-    taxRate: (invoice.totals?.tax_rate ?? (invoice.metadata as any)?.tax_rate ?? 0) || 0,
+    taxRate: (invoice.totals?.tax_rate ?? metadata?.tax_rate ?? 0) || 0,
     includeTax: true,
     includeVat: false,
     currency: "USD",
@@ -347,10 +384,10 @@ function toMiddayInvoice(invoice: Invoice): MiddayInvoice {
     amount,
     currency: "USD",
     lineItems,
-    paymentDetails: null,
-    customerDetails: null,
-    fromDetails: null,
-    noteDetails: null,
+    paymentDetails: textToEditorDoc(paymentDetailsText),
+    customerDetails: textToEditorDoc(customerDetailsText),
+    fromDetails: textToEditorDoc(fromDetailsText),
+    noteDetails: textToEditorDoc(invoice.notes),
     reminderSentAt: null,
     note: invoice.notes ?? null,
     internalNote: null,
@@ -361,19 +398,19 @@ function toMiddayInvoice(invoice: Invoice): MiddayInvoice {
     status: mapStatus(invoice.status),
     viewedAt: null,
     template,
-    customerName: (invoice.metadata as any)?.customer_name ?? "Customer",
+    customerName: customerName ?? "Customer",
     sentTo: null,
     discount: null,
     topBlock: null,
     bottomBlock: null,
     customer: {
-      name: (invoice.metadata as any)?.customer_name ?? null,
+      name: customerName,
       website: null,
-      email: null,
+      email: customerEmail,
     },
     customerId: null,
     team: {
-      name: (invoice.metadata as any)?.org_name ?? null,
+      name: orgName,
     },
   }
 }
@@ -386,7 +423,7 @@ export function InvoicePublicWithPay({ invoice, payment, receipts }: Props) {
   const mapped = useMemo(() => toMiddayInvoice(invoice), [invoice])
   const invoiceToken = payment?.token ?? invoice.token ?? null
   const receiptList = receipts ?? []
-  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"}/i/${invoice.token}`
+  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"}/i/${invoice.token}`
   const [shareUrl, setShareUrl] = useState(fallbackShareUrl)
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0

@@ -16,7 +16,7 @@ function formatMoneyFromCents(cents?: number | null) {
 
 function getShareUrl(token?: string | null) {
   if (!token) return null
-  const base = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
+  const base = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
   return `${base}/i/${token}`
 }
 

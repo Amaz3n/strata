@@ -136,7 +136,7 @@ function toMiddayInvoice(invoice: CoreInvoice): MiddayInvoice {
 
 export function InvoicePublicMiddayView({ invoice }: Props) {
   const mapped = useMemo(() => toMiddayInvoice(invoice), [invoice])
-  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"}/i/${invoice.token}`
+  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"}/i/${invoice.token}`
   const [shareUrl, setShareUrl] = useState(fallbackShareUrl)
 
   const width = mapped.template.size === "letter" ? 750 : 595

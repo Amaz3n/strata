@@ -1,4 +1,4 @@
--- Strata: Production Schema (Reconciled)
+-- Arc: Production Schema (Reconciled)
 -- This file represents the complete production schema after reconciliation
 -- Generated from production database state - DO NOT MODIFY DIRECTLY
 

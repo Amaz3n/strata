@@ -7,7 +7,9 @@ import { getOrgBilling } from "@/lib/services/orgs"
 import { listActiveSubscriptionPlans } from "@/lib/services/billing"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createStripeBillingPortalSession, createStripeCheckoutSession, createStripeCustomer, getAppBaseUrl } from "@/lib/integrations/payments/stripe"
-import { requirePermission } from "@/lib/services/permissions"
+import { getCurrentUserPermissions, requirePermission } from "@/lib/services/permissions"
+import { listTeamMembers } from "@/lib/services/team"
+import { getOrgAccessState } from "@/lib/services/access"
 
 export async function getNotificationPreferencesAction() {
   const { user } = await requireOrgMembership()
@@ -114,7 +116,7 @@ export async function createCheckoutSessionAction(planCode: string) {
   if (!customerId) {
     const customer = await createStripeCustomer({
       email: org.billing_email ?? user.email ?? "",
-      name: org.name ?? "Strata Customer",
+      name: org.name ?? "Arc Customer",
       metadata: { org_id: orgId },
     })
     customerId = customer.id
@@ -182,7 +184,7 @@ export async function createBillingPortalSessionAction() {
 
     const customer = await createStripeCustomer({
       email: org?.billing_email ?? user.email ?? "",
-      name: org?.name ?? "Strata Customer",
+      name: org?.name ?? "Arc Customer",
       metadata: { org_id: orgId },
     })
     customerId = customer.id
@@ -192,4 +194,29 @@ export async function createBillingPortalSessionAction() {
   const appUrl = getAppBaseUrl()
   const session = await createStripeBillingPortalSession(customerId, `${appUrl}/settings?tab=billing`)
   return { url: session.url }
+}
+
+export async function getTeamSettingsDataAction() {
+  const [accessState, permissionResult] = await Promise.all([
+    getOrgAccessState().catch(() => ({ status: "unknown", locked: false })),
+    getCurrentUserPermissions(),
+  ])
+  const permissions = permissionResult?.permissions ?? []
+
+  if (accessState.locked) {
+    return {
+      teamMembers: [],
+      canManageMembers: false,
+      canEditRoles: false,
+      locked: true,
+    }
+  }
+
+  const teamMembers = await listTeamMembers()
+  return {
+    teamMembers,
+    canManageMembers: permissions.includes("members.manage"),
+    canEditRoles: permissions.includes("org.admin"),
+    locked: false,
+  }
 }

@@ -6,10 +6,11 @@ import Link from "next/link"
 import { toast } from "sonner"
 import { format, parseISO } from "date-fns"
 
-import type { Project, Contact, PortalAccessToken, Proposal, Contract, DrawSchedule, ScheduleItem } from "@/lib/types"
+import type { Project, Contact, PortalAccessToken, Proposal, Contract, DrawSchedule, ScheduleItem, Company, ProjectVendor } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { loadSharingDataAction, revokePortalTokenAction, setPortalTokenPinAction, removePortalTokenPinAction } from "@/app/(app)/sharing/actions"
 import { updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
+import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
 
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,6 +27,7 @@ import { ProjectSettingsSheet } from "@/components/projects/project-settings-she
 import { ProjectSetupWizardSheet } from "@/app/(app)/projects/[id]/project-setup-wizard-sheet"
 import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
 import { ProjectOverviewSetupChecklist } from "./project-overview-setup-checklist"
+import { ManageTeamSheet } from "@/components/projects/manage-team-sheet"
 
 import {
   Share2,
@@ -45,6 +47,9 @@ import { cn } from "@/lib/utils"
 interface ProjectOverviewActionsProps {
   project: Project
   contacts: Contact[]
+  companies: Company[]
+  team: ProjectTeamMember[]
+  projectVendors: ProjectVendor[]
   portalTokens: PortalAccessToken[]
   proposals: Proposal[]
   contract: Contract | null
@@ -78,6 +83,9 @@ function formatProjectType(type: string): string {
 export function ProjectOverviewActions({
   project,
   contacts,
+  companies,
+  team,
+  projectVendors,
   portalTokens: initialPortalTokens,
   proposals,
   contract,
@@ -91,6 +99,7 @@ export function ProjectOverviewActions({
   const [settingsSheetOpen, setSettingsSheetOpen] = useState(false)
   const [setupWizardOpen, setSetupWizardOpen] = useState(false)
   const [contractSheetOpen, setContractSheetOpen] = useState(false)
+  const [manageTeamOpen, setManageTeamOpen] = useState(false)
 
   // Sharing state
   const [portalTokensState, setPortalTokensState] = useState<PortalAccessToken[]>(initialPortalTokens)
@@ -243,7 +252,7 @@ export function ProjectOverviewActions({
                     </SheetTrigger>
                     <SheetContent
                       side="right"
-                      className="w-full sm:max-w-md overflow-hidden border-l bg-background p-0 flex min-h-0 flex-col"
+                      className="sm:max-w-md w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 overflow-hidden fast-sheet-animation"
                     >
                       <div className="flex h-full min-h-0 flex-col">
                         <div className="border-b px-4 py-3 sm:px-5 sm:py-4">
@@ -262,8 +271,8 @@ export function ProjectOverviewActions({
                           </SheetHeader>
                         </div>
 
-                        <ScrollArea className="flex-1 min-h-0">
-                          <div className="space-y-4 p-4 sm:p-5">
+                        <ScrollArea className="flex-1 min-h-0 overflow-x-hidden">
+                          <div className="space-y-4 p-4 sm:p-5 overflow-hidden">
                             <div className="border bg-card p-4 rounded-lg">
                               <PortalLinkCreator projectId={project.id} onCreated={handleTokenCreated} />
                             </div>
@@ -326,11 +335,14 @@ export function ProjectOverviewActions({
                         <Settings className="mr-2 h-4 w-4" />
                         Project Settings
                       </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href={`/projects/${project.id}/team`}>
-                          <Users className="mr-2 h-4 w-4" />
-                          Manage Team
-                        </Link>
+                      <DropdownMenuItem
+                        onSelect={(e) => {
+                          e.preventDefault()
+                          setManageTeamOpen(true)
+                        }}
+                      >
+                        <Users className="mr-2 h-4 w-4" />
+                        Manage Team
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem className="text-destructive">Archive Project</DropdownMenuItem>
@@ -455,6 +467,15 @@ export function ProjectOverviewActions({
         portalTokens={portalTokensState}
       />
       <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
+      <ManageTeamSheet
+        projectId={project.id}
+        open={manageTeamOpen}
+        onOpenChange={setManageTeamOpen}
+        team={team}
+        contacts={contacts}
+        companies={companies}
+        projectVendors={projectVendors}
+      />
     </>
   )
 }

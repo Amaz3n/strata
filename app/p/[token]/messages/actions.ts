@@ -11,7 +11,12 @@ import {
 export async function loadPortalMessagesAction(token: string) {
   const access = await validatePortalToken(token)
   if (!access || !access.permissions.can_message) throw new Error("Access denied")
-  return listPortalMessages({ orgId: access.org_id, projectId: access.project_id, channel: access.portal_type })
+  return listPortalMessages({
+    orgId: access.org_id,
+    projectId: access.project_id,
+    channel: access.portal_type,
+    audienceCompanyId: access.company_id,
+  })
 }
 
 export async function sendPortalMessageAction(input: { token: string; body: string; senderName?: string }) {
@@ -24,6 +29,7 @@ export async function sendPortalMessageAction(input: { token: string; body: stri
     body: input.body,
     senderName: input.senderName,
     portalTokenId: access.id,
+    audienceCompanyId: access.company_id,
   })
   return message
 }
@@ -33,15 +39,17 @@ export async function loadPortalEntityMessagesAction(input: { token: string; ent
   if (!access || !access.permissions.can_message) throw new Error("Access denied")
   if (input.entityType === "rfi" && !access.permissions.can_view_rfis) throw new Error("Access denied")
   if (input.entityType === "submittal" && !access.permissions.can_view_submittals) throw new Error("Access denied")
-
   return listPortalEntityMessages({
     orgId: access.org_id,
     projectId: access.project_id,
     channel: access.portal_type,
     entityType: input.entityType,
     entityId: input.entityId,
+    audienceCompanyId: access.company_id,
   })
-}export async function sendPortalEntityMessageAction(input: {
+}
+
+export async function sendPortalEntityMessageAction(input: {
   token: string
   entityType: "rfi" | "submittal"
   entityId: string
@@ -64,5 +72,6 @@ export async function loadPortalEntityMessagesAction(input: { token: string; ent
     portalTokenId: access.id,
     entityType: input.entityType,
     entityId: input.entityId,
+    audienceCompanyId: access.company_id,
   })
 }

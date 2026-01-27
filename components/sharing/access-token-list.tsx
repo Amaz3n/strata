@@ -43,12 +43,42 @@ export function AccessTokenList({ tokens, onRevoke, isLoading, onSetPin, onClear
     setOrigin(window.location.origin)
   }, [])
 
-  const handleCopy = (token: PortalAccessToken) => {
+  const handleCopy = async (token: PortalAccessToken) => {
     const url = `${origin}/${token.portal_type === "client" ? "p" : "s"}/${token.token}`
-    navigator.clipboard
-      .writeText(url)
-      .then(() => toast.success("Link copied"))
-      .catch(() => toast.error("Unable to copy link"))
+
+    // Try modern clipboard API first
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(url)
+        toast.success("Link copied")
+        return
+      } catch {
+        // Fall through to fallback
+      }
+    }
+
+    // Fallback for iOS and older browsers
+    try {
+      const textArea = document.createElement("textarea")
+      textArea.value = url
+      textArea.style.position = "fixed"
+      textArea.style.left = "-9999px"
+      textArea.style.top = "0"
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+
+      const successful = document.execCommand("copy")
+      document.body.removeChild(textArea)
+
+      if (successful) {
+        toast.success("Link copied")
+      } else {
+        toast.error("Unable to copy link")
+      }
+    } catch {
+      toast.error("Unable to copy link")
+    }
   }
 
   return (

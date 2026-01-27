@@ -759,12 +759,12 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
   }
 
   const nPayload = (notification.payload ?? {}) as any
-  const title = typeof nPayload.title === "string" ? nPayload.title : `Strata: ${notification.notification_type}`
+  const title = typeof nPayload.title === "string" ? nPayload.title : `Arc: ${notification.notification_type}`
   const message = typeof nPayload.message === "string" ? nPayload.message : ""
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
   const href = buildNotificationHref(nPayload)
-  const linkHtml = href ? `<p style="margin-top: 16px"><a href="${appUrl}${href}">View in Strata</a></p>` : ""
+  const linkHtml = href ? `<p style="margin-top: 16px"><a href="${appUrl}${href}">View in Arc</a></p>` : ""
 
   await sendEmail({
     to: [user.email],
@@ -775,7 +775,7 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
         <p style="margin: 0 0 12px 0; color: #333">${escapeHtml(message)}</p>
         ${linkHtml}
         <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee" />
-        <p style="margin: 0; color: #777; font-size: 12px">You’re receiving this because notifications are enabled for your Strata account.</p>
+        <p style="margin: 0; color: #777; font-size: 12px">You’re receiving this because notifications are enabled for your Arc account.</p>
       </div>
     `,
   })

@@ -13,7 +13,12 @@ import { useToast } from "@/hooks/use-toast"
 import type { OrgRole } from "@/lib/types"
 import { UserPlus } from "@/components/icons"
 
-export function InviteMemberDialog({ canInvite = false }: { canInvite?: boolean }) {
+interface InviteMemberDialogProps {
+  canInvite?: boolean
+  onSuccess?: () => void
+}
+
+export function InviteMemberDialog({ canInvite = false, onSuccess }: InviteMemberDialogProps) {
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState("")
   const [role, setRole] = useState<OrgRole>("staff")
@@ -29,12 +34,23 @@ export function InviteMemberDialog({ canInvite = false }: { canInvite?: boolean 
 
     startTransition(async () => {
       try {
-        await inviteTeamMemberAction({ email, role })
-        toast({ title: "Invite sent" })
+        const result = await inviteTeamMemberAction({ email, role })
+        if (result?.tempPassword) {
+          toast({
+            title: "Invite created (dev)",
+            description: `Temp password: ${result.tempPassword}`,
+          })
+        } else {
+          toast({ title: "Invite sent" })
+        }
         setOpen(false)
         setEmail("")
         setRole("staff")
-        router.refresh()
+        if (onSuccess) {
+          onSuccess()
+        } else {
+          router.refresh()
+        }
       } catch (error) {
         toast({ title: "Invite failed", description: (error as Error).message })
       }

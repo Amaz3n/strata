@@ -18,7 +18,7 @@ interface RecentSheetEntry {
 }
 
 function getStorageKey(projectId: string): string {
-  return `strata:recentDrawingSheets:${projectId}`
+  return `arc:recentDrawingSheets:${projectId}`
 }
 
 function formatRelativeTime(timestamp: number): string {

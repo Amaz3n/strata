@@ -11,9 +11,9 @@ import { ServiceWorkerRegister } from "@/components/service-worker-register"
 const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
-// <CHANGE> Updated metadata for Strata
+// <CHANGE> Updated metadata for Arc
 export const metadata: Metadata = {
-  title: "Strata",
+  title: "Arc",
   description:
     "A fast, mobile-first operating system for local builders to run projects, schedules, docs, field logs, change orders, and job costing.",
   generator: "v0.app",

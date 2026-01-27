@@ -1,22 +1,70 @@
-import { redirect } from "next/navigation"
+"use client"
+
+import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
+import { useSearchParams } from "next/navigation"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 import { ResetPasswordForm } from "@/components/auth/reset-password-form"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
 
-interface ResetPageProps {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
+function createSupabaseClient(): SupabaseClient | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  if (!url || !anonKey) return null
+  return createClient(url, anonKey)
 }
 
-export default async function ResetPasswordPage({ searchParams }: ResetPageProps) {
-  const resolvedSearchParams = await searchParams
-  const code = typeof resolvedSearchParams?.code === "string" ? resolvedSearchParams.code : null
+export default function ResetPasswordPage() {
+  const searchParams = useSearchParams()
+  const code = searchParams.get("code")
+  const supabase = useMemo(() => createSupabaseClient(), [])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  if (!code) {
-    redirect("/auth/signin")
+  useEffect(() => {
+    if (!supabase) {
+      setError("Supabase configuration is missing.")
+      setLoading(false)
+      return
+    }
+
+    const verifySession = async () => {
+      try {
+        if (code) {
+          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+          if (exchangeError) {
+            setError(exchangeError.message)
+            setLoading(false)
+            return
+          }
+        }
+
+        const { data } = await supabase.auth.getSession()
+        if (!data.session) {
+          setError("Your reset link is invalid or has expired.")
+          setLoading(false)
+          return
+        }
+
+        setLoading(false)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to verify your session.")
+        setLoading(false)
+      }
+    }
+
+    verifySession()
+  }, [code, supabase])
+
+  if (loading) {
+    return (
+      <div className="space-y-4 text-center">
+        <p className="text-sm uppercase tracking-[0.2em] text-white/60">Reset access</p>
+        <h2 className="text-2xl font-semibold text-white">Preparing your account</h2>
+        <p className="text-sm text-white/60">Hang tight while we verify your link.</p>
+      </div>
+    )
   }
-
-  const supabase = await createServerSupabaseClient()
-  const { error } = await supabase.auth.exchangeCodeForSession(code)
 
   if (error) {
     return (
@@ -27,10 +75,19 @@ export default async function ResetPasswordPage({ searchParams }: ResetPageProps
           <p className="text-sm text-white/60">Request a new reset link to continue.</p>
         </div>
         <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error.message}
+          {error}
+        </div>
+        <div className="text-sm text-white/60">
+          <Link href="/auth/signin" className="underline">
+            Back to sign in
+          </Link>
         </div>
       </div>
     )
+  }
+
+  if (!supabase) {
+    return null
   }
 
   return (
@@ -40,7 +97,7 @@ export default async function ResetPasswordPage({ searchParams }: ResetPageProps
         <h2 className="mt-2 text-2xl font-semibold text-white">Choose a new password</h2>
         <p className="text-sm text-white/60">After updating, you will be signed in automatically.</p>
       </div>
-      <ResetPasswordForm />
+      <ResetPasswordForm supabase={supabase} />
     </div>
   )
 }

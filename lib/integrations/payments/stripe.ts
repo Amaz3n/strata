@@ -82,7 +82,7 @@ export async function attachPaymentMethod(customerId: string, paymentMethodId: s
 }
 
 export function getAppBaseUrl() {
-  return process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_URL || "https://app.strata.build"
+  return process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || process.env.APP_URL || "https://arcnaples.com"
 }
 
 export async function createStripeCheckoutSession(params: {

@@ -7,7 +7,8 @@ import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { sendEmail } from "@/lib/services/mailer"
+import { sendEmail, renderEmailTemplate } from "@/lib/services/mailer"
+import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { markReservationUsed } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
@@ -193,6 +194,13 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const reservationId = input.reservation_id ?? undefined
 
+  // Fetch org info for "From" section on invoice
+  const { data: orgData } = await supabase
+    .from("orgs")
+    .select("name, email, phone, address")
+    .eq("id", resolvedOrgId)
+    .maybeSingle()
+
   const lines = normalizeLines(input.lines)
   const totals = calculateTotals(input.lines, input.tax_rate)
   const shouldGenerateToken = input.client_visible === true || input.status === "sent"
@@ -222,6 +230,11 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       customer_id: input.customer_id,
       customer_name: input.customer_name,
       customer_email: input.sent_to_emails?.[0],
+      // Store org info for invoice display
+      org_name: orgData?.name ?? null,
+      org_email: orgData?.email ?? null,
+      org_phone: orgData?.phone ?? null,
+      org_address: orgData?.address ?? null,
     },
     sent_at: shouldGenerateToken ? new Date().toISOString() : null,
     sent_to_emails: input.sent_to_emails ?? null,
@@ -594,7 +607,7 @@ export async function listInvoiceViews(invoiceId: string, orgId?: string): Promi
   return data ?? []
 }
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://app.strata.build"
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
 
 async function sendInvoiceEmail({
   orgId,
@@ -640,7 +653,7 @@ async function sendInvoiceEmail({
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         })}`
-      : undefined
+      : "$0.00"
   const dueDisplay = dueDate
     ? new Date(dueDate).toLocaleDateString("en-US", {
         month: "short",
@@ -649,20 +662,17 @@ async function sendInvoiceEmail({
       })
     : undefined
   const invoiceLink = invoice.token ? `${APP_URL}/i/${invoice.token}` : `${APP_URL}/invoices`
-  const greeting = "Hi there,"
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
-      <p style="margin: 0 0 12px 0;">${greeting}</p>
-      <h2 style="margin-bottom: 4px;">${invoice.project?.name ?? "Project"}</h2>
-      <p style="margin: 0 0 12px 0; color: #555;">Invoice ${invoice.invoice_number}</p>
-      <p style="margin: 0 0 8px 0;"><strong>${invoice.title ?? "New invoice"}</strong></p>
-      ${amount ? `<p style="margin: 0 0 8px 0;">Amount: <strong>${amount}</strong></p>` : ""}
-      ${dueDisplay ? `<p style="margin: 0 0 8px 0;">Due: ${dueDisplay}</p>` : ""}
-      <div style="margin-top: 16px;">
-        <a href="${invoiceLink}" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">View invoice</a>
-      </div>
-    </div>
-  `
+
+  const html = await renderEmailTemplate(
+    InvoiceEmail({
+      invoiceNumber: invoice.invoice_number,
+      invoiceTitle: invoice.title ?? "New invoice",
+      projectName: invoice.project?.name ?? "Project",
+      amount,
+      dueDate: dueDisplay,
+      invoiceLink,
+    })
+  )
 
   await sendEmail({
     to: uniqueRecipients,

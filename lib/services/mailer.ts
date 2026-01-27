@@ -1,11 +1,23 @@
+import { render } from "@react-email/components"
+import type { ReactElement } from "react"
+import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
+import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
+
 const RESEND_API_KEY = process.env.RESEND_API_KEY
-const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "Strata Notifications <notifications@strata.build>"
+const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"
 
 export interface EmailPayload {
   to: (string | null | undefined)[]
   subject: string
   html: string
   text?: string
+}
+
+/**
+ * Render a React Email component to HTML string
+ */
+export async function renderEmailTemplate(template: ReactElement): Promise<string> {
+  return await render(template)
 }
 
 /**
@@ -68,35 +80,30 @@ export interface ReminderEmailPayload {
  * Send a reminder email for an overdue invoice
  */
 export async function sendReminderEmail(payload: ReminderEmailPayload): Promise<string | undefined> {
-  const amount = (payload.amountDue / 100).toFixed(2)
-  const dueDate = new Date(payload.dueDate).toLocaleDateString()
+  const amount = `$${(payload.amountDue / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+  const dueDate = new Date(payload.dueDate).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
 
   const subject = payload.daysOverdue
     ? `Payment Reminder: Invoice #${payload.invoiceNumber} is ${payload.daysOverdue} days overdue`
     : `Payment Reminder: Invoice #${payload.invoiceNumber} due ${dueDate}`
 
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <h2>Payment Reminder</h2>
-      <p>Dear ${payload.recipientName || 'Valued Customer'},</p>
-
-      <p>This is a reminder that your invoice is ${payload.daysOverdue ? `${payload.daysOverdue} days overdue` : `due on ${dueDate}`}.</p>
-
-      <div style="background-color: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px;">
-        <p><strong>Invoice Number:</strong> ${payload.invoiceNumber}</p>
-        <p><strong>Amount Due:</strong> $${amount}</p>
-        <p><strong>Due Date:</strong> ${dueDate}</p>
-        ${payload.daysOverdue ? `<p><strong>Days Overdue:</strong> ${payload.daysOverdue}</p>` : ''}
-      </div>
-
-      <p>Please click the link below to make your payment:</p>
-      <p><a href="${payload.payLink}" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Pay Invoice</a></p>
-
-      <p>If you have already made this payment, please disregard this reminder.</p>
-
-      <p>Thank you for your business!</p>
-    </div>
-  `
+  const html = await renderEmailTemplate(
+    InvoiceReminderEmail({
+      recipientName: payload.recipientName,
+      invoiceNumber: payload.invoiceNumber,
+      amount,
+      dueDate,
+      daysOverdue: payload.daysOverdue,
+      payLink: payload.payLink,
+    })
+  )
 
   const emailPayload: EmailPayload = {
     to: [payload.to],
@@ -109,6 +116,29 @@ export async function sendReminderEmail(payload: ReminderEmailPayload): Promise<
   // For now, return a mock message ID since Resend doesn't return one in the response
   // In a real implementation, you'd parse the response from Resend to get the actual message ID
   return `reminder-${payload.invoiceNumber}-${Date.now()}`
+}
+
+export interface InviteEmailPayload {
+  to: string
+  inviteLink: string
+  orgName?: string | null
+  inviterName?: string | null
+}
+
+export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void> {
+  const html = await renderEmailTemplate(
+    InviteTeamMemberEmail({
+      orgName: payload.orgName,
+      inviterName: payload.inviterName,
+      inviteLink: payload.inviteLink,
+    }),
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: `You have been invited to join ${payload.orgName ?? "Arc"}`,
+    html,
+  })
 }
 
 export interface ReminderSMSPayload {

@@ -1,6 +1,6 @@
 import type React from "react"
 import type { FileCategory } from "@/lib/validation/files"
-// Core domain types for Strata
+// Core domain types for Arc
 // Following the spec: every tenant-owned row includes org_id
 
 export interface Org {
@@ -481,6 +481,7 @@ export interface PortalPermissions {
   can_view_commitments?: boolean     // Can see their contracts
   can_view_bills?: boolean           // Can see their submitted invoices
   can_submit_invoices?: boolean      // Can submit new invoices
+  can_upload_compliance_docs?: boolean  // Can upload compliance documents
 }
 
 export interface PortalAccessToken {
@@ -1093,6 +1094,72 @@ export interface SubPortalData {
   messages: PortalMessage[]
   pendingRfiCount: number
   pendingSubmittalCount: number
+  complianceStatus?: ComplianceStatusSummary  // Compliance document status
+}
+
+// Compliance Document Types
+export type ComplianceDocumentStatus = "pending_review" | "approved" | "rejected" | "expired"
+
+export interface ComplianceDocumentType {
+  id: string
+  org_id: string
+  name: string
+  code: string
+  description?: string | null
+  has_expiry: boolean
+  expiry_warning_days: number
+  is_system: boolean
+  is_active: boolean
+  created_at: string
+}
+
+export interface ComplianceRequirement {
+  id: string
+  org_id: string
+  company_id: string
+  document_type_id: string
+  document_type?: ComplianceDocumentType
+  is_required: boolean
+  min_coverage_cents?: number | null
+  notes?: string | null
+  created_at: string
+  created_by?: string | null
+}
+
+export interface ComplianceDocument {
+  id: string
+  org_id: string
+  company_id: string
+  document_type_id: string
+  document_type?: ComplianceDocumentType
+  requirement_id?: string | null
+  file_id?: string | null
+  file?: FileMetadata
+  status: ComplianceDocumentStatus
+  effective_date?: string | null
+  expiry_date?: string | null
+  policy_number?: string | null
+  coverage_amount_cents?: number | null
+  carrier_name?: string | null
+  reviewed_by?: string | null
+  reviewed_at?: string | null
+  review_notes?: string | null
+  rejection_reason?: string | null
+  submitted_via_portal: boolean
+  portal_token_id?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ComplianceStatusSummary {
+  company_id: string
+  requirements: ComplianceRequirement[]
+  documents: ComplianceDocument[]
+  missing: ComplianceDocumentType[]
+  expiring_soon: ComplianceDocument[]  // within 30 days
+  expired: ComplianceDocument[]
+  pending_review: ComplianceDocument[]
+  is_compliant: boolean
 }
 
 export interface FileMetadata {

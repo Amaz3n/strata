@@ -12,6 +12,7 @@ import {
   generateInvoiceLinkAction,
   getInvoiceDetailAction,
   manualResyncInvoiceAction,
+  sendInvoiceReminderAction,
   syncPendingInvoicesNowAction,
   updateInvoiceAction,
 } from "@/app/(app)/invoices/actions"
@@ -108,6 +109,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   const [isSyncingAll, setIsSyncingAll] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
+  const [sendingReminderId, setSendingReminderId] = useState<string | null>(null)
   const didAutoOpen = useRef(false)
 
   useEffect(() => {
@@ -209,6 +211,21 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       toast.error("Could not generate link", { description: error?.message ?? "Please try again." })
     } finally {
       setLinkingId(null)
+    }
+  }
+
+  async function handleSendReminder(invoice: Invoice) {
+    setSendingReminderId(invoice.id)
+    try {
+      await sendInvoiceReminderAction(invoice.id)
+      toast.success("Reminder sent", {
+        description: `Payment reminder sent for invoice ${invoice.invoice_number}`,
+      })
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not send reminder", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSendingReminderId(null)
     }
   }
 
@@ -482,6 +499,15 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                setEditingInvoice(invoice)
+                                setEditOpen(true)
+                              }}
+                            >
+                              Edit invoice
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
                               disabled={linkingId === invoice.id}
                               onSelect={(event) => {
                                 event.preventDefault()
@@ -489,6 +515,25 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                               }}
                             >
                               {linkingId === invoice.id ? "Copying…" : "Copy link"}
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              disabled={
+                                invoice.status === "paid" ||
+                                invoice.status === "void" ||
+                                sendingReminderId === invoice.id
+                              }
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                handleSendReminder(invoice)
+                              }}
+                              className={
+                                invoice.status === "paid" || invoice.status === "void"
+                                  ? "text-muted-foreground"
+                                  : ""
+                              }
+                            >
+                              {sendingReminderId === invoice.id ? "Sending…" : "Send reminder"}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>

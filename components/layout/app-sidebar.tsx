@@ -246,7 +246,7 @@ export function AppSidebar({ user, pipelineBadgeCount }: AppSidebarProps) {
   }))
 
   const orgData = {
-    name: "Strata Construction",
+    name: "Arc Construction",
     logo: HardHat,
     plan: "Pro",
   }

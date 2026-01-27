@@ -219,7 +219,7 @@ export async function decideRfi({ orgId, input }: { orgId: string; input: RfiDec
   return { success: true }
 }
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 
 async function sendRfiEmail({
   orgId,
@@ -305,7 +305,7 @@ async function sendRfiEmail({
             : `<p style="white-space:pre-wrap;">${rfi.question}</p>`
       }
       <div style="margin-top: 16px;">
-        <a href="${APP_URL}/rfis" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Open in Strata</a>
+        <a href="${APP_URL}/rfis" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Open in Arc</a>
       </div>
     </div>
   `

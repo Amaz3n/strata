@@ -2,7 +2,7 @@ import { notFound } from "next/navigation"
 export const dynamic = 'force-dynamic'
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectOverviewAction } from "./overview-actions"
-import { getClientContactsAction } from "./actions"
+import { getClientContactsAction, getOrgCompaniesAction, getProjectTeamAction, getProjectVendorsAction } from "./actions"
 import {
   ProjectOverviewAttention,
   ProjectOverviewComingUp,
@@ -17,9 +17,12 @@ interface ProjectDetailPageProps {
 export default async function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const { id } = await params
 
-  const [overview, contacts] = await Promise.all([
+  const [overview, contacts, companies, team, projectVendors] = await Promise.all([
     getProjectOverviewAction(id),
     getClientContactsAction(),
+    getOrgCompaniesAction(),
+    getProjectTeamAction(id),
+    getProjectVendorsAction(id),
   ])
 
   if (!overview) {
@@ -62,6 +65,9 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
             <ProjectOverviewActions
               project={project}
               contacts={contacts}
+              companies={companies}
+              team={team}
+              projectVendors={projectVendors}
               portalTokens={portalTokens}
               proposals={proposals}
               contract={contract}

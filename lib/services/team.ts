@@ -1,11 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { randomBytes } from "node:crypto"
+
 import type { TeamMember, OrgRole } from "@/lib/types"
 import { inviteMemberSchema, memberStatusSchema, updateMemberRoleSchema, type InviteMemberInput } from "@/lib/validation/team"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
+import { sendInviteEmail } from "@/lib/services/mailer"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
@@ -14,6 +17,24 @@ async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
     throw new Error(`Role ${role} not found`)
   }
   return data.id as string
+}
+
+function getAuthRedirectBaseUrl() {
+  const url =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.APP_URL ||
+    process.env.VERCEL_URL ||
+    "http://localhost:3000"
+
+  if (url.startsWith("http")) return url.replace(/\/$/, "")
+  return `https://${url}`.replace(/\/$/, "")
+}
+
+function getInviteRedirectUrl() {
+  const baseUrl = getAuthRedirectBaseUrl()
+  const next = encodeURIComponent("/auth/reset")
+  return `${baseUrl}/auth/callback?next=${next}`
 }
 
 async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
@@ -28,6 +49,38 @@ async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
     acc[row.user_id] = (acc[row.user_id] ?? 0) + 1
     return acc
   }, {})
+}
+
+function generateTempPassword() {
+  return randomBytes(12).toString("base64url").slice(0, 16)
+}
+
+function shouldBypassInviteRateLimit(message: string) {
+  return process.env.NODE_ENV === "development" && /rate limit/i.test(message)
+}
+
+async function getOrgName(client: SupabaseClient, orgId: string) {
+  const { data, error } = await client.from("orgs").select("name").eq("id", orgId).maybeSingle()
+  if (error) {
+    console.error("Failed to load org name", error)
+    return null
+  }
+  return data?.name ?? null
+}
+
+async function generateInviteLink(client: SupabaseClient, email: string) {
+  const { data, error } = await client.auth.admin.generateLink({
+    type: "invite",
+    email,
+    options: { redirectTo: getInviteRedirectUrl() },
+  })
+  if (error) {
+    throw new Error(error.message)
+  }
+  return {
+    userId: data?.user?.id,
+    link: data?.properties?.action_link,
+  }
 }
 
 function mapTeamMember(row: any, projectCounts: Record<string, number>): TeamMember {
@@ -84,7 +137,13 @@ export async function listTeamMembers(orgId?: string): Promise<TeamMember[]> {
   return (data ?? []).map((row) => mapTeamMember(row, projectCounts))
 }
 
-export async function inviteTeamMember({ input, orgId }: { input: InviteMemberInput; orgId?: string }): Promise<TeamMember> {
+export async function inviteTeamMember({
+  input,
+  orgId,
+}: {
+  input: InviteMemberInput
+  orgId?: string
+}): Promise<TeamMember & { tempPassword?: string }> {
   const parsed = inviteMemberSchema.parse(input)
   const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
   await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
@@ -98,16 +157,57 @@ export async function inviteTeamMember({ input, orgId }: { input: InviteMemberIn
 
   let targetUserId = existingUser?.id as string | undefined
 
+  let tempPassword: string | undefined
+
   if (!targetUserId) {
-    const { data: inviteData, error: inviteError } = await serviceClient.auth.admin.inviteUserByEmail(parsed.email)
-    if (inviteError) {
-      throw new Error(`Failed to send invite: ${inviteError.message}`)
+    try {
+      const inviteResult = await generateInviteLink(serviceClient, parsed.email)
+      targetUserId = inviteResult.userId
+      if (inviteResult.link) {
+        const orgName = await getOrgName(serviceClient, resolvedOrgId)
+        await sendInviteEmail({
+          to: parsed.email,
+          inviteLink: inviteResult.link,
+          orgName,
+        })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown invite error"
+      if (shouldBypassInviteRateLimit(message)) {
+        tempPassword = generateTempPassword()
+        const { data: createdUser, error: createError } = await serviceClient.auth.admin.createUser({
+          email: parsed.email,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: {
+            full_name: existingUser?.full_name ?? undefined,
+          },
+        })
+        if (createError) {
+          throw new Error(`Failed to create user: ${createError.message}`)
+        }
+        targetUserId = createdUser?.user?.id
+      } else {
+        throw new Error(`Failed to send invite: ${message}`)
+      }
     }
-    targetUserId = inviteData?.user?.id
   }
 
   if (!targetUserId) {
     throw new Error("Unable to resolve invited user id")
+  }
+
+  const { error: profileError } = await serviceClient
+    .from("app_users")
+    .upsert({
+      id: targetUserId,
+      email: parsed.email,
+      full_name: existingUser?.full_name ?? null,
+    })
+
+  if (profileError) {
+    console.error("Failed to create user profile for invite", profileError)
+    throw new Error("Failed to create invited user profile")
   }
 
   const roleId = await resolveRoleId(serviceClient, parsed.role)
@@ -153,7 +253,7 @@ export async function inviteTeamMember({ input, orgId }: { input: InviteMemberIn
   })
 
   const projectCounts = await mapProjectCounts(serviceClient, resolvedOrgId)
-  return mapTeamMember(data, projectCounts)
+  return { ...mapTeamMember(data, projectCounts), tempPassword }
 }
 
 export async function updateMemberRole({
@@ -337,10 +437,16 @@ export async function resendInvite(membershipId: string, orgId?: string) {
     throw new Error("Membership user email missing")
   }
 
-  const { error: inviteError } = await serviceClient.auth.admin.inviteUserByEmail(email)
-  if (inviteError) {
-    throw new Error(`Failed to resend invite: ${inviteError.message}`)
+  const inviteResult = await generateInviteLink(serviceClient, email)
+  if (!inviteResult.link) {
+    throw new Error("Failed to generate invite link")
   }
+  const orgName = await getOrgName(serviceClient, resolvedOrgId)
+  await sendInviteEmail({
+    to: email,
+    inviteLink: inviteResult.link,
+    orgName,
+  })
 
   return true
 }

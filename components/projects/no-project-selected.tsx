@@ -21,7 +21,7 @@ interface NoProjectSelectedProps {
 
 export function NoProjectSelected({
   title = "Choose a project to get started",
-  description = "Everything in Strata is scoped to a project. Select one to continue.",
+  description = "Everything in Arc is scoped to a project. Select one to continue.",
   primaryLabel = "View projects",
   primaryHref = "/projects",
 }: NoProjectSelectedProps) {

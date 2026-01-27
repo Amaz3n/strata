@@ -429,42 +429,48 @@ export function InvoiceForm({
                         </Button>
                       </div>
 
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="grid grid-cols-[minmax(100px,1fr)_70px_70px_100px_90px] gap-2">
                         <FormField
                           control={form.control}
                           name={`lines.${index}.cost_code_id`}
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Cost code</FormLabel>
-                              <Select
-                                onValueChange={(val) => field.onChange(val === "none" ? undefined : val)}
-                                value={field.value ?? "none"}
-                              >
-                                <FormControl>
-                                  <SelectTrigger>
-                                    <SelectValue placeholder="Unassigned" />
-                                  </SelectTrigger>
-                                </FormControl>
-                                <SelectContent>
-                                  <SelectItem value="none">Unassigned</SelectItem>
-                                  {costCodeOptions.map((code) => (
-                                    <SelectItem key={code.id} value={code.id}>
-                                      <div className="flex flex-col">
-                                        <span className="font-semibold text-xs">
-                                          {code.code} — {code.name}
-                                        </span>
-                                        <span className="text-[11px] text-muted-foreground">
-                                          {code.division ? `Div ${code.division}` : "General"}
-                                          {code.category ? ` • ${code.category}` : ""}
-                                        </span>
-                                      </div>
+                          render={({ field }) => {
+                            const selectedCode = costCodeOptions.find(c => c.id === field.value)
+                            return (
+                              <FormItem>
+                                <FormLabel className="text-xs">Cost code</FormLabel>
+                                <Select
+                                  onValueChange={(val) => field.onChange(val === "none" ? undefined : val)}
+                                  value={field.value ?? "none"}
+                                >
+                                  <FormControl>
+                                    <SelectTrigger className="h-9 font-mono text-xs">
+                                      <SelectValue placeholder="—">
+                                        {selectedCode ? selectedCode.code : "—"}
+                                      </SelectValue>
+                                    </SelectTrigger>
+                                  </FormControl>
+                                  <SelectContent>
+                                    <SelectItem value="none">
+                                      <span className="text-muted-foreground">Unassigned</span>
                                     </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              <FormMessage />
-                            </FormItem>
-                          )}
+                                    {costCodeOptions.map((code) => (
+                                      <SelectItem key={code.id} value={code.id}>
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-mono text-xs font-medium min-w-[50px]">
+                                            {code.code}
+                                          </span>
+                                          <span className="text-xs text-muted-foreground truncate">
+                                            {code.name}
+                                          </span>
+                                        </div>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <FormMessage />
+                              </FormItem>
+                            )
+                          }}
                         />
 
                         <FormField
@@ -472,12 +478,13 @@ export function InvoiceForm({
                           name={`lines.${index}.quantity`}
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Qty</FormLabel>
+                              <FormLabel className="text-xs">Qty</FormLabel>
                               <FormControl>
                                 <Input
                                   type="number"
                                   step={0.01}
                                   min={0}
+                                  className="h-9 text-center text-sm tabular-nums"
                                   value={field.value}
                                   onChange={(e) => field.onChange(Number(e.target.value) || 0)}
                                 />
@@ -492,9 +499,9 @@ export function InvoiceForm({
                           name={`lines.${index}.unit`}
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Unit</FormLabel>
+                              <FormLabel className="text-xs">Unit</FormLabel>
                               <FormControl>
-                                <Input placeholder="unit" {...field} />
+                                <Input placeholder="ea" className="h-9 text-sm" {...field} />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
@@ -506,37 +513,50 @@ export function InvoiceForm({
                           name={`lines.${index}.unit_cost`}
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Unit cost (USD)</FormLabel>
+                              <FormLabel className="text-xs">Price</FormLabel>
                               <FormControl>
-                                <Input
-                                  type="number"
-                                  step={0.01}
-                                  min={0}
-                                  value={field.value}
-                                  onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                                />
+                                <div className="relative">
+                                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                  <Input
+                                    type="number"
+                                    step={0.01}
+                                    min={0}
+                                    className="h-9 pl-6 text-right text-sm tabular-nums"
+                                    value={field.value}
+                                    onChange={(e) => field.onChange(Number(e.target.value) || 0)}
+                                  />
+                                </div>
                               </FormControl>
                               <FormMessage />
                             </FormItem>
                           )}
                         />
 
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.taxable`}
-                          render={({ field }) => (
-                            <FormItem className="flex flex-row items-center justify-between rounded-md border p-3">
-                              <div className="space-y-0.5">
-                                <FormLabel>Taxable</FormLabel>
-                                <FormDescription>Apply tax to this line item.</FormDescription>
-                              </div>
-                              <FormControl>
-                                <Switch checked={field.value} onCheckedChange={field.onChange} />
-                              </FormControl>
-                            </FormItem>
-                          )}
-                        />
+                        {/* Line total - read only */}
+                        <div className="flex flex-col">
+                          <span className="text-xs font-medium mb-1.5">Total</span>
+                          <div className="h-9 flex items-center justify-end px-2 bg-muted/50 rounded-md text-sm font-medium tabular-nums">
+                            {formatMoney((watchedValues.lines?.[index]?.quantity ?? 0) * (watchedValues.lines?.[index]?.unit_cost ?? 0))}
+                          </div>
+                        </div>
+
                       </div>
+
+                      {/* Taxable toggle - compact row */}
+                      <FormField
+                        control={form.control}
+                        name={`lines.${index}.taxable`}
+                        render={({ field }) => (
+                          <FormItem className="flex items-center gap-2 pt-1">
+                            <FormControl>
+                              <Switch checked={field.value} onCheckedChange={field.onChange} className="scale-90" />
+                            </FormControl>
+                            <FormLabel className="text-xs text-muted-foreground font-normal cursor-pointer">
+                              Taxable
+                            </FormLabel>
+                          </FormItem>
+                        )}
+                      />
                     </div>
                   ))}
                 </div>

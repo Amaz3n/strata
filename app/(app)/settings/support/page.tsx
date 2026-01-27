@@ -52,7 +52,7 @@ export default async function SupportPage() {
               </div>
             )}
             <div className="text-sm text-muted-foreground">
-              For assistance, contact: <a href="mailto:support@strata.local">support@strata.local</a>
+              For assistance, contact: <a href="mailto:support@arcnaples.com">support@arcnaples.com</a>
             </div>
           </CardContent>
         </Card>

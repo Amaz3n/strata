@@ -36,9 +36,9 @@ export function LoginForm({
               <div className="flex size-8 items-center justify-center rounded-md bg-primary">
                 <GalleryVerticalEnd className="size-6 text-primary-foreground" />
               </div>
-              <span className="sr-only">Strata</span>
+              <span className="sr-only">Arc</span>
             </a>
-            <h1 className="text-xl font-bold">Welcome to Strata</h1>
+            <h1 className="text-xl font-bold">Welcome to Arc</h1>
             <FieldDescription>
               Don&apos;t have an account?{" "}
               <Link href="/auth/signup" className="underline">

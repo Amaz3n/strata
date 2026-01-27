@@ -29,7 +29,7 @@ export default async function CompanyDetailPageRoute({ params }: CompanyDetailPa
     getCurrentUserPermissions(),
   ])
 
-  const permissions = permissionResult.permissions
+  const permissions = permissionResult?.permissions ?? []
   const canEdit = permissions.includes("org.member")
   const canArchive = permissions.includes("org.admin") || permissions.includes("members.manage")
 

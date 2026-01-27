@@ -156,7 +156,7 @@ function PaymentForm({
       <PaymentElement
         options={{
           layout: "tabs",
-          business: { name: "Strata" },
+          business: { name: "Arc" },
         }}
       />
 
@@ -269,7 +269,7 @@ export function InvoicePortalClient({ invoice, portalType = "client", payment, r
   // Match container width (600px content + 48px padding)
   const containerMaxWidth = 648
 
-  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://app.strata.build"}/i/${invoice.token}`
+  const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"}/i/${invoice.token}`
   const [shareUrl, setShareUrl] = useState(fallbackShareUrl)
 
   useEffect(() => {

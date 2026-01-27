@@ -53,6 +53,7 @@ function mapPermissions(row: any): PortalPermissions {
     can_view_commitments: row.can_view_commitments ?? true,
     can_view_bills: row.can_view_bills ?? true,
     can_submit_invoices: row.can_submit_invoices ?? true,
+    can_upload_compliance_docs: row.can_upload_compliance_docs ?? true,
   }
 }
 
@@ -319,19 +320,32 @@ async function getOrCreatePortalConversation({
   orgId,
   projectId,
   channel,
+  audienceCompanyId,
 }: {
   orgId: string
   projectId: string
   channel: "client" | "sub"
+  audienceCompanyId?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: existing } = await supabase
+
+  // Build query with audience_company_id for proper scoping
+  let query = supabase
     .from("conversations")
     .select("id")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("channel", channel)
-    .maybeSingle()
+
+  // For sub conversations, require audience_company_id match
+  // For client conversations, also match by company if provided
+  if (audienceCompanyId) {
+    query = query.eq("audience_company_id", audienceCompanyId)
+  } else {
+    query = query.is("audience_company_id", null)
+  }
+
+  const { data: existing } = await query.maybeSingle()
 
   if (existing) return existing.id
 
@@ -341,6 +355,7 @@ async function getOrCreatePortalConversation({
       org_id: orgId,
       project_id: projectId,
       channel,
+      audience_company_id: audienceCompanyId ?? null,
     })
     .select("id")
     .single()
@@ -353,13 +368,15 @@ export async function listPortalMessages({
   orgId,
   projectId,
   channel,
+  audienceCompanyId,
 }: {
   orgId: string
   projectId: string
   channel: "client" | "sub"
+  audienceCompanyId?: string | null
 }): Promise<PortalMessage[]> {
   const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel })
+  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
 
   const { data, error } = await supabase
     .from("messages")
@@ -390,15 +407,17 @@ export async function listPortalEntityMessages({
   channel,
   entityType,
   entityId,
+  audienceCompanyId,
 }: {
   orgId: string
   projectId: string
   channel: "client" | "sub"
   entityType: "rfi" | "submittal"
   entityId: string
+  audienceCompanyId?: string | null
 }): Promise<PortalMessage[]> {
   const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel })
+  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
 
   const { data, error } = await supabase
     .from("messages")
@@ -432,6 +451,7 @@ export async function postPortalMessage({
   body,
   senderName,
   portalTokenId,
+  audienceCompanyId,
 }: {
   orgId: string
   projectId: string
@@ -439,9 +459,10 @@ export async function postPortalMessage({
   body: string
   senderName?: string
   portalTokenId?: string
+  audienceCompanyId?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel })
+  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
 
   const { data, error } = await supabase
     .from("messages")
@@ -483,6 +504,7 @@ export async function postPortalEntityMessage({
   portalTokenId,
   entityType,
   entityId,
+  audienceCompanyId,
 }: {
   orgId: string
   projectId: string
@@ -492,9 +514,10 @@ export async function postPortalEntityMessage({
   portalTokenId?: string
   entityType: "rfi" | "submittal"
   entityId: string
+  audienceCompanyId?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel })
+  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
 
   const { data, error } = await supabase
     .from("messages")
@@ -681,11 +704,13 @@ export async function loadClientPortalData({
   projectId,
   permissions,
   portalType = "client",
+  companyId,
 }: {
   orgId: string
   projectId: string
   permissions: PortalPermissions
   portalType?: "client" | "sub"
+  companyId?: string | null
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
@@ -715,7 +740,7 @@ export async function loadClientPortalData({
           .eq("share_with_clients", true)
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
-    permissions.can_message ? listPortalMessages({ orgId, projectId, channel: portalType }) : Promise.resolve([]),
+    permissions.can_message ? listPortalMessages({ orgId, projectId, channel: portalType, audienceCompanyId: companyId }) : Promise.resolve([]),
     permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
   ])
 
@@ -914,9 +939,9 @@ export async function loadSubPortalData({
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
 
-    // Messages
+    // Messages - scoped to this subcontractor company
     permissions.can_message
-      ? listPortalMessages({ orgId, projectId, channel: "sub" })
+      ? listPortalMessages({ orgId, projectId, channel: "sub", audienceCompanyId: companyId })
       : Promise.resolve([]),
   ])
 
@@ -1066,6 +1091,7 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_view_commitments: overrides?.can_view_commitments ?? true,
     can_view_bills: overrides?.can_view_bills ?? true,
     can_submit_invoices: overrides?.can_submit_invoices ?? true,
+    can_upload_compliance_docs: overrides?.can_upload_compliance_docs ?? true,
   }
 }
 
