@@ -1,4 +1,5 @@
 import { calculateTotal } from "@midday/invoice/utils/calculate";
+import * as React from "react";
 import { useCallback, useEffect, useMemo } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import { FormatAmount } from "../format-amount";
@@ -87,7 +88,7 @@ export function Summary() {
     setValue("tax", totalTax, { shouldValidate: true });
     setValue("subtotal", subTotal, { shouldValidate: true });
     setValue("discount", discount ?? 0, { shouldValidate: true });
-  }, [total, totalVAT, totalTax, subTotal, discount]);
+  }, [total, totalVAT, totalTax, subTotal, discount, setValue]);
 
   useEffect(() => {
     updateFormValues();
@@ -100,7 +101,7 @@ export function Summary() {
         shouldDirty: true,
       });
     }
-  }, [includeTax]);
+  }, [includeTax, setValue]);
 
   useEffect(() => {
     if (!includeVat) {
@@ -109,13 +110,13 @@ export function Summary() {
         shouldDirty: true,
       });
     }
-  }, [includeVat]);
+  }, [includeVat, setValue]);
 
   useEffect(() => {
     if (!includeDiscount) {
       setValue("discount", 0, { shouldValidate: true, shouldDirty: true });
     }
-  }, [includeDiscount]);
+  }, [includeDiscount, setValue]);
 
   return (
     <div className="w-[320px] flex flex-col">
@@ -256,5 +257,5 @@ function NumberFlow({
     }
   }, [parts]);
 
-  return <number-flow ref={ref} root />;
+  return React.createElement('number-flow', { ref, root: true });
 }

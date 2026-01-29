@@ -30,7 +30,12 @@ export function ProjectTasksClient({ projectId, initialTasks, team }: ProjectTas
       <TasksTab
         projectId={projectId}
         tasks={tasks}
-        team={team}
+        team={team.map((t) => ({
+          id: t.id,
+          user_id: t.user_id,
+          full_name: t.full_name,
+          avatar_url: t.avatar_url ?? undefined,
+        }))}
         onTaskCreate={async (input) => {
           const created = await createProjectTaskAction(projectId, input)
           setTasks((prev) => [created, ...prev])

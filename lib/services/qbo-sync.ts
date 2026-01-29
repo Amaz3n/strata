@@ -52,11 +52,14 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     lines: (invoice as any).invoice_lines ?? [],
   } as InvoiceForSync
 
+  let existingSync: any = null
+  let qboInvoice: any = null
+
   try {
     const customer = await client.getOrCreateCustomer(resolveCustomerName(typedInvoice))
     const defaultItem = await client.getDefaultServiceItem()
 
-    const existingSync = await supabase
+    existingSync = await supabase
       .from("qbo_sync_records")
       .select("qbo_id, qbo_sync_token")
       .eq("org_id", orgId)
@@ -64,7 +67,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       .eq("entity_id", invoiceId)
       .maybeSingle()
 
-    const qboInvoice = {
+    qboInvoice = {
       Id: existingSync.data?.qbo_id,
       SyncToken: existingSync.data?.qbo_sync_token,
       DocNumber: typedInvoice.invoice_number,
@@ -93,6 +96,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       entityId: invoiceId,
       qboId: result.Id!,
       syncToken: result.SyncToken,
+      entityType: "invoice",
     })
 
     await supabase
@@ -138,6 +142,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
           entityId: invoiceId,
           qboId: retryResult.Id!,
           syncToken: retryResult.SyncToken,
+          entityType: "invoice",
         })
 
         await supabase
@@ -190,14 +195,16 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
     .single()
 
   if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
-  if (!payment.invoice?.qbo_id) return { success: false, error: "Invoice not synced to QBO" }
+  
+  const invoice = Array.isArray(payment.invoice) ? payment.invoice[0] : payment.invoice
+  if (!invoice?.qbo_id) return { success: false, error: "Invoice not synced to QBO" }
 
   const { data: customerSync } = await supabase
     .from("qbo_sync_records")
     .select("qbo_id")
     .eq("org_id", orgId)
     .eq("entity_type", "customer")
-    .eq("entity_id", payment.invoice.project_id)
+    .eq("entity_id", invoice.project_id)
     .maybeSingle()
 
   const customerRef = customerSync?.qbo_id
@@ -213,7 +220,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
     Line: [
       {
         Amount: payment.amount_cents / 100,
-        LinkedTxn: [{ TxnId: payment.invoice.qbo_id, TxnType: "Invoice" }],
+        LinkedTxn: [{ TxnId: invoice.qbo_id, TxnType: "Invoice" }],
       },
     ],
   })
@@ -222,6 +229,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
     orgId,
     entityId: paymentId,
     qboId: qboPayment.Id,
+    entityType: "payment",
   })
 
   return { success: true, qbo_id: qboPayment.Id }
@@ -277,6 +285,7 @@ async function upsertSyncRecord(input: {
   entityId: string
   qboId: string
   syncToken?: string
+  entityType?: string
 }) {
   const supabase = createServiceSupabaseClient()
 
@@ -295,7 +304,7 @@ async function upsertSyncRecord(input: {
       {
         org_id: input.orgId,
         connection_id: connection.id,
-        entity_type: "invoice",
+        entity_type: input.entityType ?? "invoice",
         entity_id: input.entityId,
         qbo_id: input.qboId,
         qbo_sync_token: input.syncToken,

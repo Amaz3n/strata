@@ -200,7 +200,7 @@ export async function createDrawingSetFromUpload(input: {
   const drawingSet = await createDrawingSet({
     project_id: input.projectId,
     title: input.title || input.fileName.replace(/\.pdf$/i, ""),
-    set_type: input.setType,
+    set_type: input.setType as any,
     source_file_id: fileRecord.id,
   })
 

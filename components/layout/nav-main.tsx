@@ -40,8 +40,6 @@ export function NavMain({
     }[]
   }[]
 }) {
-  if (!items.length || items.every((group) => group.items.length === 0)) return null
-
   const pathname = usePathname()
 
   // Avoid hydration issues with useSearchParams by only using it after hydration
@@ -55,6 +53,8 @@ export function NavMain({
       setCurrentPath(pathname)
     }
   }, [pathname])
+
+  if (!items.length || items.every((group) => group.items.length === 0)) return null
 
   return (
     <>

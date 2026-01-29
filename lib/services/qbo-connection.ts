@@ -147,10 +147,14 @@ export async function upsertQBOConnection(input: {
   companyName?: string
 }) {
   const supabase = createServiceSupabaseClient()
-  let settings = {
-    invoice_number_pattern: "numeric" as const,
-    invoice_number_prefix: null as string | null,
-    last_known_invoice_number: null as string | null,
+  let settings: {
+    invoice_number_pattern: "numeric" | "prefix" | "custom"
+    invoice_number_prefix: string | null
+    last_known_invoice_number: string | null
+  } = {
+    invoice_number_pattern: "numeric",
+    invoice_number_prefix: null,
+    last_known_invoice_number: null,
   }
 
   try {

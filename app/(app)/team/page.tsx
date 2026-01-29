@@ -6,7 +6,7 @@ import { TeamTable } from "@/components/team/team-table"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
 export default async function TeamPage() {
-  const [members, currentUser, permissionResult] = await Promise.all([
+  const [members, permissionResult] = await Promise.all([
     listTeamMembers(),
     getCurrentUserPermissions(),
   ])

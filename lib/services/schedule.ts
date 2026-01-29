@@ -513,6 +513,7 @@ export async function setScheduleItemAssignee({
   const assignmentInput: ScheduleAssignmentInput = {
     schedule_item_id: itemId,
     role: assignee.role ?? "assigned",
+    actual_hours: 0,
   }
 
   if (assignee.type === "user") {
@@ -1042,10 +1043,10 @@ export async function applyTemplate(templateId: string, projectId: string, orgId
         status: "planned",
         phase: item.phase,
         trade: item.trade,
-        planned_hours: item.planned_hours,
+        planned_hours: item.planned_hours ?? 0,
         color: item.color,
-        sort_order: item.sort_order,
-      },
+        sort_order: item.sort_order ?? 0,
+      } as any,
       orgId: resolvedOrgId,
     })
     createdItems.push(created)
@@ -1513,14 +1514,15 @@ export async function getDrawsByMilestone(
     org_id: row.org_id,
     project_id: row.project_id,
     draw_number: row.draw_number,
+    title: (row as any).title ?? `Draw ${row.draw_number}`,
     description: row.description ?? undefined,
     amount_cents: row.amount_cents,
-    scheduled_date: row.scheduled_date ?? undefined,
-    status: row.status ?? "scheduled",
+    due_date: row.scheduled_date ?? undefined,
+    status: (row.status === "scheduled" ? "pending" : row.status) ?? "pending",
     milestone_id: row.milestone_id ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
-  }))
+  })) as DrawSchedule[]
 }
 
 // ============================================================================

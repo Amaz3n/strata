@@ -85,7 +85,7 @@ export function FileViewer({
     if (currentFile) {
       onFileChange?.(currentFile)
     }
-  }, [currentFile?.id, onFileChange])
+  }, [currentFile, onFileChange])
   const hasMultiple = files.length > 1
   const canPrev = hasMultiple && currentIndex > 0
   const canNext = hasMultiple && currentIndex < files.length - 1

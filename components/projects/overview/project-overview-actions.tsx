@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { toast } from "sonner"
@@ -118,7 +118,7 @@ export function ProjectOverviewActions({
     return { clientActiveLinks: activeClient, subActiveLinks: activeSubs, activeTokens: actives }
   }, [portalTokensState])
 
-  async function refreshPortalTokens() {
+  const refreshPortalTokens = useCallback(async () => {
     setSharingLoading(true)
     try {
       const tokens = await loadSharingDataAction(project.id)
@@ -130,7 +130,7 @@ export function ProjectOverviewActions({
     } finally {
       setSharingLoading(false)
     }
-  }
+  }, [project.id])
 
   function handleTokenCreated(token: PortalAccessToken) {
     setPortalTokensState((prev) => [token, ...prev])
@@ -192,7 +192,7 @@ export function ProjectOverviewActions({
     if (sharingSheetOpen && !sharingInitialized) {
       void refreshPortalTokens()
     }
-  }, [sharingInitialized, sharingSheetOpen])
+  }, [sharingInitialized, sharingSheetOpen, refreshPortalTokens])
 
   const handleSaveProject = async (input: Partial<ProjectInput>) => {
     await updateProjectSettingsAction(project.id, input)

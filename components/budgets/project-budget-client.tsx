@@ -76,7 +76,7 @@ export function ProjectBudgetClient({
 
   useEffect(() => {
     setLines(currentBudget ? toLineState(currentBudget.lines) : [])
-  }, [currentBudget?.id])
+  }, [currentBudget])
 
   const costCodeOptions = useMemo(() => {
     const sorted = [...(costCodes ?? [])].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? ""))

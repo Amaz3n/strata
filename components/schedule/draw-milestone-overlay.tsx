@@ -35,22 +35,22 @@ export function DrawMilestoneOverlay({
   // Calculate totals
   const totalAmount = draws.reduce((sum, d) => sum + (d.amount_cents ?? 0), 0)
   const approvedAmount = draws
-    .filter((d) => d.status === "approved" || d.status === "paid")
+    .filter((d) => d.status === "invoiced" || d.status === "paid")
     .reduce((sum, d) => sum + (d.amount_cents ?? 0), 0)
   const pendingAmount = draws
-    .filter((d) => d.status === "scheduled" || d.status === "pending")
+    .filter((d) => d.status === "pending" || d.status === "partial")
     .reduce((sum, d) => sum + (d.amount_cents ?? 0), 0)
 
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "paid":
         return <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-      case "approved":
+      case "invoiced":
         return <CheckCircle2 className="h-3 w-3 text-blue-500" />
       case "pending":
         return <Clock className="h-3 w-3 text-amber-500" />
-      case "scheduled":
-        return <Calendar className="h-3 w-3 text-slate-500" />
+      case "partial":
+        return <Calendar className="h-3 w-3 text-purple-500" />
       case "rejected":
         return <AlertCircle className="h-3 w-3 text-red-500" />
       default:
@@ -62,10 +62,12 @@ export function DrawMilestoneOverlay({
     switch (status) {
       case "paid":
         return "text-emerald-600 dark:text-emerald-400"
-      case "approved":
+      case "invoiced":
         return "text-blue-600 dark:text-blue-400"
       case "pending":
         return "text-amber-600 dark:text-amber-400"
+      case "partial":
+        return "text-purple-600 dark:text-purple-400"
       case "rejected":
         return "text-red-600 dark:text-red-400"
       default:

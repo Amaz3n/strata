@@ -1,3 +1,4 @@
+// @ts-ignore
 import * as jose from "jose";
 
 export async function verify(token: string) {

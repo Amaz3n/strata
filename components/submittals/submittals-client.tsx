@@ -18,6 +18,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
 
+type StatusKey = "draft" | "submitted" | "in_review" | "approved" | "rejected" | string
+
 const statusLabels: Record<string, string> = {
   draft: "Draft",
   submitted: "Submitted",
@@ -67,7 +69,7 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
       const matchesStatus = statusFilter === "all" || item.status === statusFilter
       const matchesSearch =
         term.length === 0 ||
-        [item.submittal_number ?? "", item.title ?? "", item.description ?? ""].some((value) =>
+        [String(item.submittal_number ?? ""), item.title ?? "", item.description ?? ""].some((value) =>
           value.toLowerCase().includes(term),
         )
       return matchesProject && matchesStatus && matchesSearch

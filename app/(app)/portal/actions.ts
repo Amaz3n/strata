@@ -10,6 +10,9 @@ export async function loadPortalViewAction(projectId: string, channel: string) {
 
 export async function sendPortalMessageAction(input: unknown) {
   const parsed = portalMessageInputSchema.parse(input)
-  const { message } = await sendPortalMessage(parsed)
+  const { message } = await sendPortalMessage({
+    ...parsed,
+    projectId: parsed.project_id,
+  })
   return message
 }

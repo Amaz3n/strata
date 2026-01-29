@@ -7,6 +7,7 @@ import type { Project, ProjectStatus } from "@/lib/types"
 
 const statusColors: Record<ProjectStatus, string> = {
   planning: "bg-chart-3/20 text-chart-3 border-chart-3/30",
+  bidding: "bg-chart-4/20 text-chart-4 border-chart-4/30",
   active: "bg-success/20 text-success border-success/30",
   on_hold: "bg-warning/20 text-warning border-warning/30",
   completed: "bg-muted text-muted-foreground border-muted",
@@ -15,6 +16,7 @@ const statusColors: Record<ProjectStatus, string> = {
 
 const statusLabels: Record<ProjectStatus, string> = {
   planning: "Planning",
+  bidding: "Bidding",
   active: "Active",
   on_hold: "On Hold",
   completed: "Completed",

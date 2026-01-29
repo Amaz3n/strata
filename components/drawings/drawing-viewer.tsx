@@ -312,7 +312,7 @@ export function DrawingViewer({
         device: metrics.device,
         connection: metrics.connection || "unknown",
         isPdf: metrics.isPdf,
-        fileSize: metrics.fileSize,
+        fileSize: metrics.fileSize ?? 0,
         usedOptimizedImages: hasOptimizedImages,
       })
 
@@ -397,7 +397,7 @@ export function DrawingViewer({
       markTiming("thumbnailLoad")
       markFullyLoaded()
     }
-  }, [])
+  }, [markTiming, markFullyLoaded])
   const [osdMatrix, setOsdMatrix] = useState<ImageToScreenMatrix | null>(null)
   const [osdContainer, setOsdContainer] = useState<{ width: number; height: number } | null>(null)
   const [osdZoom, setOsdZoom] = useState<number>(1)
@@ -1148,7 +1148,7 @@ export function DrawingViewer({
         renderMarkup(ctx, currentMarkup, canvas.width, canvas.height)
       }
     }
-  }, [markups, localMarkups, currentMarkup, showMarkups, renderMarkup, contentSize])
+  }, [markups, localMarkups, currentMarkup, showMarkups, renderMarkup, contentSize, hasTiles])
 
   useEffect(() => {
     if (!contentSize || !canvasRef.current) return

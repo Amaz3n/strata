@@ -180,8 +180,8 @@ function toMappedValues(invoice: Invoice, contacts?: Contact[], builderDefaultCo
     noteDetails: parsedNotes?.note_details ?? (noteBlob ? buildRichTextContent([noteBlob]) : null),
     topBlock: parsedNotes?.top_block ?? null,
     bottomBlock: parsedNotes?.bottom_block ?? null,
-    dueDate: invoice.due_date ?? undefined,
-    issueDate: invoice.issue_date ?? undefined,
+    dueDate: invoice.due_date ?? "",
+    issueDate: invoice.issue_date ?? "",
     invoiceNumber: invoice.invoice_number,
     logoUrl: null,
     vat: null,
@@ -323,7 +323,7 @@ export function MiddayInvoiceWrapper({
       }).catch((err) => console.error("Failed to release reservation", err))
       reservationRef.current = null
     }
-  }, [])
+  }, [mode])
 
   const loadNextNumber = useCallback(async () => {
     if (mode === "edit") return

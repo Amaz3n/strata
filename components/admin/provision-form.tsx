@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-const initialState: { error?: string; message?: string } = {}
+const initialState = {} as { error?: any; message?: any }
 
 export function ProvisionOrgForm() {
   const [state, formAction, pending] = useActionState(provisionOrgAction, initialState)

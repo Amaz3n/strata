@@ -56,6 +56,8 @@ function mapFile(row: any): FileWithUrls {
     folder_path: row.folder_path ?? undefined,
     description: row.description ?? undefined,
     tags: row.tags ?? [],
+    share_with_clients: row.share_with_clients ?? false,
+    share_with_subs: row.share_with_subs ?? false,
     source: row.source ?? undefined,
     uploaded_by: row.uploaded_by ?? undefined,
     uploader_name: (row.app_users as any)?.full_name ?? undefined,

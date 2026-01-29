@@ -67,13 +67,6 @@ export function ChangeOrderDetailSheet({
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
 
-  // Load attachments when sheet opens
-  useEffect(() => {
-    if (open && changeOrder) {
-      loadAttachments()
-    }
-  }, [open, changeOrder?.id])
-
   const loadAttachments = useCallback(async () => {
     if (!changeOrder) return
 
@@ -98,7 +91,13 @@ export function ChangeOrderDetailSheet({
     } finally {
       setIsLoadingAttachments(false)
     }
-  }, [changeOrder?.id])
+  }, [changeOrder])
+
+  useEffect(() => {
+    if (open && changeOrder) {
+      loadAttachments()
+    }
+  }, [open, changeOrder, loadAttachments])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {

@@ -48,7 +48,10 @@ function licenseStatus(company: Company) {
       if (days <= 30) return { label: "Expiring soon", tone: "secondary" as const }
     }
   }
-  return { label: company.license_verified ? "Verified" : "Unverified", tone: company.license_verified ? "secondary" : ("outline" as const) }
+  return {
+    label: company.license_verified ? "Verified" : "Unverified",
+    tone: (company.license_verified ? "secondary" : "outline") as "secondary" | "outline"
+  }
 }
 
 export function CompanyDetailPage({

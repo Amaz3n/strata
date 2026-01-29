@@ -190,7 +190,7 @@ export async function updatePasswordAction(prevState: AuthState, formData: FormD
   redirect("/")
 }
 
-async function persistOrgCookie(supabase: ReturnType<typeof createServerSupabaseClient>, userId: string) {
+async function persistOrgCookie(supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>, userId: string) {
   const { data, error } = await supabase
     .from("memberships")
     .select("org_id")

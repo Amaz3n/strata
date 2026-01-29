@@ -80,7 +80,7 @@ export function LineItems({ costCodes }: { costCodes?: CostCode[] }) {
         {fields.map((field, index) => (
           <LineItemRow
             key={field.id}
-            // @ts-expect-error
+            // @ts-expect-error Item structure mismatch due to external library types
             item={field}
             index={index}
             handleRemove={handleRemove}

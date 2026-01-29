@@ -217,7 +217,7 @@ async function generateAndAttachDrawSummary({
   const fileName = `draw-${draw.draw_number}-summary-invoice-${safeInvoice}.pdf`
   const storagePath = `${orgId}/${projectId}/draw-summaries/${timestamp}_${fileName}`
 
-  const file = new File([pdfBuffer], fileName, { type: "application/pdf" })
+  const file = new File([pdfBuffer as any], fileName, { type: "application/pdf" })
   const { error: uploadError } = await supabase.storage.from("project-files").upload(storagePath, file, {
     contentType: "application/pdf",
     upsert: false,

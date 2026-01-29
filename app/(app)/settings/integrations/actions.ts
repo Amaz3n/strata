@@ -13,7 +13,7 @@ export async function connectQBOAction() {
   await requirePermission("org.admin", { supabase, orgId, userId })
 
   const state = `${orgId}:${randomUUID()}`
-  const cookieStore = cookies()
+  const cookieStore = await cookies()
   const secure = typeof process.env.VERCEL !== "undefined" || process.env.NODE_ENV === "production"
   if (typeof cookieStore.set === "function") {
     cookieStore.set({

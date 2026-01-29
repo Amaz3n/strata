@@ -24,6 +24,7 @@ export default async function PayLinkPage({ params }: Params) {
   const intent = await createPaymentIntent(
     {
       invoice_id: result.invoice.id,
+      currency: result.invoice.currency,
     },
     result.invoice.org_id,
   )

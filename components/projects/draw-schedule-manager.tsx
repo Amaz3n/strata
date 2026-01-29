@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { ArrowDown, ArrowUp, FileText, MoreHorizontal, Plus, ReceiptText } from "lucide-react"
 import { toast } from "sonner"
@@ -75,7 +75,7 @@ export function DrawScheduleManager({
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editing, setEditing] = useState<DrawSchedule | null>(null)
 
-  const normalizedScheduleItems = Array.isArray(scheduleItems) ? scheduleItems : []
+  const normalizedScheduleItems = useMemo(() => (Array.isArray(scheduleItems) ? scheduleItems : []), [scheduleItems])
 
   const milestonesById = useMemo(() => {
     const map = new Map<string, ScheduleItem>()
@@ -89,12 +89,12 @@ export function DrawScheduleManager({
     return (contract?.total_cents ?? 0) + (approvedChangeOrdersTotalCents ?? 0)
   }, [contract?.total_cents, approvedChangeOrdersTotalCents])
 
-  const effectiveAmountCents = (draw: DrawSchedule) => {
+  const effectiveAmountCents = useCallback((draw: DrawSchedule) => {
     if (typeof draw.percent_of_contract === "number" && revisedContractCents > 0) {
       return Math.round((revisedContractCents * draw.percent_of_contract) / 100)
     }
     return draw.amount_cents ?? 0
-  }
+  }, [revisedContractCents])
 
   const totals = useMemo(() => {
     const total = draws.reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
@@ -102,7 +102,7 @@ export function DrawScheduleManager({
       .filter((d) => d.status === "invoiced" || d.status === "partial" || d.status === "paid")
       .reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
     return { total, billed }
-  }, [draws, revisedContractCents])
+  }, [draws, effectiveAmountCents])
 
   const progress = totals.total > 0 ? Math.round((totals.billed / totals.total) * 100) : 0
   const overContract = revisedContractCents > 0 && totals.total > revisedContractCents
@@ -245,7 +245,7 @@ export function DrawScheduleManager({
               const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
               const dueLabel =
                 draw.due_trigger === "milestone"
-                  ? milestone?.title ?? "Milestone"
+                  ? milestone?.name ?? "Milestone"
                   : draw.due_date
                     ? format(new Date(draw.due_date), "MMM d, yyyy")
                     : (draw.metadata as any)?.due_trigger_label ?? "—"
@@ -538,7 +538,7 @@ function DrawDialog({
                   <SelectItem value="none">No milestone</SelectItem>
                   {scheduleItems.map((item) => (
                     <SelectItem key={item.id} value={item.id}>
-                      {item.title}
+                      {item.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -93,7 +93,7 @@ export function ProjectSetupWizardSheet({
   const [templatesLoading, setTemplatesLoading] = useState(false)
 
   const safeContacts = Array.isArray(contacts) ? contacts : []
-  const safeTeam = Array.isArray(team) ? team : []
+  const safeTeam = useMemo(() => (Array.isArray(team) ? team : []), [team])
   const safeScheduleItems = Array.isArray(scheduleItems) ? scheduleItems : []
 
   const [savingBasics, startSavingBasics] = useTransition()

@@ -24,9 +24,9 @@ export function CustomerFilters({ search, status, plan, onProvision }: CustomerF
     const params = new URLSearchParams(searchParams.toString())
 
     Object.entries(updates).forEach(([key, value]) => {
-      if (value && value !== 'all') {
+      if (typeof value === 'string' && value && value !== 'all') {
         params.set(key, value)
-      } else {
+      } else if (typeof value === 'string') {
         params.delete(key)
       }
     })

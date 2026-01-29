@@ -25,7 +25,7 @@ export async function createProjectBudgetAction(input: unknown) {
     {
       project_id: parsed.project_id,
       status: parsed.status ?? "draft",
-      lines: parsed.lines,
+      lines: parsed.lines.map((l) => ({ ...l, cost_code_id: l.cost_code_id ?? undefined })),
     },
     undefined,
   )

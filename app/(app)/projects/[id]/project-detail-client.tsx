@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -191,7 +191,7 @@ export function ProjectDetailClient({
   approvedChangeOrdersTotalCents,
 }: ProjectDetailClientProps) {
   const router = useRouter()
-  const today = new Date()
+  const today = useMemo(() => new Date(), [])
 
   // State for data
   const [tasks, setTasks] = useState<Task[]>(initialTasks)
@@ -263,11 +263,7 @@ export function ProjectDetailClient({
   }, [portalTokensState])
   const activePortalLinks = clientActiveLinks + subActiveLinks
 
-  useEffect(() => {
-    void loadTeamDirectory()
-  }, [])
-
-  async function refreshPortalTokens() {
+  const refreshPortalTokens = useCallback(async () => {
     setSharingLoading(true)
     try {
       const tokens = await loadSharingDataAction(project.id)
@@ -280,7 +276,7 @@ export function ProjectDetailClient({
     } finally {
       setSharingLoading(false)
     }
-  }
+  }, [project.id])
 
   function handleTokenCreated(token: PortalAccessToken) {
     setPortalTokensState((prev) => [token, ...prev])
@@ -343,9 +339,9 @@ export function ProjectDetailClient({
     if (sharingSheetOpen && !sharingInitialized) {
       void refreshPortalTokens()
     }
-  }, [sharingInitialized, sharingSheetOpen])
+  }, [sharingInitialized, sharingSheetOpen, refreshPortalTokens])
 
-  async function loadTeamDirectory() {
+  const loadTeamDirectory = useCallback(async () => {
     setTeamDirectoryLoading(true)
     try {
       const { roles, people } = await getProjectTeamDirectoryAction(project.id)
@@ -360,7 +356,11 @@ export function ProjectDetailClient({
     } finally {
       setTeamDirectoryLoading(false)
     }
-  }
+  }, [project.id, selectedRoleId])
+
+  useEffect(() => {
+    void loadTeamDirectory()
+  }, [loadTeamDirectory])
 
   async function handleAddMembers() {
     const userIds = Array.from(selectedUserIds)
@@ -685,7 +685,7 @@ export function ProjectDetailClient({
     const combined = [...companyOptions, ...contactOptions]
     if (!lower) return combined
     return combined.filter((item) => item.match.includes(lower))
-  }, [companies, contacts, assignedCompanyIds, assignedContactIds, vendorSearch, projectVendorsState])
+  }, [companies, contacts, assignedCompanyIds, assignedContactIds, vendorSearch])
 
   useEffect(() => {
     if (vendorRoleFilter !== "all") {

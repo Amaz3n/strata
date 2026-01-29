@@ -12,7 +12,7 @@ export async function listSubmittals(orgId?: string, projectId?: string): Promis
   let query = supabase
     .from("submittals")
     .select(
-      "id, org_id, project_id, submittal_number, title, description, status, spec_section, submittal_type, due_date, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id",
+      "id, org_id, project_id, submittal_number, title, description, status, spec_section, submittal_type, due_date, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, created_at, updated_at",
     )
     .eq("org_id", resolvedOrgId)
     .order("submittal_number", { ascending: true })
@@ -46,7 +46,7 @@ export async function createSubmittal({ input, orgId }: { input: SubmittalInput;
     .from("submittals")
     .insert(payload)
     .select(
-      "id, org_id, project_id, submittal_number, title, description, status, spec_section, submittal_type, due_date, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id",
+      "id, org_id, project_id, submittal_number, title, description, status, spec_section, submittal_type, due_date, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, created_at, updated_at",
     )
     .single()
 
@@ -182,6 +182,7 @@ export async function addSubmittalComment({
     input: {
       submittal_id: submittalId,
       description: note,
+      created_via_portal: false,
     },
   })
 }
@@ -271,6 +272,8 @@ async function sendSubmittalEmail({
 
   const recipients: (string | null)[] = []
 
+  const project = Array.isArray(submittal.project) ? submittal.project[0] : submittal.project
+
   if (submittal.reviewed_by) {
     const reviewer = await fetchUserEmail(supabase, submittal.reviewed_by)
     if (reviewer) recipients.push(reviewer.email)
@@ -281,8 +284,8 @@ async function sendSubmittalEmail({
     if (submitter) recipients.push(submitter.email)
   }
 
-  if (submittal.project?.client_id) {
-    const client = await fetchContactEmail(supabase, submittal.project.client_id)
+  if (project?.client_id) {
+    const client = await fetchContactEmail(supabase, project.client_id)
     if (client) recipients.push(client.email)
   }
 
@@ -291,7 +294,7 @@ async function sendSubmittalEmail({
     return
   }
 
-  const projectName = submittal.project?.name ?? "Project"
+  const projectName = project?.name ?? "Project"
   const subject = kind === "decision"
     ? `Submittal #${submittal.submittal_number} decision: ${decisionStatus}`
     : `New submittal #${submittal.submittal_number}: ${submittal.title}`

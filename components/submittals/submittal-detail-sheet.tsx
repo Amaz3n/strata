@@ -63,28 +63,6 @@ export function SubmittalDetailSheet({
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
 
-  // Load attachments when sheet opens
-  useEffect(() => {
-    if (open && submittal) {
-      ;(async () => {
-        if (submittal.attachment_file_id) {
-          try {
-            await attachFileAction(
-              submittal.attachment_file_id,
-              "submittal",
-              submittal.id,
-              submittal.project_id,
-              "legacy_attachment",
-            )
-          } catch (error) {
-            console.warn("Failed to backfill legacy submittal attachment link", error)
-          }
-        }
-        await loadAttachments()
-      })()
-    }
-  }, [open, submittal?.id])
-
   const loadAttachments = useCallback(async () => {
     if (!submittal) return
 
@@ -109,7 +87,29 @@ export function SubmittalDetailSheet({
     } finally {
       setIsLoadingAttachments(false)
     }
-  }, [submittal?.id])
+  }, [submittal])
+
+  // Load attachments when sheet opens
+  useEffect(() => {
+    if (open && submittal) {
+      ;(async () => {
+        if (submittal.attachment_file_id) {
+          try {
+            await attachFileAction(
+              submittal.attachment_file_id,
+              "submittal",
+              submittal.id,
+              submittal.project_id,
+              "legacy_attachment",
+            )
+          } catch (error) {
+            console.warn("Failed to backfill legacy submittal attachment link", error)
+          }
+        }
+        await loadAttachments()
+      })()
+    }
+  }, [open, submittal, loadAttachments])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {

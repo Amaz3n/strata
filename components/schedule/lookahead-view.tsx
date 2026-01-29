@@ -61,9 +61,9 @@ function itemOnDay(item: ScheduleItem, day: Date): boolean {
   const start = parseDate(item.start_date)
   const end = parseDate(item.end_date) || start
   
-  if (!start) return false
+  if (!start || !end) return false
   
-  return isWithinInterval(day, { start, end }) || isSameDay(day, start) || (end && isSameDay(day, end))
+  return isWithinInterval(day, { start, end }) || isSameDay(day, start) || isSameDay(day, end)
 }
 
 // Get items for a specific day
@@ -107,7 +107,7 @@ export function LookaheadView({ className, weeks = 2, onAddItem }: LookaheadView
       const itemStart = parseDate(item.start_date)
       const itemEnd = parseDate(item.end_date) || itemStart
       
-      if (!itemStart) return false
+      if (!itemStart || !itemEnd) return false
       
       // Check if item overlaps with the date range
       return (

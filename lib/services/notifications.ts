@@ -1,10 +1,10 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requireOrgMembership } from "@/lib/auth/context"
-import type { NotificationType, NotificationRecord, NotificationInput } from "@/lib/types/notifications"
+import type { NotificationType, NotificationInput } from "@/lib/types/notifications"
 
 // Re-export types for backward compatibility
-export type { NotificationType, NotificationRecord, NotificationInput }
+export type { NotificationType, NotificationInput }
 
 export interface NotificationRecord {
   id: string

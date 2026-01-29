@@ -38,6 +38,10 @@ interface SubmittalFormProps {
   isSubmitting?: boolean
 }
 
+type SubmittalFormValues = Omit<SubmittalInput, "submittal_number"> & {
+  submittal_number: string | number
+}
+
 export function SubmittalForm({
   open,
   onOpenChange,
@@ -48,7 +52,7 @@ export function SubmittalForm({
 }: SubmittalFormProps) {
   const [statusValue, setStatusValue] = useState("submitted")
 
-  const form = useForm<SubmittalInput>({
+  const form = useForm<SubmittalFormValues>({
     resolver: zodResolver(submittalInputSchema),
     defaultValues: {
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
@@ -63,7 +67,7 @@ export function SubmittalForm({
   })
 
   const handleSubmit = form.handleSubmit(async (values) => {
-    await onSubmit(values)
+    await onSubmit(values as unknown as SubmittalInput)
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
       submittal_number: "",

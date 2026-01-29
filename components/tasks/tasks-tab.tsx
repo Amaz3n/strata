@@ -747,6 +747,8 @@ export function TasksTab({
         team={team}
         onSubmit={handleCreateTask}
         isSubmitting={isSubmitting}
+        groupedResources={groupedResources}
+        loadingResources={loadingResources}
       />
 
       {/* Task Detail Sheet */}
@@ -1339,9 +1341,24 @@ interface CreateTaskSheetProps {
   team: TasksTabProps["team"]
   onSubmit: (values: TaskInput) => void
   isSubmitting: boolean
+  groupedResources: {
+    users: AssignableResource[]
+    contacts: AssignableResource[]
+    companies: AssignableResource[]
+  }
+  loadingResources: boolean
 }
 
-function CreateTaskSheet({ open, onOpenChange, form, team, onSubmit, isSubmitting }: CreateTaskSheetProps) {
+function CreateTaskSheet({
+  open,
+  onOpenChange,
+  form,
+  team,
+  onSubmit,
+  isSubmitting,
+  groupedResources,
+  loadingResources,
+}: CreateTaskSheetProps) {
   const [newChecklistItem, setNewChecklistItem] = useState("")
 
   const handleAddChecklistItem = () => {

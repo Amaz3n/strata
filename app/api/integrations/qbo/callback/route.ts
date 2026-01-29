@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   let savedState = request.cookies.get("qbo_oauth_state")?.value
   if (!savedState) {
     try {
-      const cookieStore = cookies()
+      const cookieStore = await cookies()
       savedState = cookieStore.get("qbo_oauth_state")?.value
     } catch {
       // ignore

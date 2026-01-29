@@ -164,7 +164,7 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
   const daysRemaining = Math.max(0, differenceInCalendarDays(endDate, today))
 
   // Calculate financial health data
-  const nextDraw = drawsData.find(d => d.status === "pending" || d.status === "scheduled")
+  const nextDraw = drawsData.find(d => d.status === "pending" || (d.status as string) === "scheduled")
 
   const health: HealthCounts = {
     tasks: taskCounts,
@@ -703,13 +703,13 @@ async function getApprovedChangeOrderTotal(supabase: any, orgId: string, project
 
 async function getBudgetSummary(orgId: string, projectId: string) {
   try {
-    const budgetData = await getBudgetWithActuals({ projectId, orgId })
+    const budgetData = await getBudgetWithActuals(projectId, orgId)
     if (!budgetData) return null
 
-    const adjustedBudget = budgetData.adjustedBudgetCents ?? budgetData.originalBudgetCents ?? 0
-    const totalCommitted = budgetData.totalCommittedCents ?? 0
-    const totalActual = budgetData.totalActualCents ?? 0
-    const totalInvoiced = budgetData.totalInvoicedCents ?? 0
+    const adjustedBudget = budgetData.summary.adjusted_budget_cents ?? 0
+    const totalCommitted = budgetData.summary.total_committed_cents ?? 0
+    const totalActual = budgetData.summary.total_actual_cents ?? 0
+    const totalInvoiced = budgetData.summary.total_invoiced_cents ?? 0
     const variance = adjustedBudget > 0 ? totalActual : 0
     const variancePercent = adjustedBudget > 0 ? Math.round((totalActual / adjustedBudget) * 100) : 0
     const grossMarginPercent = totalInvoiced > 0 ? Math.round(((totalInvoiced - totalActual) / totalInvoiced) * 100) : 0
@@ -722,7 +722,7 @@ async function getBudgetSummary(orgId: string, projectId: string) {
       varianceCents: variance,
       variancePercent,
       grossMarginPercent,
-      trendPercent: budgetData.trendPercent,
+      trendPercent: 0,
       status: variancePercent > 100 ? "over" : variancePercent > 90 ? "warning" : "ok",
     } as const
   } catch (error) {

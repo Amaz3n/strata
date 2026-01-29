@@ -288,8 +288,8 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
     action: "update",
     entityType: "change_order",
     entityId: data.id,
-    before: existing,
-    after: data,
+    before: existing as unknown as Record<string, unknown>,
+    after: data as unknown as Record<string, unknown>,
   })
 
   return mapChangeOrderRow(data as ChangeOrderRow)

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { FILE_CATEGORIES } from "@/components/files/types"
+import type { FileCategory } from "@/components/files/types"
 import type { FileMetadata } from "@/lib/types"
 import { logPortalFileAccessClientAction } from "@/app/(app)/files/actions"
 
@@ -99,7 +100,7 @@ export function SubDocumentsTab({
             variant={selectedCategory === category ? "default" : "outline"}
             onClick={() => setSelectedCategory(category)}
           >
-            {FILE_CATEGORIES[category]?.label ?? category} ({filesByCategory[category].length})
+            {FILE_CATEGORIES[category as FileCategory]?.label ?? category} ({filesByCategory[category].length})
           </Button>
         ))}
       </div>
@@ -123,7 +124,7 @@ export function SubDocumentsTab({
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{file.file_name}</p>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>{FILE_CATEGORIES[file.category ?? "other"]?.label ?? "Other"}</span>
+                    <span>{FILE_CATEGORIES[(file.category ?? "other") as FileCategory]?.label ?? "Other"}</span>
                     <span>·</span>
                     <span>{format(new Date(file.created_at), "MMM d, yyyy")}</span>
                     {file.size_bytes != null && (
@@ -135,7 +136,7 @@ export function SubDocumentsTab({
                   </div>
                   {file.category && (
                     <Badge variant="secondary" className="mt-1 text-[11px]">
-                      {FILE_CATEGORIES[file.category]?.label ?? file.category}
+                      {FILE_CATEGORIES[file.category as FileCategory]?.label ?? file.category}
                     </Badge>
                   )}
                 </div>

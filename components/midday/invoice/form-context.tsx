@@ -108,7 +108,7 @@ export function FormContext({
       },
       customerId: data?.customerId ?? defaultSettings?.customerId ?? undefined,
     });
-  }, [data, defaultSettings]);
+  }, [data, defaultSettings, form]);
 
   return <FormProvider {...form}>{children}</FormProvider>;
 }

@@ -67,7 +67,7 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
       const matchesStatus = statusFilter === "all" || item.status === statusFilter
       const matchesSearch =
         term.length === 0 ||
-        [item.rfi_number ?? "", item.subject ?? "", item.question ?? ""].some((value) =>
+        [String(item.rfi_number ?? ""), item.subject ?? "", item.question ?? ""].some((value) =>
           value.toLowerCase().includes(term),
         )
       return matchesProject && matchesStatus && matchesSearch

@@ -22,7 +22,7 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
 
   const connection = await getQBOConnection(resolvedOrgId)
 
-  if (connection?.settings?.invoice_number_sync !== false) {
+  if (connection && connection.settings?.invoice_number_sync !== false) {
     const client = await QBOClient.forOrg(resolvedOrgId)
     if (client) {
       try {

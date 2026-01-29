@@ -42,7 +42,10 @@ export async function listProposalProjectsAction() {
 }
 
 export async function createProposalAction(input: ProposalInput) {
-  const { viewUrl, proposal, token } = await createProposal(input)
+  const { viewUrl, proposal, token } = await createProposal({
+    ...input,
+    lines: input.lines.map((l) => ({ ...l, is_optional: l.is_optional ?? false })),
+  })
   revalidatePath("/proposals")
   return { viewUrl, proposal: { ...proposal, token }, token }
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useCallback, useEffect, useState, useTransition } from "react"
 
 import type {
   Company,
@@ -384,7 +384,7 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
   const [reviewDocument, setReviewDocument] = useState<ComplianceDocument | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
 
-  const loadData = () => {
+  const loadData = useCallback(() => {
     startTransition(async () => {
       try {
         const [statusData, types] = await Promise.all([
@@ -400,11 +400,11 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
         })
       }
     })
-  }
+  }, [company.id, toast])
 
   useEffect(() => {
     loadData()
-  }, [company.id])
+  }, [loadData])
 
   const openReview = (doc: ComplianceDocument) => {
     setReviewDocument(doc)

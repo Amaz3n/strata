@@ -72,15 +72,16 @@ export function SubmitButton({ isSubmitting, disabled, isEdit }: Props) {
   });
 
   // Sync with form scheduledAt changes (for when invoice data is loaded)
+  const scheduledAtValue = watch("scheduledAt");
+
   React.useEffect(() => {
-    const currentScheduledAt = watch("scheduledAt");
-    if (currentScheduledAt) {
-      const scheduledDateTime = new Date(currentScheduledAt);
+    if (scheduledAtValue) {
+      const scheduledDateTime = new Date(scheduledAtValue);
       setScheduleDate(scheduledDateTime);
       // Use date-fns format for consistent time formatting
       setScheduleTime(format(scheduledDateTime, "HH:mm"));
     }
-  }, [watch("scheduledAt")]);
+  }, [scheduledAtValue]);
 
   // Helper function to update scheduledAt with provided date and time
   const updateScheduledAt = (date: Date, time: string) => {

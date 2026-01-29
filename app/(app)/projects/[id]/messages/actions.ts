@@ -174,7 +174,7 @@ export async function uploadMessageFileAction(formData: FormData): Promise<{ id:
     size_bytes: file.size,
     visibility: "private",
     category: category as any,
-    source: "message",
+    source: "message" as any,
   })
 
   // Generate signed URL

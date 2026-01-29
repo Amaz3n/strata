@@ -8,7 +8,7 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 export const dynamic = 'force-dynamic'
 
 export default async function ContactsPage() {
-  const [contacts, companies, projects, currentUser, permissionResult] = await Promise.all([
+  const [contacts, companies, projects, permissionResult] = await Promise.all([
     listContacts(),
     listCompanies(),
     listProjectsAction(),

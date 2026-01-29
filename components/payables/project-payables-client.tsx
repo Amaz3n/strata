@@ -142,9 +142,11 @@ export function ProjectPayablesClient({
       try {
         const amountInput = paymentAmount[billId]?.trim()
         const amountCents = amountInput ? Math.round(Number(amountInput) * 100) : undefined
-        if ((status === "paid" || status === "partial") && amountInput && (!Number.isFinite(amountCents) || amountCents <= 0)) {
-          toast({ title: "Invalid payment amount", description: "Enter a positive amount." })
-          return
+        if ((status === "paid" || status === "partial") && amountInput) {
+          if (amountCents === undefined || !Number.isFinite(amountCents) || amountCents <= 0) {
+            toast({ title: "Invalid payment amount", description: "Enter a positive amount." })
+            return
+          }
         }
         await updateProjectVendorBillStatusAction(projectId, billId, {
           status,
@@ -550,9 +552,11 @@ export function ProjectPayablesClient({
                   disabled={isPending}
                   onClick={() => {
                     const retainagePercent = detailRetainage.trim() ? Number(detailRetainage) : undefined
-                    if (detailRetainage.trim() && (!Number.isFinite(retainagePercent) || retainagePercent < 0)) {
-                      toast({ title: "Invalid retainage", description: "Enter a valid percentage." })
-                      return
+                    if (detailRetainage.trim()) {
+                      if (retainagePercent === undefined || !Number.isFinite(retainagePercent) || retainagePercent < 0) {
+                        toast({ title: "Invalid retainage", description: "Enter a valid percentage." })
+                        return
+                      }
                     }
                     startTransition(async () => {
                       try {

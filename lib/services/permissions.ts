@@ -11,8 +11,9 @@ interface PermissionContext extends OrgServiceContext {
   supabase: SupabaseClient
 }
 
-function normalizePermissionRow(row?: PermissionRow | null) {
-  return row?.role?.permissions?.map((perm) => perm.permission_key) ?? []
+function normalizePermissionRow(row?: any) {
+  const role = Array.isArray(row?.role) ? row.role[0] : row?.role
+  return role?.permissions?.map((perm: any) => perm.permission_key) ?? []
 }
 
 async function fetchPermissions({ supabase, orgId, userId }: { supabase: SupabaseClient; orgId: string; userId: string }) {

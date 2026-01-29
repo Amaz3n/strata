@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, Suspense } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import { createClient } from "@supabase/supabase-js"
 
@@ -9,7 +9,7 @@ function parseHashParams(hash: string) {
   return new URLSearchParams(trimmed)
 }
 
-export default function AuthCallbackPage() {
+function AuthCallbackContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
@@ -22,9 +22,18 @@ export default function AuthCallbackPage() {
     const refreshToken = params.get("refresh_token")
 
     if (!accessToken || !refreshToken) {
-      router.replace("/auth/signin")
-      return
+      // It's possible the hash isn't available immediately or we are on server
+      // Wait for client side hash
+      if (typeof window !== 'undefined' && !window.location.hash) {
+         router.replace("/auth/signin")
+         return
+      }
+      // If hash exists but parsing failed or params missing, we continue or retry?
+      // For now, let the logic above proceed. If params.get returns null, checking if hash exists.
+      if (!params.get("access_token")) return
     }
+
+    if (!accessToken || !refreshToken) return
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -65,5 +74,13 @@ export default function AuthCallbackPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function AuthCallbackPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-svh items-center justify-center">Loading...</div>}>
+      <AuthCallbackContent />
+    </Suspense>
   )
 }

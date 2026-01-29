@@ -294,7 +294,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     scrollToTodayTrigger,
   } = useSchedule()
 
-  const items = Array.isArray(rawItems) ? rawItems : []
+  const items = useMemo(() => (Array.isArray(rawItems) ? rawItems : []), [rawItems])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -561,23 +561,27 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
   }, [dateSelection, onQuickAdd])
 
   // Calculate row index for each item
-  let currentRowIndex = 0
-  const itemRowIndices = new Map<string, number>()
-  
-  for (const groupKey of sortedGroups) {
-    if (viewState.groupBy !== "none") {
-      currentRowIndex++ // Group header row
-    }
-    
-    const isExpanded = expandedGroups.has(groupKey) || viewState.groupBy === "none"
-    if (isExpanded) {
-      const groupItemsList = groupedItems.get(groupKey) || []
-      for (const item of groupItemsList) {
-        itemRowIndices.set(item.id, currentRowIndex)
+  const { itemRowIndices, totalRows } = useMemo(() => {
+    let currentRowIndex = 0
+    const rowIndices = new Map<string, number>()
+
+    for (const groupKey of sortedGroups) {
+      if (viewState.groupBy !== "none") {
         currentRowIndex++
       }
+
+      const isExpanded = expandedGroups.has(groupKey) || viewState.groupBy === "none"
+      if (isExpanded) {
+        const groupItemsList = groupedItems.get(groupKey) || []
+        for (const item of groupItemsList) {
+          rowIndices.set(item.id, currentRowIndex)
+          currentRowIndex++
+        }
+      }
     }
-  }
+
+    return { itemRowIndices: rowIndices, totalRows: currentRowIndex || 1 }
+  }, [sortedGroups, groupedItems, expandedGroups, viewState.groupBy])
 
   // Draw dependency lines
   const dependencyLines = useMemo(() => {
@@ -615,7 +619,6 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
   }, [dependencies, items, itemRowIndices, viewState.showDependencies, getBarPosition])
 
   // Calculate total height
-  const totalRows = currentRowIndex || 1
   const totalHeight = Math.max(totalRows * GANTT_ROW_HEIGHT, 200)
   const timelineHeight = Math.max(totalHeight, viewportHeight || 0)
 

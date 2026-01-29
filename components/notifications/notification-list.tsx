@@ -10,8 +10,8 @@ import { NotificationItem } from './notification-item'
 export function NotificationList() {
   const { notifications, unreadCount, markAllAsRead, isLoading } = useNotifications()
 
-  const unreadNotifications = notifications.filter(n => !n.read_at)
-  const readNotifications = notifications.filter(n => n.read_at)
+  const unreadNotifications = notifications.filter(n => !n.is_read)
+  const readNotifications = notifications.filter(n => n.is_read)
 
   return (
     <div className="flex flex-col">

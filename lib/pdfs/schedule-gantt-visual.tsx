@@ -408,6 +408,7 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
                     item.is_critical_path ? styles.nameRowCritical : {},
                   ]}
                 >
+                  {/* @ts-ignore */}
                   <Text style={[styles.nameText, styles.nameTextTruncate]} numberOfLines={1}>
                     {item.name}
                   </Text>

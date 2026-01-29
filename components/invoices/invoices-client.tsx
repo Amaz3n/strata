@@ -149,7 +149,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
 
       const matchesSearch =
         term.length === 0 ||
-        [item.title ?? "", item.invoice_number ?? "", projectLookup[item.project_id]?.name ?? ""].some((value) =>
+        [item.title ?? "", item.invoice_number ?? "", (item.project_id ? projectLookup[item.project_id]?.name : "") ?? ""].some((value) =>
           value.toLowerCase().includes(term),
         )
 
@@ -295,7 +295,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                     <Building2 className="mr-2 h-4 w-4" />
                     By project
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56" sideOffset={8} align="start">
+                  <DropdownMenuSubContent className="w-56" sideOffset={8}>
                     <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
                       <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
                       {projects.map((project) => (
@@ -312,7 +312,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                     <Calendar className="mr-2 h-4 w-4" />
                     By due date
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56" sideOffset={8} align="start">
+                  <DropdownMenuSubContent className="w-56" sideOffset={8}>
                     <DropdownMenuRadioGroup value={dueFilter} onValueChange={(value) => setDueFilter(value as DueFilter)}>
                       <DropdownMenuRadioItem value="any">Any due date</DropdownMenuRadioItem>
                       <DropdownMenuRadioItem value="due_soon">Due in next 7 days</DropdownMenuRadioItem>
@@ -327,7 +327,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                     <List className="mr-2 h-4 w-4" />
                     Status
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56" sideOffset={8} align="start">
+                  <DropdownMenuSubContent className="w-56" sideOffset={8}>
                     <DropdownMenuRadioGroup
                       value={statusFilter}
                       onValueChange={(value) => setStatusFilter(value as StatusFilter)}
@@ -435,7 +435,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
             </TableHeader>
             <TableBody>
               {filtered.map((invoice) => {
-                const projectName = projectLookup[invoice.project_id]?.name ?? "Unknown project"
+                const projectName = (invoice.project_id ? projectLookup[invoice.project_id]?.name : "") ?? "Unknown project"
                 const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
                 const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
                 return (

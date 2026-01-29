@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, Suspense } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
@@ -14,7 +14,7 @@ function createSupabaseClient(): SupabaseClient | null {
   return createClient(url, anonKey)
 }
 
-export default function ResetPasswordPage() {
+function AuthResetContent() {
   const searchParams = useSearchParams()
   const code = searchParams.get("code")
   const supabase = useMemo(() => createSupabaseClient(), [])
@@ -99,5 +99,13 @@ export default function ResetPasswordPage() {
       </div>
       <ResetPasswordForm supabase={supabase} />
     </div>
+  )
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense fallback={<div className="text-white">Loading...</div>}>
+      <AuthResetContent />
+    </Suspense>
   )
 }

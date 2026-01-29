@@ -155,81 +155,7 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-async function generateTilesLocally(pdfBytes: Uint8Array, orgId: string, supabase: any) {
-  // Actually process the PDF to create real tiles
-  let sharp: any
-  let pdfToImg: any
 
-  try {
-    sharp = (await import("sharp")) as any
-  } catch (e) {
-    throw new Error(`Sharp not available: ${e?.message ?? String(e)}`)
-  }
-
-  // For now, just create a placeholder image since PDF processing is not working
-  console.log('📄 PDF processing temporarily disabled, using placeholder')
-  console.log('🚀 In production, PDFs are processed automatically by Edge Functions')
-  return await createPlaceholderImage(orgId, supabase)
-
-  // Create tiles from the processed image
-  const hash = `real-${Date.now()}`
-  const basePath = `${orgId}/${hash}`
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const tileBaseUrl = `${supabaseUrl}/storage/v1/object/public/drawings-tiles/${basePath}`
-
-  // For simplicity, just use the full image as a single tile
-  // In production, this would create proper tile pyramid
-  const tilePath = `${basePath}/tiles/0/0_0.png`
-  const { error: tileError } = await supabase.storage
-    .from("drawings-tiles")
-    .upload(tilePath, imageBuffer, {
-      contentType: "image/png",
-      cacheControl: "public, max-age=31536000, immutable",
-      upsert: true
-    })
-
-  if (tileError && !tileError.message?.includes?.('already exists')) {
-    throw new Error(`Failed to upload tile: ${tileError.message}`)
-  }
-
-  // Generate thumbnail
-  const thumbBuffer = await sharp(imageBuffer)
-    .resize(256, 256, { fit: 'inside' })
-    .png()
-    .toBuffer()
-
-  const thumbPath = `${basePath}/thumbnail.png`
-  const { error: thumbError } = await supabase.storage
-    .from("drawings-tiles")
-    .upload(thumbPath, thumbBuffer, {
-      contentType: "image/png",
-      cacheControl: "public, max-age=31536000, immutable",
-      upsert: true
-    })
-
-  if (thumbError && !thumbError.message?.includes?.('already exists')) {
-    throw new Error(`Failed to upload thumbnail: ${thumbError.message}`)
-  }
-
-  return {
-    tile_manifest: {
-      Image: {
-        xmlns: "http://schemas.microsoft.com/deepzoom/2008",
-        Format: "png",
-        Overlap: 0,
-        TileSize: metadata.width, // Single tile covers entire image
-        Size: { Width: metadata.width, Height: metadata.height }
-      }
-    },
-    tile_base_url: tileBaseUrl,
-    source_hash: hash,
-    tile_levels: 1,
-    tiles_generated_at: new Date().toISOString(),
-    thumbnail_url: `${tileBaseUrl}/thumbnail.png`,
-    image_width: metadata.width,
-    image_height: metadata.height,
-  }
-}
 
 async function createVisibleTestImage(orgId: string, supabase: any) {
   // Create a HIGHLY VISIBLE test image with bright colors
@@ -237,7 +163,7 @@ async function createVisibleTestImage(orgId: string, supabase: any) {
   try {
     sharp = (await import("sharp")) as any
   } catch (e) {
-    throw new Error(`Sharp not available: ${e?.message ?? String(e)}`)
+    throw new Error(`Sharp not available: ${(e as any)?.message ?? String(e)}`)
   }
 
   // Create a colorful test pattern that's definitely visible
@@ -591,7 +517,7 @@ const WEBP_QUALITY = 82
 type TileManifest = {
   Image: {
     xmlns: string
-    Format: "webp"
+    Format: "webp" | "png"
     Overlap: number
     TileSize: number
     Size: { Width: number; Height: number }
@@ -1215,7 +1141,7 @@ async function generateDrawingTilesInNode(
     // 2) Download PDF bytes
     const { data: pdfFile, error: downloadError } = await supabase.storage
       .from("project-files")
-      .download(file.storage_path, { signal: controller.signal as any })
+      .download(file.storage_path)
 
     if (downloadError || !pdfFile) {
       throw new Error(`Failed to download PDF: ${downloadError?.message ?? "unknown error"}`)

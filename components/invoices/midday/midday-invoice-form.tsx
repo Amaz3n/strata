@@ -309,7 +309,7 @@ export function MiddayInvoiceForm({
                         <FormItem>
                           <FormLabel>Issue date</FormLabel>
                           <FormControl>
-                            <Input type="date" value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value)} />
+                            <Input type="date" value={field.value || ""} onChange={(e) => field.onChange(e.target.value)} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -322,7 +322,7 @@ export function MiddayInvoiceForm({
                         <FormItem>
                           <FormLabel>Due date</FormLabel>
                           <FormControl>
-                            <Input type="date" value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value)} />
+                            <Input type="date" value={field.value || ""} onChange={(e) => field.onChange(e.target.value)} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -338,7 +338,7 @@ export function MiddayInvoiceForm({
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Project</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
+                        <Select onValueChange={field.onChange} value={field.value ?? undefined}>
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue placeholder="Select a project" />

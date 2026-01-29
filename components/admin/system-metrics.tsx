@@ -11,6 +11,7 @@ import {
   Square,
   HardHat
 } from "@/components/icons"
+import { Database, Server, HardDrive } from "lucide-react"
 import { getSystemMetrics } from "@/lib/services/admin"
 
 export async function SystemMetrics() {

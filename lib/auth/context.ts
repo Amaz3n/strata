@@ -134,7 +134,7 @@ export async function requireOrgMembership(
 
   // Platform admin: allow bypassing membership, use service client, and pick any org.
   if (isPlatformAdmin) {
-    let resolvedOrgId =
+    const resolvedOrgId =
       orgId ??
       context.orgId ??
       (await (async () => {

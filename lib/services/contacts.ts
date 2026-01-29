@@ -522,7 +522,7 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
   }
 
   return {
-    schedule: (scheduleAssignments.data ?? []).map((row) => ({
+    schedule: (scheduleAssignments.data ?? []).map((row: any) => ({
       id: row.id,
       project_id: row.project_id,
       schedule_item_id: row.schedule_item_id,
@@ -533,15 +533,15 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
       confirmed_at: row.confirmed_at ?? undefined,
       notes: row.notes ?? undefined,
       created_at: row.created_at,
-      schedule_item: row.schedule_items ?? undefined,
+      schedule_item: Array.isArray(row.schedule_items) ? row.schedule_items[0] : row.schedule_items,
     })),
-    tasks: (taskAssignments.data ?? []).map((row) => ({
+    tasks: (taskAssignments.data ?? []).map((row: any) => ({
       id: row.id,
       task_id: row.task_id,
       role: row.role ?? undefined,
       due_date: row.due_date ?? undefined,
       created_at: row.created_at,
-      task: row.tasks ?? undefined,
+      task: Array.isArray(row.tasks) ? row.tasks[0] : row.tasks,
     })),
   }
 }

@@ -158,7 +158,7 @@ export async function updateTask({
     .from("tasks")
     .select(
       `
-      id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
+      id, org_id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at,
       task_assignments(id, user_id, contact_id)
     `,
     )
@@ -180,9 +180,8 @@ export async function updateTask({
       due_date: parsed.due_date,
     })
     .eq("org_id", resolvedOrgId)
-    .eq("id", taskId)
     .select(`
-      id, org_id, project_id, title, description, status, priority, due_date, created_at, updated_at,
+      id, org_id, project_id, title, description, status, priority, due_date, completed_at, created_at, updated_at,
       task_assignments (
         id, user_id, contact_id, role,
         user:app_users(id, full_name, avatar_url, email),

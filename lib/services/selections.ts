@@ -40,7 +40,7 @@ export async function listProjectSelections(orgId?: string, projectId?: string):
       "id, org_id, project_id, category_id, selected_option_id, status, due_date, selected_at, confirmed_at, notes",
     )
     .eq("org_id", resolvedOrgId)
-    .order("due_date", { ascending: true, nullsLast: true })
+    .order("due_date", { ascending: true, nullsFirst: false })
 
   if (projectId) {
     query = query.eq("project_id", projectId)

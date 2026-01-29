@@ -493,7 +493,7 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
 
   await recordAudit({
     orgId: resolvedOrgId,
-    actorId: null,
+    actorId: undefined,
     action: "insert",
     entityType: "payment",
     entityId: paymentRow.id,
@@ -630,7 +630,8 @@ export async function findDueReminders() {
 
   const now = new Date()
   const due = (data ?? []).filter((row) => {
-    const dueDate = row.invoice?.due_date ? new Date(row.invoice.due_date) : undefined
+    const invoice = Array.isArray(row.invoice) ? row.invoice[0] : row.invoice
+    const dueDate = invoice?.due_date ? new Date(invoice.due_date) : undefined
     if (!dueDate) return false
     const diffDays = Math.floor((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
     const overdueDays = Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
@@ -639,7 +640,7 @@ export async function findDueReminders() {
       return diffDays <= row.offset_days && diffDays >= 0
     }
     if (row.schedule === "after_due" || row.schedule === "overdue") {
-      return overdueDays >= row.offset_days && (row.invoice?.balance_due_cents ?? 0) > 0
+      return overdueDays >= row.offset_days && (invoice?.balance_due_cents ?? 0) > 0
     }
     return false
   })

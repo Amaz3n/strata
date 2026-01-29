@@ -41,7 +41,7 @@ export async function getPortalView({
     listConversationMessagesWithClient(context.supabase, context.orgId, conversation.id),
     listScheduleItemsWithClient(context.supabase, context.orgId),
     listDailyLogs(context.orgId),
-    listFiles(context.orgId),
+    listFiles({ project_id: projectId }, context.orgId),
   ])
 
   return {

@@ -172,7 +172,7 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
         }),
       ) ?? []),
       ...(primaryContactQuery.data ?? []).map((row: any) => mapContact(row)),
-    ] ?? []
+    ]
 
   const deduped = new Map<string, Contact>()
   for (const contact of contacts) {

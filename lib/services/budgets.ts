@@ -762,7 +762,7 @@ export async function acknowledgeVarianceAlert(alertId: string, status: "acknowl
 }
 
 async function selectIds(
-  query: ReturnType<SupabaseClient["from"]>,
+  query: any,
   label: string,
 ): Promise<string[]> {
   const { data, error } = await query

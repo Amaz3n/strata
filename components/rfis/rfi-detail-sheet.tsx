@@ -118,28 +118,6 @@ export function RfiDetailSheet({
     }
   }, [rfi, responseForm, decisionForm])
 
-  // Load attachments when sheet opens
-  useEffect(() => {
-    if (open && rfi) {
-      ;(async () => {
-        if (rfi.attachment_file_id) {
-          try {
-            await attachFileAction(
-              rfi.attachment_file_id,
-              "rfi",
-              rfi.id,
-              rfi.project_id,
-              "legacy_attachment",
-            )
-          } catch (error) {
-            console.warn("Failed to backfill legacy RFI attachment link", error)
-          }
-        }
-        await loadAttachments()
-      })()
-    }
-  }, [open, rfi?.id])
-
   const loadAttachments = useCallback(async () => {
     if (!rfi) return
 
@@ -164,7 +142,29 @@ export function RfiDetailSheet({
     } finally {
       setIsLoadingAttachments(false)
     }
-  }, [rfi?.id])
+  }, [rfi])
+
+  // Load attachments when sheet opens
+  useEffect(() => {
+    if (open && rfi) {
+      ;(async () => {
+        if (rfi.attachment_file_id) {
+          try {
+            await attachFileAction(
+              rfi.attachment_file_id,
+              "rfi",
+              rfi.id,
+              rfi.project_id,
+              "legacy_attachment",
+            )
+          } catch (error) {
+            console.warn("Failed to backfill legacy RFI attachment link", error)
+          }
+        }
+        await loadAttachments()
+      })()
+    }
+  }, [open, rfi, loadAttachments])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {

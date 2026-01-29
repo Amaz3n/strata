@@ -39,7 +39,7 @@ interface CustomersClientProps {
   status: string
   plan: string
   page: number
-  onProvision: (formData: FormData) => Promise<void>
+  onProvision: (formData: FormData) => Promise<any>
 }
 
 export function CustomersClient({

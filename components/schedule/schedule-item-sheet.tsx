@@ -1461,7 +1461,7 @@ export function ScheduleItemSheet({
                                           "font-medium",
                                           draw.status === "paid"
                                             ? "text-emerald-600 dark:text-emerald-400"
-                                            : draw.status === "approved"
+                                            : draw.status === "invoiced"
                                               ? "text-blue-600 dark:text-blue-400"
                                               : ""
                                         )}
@@ -1485,7 +1485,7 @@ export function ScheduleItemSheet({
                                           "text-[10px]",
                                           draw.status === "paid"
                                             ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                                            : draw.status === "approved"
+                                            : draw.status === "invoiced"
                                               ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
                                               : "bg-slate-50 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300"
                                         )}

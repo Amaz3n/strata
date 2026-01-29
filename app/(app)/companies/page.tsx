@@ -8,7 +8,7 @@ import { InsuranceWidget } from "@/components/companies/insurance-widget"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
 export default async function CompaniesPage() {
-  const [companies, contacts, teamMembers, currentUser, permissionResult] = await Promise.all([
+  const [companies, contacts, teamMembers, permissionResult] = await Promise.all([
     listCompanies(),
     listContacts(),
     listTeamMembers(),

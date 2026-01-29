@@ -119,6 +119,7 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     subtotal_cents: row.subtotal_cents ?? totals?.subtotal_cents,
     tax_cents: row.tax_cents ?? totals?.tax_cents,
     total_cents: row.total_cents ?? totals?.total_cents,
+    currency: "usd",
     balance_due_cents: row.balance_due_cents ?? totals?.balance_due_cents,
     metadata: metadata ?? undefined,
     customer_name: (metadata as any)?.customer_name ?? (row as any).customer_name,
@@ -129,7 +130,6 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     viewed_at: row.viewed_at ?? undefined,
     sent_at: row.sent_at ?? (metadata as any)?.sent_at ?? undefined,
     sent_to_emails: row.sent_to_emails ?? undefined,
-    customer_name: (metadata as any)?.customer_name,
   }
 }
 
@@ -667,7 +667,7 @@ async function sendInvoiceEmail({
     InvoiceEmail({
       invoiceNumber: invoice.invoice_number,
       invoiceTitle: invoice.title ?? "New invoice",
-      projectName: invoice.project?.name ?? "Project",
+      projectName: (Array.isArray(invoice.project) ? invoice.project[0] : invoice.project)?.name ?? "Project",
       amount,
       dueDate: dueDisplay,
       invoiceLink,

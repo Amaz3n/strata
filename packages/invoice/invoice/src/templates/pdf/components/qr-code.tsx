@@ -8,7 +8,7 @@ interface QRCodeProps {
 export function QRCode({ data, size = 40 }: QRCodeProps) {
   return (
     <View style={{ marginTop: 20 }}>
-      <Image src={data} style={{ width: size, height: size }} />
+      <Image src={data} alt="Invoice QR code" style={{ width: size, height: size }} />
     </View>
   );
 }

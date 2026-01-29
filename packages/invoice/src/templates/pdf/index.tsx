@@ -1,4 +1,5 @@
 import { Document, Font, Image, Page, Text, View } from "@react-pdf/renderer";
+// @ts-ignore
 import QRCodeUtil from "qrcode";
 import type { Invoice } from "../../types";
 import { EditorContent } from "./components/editor-content";

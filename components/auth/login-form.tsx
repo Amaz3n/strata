@@ -29,7 +29,7 @@ export function LoginForm({
       <form action={formAction}>
         <FieldGroup>
           <div className="flex flex-col items-center gap-2 text-center">
-            <a
+            <Link
               href="/"
               className="flex flex-col items-center gap-2 font-medium"
             >
@@ -37,7 +37,7 @@ export function LoginForm({
                 <GalleryVerticalEnd className="size-6 text-primary-foreground" />
               </div>
               <span className="sr-only">Arc</span>
-            </a>
+            </Link>
             <h1 className="text-xl font-bold">Welcome to Arc</h1>
             <FieldDescription>
               Don&apos;t have an account?{" "}

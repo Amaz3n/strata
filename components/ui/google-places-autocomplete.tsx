@@ -34,12 +34,13 @@ export function GooglePlacesAutocomplete({
   const inputRef = useRef<HTMLInputElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const autocompleteServiceRef = useRef<google.maps.places.AutocompleteService | null>(null)
+  const autocompleteServiceRef = useRef<any>(null)
 
   // Initialize Google Places Autocomplete service
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.google && window.google.maps && window.google.maps.places) {
-      autocompleteServiceRef.current = new window.google.maps.places.AutocompleteService()
+    const win = window as any
+    if (typeof window !== 'undefined' && win.google && win.google.maps && win.google.maps.places) {
+      autocompleteServiceRef.current = new win.google.maps.places.AutocompleteService()
     }
   }, [])
 
@@ -60,6 +61,17 @@ export function GooglePlacesAutocomplete({
       }
     }
   }, [selectedIndex])
+
+  const handleSelectPrediction = useCallback(
+    (prediction: PlacePrediction) => {
+      setInputValue(prediction.description)
+      onChange(prediction.description)
+      setPredictions([])
+      setSelectedIndex(-1)
+      inputRef.current?.blur()
+    },
+    [onChange]
+  )
 
   // Handle click outside and keyboard events
   useEffect(() => {
@@ -95,7 +107,7 @@ export function GooglePlacesAutocomplete({
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [predictions, selectedIndex])
+  }, [predictions, selectedIndex, handleSelectPrediction])
 
   // Update input value when prop changes
   useEffect(() => {
@@ -118,8 +130,9 @@ export function GooglePlacesAutocomplete({
           types: ['address']
         }
 
-        autocompleteServiceRef.current.getPlacePredictions(request, (predictions, status) => {
-        if (status === google.maps.places.PlacesServiceStatus.OK && predictions) {
+        autocompleteServiceRef.current.getPlacePredictions(request, (predictions: any[], status: string) => {
+        const win = window as any
+        if (status === win.google.maps.places.PlacesServiceStatus.OK && predictions) {
           setPredictions(predictions)
         } else {
           setPredictions([])
@@ -141,12 +154,6 @@ export function GooglePlacesAutocomplete({
     const newValue = e.target.value
     setInputValue(newValue)
     onChange(newValue)
-  }
-
-  const handleSelectPrediction = (prediction: PlacePrediction) => {
-    setInputValue(prediction.description)
-    onChange(prediction.description)
-    inputRef.current?.blur()
   }
 
   const handleInputFocus = () => {

@@ -31,8 +31,8 @@ const statusStyles: Record<StatusKey, string> = {
 }
 
 interface ProposalsClientProps {
-  proposals: Array<Proposal & { project_name?: string | null }>
-  projects: Project[]
+  proposals: Array<Proposal & { project_name?: string | null; token?: string | null }>
+  projects: Array<{ id: string; name: string }>
   allowNoProject?: boolean
 }
 

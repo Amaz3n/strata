@@ -54,8 +54,8 @@ export async function recordEvent(input: EventInput) {
     .insert({
       org_id: orgId,
       event_type: input.eventType,
-      entity_type: input.entityType,
-      entity_id: input.entityId,
+      entity_type: input.entityType ?? null,
+      entity_id: input.entityId ?? null,
       payload,
       channel: input.channel ?? "activity",
     })
@@ -72,8 +72,8 @@ export async function recordEvent(input: EventInput) {
       id: data.id,
       org_id: orgId,
       event_type: input.eventType,
-      entity_type: input.entityType,
-      entity_id: input.entityId,
+      entity_type: input.entityType ?? null,
+      entity_id: input.entityId ?? null,
       payload,
       created_at: data.created_at,
     }, orgId)
@@ -291,7 +291,9 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
 }
 
 function buildNotificationFromEvent(event: EventRecord, userId: string) {
-  const { event_type, payload, entity_type, entity_id } = event
+  const { event_type, payload, entity_type: rawEntityType, entity_id: rawEntityId } = event
+  const entity_type = rawEntityType || undefined
+  const entity_id = rawEntityId || undefined
   const safePayload = (payload ?? {}) as Record<string, any>
   const projectId = extractProjectIdFromEvent(event)
 

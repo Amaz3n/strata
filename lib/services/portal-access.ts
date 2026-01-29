@@ -1308,6 +1308,8 @@ function mapRfi(data: any): Rfi {
     decided_at: data.decided_at ?? undefined,
     decided_via_portal: data.decided_via_portal ?? undefined,
     decision_portal_token_id: data.decision_portal_token_id ?? undefined,
+    created_at: data.created_at ?? "",
+    updated_at: data.updated_at ?? undefined,
   }
 }
 
@@ -1333,6 +1335,8 @@ function mapSubmittal(data: any): Submittal {
     decision_at: data.decision_at ?? undefined,
     decision_via_portal: data.decision_via_portal ?? undefined,
     decision_portal_token_id: data.decision_portal_token_id ?? undefined,
+    created_at: data.created_at ?? "",
+    updated_at: data.updated_at ?? undefined,
   }
 }
 

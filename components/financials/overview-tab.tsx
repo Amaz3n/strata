@@ -1,7 +1,7 @@
 "use client"
 
 import type { Contract, DrawSchedule, Retainage, ScheduleItem } from "@/lib/types"
-import type { ProjectStats } from "@/app/projects/[id]/actions"
+import type { ProjectStats } from "@/app/(app)/projects/[id]/actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContractSummaryCard } from "@/components/projects/contract-summary-card"
 import { DrawScheduleManager } from "@/components/projects/draw-schedule-manager"

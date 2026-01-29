@@ -61,6 +61,7 @@ export default async function InvoicePublicPage({ params }: Params) {
       const intent = await createPaymentIntent(
         {
           invoice_id: invoice.id,
+          currency: invoice.currency,
         },
         invoice.org_id,
       )

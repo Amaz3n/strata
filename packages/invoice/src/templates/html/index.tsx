@@ -42,7 +42,6 @@ export function HtmlTemplate({ data, width, height }: Props) {
         maxWidth: width,
         height,
       }}
-      hideScrollbar
     >
       <div
         className="p-4 sm:p-6 md:p-8 h-full flex flex-col"

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   Building2,
@@ -49,6 +49,7 @@ interface SearchResult {
   project_name?: string
   created_at?: string
   updated_at?: string
+  icon?: any
 }
 
 interface CommandSearchProps {
@@ -63,7 +64,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
   const router = useRouter()
 
   // Search function using server action
-  const searchItems = async (searchQuery: string): Promise<SearchResult[]> => {
+  const searchItems = useCallback(async (searchQuery: string): Promise<SearchResult[]> => {
     if (!searchQuery.trim()) return []
 
     try {
@@ -82,7 +83,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
       console.error("Search failed:", error)
       return []
     }
-  }
+  }, [])
 
   // Get icon component for entity type
   const getIconForType = (type: SearchResult["type"]) => {
@@ -149,7 +150,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
 
     const debounceTimer = setTimeout(search, 150)
     return () => clearTimeout(debounceTimer)
-  }, [query])
+  }, [query, searchItems])
 
   const handleSelect = (result: SearchResult) => {
     setOpen(false)

@@ -558,11 +558,13 @@ export interface ChangeOrder {
   id: string
   org_id: string
   project_id: string
+  co_number?: number | string | null
   title: string
   description?: string
   status: string
   reason?: string
   total_cents?: number
+  amount_cents?: number // Alias for total_cents used in some components
   approved_by?: string | null
   approved_at?: string | null
   summary?: string | null
@@ -612,6 +614,7 @@ export interface Invoice {
   subtotal_cents?: number | null
   tax_cents?: number | null
   total_cents?: number | null
+  currency: string
   balance_due_cents?: number | null
   metadata?: Record<string, any>
   lines?: InvoiceLine[]
@@ -763,6 +766,7 @@ export interface DrawSchedule {
   amount_cents: number
   percent_of_contract?: number | null
   due_date?: string | null
+  scheduled_date?: string | null // Alias used in some components
   due_trigger?: "date" | "milestone" | "approval" | null
   milestone_id?: string | null
   status: "pending" | "invoiced" | "partial" | "paid"
@@ -949,6 +953,8 @@ export interface Rfi {
   decided_at?: string | null
   decided_via_portal?: boolean | null
   decision_portal_token_id?: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface SubmittalDecision {
@@ -982,6 +988,8 @@ export interface Submittal {
   decision_at?: string | null
   decision_via_portal?: boolean | null
   decision_portal_token_id?: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface PortalMessageThread {

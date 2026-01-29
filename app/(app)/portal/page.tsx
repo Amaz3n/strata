@@ -6,7 +6,7 @@ import { loadPortalViewAction } from "./actions"
 import { PortalClient } from "./portal-client"
 
 export default async function PortalPage() {
-
+  const projects = await listProjectsAction()
   const initialChannel: ConversationChannel = "client"
   const initialProjectId = projects[0]?.id
   const initialView = initialProjectId ? await loadPortalViewAction(initialProjectId, initialChannel) : null

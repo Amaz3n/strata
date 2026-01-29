@@ -26,7 +26,6 @@ export default async function ProjectFinancialsPage({ params, searchParams }: Pr
 
   const [
     project,
-    currentUser,
     stats,
     scheduleItems,
     contract,

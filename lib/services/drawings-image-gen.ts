@@ -185,7 +185,7 @@ export async function generateImagesFromPDF(
       }
     } catch (fallbackError) {
       console.error("Fallback rendering also failed:", fallbackError)
-      throw new Error(`Image generation failed: ${error.message}`)
+      throw new Error(`Image generation failed: ${(error as Error).message}`)
     }
   }
 }

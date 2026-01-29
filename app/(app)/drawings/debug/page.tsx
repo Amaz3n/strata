@@ -131,7 +131,10 @@ export default async function DrawingsDebugPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <form action={queueTileGenerationForExistingSheetsAction}>
+          <form action={async () => {
+            "use server"
+            await queueTileGenerationForExistingSheetsAction()
+          }}>
             <Button type="submit" variant="default">
               Queue tile generation jobs
             </Button>

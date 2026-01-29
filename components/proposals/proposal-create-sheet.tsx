@@ -23,7 +23,7 @@ const DEFAULT_LINE = { description: "", quantity: 1, unit_cost: 0 }
 interface ProposalCreateSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  projects: Project[]
+  projects: { id: string; name: string }[]
   allowNoProject?: boolean
   onCreate: (input: ProposalInput) => Promise<void> | void
   loading?: boolean

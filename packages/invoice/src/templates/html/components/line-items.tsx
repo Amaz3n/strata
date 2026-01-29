@@ -50,31 +50,28 @@ export function LineItems({
           <div className="text-[11px] self-start">{item.quantity ?? 0}</div>
           <div className="text-[11px] self-start">
             {currency && includeUnits && item.unit
-              ? `${formatAmount({
+              ? `${formatAmount(
+                  item.price ?? 0,
                   currency,
-                  amount: item.price ?? 0,
-                  maximumFractionDigits,
-                  locale,
-                })}/${item.unit}`
+                  locale
+                )}/${item.unit}`
               : currency &&
-                formatAmount({
+                formatAmount(
+                  item.price ?? 0,
                   currency,
-                  amount: item.price ?? 0,
-                  maximumFractionDigits,
-                  locale,
-                })}
+                  locale
+                )}
           </div>
           <div className="text-[11px] text-right self-start">
             {currency &&
-              formatAmount({
-                maximumFractionDigits,
-                currency,
-                amount: calculateLineItemTotal({
+              formatAmount(
+                calculateLineItemTotal({
                   price: item.price,
                   quantity: item.quantity,
                 }),
-                locale,
-              })}
+                currency,
+                locale
+              )}
           </div>
         </div>
       ))}

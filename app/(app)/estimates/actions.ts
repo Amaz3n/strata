@@ -33,6 +33,7 @@ export async function createEstimateAction(input: unknown) {
     ...parsed,
     project_id: parsed.project_id ?? null,
     recipient_contact_id: parsed.recipient_contact_id ?? null,
+    lines: parsed.lines.map((line, index) => ({ ...line, sort_order: index, markup_pct: line.markup_pct ?? 0 })),
   })
   revalidatePath("/estimates")
   return estimate

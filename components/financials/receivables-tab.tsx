@@ -42,8 +42,8 @@ export function ReceivablesTab({
   builderInfo,
 }: ReceivablesTabProps) {
   const [subTab, setSubTab] = useState<"invoices" | "draws" | "retainage">("invoices")
-  const safeRetainage = Array.isArray(retainage) ? retainage : []
-  const safeInvoices = Array.isArray(invoices) ? invoices : []
+  const safeRetainage = useMemo(() => (Array.isArray(retainage) ? retainage : []), [retainage])
+  const safeInvoices = useMemo(() => (Array.isArray(invoices) ? invoices : []), [invoices])
 
   // Calculate summary stats
   const stats = useMemo(() => {

@@ -369,7 +369,7 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
   await recordAudit({
     orgId,
     actorId: userId,
-    action: "create",
+    action: "insert",
     entityType: "commitment_line",
     entityId: data.id as string,
     after: data,
@@ -377,9 +377,9 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
 
   await recordEvent({
     orgId,
-    projectId: commitment.project_id,
     eventType: "commitment_line_created",
     payload: {
+      project_id: commitment.project_id,
       commitment_id: commitmentId,
       commitment_line_id: data.id,
       cost_code_id: validated.cost_code_id,
@@ -436,9 +436,9 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
 
   await recordEvent({
     orgId,
-    projectId: (existing as any).commitment?.project_id,
     eventType: "commitment_line_updated",
     payload: {
+      project_id: (existing as any).commitment?.project_id,
       commitment_id: (existing as any).commitment_id,
       commitment_line_id: data.id,
     },
@@ -486,9 +486,9 @@ export async function deleteCommitmentLine(lineId: string): Promise<void> {
 
   await recordEvent({
     orgId,
-    projectId: (existing as any).commitment?.project_id,
     eventType: "commitment_line_deleted",
     payload: {
+      project_id: (existing as any).commitment?.project_id,
       commitment_id: (existing as any).commitment_id,
       commitment_line_id: lineId,
     },

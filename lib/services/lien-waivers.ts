@@ -154,16 +154,19 @@ export async function generateConditionalWaiverForPayment(paymentId: string, org
     .eq("org_id", orgId)
     .single()
 
-  if (error || !payment?.invoice?.project_id) return null
+  const invoice = Array.isArray(payment?.invoice) ? payment.invoice[0] : payment?.invoice
+  const project = Array.isArray(invoice?.project) ? invoice.project[0] : invoice?.project
+
+  if (error || !invoice?.project_id) return null
 
   const propertyDescription =
-    (payment.invoice.project as any)?.address ??
-    (payment.invoice.project as any)?.metadata?.location ??
+    project?.address ??
+    (project?.metadata as any)?.location ??
     undefined
 
   return createLienWaiver(
     {
-      project_id: payment.invoice.project_id,
+      project_id: invoice.project_id,
       payment_id: paymentId,
       waiver_type: "conditional",
       amount_cents: payment.amount_cents,

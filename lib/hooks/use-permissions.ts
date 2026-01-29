@@ -36,7 +36,7 @@ export function usePermissions(orgId?: string) {
           return
         }
 
-        let targetOrg = orgId ?? readOrgCookie()
+        const targetOrg = orgId ?? readOrgCookie()
 
         let query = supabase
           .from("memberships")

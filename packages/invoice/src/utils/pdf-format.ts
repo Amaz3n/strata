@@ -29,12 +29,12 @@ export function formatCurrencyForPDF({
   const absoluteAmount = Math.abs(amount);
 
   // Format the absolute value using the standard formatAmount function
-  const formatted = formatAmount({
+  const formatted = formatAmount(
+    absoluteAmount,
     currency,
-    amount: absoluteAmount,
     locale,
-    maximumFractionDigits,
-  });
+    maximumFractionDigits !== 0
+  );
 
   // Manually prepend minus sign for negative values
   return isNegative ? `-${formatted}` : formatted || "";

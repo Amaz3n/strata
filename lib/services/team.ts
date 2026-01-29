@@ -31,10 +31,18 @@ function getAuthRedirectBaseUrl() {
   return `https://${url}`.replace(/\/$/, "")
 }
 
-function getInviteRedirectUrl() {
+function generateInviteToken() {
+  return randomBytes(32).toString("base64url")
+}
+
+function getInviteLink(token: string) {
   const baseUrl = getAuthRedirectBaseUrl()
-  const next = encodeURIComponent("/auth/reset")
-  return `${baseUrl}/auth/callback?next=${next}`
+  return `${baseUrl}/auth/accept-invite?token=${token}`
+}
+
+// Token expires in 7 days
+function getInviteTokenExpiry() {
+  return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 }
 
 async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
@@ -68,19 +76,27 @@ async function getOrgName(client: SupabaseClient, orgId: string) {
   return data?.name ?? null
 }
 
-async function generateInviteLink(client: SupabaseClient, email: string) {
-  const { data, error } = await client.auth.admin.generateLink({
-    type: "invite",
+async function createUserForInvite(client: SupabaseClient, email: string) {
+  // Create user with a temporary password - they'll set their real password when accepting
+  const tempPassword = generateTempPassword()
+  const { data, error } = await client.auth.admin.createUser({
     email,
-    options: { redirectTo: getInviteRedirectUrl() },
+    password: tempPassword,
+    email_confirm: true, // Skip email confirmation since we're handling invite flow ourselves
   })
   if (error) {
+    // User might already exist
+    if (error.message.includes("already been registered")) {
+      const { data: existingUser } = await client
+        .from("app_users")
+        .select("id")
+        .ilike("email", email)
+        .maybeSingle()
+      return { userId: existingUser?.id as string | undefined, isExisting: true }
+    }
     throw new Error(error.message)
   }
-  return {
-    userId: data?.user?.id,
-    link: data?.properties?.action_link,
-  }
+  return { userId: data?.user?.id, isExisting: false }
 }
 
 function mapTeamMember(row: any, projectCounts: Record<string, number>): TeamMember {
@@ -157,40 +173,10 @@ export async function inviteTeamMember({
 
   let targetUserId = existingUser?.id as string | undefined
 
-  let tempPassword: string | undefined
-
+  // Create user if they don't exist
   if (!targetUserId) {
-    try {
-      const inviteResult = await generateInviteLink(serviceClient, parsed.email)
-      targetUserId = inviteResult.userId
-      if (inviteResult.link) {
-        const orgName = await getOrgName(serviceClient, resolvedOrgId)
-        await sendInviteEmail({
-          to: parsed.email,
-          inviteLink: inviteResult.link,
-          orgName,
-        })
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown invite error"
-      if (shouldBypassInviteRateLimit(message)) {
-        tempPassword = generateTempPassword()
-        const { data: createdUser, error: createError } = await serviceClient.auth.admin.createUser({
-          email: parsed.email,
-          password: tempPassword,
-          email_confirm: true,
-          user_metadata: {
-            full_name: existingUser?.full_name ?? undefined,
-          },
-        })
-        if (createError) {
-          throw new Error(`Failed to create user: ${createError.message}`)
-        }
-        targetUserId = createdUser?.user?.id
-      } else {
-        throw new Error(`Failed to send invite: ${message}`)
-      }
-    }
+    const result = await createUserForInvite(serviceClient, parsed.email)
+    targetUserId = result.userId
   }
 
   if (!targetUserId) {
@@ -212,6 +198,10 @@ export async function inviteTeamMember({
 
   const roleId = await resolveRoleId(serviceClient, parsed.role)
 
+  // Generate invite token
+  const inviteToken = generateInviteToken()
+  const inviteTokenExpiresAt = getInviteTokenExpiry()
+
   const { data, error } = await serviceClient
     .from("memberships")
     .upsert({
@@ -220,6 +210,8 @@ export async function inviteTeamMember({
       role_id: roleId,
       status: "invited",
       invited_by: userId,
+      invite_token: inviteToken,
+      invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
     })
     .select(
       `
@@ -234,6 +226,15 @@ export async function inviteTeamMember({
   if (error || !data) {
     throw new Error(`Failed to create membership: ${error?.message}`)
   }
+
+  // Send invite email with our token-based link
+  const orgName = await getOrgName(serviceClient, resolvedOrgId)
+  const inviteLink = getInviteLink(inviteToken)
+  await sendInviteEmail({
+    to: parsed.email,
+    inviteLink,
+    orgName,
+  })
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -253,7 +254,7 @@ export async function inviteTeamMember({
   })
 
   const projectCounts = await mapProjectCounts(serviceClient, resolvedOrgId)
-  return { ...mapTeamMember(data, projectCounts), tempPassword }
+  return mapTeamMember(data, projectCounts)
 }
 
 export async function updateMemberRole({
@@ -432,22 +433,137 @@ export async function resendInvite(membershipId: string, orgId?: string) {
     throw new Error("Membership not found for resend")
   }
 
-  const email = data.user?.email
+  const user = Array.isArray(data.user) ? data.user[0] : data.user
+  const email = user?.email
   if (!email) {
     throw new Error("Membership user email missing")
   }
 
-  const inviteResult = await generateInviteLink(serviceClient, email)
-  if (!inviteResult.link) {
-    throw new Error("Failed to generate invite link")
+  // Generate new invite token
+  const inviteToken = generateInviteToken()
+  const inviteTokenExpiresAt = getInviteTokenExpiry()
+
+  // Update membership with new token
+  const { error: updateError } = await serviceClient
+    .from("memberships")
+    .update({
+      invite_token: inviteToken,
+      invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
+    })
+    .eq("id", membershipId)
+
+  if (updateError) {
+    throw new Error(`Failed to generate new invite token: ${updateError.message}`)
   }
+
   const orgName = await getOrgName(serviceClient, resolvedOrgId)
+  const inviteLink = getInviteLink(inviteToken)
   await sendInviteEmail({
     to: email,
-    inviteLink: inviteResult.link,
+    inviteLink,
     orgName,
   })
 
   return true
+}
+
+export async function getInviteDetailsByToken(token: string): Promise<{
+  membershipId: string
+  userId: string
+  orgId: string
+  orgName: string
+  email: string
+} | null> {
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data, error } = await serviceClient
+    .from("memberships")
+    .select(`
+      id, user_id, org_id, status, invite_token_expires_at,
+      orgs!inner(name),
+      user:app_users!memberships_user_id_fkey(email)
+    `)
+    .eq("invite_token", token)
+    .eq("status", "invited")
+    .maybeSingle()
+
+  if (error || !data) {
+    return null
+  }
+
+  // Check if token is expired
+  if (data.invite_token_expires_at) {
+    const expiresAt = new Date(data.invite_token_expires_at)
+    if (expiresAt < new Date()) {
+      return null
+    }
+  }
+
+  const org = data.orgs as unknown as { name: string }
+  const user = data.user as unknown as { email: string }
+
+  return {
+    membershipId: data.id,
+    userId: data.user_id,
+    orgId: data.org_id,
+    orgName: org.name,
+    email: user.email,
+  }
+}
+
+export async function acceptInviteByToken(
+  token: string,
+  password: string,
+  fullName: string
+): Promise<{
+  orgId: string
+  orgName: string
+} | null> {
+  const serviceClient = createServiceSupabaseClient()
+
+  // Get invite details
+  const inviteDetails = await getInviteDetailsByToken(token)
+  if (!inviteDetails) {
+    return null
+  }
+
+  // Update user's password
+  const { error: passwordError } = await serviceClient.auth.admin.updateUserById(
+    inviteDetails.userId,
+    { password }
+  )
+
+  if (passwordError) {
+    throw new Error(`Failed to set password: ${passwordError.message}`)
+  }
+
+  // Update user profile with full name
+  const { error: profileError } = await serviceClient
+    .from("app_users")
+    .update({ full_name: fullName })
+    .eq("id", inviteDetails.userId)
+
+  if (profileError) {
+    console.error("Failed to update user profile", profileError)
+  }
+
+  // Activate membership and clear invite token
+  const { error: membershipError } = await serviceClient
+    .from("memberships")
+    .update({
+      status: "active",
+      invite_token: null,
+      invite_token_expires_at: null,
+    })
+    .eq("id", inviteDetails.membershipId)
+
+  if (membershipError) {
+    throw new Error(`Failed to activate membership: ${membershipError.message}`)
+  }
+
+  return {
+    orgId: inviteDetails.orgId,
+    orgName: inviteDetails.orgName,
+  }
 }
 

@@ -20,7 +20,7 @@ export default async function CompanyDetailPageRoute({ params }: CompanyDetailPa
     notFound()
   }
 
-  const [company, projectHistory, commitments, vendorBills, projects, currentUser, permissionResult] = await Promise.all([
+  const [company, projectHistory, commitments, vendorBills, projects, permissionResult] = await Promise.all([
     getCompany(companyId),
     getCompanyProjects(companyId),
     listCompanyCommitments(companyId),

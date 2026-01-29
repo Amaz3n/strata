@@ -229,33 +229,6 @@ export function DrawingsClient({
     [sets]
   )
 
-  useEffect(() => {
-    if (processingSetIds.length === 0) return
-
-    const interval = setInterval(async () => {
-      for (const setId of processingSetIds) {
-        try {
-          const status = await getProcessingStatusAction(setId)
-          setSets((prev) =>
-            prev.map((s) =>
-              s.id === setId
-                ? { ...s, status: status.status as any, processed_pages: status.processed_pages, total_pages: status.total_pages, error_message: status.error_message }
-                : s
-            )
-          )
-
-          if (status.status === "ready") {
-            await fetchSheets()
-          }
-        } catch (e) {
-          console.error("Failed to poll status:", e)
-        }
-      }
-    }, 3000)
-
-    return () => clearInterval(interval)
-  }, [processingSetIds])
-
   // Fetch data
   const fetchSets = useCallback(async () => {
     try {
@@ -337,6 +310,33 @@ export function DrawingsClient({
     lockSet,
     tabMode,
   ])
+
+  useEffect(() => {
+    if (processingSetIds.length === 0) return
+
+    const interval = setInterval(async () => {
+      for (const setId of processingSetIds) {
+        try {
+          const status = await getProcessingStatusAction(setId)
+          setSets((prev) =>
+            prev.map((s) =>
+              s.id === setId
+                ? { ...s, status: status.status as any, processed_pages: status.processed_pages, total_pages: status.total_pages, error_message: status.error_message }
+                : s
+            )
+          )
+
+          if (status.status === "ready") {
+            await fetchSheets()
+          }
+        } catch (e) {
+          console.error("Failed to poll status:", e)
+        }
+      }
+    }, 3000)
+
+    return () => clearInterval(interval)
+  }, [processingSetIds, fetchSheets])
 
   const fetchRevisions = useCallback(async () => {
     if (!selectedSet) {

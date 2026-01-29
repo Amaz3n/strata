@@ -291,7 +291,7 @@ function buildSearchQuery(
   const mainTable = `${config.table} ${tableAlias}`
 
   // Build joins
-  let joins = config.joins?.join(' ') || ''
+  const joins = config.joins?.join(' ') || ''
 
   // Build WHERE conditions
   const conditions: string[] = [`${tableAlias}.org_id = ?`]
@@ -415,7 +415,7 @@ export async function searchEntities(
   // Default to key entity types if none specified
   const typesToSearch = entityTypes.length > 0 ? entityTypes : [
     'project', 'task', 'file', 'contact', 'company'
-  ]
+  ] as SearchEntityType[]
   console.log('🔍 Searching entity types:', typesToSearch)
 
   const results: SearchResult[] = []

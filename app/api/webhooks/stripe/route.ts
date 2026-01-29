@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
             invoice_id: domainEvent.invoice_id,
             amount_cents: domainEvent.amount_cents,
             currency: domainEvent.currency,
-            method: domainEvent.method,
+            method: domainEvent.method as "ach" | "card" | "wire" | "check" | undefined,
             provider: "stripe",
             provider_payment_id: domainEvent.provider_payment_id,
             status: "succeeded",

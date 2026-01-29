@@ -1,20 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/lib/auth/client'
 import { toast } from 'sonner'
 import { getUserNotificationsAction, getUnreadCountAction, markNotificationAsReadAction } from '@/app/(app)/settings/actions'
-
-interface NotificationRecord {
-  id: string
-  org_id: string
-  user_id: string
-  notification_type: string
-  payload: Record<string, unknown>
-  read_at: string | null
-  created_at: string
-}
+import type { NotificationRecord, NotificationType } from '@/lib/types/notifications'
 
 export function useNotifications() {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
@@ -22,7 +13,44 @@ export function useNotifications() {
   const [isLoading, setIsLoading] = useState(true)
   const { user } = useUser()
 
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
+
+  const mapNotification = useCallback((n: any): NotificationRecord => {
+    return {
+      id: n.id,
+      org_id: n.org_id,
+      user_id: n.user_id,
+      type: n.notification_type as NotificationType,
+      title: (n.payload as any)?.title ?? 'Notification',
+      message: (n.payload as any)?.message ?? '',
+      payload: n.payload ?? {},
+      is_read: !!n.read_at,
+      created_at: n.created_at,
+      updated_at: n.updated_at ?? n.created_at,
+      project_id: (n.payload as any)?.project_id,
+      entity_type: (n.payload as any)?.entity_type,
+      entity_id: (n.payload as any)?.entity_id,
+    }
+  }, [])
+
+  const loadNotifications = useCallback(async () => {
+    if (!user) return
+
+    try {
+      setIsLoading(true)
+      const [allNotifications, count] = await Promise.all([
+        getUserNotificationsAction(),
+        getUnreadCountAction()
+      ])
+
+      setNotifications(allNotifications.map(mapNotification))
+      setUnreadCount(count)
+    } catch (error) {
+      console.error('Failed to load notifications:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [user, mapNotification])
 
   useEffect(() => {
     if (!user) return
@@ -42,7 +70,8 @@ export function useNotifications() {
           filter: `user_id=eq.${user.id}`,
         },
         (payload) => {
-          const newNotification = payload.new as NotificationRecord
+          const newNotificationRaw = payload.new
+          const newNotification = mapNotification(newNotificationRaw)
 
           // Add to notifications list
           setNotifications(prev => [newNotification, ...prev])
@@ -57,26 +86,7 @@ export function useNotifications() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [user])
-
-  const loadNotifications = async () => {
-    if (!user) return
-
-    try {
-      setIsLoading(true)
-      const [allNotifications, count] = await Promise.all([
-        getUserNotificationsAction(),
-        getUnreadCountAction()
-      ])
-
-      setNotifications(allNotifications)
-      setUnreadCount(count)
-    } catch (error) {
-      console.error('Failed to load notifications:', error)
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  }, [user, loadNotifications, supabase, mapNotification])
 
   const markAsRead = async (notificationId: string) => {
     try {
@@ -86,7 +96,7 @@ export function useNotifications() {
       setNotifications(prev =>
         prev.map(n =>
           n.id === notificationId
-            ? { ...n, read_at: new Date().toISOString() }
+            ? { ...n, is_read: true }
             : n
         )
       )
@@ -99,7 +109,7 @@ export function useNotifications() {
   const markAllAsRead = async () => {
     try {
       // Mark all unread notifications as read
-      const unreadNotifications = notifications.filter(n => !n.read_at)
+      const unreadNotifications = notifications.filter(n => !n.is_read)
       await Promise.all(
         unreadNotifications.map(n => markAsRead(n.id))
       )
@@ -133,41 +143,32 @@ function showNotificationToast(notification: NotificationRecord) {
     : undefined
 
   // Show different toast types based on notification type
-  switch (notification.notification_type) {
+  switch (notification.type) {
     case 'task_completed':
-      toast.success(payload.title, {
-        description: payload.message,
+      toast.success(notification.title, {
+        description: notification.message,
         action: viewAction,
       })
       break
 
-    case 'daily_log_submitted':
     case 'daily_log_created':
-      toast.info(payload.title, {
-        description: payload.message,
+      toast.info(notification.title, {
+        description: notification.message,
         action: viewAction,
       })
       break
 
-    case 'photo_uploaded':
-      toast.success(payload.title, {
-        description: payload.message,
-        action: viewAction,
-      })
-      break
-
-    case 'schedule_changed':
     case 'schedule_item_updated':
     case 'schedule_risk':
-      toast.warning(payload.title, {
-        description: payload.message,
+      toast.warning(notification.title, {
+        description: notification.message,
         action: viewAction,
       })
       break
 
     default:
-      toast(payload.title, {
-        description: payload.message,
+      toast(notification.title, {
+        description: notification.message,
         action: viewAction,
       })
   }

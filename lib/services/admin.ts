@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { recordAudit } from "@/lib/services/audit"
 
 export interface AdminStats {
   totalOrgs: number
@@ -88,14 +89,17 @@ export async function getRecentAdminActivity(): Promise<AdminActivity[]> {
 
   if (!auditEntries) return []
 
-  return auditEntries.map(entry => ({
-    id: entry.id,
-    type: getActivityType(entry.action, entry.entity_type),
-    description: formatActivityDescription(entry.action, entry.entity_type),
-    userName: entry.actor_user?.full_name || entry.actor_user?.email || "System",
-    userInitials: getInitials(entry.actor_user?.full_name || entry.actor_user?.email || "System"),
-    createdAt: entry.created_at,
-  }))
+  return auditEntries.map(entry => {
+    const actor = Array.isArray(entry.actor_user) ? entry.actor_user[0] : entry.actor_user
+    return {
+      id: entry.id,
+      type: getActivityType(entry.action, entry.entity_type),
+      description: formatActivityDescription(entry.action, entry.entity_type),
+      userName: actor?.full_name || actor?.email || "System",
+      userInitials: getInitials(actor?.full_name || actor?.email || "System"),
+      createdAt: entry.created_at,
+    }
+  })
 }
 
 function getActivityType(action: string, entityType: string): string {
@@ -262,14 +266,18 @@ export async function getCustomers({
       .limit(1)
       .single()
 
-    const subscription = subscriptionData ? {
-      status: subscriptionData.status,
-      planName: subscriptionData.plans.name,
-      amountCents: subscriptionData.plans.amount_cents,
-      currency: subscriptionData.plans.currency,
-      interval: subscriptionData.plans.interval,
-      currentPeriodEnd: subscriptionData.current_period_end,
-    } : null
+    let subscription = null
+    if (subscriptionData) {
+      const plan = Array.isArray(subscriptionData.plans) ? subscriptionData.plans[0] : subscriptionData.plans
+      subscription = {
+        status: subscriptionData.status,
+        planName: plan?.name,
+        amountCents: plan?.amount_cents,
+        currency: plan?.currency,
+        interval: plan?.interval,
+        currentPeriodEnd: subscriptionData.current_period_end,
+      }
+    }
 
     customers.push({
       id: org.id,
@@ -529,7 +537,7 @@ export async function toggleFeatureFlag(
   // Record audit log
   await recordAudit({
     orgId,
-    actorId: null, // System action
+    actorId: undefined, // System action
     action: "update",
     entityType: "feature_flag",
     entityId: flagId,

@@ -45,7 +45,7 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     resolver: zodResolver(rfiInputSchema),
     defaultValues: {
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      rfi_number: "",
+      rfi_number: 0,
       subject: "",
       question: "",
       status: "open",
@@ -58,7 +58,7 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     await onSubmit(values)
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      rfi_number: "",
+      rfi_number: 0,
       subject: "",
       question: "",
       status: "open",
@@ -123,7 +123,13 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                     <FormItem>
                       <FormLabel>RFI #</FormLabel>
                       <FormControl>
-                        <Input placeholder="RFI-001" {...field} />
+                        <Input 
+                          type="number" 
+                          placeholder="1" 
+                          {...field} 
+                          value={field.value || ""}
+                          onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value, 10) : 0)} 
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

@@ -141,6 +141,11 @@ export class QBOClient {
     const result = await this.request<{ Invoice: QBOInvoice }>("POST", "invoice", invoice)
     return result.Invoice
   }
+
+  async createPayment(payment: any): Promise<any> {
+    const result = await this.request<{ Payment: any }>("POST", "payment", payment)
+    return result.Payment
+  }
 }
 
 export class QBOError extends Error {

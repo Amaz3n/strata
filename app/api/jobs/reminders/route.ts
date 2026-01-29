@@ -29,7 +29,8 @@ export async function POST() {
   const today = now.toISOString().split("T")[0]
   let sentCount = 0
 
-  for (const reminder of reminders) {
+  for (const r of reminders) {
+    const reminder = r as any
     if (!reminder.invoice?.due_date || !reminder.invoice?.balance_due_cents) continue
 
     const dueDate = new Date(reminder.invoice.due_date)

@@ -1,3 +1,4 @@
+// @ts-ignore
 import { describe, expect, it } from "bun:test";
 import { calculateLineItemTotal, calculateTotal } from "./calculate";
 

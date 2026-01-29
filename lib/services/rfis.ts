@@ -13,7 +13,7 @@ export async function listRfis(orgId?: string, projectId?: string): Promise<Rfi[
   let query = supabase
     .from("rfis")
     .select(
-      "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id",
+      "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
     )
     .eq("org_id", resolvedOrgId)
     .order("rfi_number", { ascending: true })
@@ -45,7 +45,7 @@ export async function createRfi({ input, orgId }: { input: RfiInput; orgId?: str
     .from("rfis")
     .insert(payload)
     .select(
-      "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id",
+      "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
     )
     .single()
 
@@ -96,14 +96,15 @@ export async function createRfi({ input, orgId }: { input: RfiInput; orgId?: str
   return data as Rfi
 }
 
-export async function addRfiResponse({ orgId, input }: { orgId: string; input: RfiResponseInput }) {
+export async function addRfiResponse({ orgId, input }: { orgId?: string; input: RfiResponseInput }) {
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const supabase = createServiceSupabaseClient()
   const now = new Date().toISOString()
 
   const { data, error } = await supabase
     .from("rfi_responses")
     .insert({
-      org_id: orgId,
+      org_id: resolvedOrgId,
       rfi_id: input.rfi_id,
       response_type: input.response_type ?? "comment",
       body: input.body,
@@ -125,10 +126,10 @@ export async function addRfiResponse({ orgId, input }: { orgId: string; input: R
     updatePayload.status = "answered"
   }
 
-  await supabase.from("rfis").update(updatePayload).eq("id", input.rfi_id).eq("org_id", orgId)
+  await supabase.from("rfis").update(updatePayload).eq("id", input.rfi_id).eq("org_id", resolvedOrgId)
 
   await recordEvent({
-    orgId,
+    orgId: resolvedOrgId,
     eventType: "rfi_response_added",
     entityType: "rfi",
     entityId: input.rfi_id,
@@ -136,7 +137,7 @@ export async function addRfiResponse({ orgId, input }: { orgId: string; input: R
   })
 
   await recordAudit({
-    orgId,
+    orgId: resolvedOrgId,
     actorId: input.responder_user_id ?? input.responder_contact_id ?? undefined,
     action: "insert",
     entityType: "rfi_response",
@@ -147,7 +148,7 @@ export async function addRfiResponse({ orgId, input }: { orgId: string; input: R
   if (input.file_id) {
     try {
       await attachFileWithServiceRole({
-        orgId,
+        orgId: resolvedOrgId,
         fileId: input.file_id,
         projectId: undefined,
         entityType: "rfi",
@@ -161,7 +162,7 @@ export async function addRfiResponse({ orgId, input }: { orgId: string; input: R
   }
 
   await sendRfiEmail({
-    orgId,
+    orgId: resolvedOrgId,
     rfiId: input.rfi_id,
     kind: "response",
     message: input.body,
@@ -170,7 +171,8 @@ export async function addRfiResponse({ orgId, input }: { orgId: string; input: R
   return { success: true }
 }
 
-export async function decideRfi({ orgId, input }: { orgId: string; input: RfiDecisionInput }) {
+export async function decideRfi({ orgId, input }: { orgId?: string; input: RfiDecisionInput }) {
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const supabase = createServiceSupabaseClient()
   const decidedAt = new Date().toISOString()
   const { error } = await supabase
@@ -187,12 +189,12 @@ export async function decideRfi({ orgId, input }: { orgId: string; input: RfiDec
       status: input.decision_status === "approved" ? "answered" : "open",
     })
     .eq("id", input.rfi_id)
-    .eq("org_id", orgId)
+    .eq("org_id", resolvedOrgId)
 
   if (error) throw new Error(`Failed to record RFI decision: ${error.message}`)
 
   await recordEvent({
-    orgId,
+    orgId: resolvedOrgId,
     eventType: "rfi_decided",
     entityType: "rfi",
     entityId: input.rfi_id,
@@ -200,7 +202,7 @@ export async function decideRfi({ orgId, input }: { orgId: string; input: RfiDec
   })
 
   await recordAudit({
-    orgId,
+    orgId: resolvedOrgId,
     actorId: input.decided_by_user_id ?? input.decided_by_contact_id ?? undefined,
     action: "update",
     entityType: "rfi",
@@ -209,7 +211,7 @@ export async function decideRfi({ orgId, input }: { orgId: string; input: RfiDec
   })
 
   await sendRfiEmail({
-    orgId,
+    orgId: resolvedOrgId,
     rfiId: input.rfi_id,
     kind: "decision",
     decisionStatus: input.decision_status,
@@ -256,13 +258,15 @@ async function sendRfiEmail({
 
   const recipients: (string | null)[] = []
 
+  const project = Array.isArray(rfi.project) ? rfi.project[0] : rfi.project
+
   if (rfi.assigned_to) {
     const userEmail = await fetchUserEmail(supabase, rfi.assigned_to)
     if (userEmail) recipients.push(userEmail.email)
   }
 
-  if (rfi.project?.client_id) {
-    const contactEmail = await fetchContactEmail(supabase, rfi.project.client_id)
+  if (project?.client_id) {
+    const contactEmail = await fetchContactEmail(supabase, project.client_id)
     if (contactEmail) recipients.push(contactEmail.email)
   }
 
@@ -276,7 +280,7 @@ async function sendRfiEmail({
     return
   }
 
-  const projectName = rfi.project?.name ?? "Project"
+  const projectName = project?.name ?? "Project"
   const subject = (() => {
     switch (kind) {
       case "created":

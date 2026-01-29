@@ -116,6 +116,7 @@ export async function PdfTemplate({
             <div style={{ maxWidth: "300px" }}>
               <Image
                 src={template.logoUrl}
+                alt={template.title ? `${template.title} logo` : "Invoice logo"}
                 style={{
                   height: 75,
                   objectFit: "contain",
