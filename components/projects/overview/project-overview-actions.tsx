@@ -252,7 +252,8 @@ export function ProjectOverviewActions({
                     </SheetTrigger>
                     <SheetContent
                       side="right"
-                      className="sm:max-w-md w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 overflow-hidden fast-sheet-animation"
+                      mobileFullscreen
+                      className="sm:max-w-md sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 overflow-hidden fast-sheet-animation"
                     >
                       <div className="flex h-full min-h-0 flex-col">
                         <div className="border-b px-4 py-3 sm:px-5 sm:py-4">
@@ -274,7 +275,11 @@ export function ProjectOverviewActions({
                         <ScrollArea className="flex-1 min-h-0 overflow-x-hidden">
                           <div className="space-y-4 p-4 sm:p-5 overflow-hidden">
                             <div className="border bg-card p-4 rounded-lg">
-                              <PortalLinkCreator projectId={project.id} onCreated={handleTokenCreated} />
+                              <PortalLinkCreator
+                                projectId={project.id}
+                                onCreated={handleTokenCreated}
+                                enabled={sharingSheetOpen}
+                              />
                             </div>
 
                             <Accordion type="single" collapsible className="border bg-card rounded-lg">

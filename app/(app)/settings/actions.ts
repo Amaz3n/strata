@@ -212,7 +212,7 @@ export async function getTeamSettingsDataAction() {
     }
   }
 
-  const teamMembers = await listTeamMembers()
+  const teamMembers = await listTeamMembers(undefined, { includeProjectCounts: false })
   return {
     teamMembers,
     canManageMembers: permissions.includes("members.manage"),

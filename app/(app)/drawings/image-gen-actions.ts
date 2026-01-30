@@ -2,8 +2,7 @@
 
 import { requireOrgContext } from "@/lib/services/context"
 import { revalidatePath } from "next/cache"
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
+import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 
 /**
  * Update a sheet version with generated image URLs
@@ -22,11 +21,7 @@ export async function updateSheetVersionImages(
 ) {
   const { supabase, orgId } = await requireOrgContext()
 
-  const toPublicUrl = (path: string | null | undefined) => {
-    if (!path || !SUPABASE_URL) return null
-    const normalized = path.startsWith("/") ? path.slice(1) : path
-    return `${SUPABASE_URL}/storage/v1/object/public/drawings-images/${encodeURI(normalized)}`
-  }
+  const toPublicUrl = (path: string | null | undefined) => buildDrawingsImageUrl(path)
 
   const { error } = await supabase
     .from("drawing_sheet_versions")

@@ -9,9 +9,10 @@ import {
   removeMember,
   resendInvite,
   suspendMember,
+  updateMemberProfile,
   updateMemberRole,
 } from "@/lib/services/team"
-import { inviteMemberSchema, updateMemberRoleSchema } from "@/lib/validation/team"
+import { inviteMemberSchema, updateMemberProfileSchema, updateMemberRoleSchema } from "@/lib/validation/team"
 
 export async function listTeamMembersAction() {
   return listTeamMembers()
@@ -31,6 +32,14 @@ export async function updateMemberRoleAction(membershipId: string, input: unknow
   revalidatePath("/team")
   revalidatePath("/settings")
   return member
+}
+
+export async function updateMemberProfileAction(userId: string, input: unknown) {
+  const parsed = updateMemberProfileSchema.parse(input)
+  const user = await updateMemberProfile({ userId, fullName: parsed.full_name })
+  revalidatePath("/team")
+  revalidatePath("/settings")
+  return user
 }
 
 export async function suspendMemberAction(membershipId: string) {
@@ -60,7 +69,6 @@ export async function resendInviteAction(membershipId: string) {
   revalidatePath("/settings")
   return true
 }
-
 
 
 

@@ -3,8 +3,11 @@
 import { useEffect, useState, Suspense } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
+import { GalleryVerticalEnd } from "lucide-react"
 
 import { AcceptInviteForm } from "@/components/auth/accept-invite-form"
+import { Building2, Loader2, AlertCircle } from "@/components/icons"
+import { Button } from "@/components/ui/button"
 import { getInviteDetailsAction } from "./actions"
 
 function AcceptInviteContent() {
@@ -43,29 +46,43 @@ function AcceptInviteContent() {
 
   if (loading) {
     return (
-      <div className="space-y-4 text-center">
-        <p className="text-sm uppercase tracking-[0.2em] text-white/60">Accept invitation</p>
-        <h2 className="text-2xl font-semibold text-white">Verifying your invitation</h2>
-        <p className="text-sm text-white/60">Please wait while we verify your invitation link.</p>
+      <div className="flex flex-col items-center gap-6 text-center">
+        <Link href="/" className="flex flex-col items-center gap-2 font-medium">
+          <div className="flex size-10 items-center justify-center rounded-md bg-primary">
+            <GalleryVerticalEnd className="size-6 text-primary-foreground" />
+          </div>
+        </Link>
+        <div className="space-y-2">
+          <h1 className="text-xl font-bold">Verifying your invitation</h1>
+          <p className="text-muted-foreground text-sm">Please wait while we verify your invitation link.</p>
+        </div>
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="space-y-4">
-        <div>
-          <p className="text-sm uppercase tracking-[0.2em] text-white/60">Accept invitation</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Invalid or expired invitation</h2>
-          <p className="text-sm text-white/60">Please contact your admin for a new invitation.</p>
+      <div className="flex flex-col items-center gap-6 text-center">
+        <Link href="/" className="flex flex-col items-center gap-2 font-medium">
+          <div className="flex size-10 items-center justify-center rounded-md bg-primary">
+            <GalleryVerticalEnd className="size-6 text-primary-foreground" />
+          </div>
+        </Link>
+        <div className="space-y-2">
+          <h1 className="text-xl font-bold">Invitation not found</h1>
+          <p className="text-muted-foreground text-sm max-w-xs">
+            This invitation may have expired or already been used.
+          </p>
         </div>
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
+        <div className="flex w-full items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive text-left">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          <span>{error}</span>
         </div>
-        <div className="text-sm text-white/60">
-          <Link href="/auth/signin" className="underline">
-            Back to sign in
-          </Link>
+        <div className="flex flex-col gap-3 w-full">
+          <Button asChild variant="outline" className="w-full">
+            <Link href="/auth/signin">Back to sign in</Link>
+          </Button>
         </div>
       </div>
     )
@@ -76,14 +93,31 @@ function AcceptInviteContent() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <p className="text-sm uppercase tracking-[0.2em] text-white/60">Accept invitation</p>
-        <h2 className="mt-2 text-2xl font-semibold text-white">
-          Join <span className="text-primary">{inviteDetails.orgName}</span>
-        </h2>
-        <p className="text-sm text-white/60">Complete your account setup to get started.</p>
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col items-center gap-4 text-center">
+        <Link href="/" className="flex flex-col items-center gap-2 font-medium">
+          <div className="flex size-10 items-center justify-center rounded-md bg-primary">
+            <GalleryVerticalEnd className="size-6 text-primary-foreground" />
+          </div>
+        </Link>
+        <div className="space-y-2">
+          <h1 className="text-xl font-bold">Welcome to Arc</h1>
+          <p className="text-muted-foreground text-sm">
+            You&apos;ve been invited to join a team
+          </p>
+        </div>
       </div>
+
+      <div className="flex items-center gap-3 rounded-lg border bg-muted/30 px-4 py-3">
+        <div className="flex size-10 items-center justify-center rounded-md bg-primary/10">
+          <Building2 className="size-5 text-primary" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium truncate">{inviteDetails.orgName}</p>
+          <p className="text-muted-foreground text-sm truncate">{inviteDetails.email}</p>
+        </div>
+      </div>
+
       <AcceptInviteForm token={token} orgName={inviteDetails.orgName} email={inviteDetails.email} />
     </div>
   )
@@ -91,8 +125,21 @@ function AcceptInviteContent() {
 
 export default function AcceptInvitePage() {
   return (
-    <Suspense fallback={<div className="text-white">Loading...</div>}>
-      <AcceptInviteContent />
-    </Suspense>
+    <div className="bg-background flex min-h-svh flex-col items-center justify-center gap-6 p-6 md:p-10">
+      <div className="w-full max-w-sm">
+        <Suspense
+          fallback={
+            <div className="flex flex-col items-center gap-6 text-center">
+              <div className="flex size-10 items-center justify-center rounded-md bg-primary">
+                <GalleryVerticalEnd className="size-6 text-primary-foreground" />
+              </div>
+              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            </div>
+          }
+        >
+          <AcceptInviteContent />
+        </Suspense>
+      </div>
+    </div>
   )
 }

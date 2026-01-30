@@ -2,11 +2,22 @@
 
 import { useCallback, useEffect, useState, useTransition } from "react"
 import { useRouter, usePathname, useSearchParams } from "next/navigation"
-import type { Contract, DrawSchedule, Retainage, ScheduleItem, Project, CostCode, Contact, Invoice, Company } from "@/lib/types"
+import type {
+  Contract,
+  DrawSchedule,
+  Retainage,
+  ScheduleItem,
+  Project,
+  CostCode,
+  Contact,
+  Invoice,
+  Company,
+  ComplianceRules,
+  ComplianceStatusSummary,
+} from "@/lib/types"
 import type { ProjectStats } from "@/app/(app)/projects/[id]/actions"
 import type { CommitmentSummary } from "@/lib/services/commitments"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import type { ComplianceRules } from "@/lib/types"
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { OverviewTab } from "./overview-tab"
@@ -102,6 +113,9 @@ export function FinancialsTabs({
     require_lien_waiver: false,
     block_payment_on_missing_docs: false,
   })
+  const [complianceStatusByCompanyId, setComplianceStatusByCompanyId] = useState<
+    Record<string, ComplianceStatusSummary>
+  >({})
 
   // Update URL when tab changes
   const handleTabChange = useCallback(
@@ -172,6 +186,7 @@ export function FinancialsTabs({
         .then((data) => {
           setVendorBills(data.vendorBills)
           setComplianceRules(data.complianceRules)
+          setComplianceStatusByCompanyId(data.complianceStatusByCompanyId ?? {})
           setHasFetchedPayables(true)
         })
         .catch((error) => {
@@ -278,6 +293,7 @@ export function FinancialsTabs({
             projectId={projectId}
             vendorBills={vendorBills}
             complianceRules={complianceRules}
+            complianceStatusByCompanyId={complianceStatusByCompanyId}
           />
         ) : null}
       </TabsContent>

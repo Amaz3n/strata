@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react"
 
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import type { ComplianceRules } from "@/lib/types"
+import type { ComplianceRules, ComplianceStatusSummary } from "@/lib/types"
 import { updateProjectVendorBillStatusAction } from "@/app/(app)/projects/[id]/payables/actions"
 
 import { Badge } from "@/components/ui/badge"
@@ -29,31 +29,19 @@ function billBadge(status?: string) {
   return <Badge variant="outline">Pending</Badge>
 }
 
-function complianceWarnings(bill: VendorBillSummary, rules: ComplianceRules) {
+function complianceWarnings(
+  bill: VendorBillSummary,
+  rules: ComplianceRules,
+  status?: ComplianceStatusSummary
+) {
   const warnings: string[] = []
 
-  if (rules.require_insurance) {
-    const insuranceExpiry = bill.company_insurance_expiry ? new Date(bill.company_insurance_expiry) : null
-    if (!insuranceExpiry || Number.isNaN(insuranceExpiry.getTime())) {
-      warnings.push("COI not on file")
-    } else {
-      const days = Math.ceil((insuranceExpiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-      if (days < 0) warnings.push("COI expired")
-      else if (days <= 30) warnings.push("COI expiring soon")
-    }
-  }
-
-  if (rules.require_w9 && bill.company_w9_on_file === false) warnings.push("W-9 missing")
-
-  if (rules.require_license) {
-    const licenseExpiry = bill.company_license_expiry ? new Date(bill.company_license_expiry) : null
-    if (!licenseExpiry || Number.isNaN(licenseExpiry.getTime())) {
-      warnings.push("License not on file")
-    } else {
-      const days = Math.ceil((licenseExpiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-      if (days < 0) warnings.push("License expired")
-      else if (days <= 30) warnings.push("License expiring soon")
-    }
+  // Compliance is driven by company-specific requirements + uploaded docs.
+  if (status) {
+    if (status.missing.length > 0) warnings.push(`${status.missing.length} missing required doc(s)`)
+    if (status.expired.length > 0) warnings.push(`${status.expired.length} expired doc(s)`)
+    if (status.pending_review.length > 0) warnings.push(`${status.pending_review.length} pending review`)
+    if (status.expiring_soon.length > 0) warnings.push(`${status.expiring_soon.length} expiring soon`)
   }
 
   if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") {
@@ -63,24 +51,14 @@ function complianceWarnings(bill: VendorBillSummary, rules: ComplianceRules) {
   return warnings
 }
 
-function hasBlockingComplianceIssues(bill: VendorBillSummary, rules: ComplianceRules) {
+function hasBlockingComplianceIssues(
+  bill: VendorBillSummary,
+  rules: ComplianceRules,
+  status?: ComplianceStatusSummary
+) {
   if (!rules.block_payment_on_missing_docs) return false
 
-  if (rules.require_w9 && bill.company_w9_on_file === false) return true
-
-  if (rules.require_insurance) {
-    const insuranceExpiry = bill.company_insurance_expiry ? new Date(bill.company_insurance_expiry) : null
-    const hasExpiredInsurance = insuranceExpiry && insuranceExpiry.getTime() < Date.now()
-    const hasMissingInsurance = !insuranceExpiry || Number.isNaN(insuranceExpiry.getTime())
-    if (hasExpiredInsurance || hasMissingInsurance) return true
-  }
-
-  if (rules.require_license) {
-    const licenseExpiry = bill.company_license_expiry ? new Date(bill.company_license_expiry) : null
-    const hasExpiredLicense = licenseExpiry && licenseExpiry.getTime() < Date.now()
-    const hasMissingLicense = !licenseExpiry || Number.isNaN(licenseExpiry.getTime())
-    if (hasExpiredLicense || hasMissingLicense) return true
-  }
+  if (status && !status.is_compliant) return true
 
   if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") return true
 
@@ -91,10 +69,12 @@ export function ProjectPayablesClient({
   projectId,
   vendorBills,
   complianceRules,
+  complianceStatusByCompanyId,
 }: {
   projectId: string
   vendorBills: VendorBillSummary[]
   complianceRules: ComplianceRules
+  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
 }) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -283,10 +263,11 @@ export function ProjectPayablesClient({
           </TableHeader>
           <TableBody>
             {filtered.map((bill) => {
-              const warnings = complianceWarnings(bill, complianceRules)
+              const status = bill.company_id ? complianceStatusByCompanyId[bill.company_id] : undefined
+              const warnings = complianceWarnings(bill, complianceRules, status)
               const paidCents = bill.paid_cents ?? (bill.status === "paid" ? bill.total_cents ?? 0 : 0)
               const remainingCents = Math.max(0, (bill.total_cents ?? 0) - paidCents)
-              const blocking = hasBlockingComplianceIssues(bill, complianceRules)
+              const blocking = hasBlockingComplianceIssues(bill, complianceRules, status)
               return (
                 <TableRow key={bill.id} className="divide-x align-top hover:bg-muted/40">
                   <TableCell className="text-sm px-4 py-3">{bill.due_date ?? "—"}</TableCell>
@@ -616,19 +597,28 @@ export function ProjectPayablesClient({
               </div>
 
               {/* Compliance Warnings */}
-              {complianceWarnings(selectedBill, complianceRules).length > 0 && (
+              {(() => {
+                const status = selectedBill.company_id
+                  ? complianceStatusByCompanyId[selectedBill.company_id]
+                  : undefined
+                const warnings = complianceWarnings(selectedBill, complianceRules, status)
+                const blocking = hasBlockingComplianceIssues(selectedBill, complianceRules, status)
+
+                if (warnings.length === 0) return null
+
+                return (
                 <div>
                   <h3 className="text-sm font-medium mb-3">
                     Compliance Issues
-                    {hasBlockingComplianceIssues(selectedBill, complianceRules) && (
+                    {blocking && (
                       <span className="ml-2 text-xs bg-red-100 text-red-800 px-2 py-1 rounded">
                         Blocking Payment
                       </span>
                     )}
                   </h3>
                   <div className="space-y-2">
-                    {complianceWarnings(selectedBill, complianceRules).map((warning, index) => {
-                      const isBlocking = warning.includes("expired") || warning.includes("not on file") || warning.includes("missing")
+                    {warnings.map((warning, index) => {
+                      const isBlocking = warning.includes("expired") || warning.includes("missing")
                       return (
                         <div key={index} className={`flex items-center gap-2 p-2 border rounded text-sm ${isBlocking ? 'bg-red-50 border-red-200' : 'bg-yellow-50 border-yellow-200'}`}>
                           <span className={isBlocking ? "text-red-600" : "text-yellow-600"}>⚠️</span>
@@ -638,8 +628,52 @@ export function ProjectPayablesClient({
                       )
                     })}
                   </div>
+
+                  {status && (
+                    <div className="mt-3 rounded-lg border bg-muted/20 p-3 text-sm">
+                      {status.missing.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="font-medium">Missing required documents</p>
+                          <div className="flex flex-wrap gap-2">
+                            {status.missing.map((dt) => (
+                              <Badge key={dt.id} variant="outline">
+                                {dt.name}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {status.expired.length > 0 && (
+                        <div className={status.missing.length > 0 ? "mt-3 space-y-1" : "space-y-1"}>
+                          <p className="font-medium">Expired documents</p>
+                          <div className="flex flex-wrap gap-2">
+                            {status.expired.map((doc) => (
+                              <Badge key={doc.id} variant="outline">
+                                {doc.document_type?.name ?? "Document"}{doc.expiry_date ? ` (exp ${doc.expiry_date})` : ""}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {status.pending_review.length > 0 && (
+                        <div className={status.missing.length > 0 || status.expired.length > 0 ? "mt-3 space-y-1" : "space-y-1"}>
+                          <p className="font-medium">Pending review</p>
+                          <div className="flex flex-wrap gap-2">
+                            {status.pending_review.map((doc) => (
+                              <Badge key={doc.id} variant="outline">
+                                {doc.document_type?.name ?? "Document"}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
+                )
+              })()}
             </div>
           )}
         </DialogContent>

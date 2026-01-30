@@ -5,7 +5,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url)
 
   // Tile requests: cache-first, immutable
-  if (url.pathname.includes("/storage/v1/object/public/drawings-tiles/")) {
+  if (url.pathname.includes("/drawings-tiles/") || url.pathname.includes("/drawing-tiles/")) {
     event.respondWith(
       caches.open(TILE_CACHE).then((cache) =>
         cache.match(event.request).then((cached) => {
@@ -33,4 +33,3 @@ self.addEventListener("fetch", (event) => {
     )
   }
 })
-

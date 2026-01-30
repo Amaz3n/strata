@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
@@ -524,8 +525,6 @@ export async function getSheetOptimizedImageUrlsAction(
   // but use service role for storage signing to avoid Storage RLS edge cases.
   const { supabase, orgId } = await requireOrgContext()
   const service = createServiceSupabaseClient()
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-
   const { data: sheet, error: sheetError } = await supabase
     .from("drawing_sheets")
     .select("id, current_revision_id")
@@ -555,11 +554,7 @@ export async function getSheetOptimizedImageUrlsAction(
     throw new Error(`Failed to load sheet version: ${versionError.message}`)
   }
 
-  const buildPublicImageUrl = (path?: string | null) => {
-    if (!path || !supabaseUrl) return null
-    const normalized = path.startsWith("/") ? path.slice(1) : path
-    return `${supabaseUrl}/storage/v1/object/public/drawings-images/${encodeURI(normalized)}`
-  }
+  const buildPublicImageUrl = (path?: string | null) => buildDrawingsImageUrl(path)
 
   const maybeSignLegacy = async (value: string | null | undefined): Promise<string | null> => {
     if (!value) return null

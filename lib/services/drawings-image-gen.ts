@@ -1,6 +1,7 @@
 "use client"
 
 import { createClient } from "@/lib/supabase/client"
+import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 
 // We'll import PDF.js dynamically to avoid loading issues
 let pdfjsLib: any = null
@@ -247,15 +248,13 @@ async function uploadImage(
     throw new Error(`Failed to upload image: ${error.message}`)
   }
 
-  const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  if (!baseUrl) {
-    const { data: { publicUrl } } = supabase.storage.from("drawings-images").getPublicUrl(path)
+  const publicUrl = buildDrawingsImageUrl(path)
+  if (publicUrl) {
     return { path, publicUrl }
   }
 
-  const normalized = path.startsWith("/") ? path.slice(1) : path
-  const publicUrl = `${baseUrl}/storage/v1/object/public/drawings-images/${encodeURI(normalized)}`
-  return { path, publicUrl }
+  const { data: { publicUrl: fallbackUrl } } = supabase.storage.from("drawings-images").getPublicUrl(path)
+  return { path, publicUrl: fallbackUrl }
 }
 
 async function hashBlob(blob: Blob): Promise<string> {

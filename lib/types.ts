@@ -83,6 +83,13 @@ export type ComplianceRules = {
   block_payment_on_missing_docs?: boolean
 }
 
+export type ComplianceRequirementTemplateItem = {
+  document_type_id: string
+  is_required?: boolean
+  min_coverage_cents?: number
+  notes?: string
+}
+
 export type ContactType = "internal" | "subcontractor" | "client" | "vendor" | "consultant"
 
 export interface Contact {

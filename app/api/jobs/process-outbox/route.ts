@@ -8,6 +8,13 @@ import {
   createSheetVersion,
   updateDrawingSet,
 } from "@/lib/services/drawings"
+import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
+import {
+  deleteTilesObjects,
+  getTilesStorageProvider,
+  listTilesObjects,
+  uploadTilesObject,
+} from "@/lib/storage/drawings-tiles-storage"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
 // These are complete implementations that PDF.js needs for proper rendering
@@ -211,29 +218,26 @@ async function createVisibleTestImage(orgId: string, supabase: any) {
 
   const hash = `visible-test-${Date.now()}`
   const basePath = `${orgId}/${hash}`
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const tileBaseUrl = `${supabaseUrl}/storage/v1/object/public/drawings-tiles/${basePath}`
+  const tileBaseUrl = buildDrawingsTilesBaseUrl(basePath)
+  if (!tileBaseUrl) {
+    throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
+  }
 
   // Upload the visible test image
   const tilePath = `${basePath}/tiles/0/0_0.png`
-  const { error: tileError } = await supabase.storage
-    .from("drawings-tiles")
-    .upload(tilePath, imageBuffer, {
-      contentType: "image/png",
-      cacheControl: "public, max-age=31536000, immutable",
-      upsert: true
-    })
-
-  if (tileError) {
-    console.error('Tile upload error:', tileError)
-    throw new Error(`Failed to upload test image: ${tileError.message}`)
-  }
+  await uploadTilesObject({
+    supabase,
+    path: tilePath,
+    bytes: imageBuffer,
+    contentType: "image/png",
+  })
 
   const thumbPath = `${basePath}/thumbnail.png`
-  await supabase.storage.from("drawings-tiles").upload(thumbPath, thumbBuffer, {
+  await uploadTilesObject({
+    supabase,
+    path: thumbPath,
+    bytes: thumbBuffer,
     contentType: "image/png",
-    cacheControl: "public, max-age=31536000, immutable",
-    upsert: true
   })
 
   return {
@@ -269,24 +273,9 @@ export async function GET(request: NextRequest) {
   // Check if we should list storage contents
   if (searchParams.get("list") === "storage") {
     try {
-      const { data: files, error } = await supabase.storage
-        .from("drawings-tiles")
-        .list("", {
-          limit: 100,
-          sortBy: { column: "name", order: "asc" }
-        })
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
-
       return NextResponse.json({
         message: "Storage contents",
-        files: files?.map(f => ({
-          name: f.name,
-          size: f.metadata?.size || 0,
-          lastModified: f.updated_at
-        })) || []
+        files: await listTilesObjects({ supabase, limit: 100 })
       })
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 500 })
@@ -323,6 +312,29 @@ export async function GET(request: NextRequest) {
   if (searchParams.get("delete") === "storage") {
     try {
       console.log("[Cleanup] Starting comprehensive storage cleanup...")
+      const provider = getTilesStorageProvider()
+
+      if (provider === "r2") {
+        const objects = await listTilesObjects({ supabase, limit: 1000 })
+        if (!objects.length) {
+          return NextResponse.json({
+            message: "No R2 objects found",
+            files_found: 0,
+            files_deleted: 0,
+            remaining_files: 0,
+          })
+        }
+
+        await deleteTilesObjects({ supabase, paths: objects.map((o) => o.name) })
+
+        return NextResponse.json({
+          message: "R2 storage cleanup completed (first 1000 objects)",
+          files_found: objects.length,
+          files_deleted: objects.length,
+          remaining_files: 0,
+          remaining_list: [],
+        })
+      }
 
       // Function to recursively list all files
       async function listAllFiles(prefix = ""): Promise<string[]> {
@@ -381,16 +393,10 @@ export async function GET(request: NextRequest) {
           const batch = actualFiles.slice(i, i + batchSize)
           try {
             console.log(`[Cleanup] Deleting batch ${Math.floor(i/batchSize) + 1}: ${batch.length} files`)
-            const { error: deleteError } = await supabase.storage
-              .from("drawings-tiles")
-              .remove(batch)
+            await deleteTilesObjects({ supabase, paths: batch })
 
-            if (deleteError) {
-              console.error(`[Cleanup] Error deleting batch ${Math.floor(i/batchSize) + 1}:`, deleteError)
-            } else {
-              totalDeleted += batch.length
-              console.log(`[Cleanup] Successfully deleted batch ${Math.floor(i/batchSize) + 1}`)
-            }
+            totalDeleted += batch.length
+            console.log(`[Cleanup] Successfully deleted batch ${Math.floor(i/batchSize) + 1}`)
           } catch (e) {
             console.error(`[Cleanup] Exception deleting batch ${Math.floor(i/batchSize) + 1}:`, e)
           }
@@ -812,7 +818,7 @@ async function processDrawingSetJob(supabase: ReturnType<typeof createServiceSup
         // Create sheet version with the extracted page image
         const hash = `page-${page.pageNumber}-${Date.now()}`
         const basePath = `${drawingSet.org_id}/${hash}`
-        const publicBaseUrl = buildPublicBaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL!, drawingSet.org_id, hash)
+        const publicBaseUrl = buildPublicBaseUrl(drawingSet.org_id, hash)
 
         // Upload the page image as a single tile
         const objectPath = `${basePath}/tiles/0/0_0.png`
@@ -990,8 +996,12 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(Buffer.from(bytes)).digest("hex")
 }
 
-function buildPublicBaseUrl(supabaseUrl: string, orgId: string, hash: string) {
-  return `${supabaseUrl}/storage/v1/object/public/drawings-tiles/${orgId}/${hash}`
+function buildPublicBaseUrl(orgId: string, hash: string) {
+  const base = buildDrawingsTilesBaseUrl(`${orgId}/${hash}`)
+  if (!base) {
+    throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
+  }
+  return base
 }
 
 function clampCrop(x: number, y: number, w: number, h: number, maxW: number, maxH: number) {
@@ -1047,35 +1057,20 @@ async function uploadPublicObject(
 ) {
   console.log(`[Storage] Uploading ${bytes.length} bytes to ${objectPath} (${contentType})`)
 
-  const { error } = await supabase.storage.from("drawings-tiles").upload(objectPath, bytes, {
+  await uploadTilesObject({
+    supabase,
+    path: objectPath,
+    bytes,
     contentType,
-    cacheControl: "public, max-age=31536000, immutable",
-    upsert: false,
   })
 
-  if (!error) {
-    console.log(`[Storage] Successfully uploaded ${objectPath}`)
-    return
-  }
-
-  const msg = (error as any)?.message?.toLowerCase?.() ?? ""
-  console.log(`[Storage] Upload result for ${objectPath}:`, { error: (error as any)?.message, msg })
-
-  if (msg.includes("already exists") || msg.includes("409")) {
-    console.log(`[Storage] File already exists, skipping: ${objectPath}`)
-    return
-  }
-
-  throw new Error(`storage upload failed (${objectPath}): ${(error as any)?.message ?? "unknown error"}`)
+  console.log(`[Storage] Successfully uploaded ${objectPath}`)
 }
 
 async function generateDrawingTilesInNode(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   sheetVersionId: string,
 ) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  if (!supabaseUrl) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL")
-
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), SUPABASE_FUNCTION_TIMEOUT_MS)
 
@@ -1162,7 +1157,7 @@ async function generateDrawingTilesInNode(
 
     // 4) Content-addressed base path
     const basePath = `${orgId}/${hash}`
-    const publicBaseUrl = buildPublicBaseUrl(supabaseUrl, orgId, hash)
+    const publicBaseUrl = buildPublicBaseUrl(orgId, hash)
 
     console.log(`[TileGen] Using base path: ${basePath}`)
     console.log(`[TileGen] Public URL: ${publicBaseUrl}`)

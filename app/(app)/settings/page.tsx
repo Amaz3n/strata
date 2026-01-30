@@ -6,7 +6,7 @@ import { listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getOrgBilling } from "@/lib/services/orgs"
 import { getOrgAccessState } from "@/lib/services/access"
-import { getComplianceRules } from "@/lib/services/compliance"
+import { getComplianceRules, getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { getCurrentUserAction } from "@/app/actions/user"
 
 interface SettingsPageProps {
@@ -23,30 +23,33 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
     searchParams,
   ])
   const isLocked = accessState.locked
+  const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
 
   const [qboConnection, teamMembers] = isLocked
-    ? [null, []]
-    : await Promise.all([getQBOConnection(), listTeamMembers()])
-  const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
+    ? [null, initialTab === "team" ? [] : undefined]
+    : await Promise.all([
+        getQBOConnection(),
+        initialTab === "team" ? listTeamMembers(undefined, { includeProjectCounts: false }) : Promise.resolve(undefined),
+      ])
   const permissions = permissionResult?.permissions ?? []
   const canManageMembers = permissions.includes("members.manage")
   const canEditRoles = permissions.includes("org.admin")
   const canManageBilling = permissions.includes("billing.manage")
   const billing = canManageBilling ? await getOrgBilling().catch(() => null) : null
   const complianceRules = isLocked ? {
-    require_w9: true,
-    require_insurance: true,
-    require_license: false,
     require_lien_waiver: false,
     block_payment_on_missing_docs: true,
   } : await getComplianceRules().catch(() => ({
-    require_w9: true,
-    require_insurance: true,
-    require_license: false,
     require_lien_waiver: false,
     block_payment_on_missing_docs: true,
   }))
-  const canManageCompliance = permissions.includes("org.admin")
+  const canManageCompliance =
+    permissions.includes("org.admin") ||
+    permissions.includes("billing.manage") ||
+    permissions.includes("org.member")
+  const complianceRequirementDefaults = isLocked
+    ? []
+    : await getDefaultComplianceRequirements().catch(() => [])
 
   return (
     <PageLayout title="Settings">
@@ -61,6 +64,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
         canManageBilling={canManageBilling}
         initialComplianceRules={complianceRules}
         canManageCompliance={canManageCompliance}
+        initialComplianceRequirementDefaults={complianceRequirementDefaults}
       />
     </PageLayout>
   )

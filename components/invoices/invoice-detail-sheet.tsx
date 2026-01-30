@@ -234,7 +234,8 @@ export function InvoiceDetailSheet({
       {trigger ? <SheetTrigger asChild>{trigger}</SheetTrigger> : null}
       <SheetContent
         side="right"
-        className="sm:max-w-xl w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] overflow-hidden rounded-lg border shadow-2xl flex flex-col bg-white dark:bg-[#0C0C0C] gap-0 [&>button]:hidden fast-sheet-animation"
+        mobileFullscreen
+        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] overflow-hidden shadow-2xl flex flex-col bg-white dark:bg-[#0C0C0C] gap-0 [&>button]:hidden fast-sheet-animation"
         style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
       >
         <div className="flex-1 overflow-y-auto">

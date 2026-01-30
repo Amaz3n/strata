@@ -788,7 +788,8 @@ export function ProjectDetailClient({
       <Sheet open={directoryAssignOpen} onOpenChange={(open) => { setDirectoryAssignOpen(open); setSelectedVendorEntity(null); setCreateNewMode(false); }}>
         <SheetContent
           side="right"
-          className="sm:max-w-xl w-full max-w-xl ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation"
+          mobileFullscreen
+          className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
           style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
         >
           <div className="flex h-full flex-col">
@@ -1013,7 +1014,8 @@ export function ProjectDetailClient({
               </SheetTrigger>
               <SheetContent
                 side="right"
-                className="w-full max-w-5xl sm:max-w-5xl ml-auto mr-4 mt-4 mb-4 h-[calc(100vh-2rem)] overflow-hidden rounded-xl border bg-background p-0 shadow-2xl flex min-h-0 flex-col"
+                mobileFullscreen
+                className="sm:max-w-5xl sm:ml-auto sm:mr-4 sm:mt-4 sm:mb-4 sm:h-[calc(100vh-2rem)] overflow-hidden sm:rounded-xl bg-background p-0 shadow-2xl flex min-h-0 flex-col"
               >
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="border-b bg-muted/50 px-6 py-5">
@@ -1105,7 +1107,7 @@ export function ProjectDetailClient({
 
       {/* Manage Team Sheet */}
       <Sheet open={manageTeamSheetOpen} onOpenChange={setManageTeamSheetOpen}>
-        <SheetContent side="right" className="sm:max-w-3xl w-full max-w-3xl ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col">
+        <SheetContent side="right" mobileFullscreen className="sm:max-w-3xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col">
           <div className="flex-1 overflow-y-auto px-4">
             <SheetHeader className="pt-6 pb-4">
               <SheetTitle className="text-lg font-semibold leading-none tracking-tight">Project team</SheetTitle>
@@ -1374,7 +1376,8 @@ export function ProjectDetailClient({
       <Sheet open={teamSheetOpen} onOpenChange={setTeamSheetOpen}>
         <SheetContent
           side="right"
-          className="sm:max-w-md w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col"
+          mobileFullscreen
+          className="sm:max-w-md sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col"
         >
           <div className="flex-1 overflow-y-auto px-4">
             <SheetHeader className="pt-6 pb-4">

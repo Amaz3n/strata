@@ -125,7 +125,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search projects..." className="pl-9" />
         </div>
-        <div className="flex gap-2">
+        <div className="hidden sm:flex gap-2">
           <Button variant="outline" size="sm">
             All
           </Button>
@@ -139,9 +139,10 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
             Completed
           </Button>
         </div>
-        <div className="flex items-center gap-2 ml-auto">
+        <div className="flex items-center gap-2 sm:ml-auto">
           <Button
             onClick={() => setSheetOpen(true)}
+            className="w-full sm:w-auto"
           >
             <Plus className="mr-2 h-4 w-4" />
             New project
@@ -152,7 +153,8 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
 
         <SheetContent
           side="right"
-          className="sm:max-w-lg w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col fast-sheet-animation"
+          mobileFullscreen
+          className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col fast-sheet-animation"
           style={{
             animationDuration: '150ms',
             transitionDuration: '150ms'
@@ -374,8 +376,65 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
         </SheetContent>
       </Sheet>
 
-      {/* Projects table */}
-      <div className="rounded-lg border px-6 py-3">
+      {/* Mobile: Card layout */}
+      <div className="md:hidden space-y-3">
+        {projectsState.map((project) => (
+          <Link
+            key={project.id}
+            href={`/projects/${project.id}`}
+            className="block rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold truncate">{project.name}</span>
+                  <Badge variant="outline" className={statusColors[project.status]}>
+                    {statusLabels[project.status]}
+                  </Badge>
+                </div>
+                {project.address && (
+                  <p className="text-sm text-muted-foreground mt-1 truncate">
+                    {project.address}
+                  </p>
+                )}
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild onClick={(e) => e.preventDefault()}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                    <MoreHorizontal className="h-4 w-4" />
+                    <span className="sr-only">Actions</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem>Edit</DropdownMenuItem>
+                  <DropdownMenuItem>Archive</DropdownMenuItem>
+                  <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </Link>
+        ))}
+        {projectsState.length === 0 && (
+          <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
+            <div className="flex flex-col items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                <FolderOpen className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="font-medium">No projects yet</p>
+                <p className="text-sm">Create your first project to get started.</p>
+              </div>
+              <Button onClick={() => setSheetOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                Create New Project
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Desktop: Table layout */}
+      <div className="hidden md:block rounded-lg border px-6 py-3">
         <Table>
           <TableHeader>
             <TableRow>

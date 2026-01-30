@@ -108,7 +108,8 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="sm:max-w-xl w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation"
+        mobileFullscreen
+        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
         style={{
           animationDuration: '150ms',
           transitionDuration: '150ms'

@@ -21,7 +21,7 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 // ============ Mappers ============
 
@@ -626,4 +626,117 @@ export async function getCompanyComplianceStatusWithClient(
     pending_review: pendingReview,
     is_compliant: isCompliant,
   }
+}
+
+export async function getCompaniesComplianceStatus(
+  companyIds: string[],
+  orgId?: string
+): Promise<Record<string, ComplianceStatusSummary>> {
+  const uniqueCompanyIds = Array.from(new Set(companyIds.filter(Boolean)))
+  if (uniqueCompanyIds.length === 0) return {}
+
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+
+  const [requirementsResult, documentsResult] = await Promise.all([
+    supabase
+      .from("company_compliance_requirements")
+      .select(
+        `
+        *,
+        compliance_document_types (*)
+      `
+      )
+      .eq("org_id", resolvedOrgId)
+      .in("company_id", uniqueCompanyIds),
+    supabase
+      .from("compliance_documents")
+      .select(
+        `
+        *,
+        compliance_document_types (*)
+      `
+      )
+      .eq("org_id", resolvedOrgId)
+      .in("company_id", uniqueCompanyIds)
+      .order("created_at", { ascending: false }),
+  ])
+
+  if (requirementsResult.error) {
+    throw new Error(
+      `Failed to get compliance requirements: ${requirementsResult.error.message}`
+    )
+  }
+  if (documentsResult.error) {
+    throw new Error(
+      `Failed to get compliance documents: ${documentsResult.error.message}`
+    )
+  }
+
+  const requirements = (requirementsResult.data ?? []).map(mapRequirement)
+  const documents = (documentsResult.data ?? []).map(mapDocument)
+
+  const requirementsByCompanyId = new Map<string, ComplianceRequirement[]>()
+  for (const req of requirements) {
+    const list = requirementsByCompanyId.get(req.company_id) ?? []
+    list.push(req)
+    requirementsByCompanyId.set(req.company_id, list)
+  }
+
+  const documentsByCompanyId = new Map<string, ComplianceDocument[]>()
+  for (const doc of documents) {
+    const list = documentsByCompanyId.get(doc.company_id) ?? []
+    list.push(doc)
+    documentsByCompanyId.set(doc.company_id, list)
+  }
+
+  const result: Record<string, ComplianceStatusSummary> = {}
+  for (const companyId of uniqueCompanyIds) {
+    const companyRequirements = requirementsByCompanyId.get(companyId) ?? []
+    const companyDocuments = documentsByCompanyId.get(companyId) ?? []
+
+    // Calculate status (same logic as getCompanyComplianceStatusWithClient)
+    const now = new Date()
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+
+    const approvedDocs = companyDocuments.filter((d) => d.status === "approved")
+    const pendingReview = companyDocuments.filter((d) => d.status === "pending_review")
+
+    const expired = approvedDocs.filter((d) => {
+      if (!d.expiry_date) return false
+      return new Date(d.expiry_date) < now
+    })
+
+    const expiringSoon = approvedDocs.filter((d) => {
+      if (!d.expiry_date) return false
+      const expiryDate = new Date(d.expiry_date)
+      return expiryDate >= now && expiryDate <= thirtyDaysFromNow
+    })
+
+    const approvedDocTypeIds = new Set(
+      approvedDocs
+        .filter((d) => !expired.some((e) => e.id === d.id))
+        .map((d) => d.document_type_id)
+    )
+
+    const missing: ComplianceDocumentType[] = companyRequirements
+      .filter((r) => r.is_required && !approvedDocTypeIds.has(r.document_type_id))
+      .map((r) => r.document_type)
+      .filter((dt): dt is ComplianceDocumentType => dt !== undefined)
+
+    const isCompliant = missing.length === 0 && expired.length === 0
+
+    result[companyId] = {
+      company_id: companyId,
+      requirements: companyRequirements,
+      documents: companyDocuments,
+      missing,
+      expiring_soon: expiringSoon,
+      expired,
+      pending_review: pendingReview,
+      is_compliant: isCompliant,
+    }
+  }
+
+  return result
 }

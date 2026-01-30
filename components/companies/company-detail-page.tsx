@@ -1,9 +1,9 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 
-import type { Company, Contact, Project } from "@/lib/types"
+import type { Company, ComplianceStatusSummary, Contact, Project } from "@/lib/types"
 import type { CommitmentSummary } from "@/lib/services/commitments"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -20,7 +20,7 @@ import { CompanyInvoicesTab } from "@/components/companies/company-invoices-tab"
 import { CompanyComplianceTab } from "@/components/companies/company-compliance-tab"
 import { CompanyProjectsTab } from "@/components/companies/company-projects-tab"
 import { CompanyContactsTab } from "@/components/companies/company-contacts-tab"
-import { archiveCompanyAction } from "@/app/(app)/companies/actions"
+import { archiveCompanyAction, getCompanyComplianceStatusAction } from "@/app/(app)/companies/actions"
 import { useToast } from "@/hooks/use-toast"
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -28,31 +28,8 @@ function formatMoneyFromCents(cents?: number | null) {
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
-function insuranceStatus(expiry?: string) {
-  if (!expiry) return { label: "Not on file", tone: "outline" as const }
-  const date = new Date(expiry)
-  if (Number.isNaN(date.getTime())) return { label: "Unknown", tone: "outline" as const }
-  const days = Math.ceil((date.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-  if (days < 0) return { label: "Expired", tone: "destructive" as const }
-  if (days <= 30) return { label: "Expiring soon", tone: "secondary" as const }
-  return { label: "Valid", tone: "secondary" as const }
-}
-
-function licenseStatus(company: Company) {
-  if (!company.license_number) return { label: "Not on file", tone: "outline" as const }
-  if (company.license_expiry) {
-    const date = new Date(company.license_expiry)
-    const days = Number.isNaN(date.getTime()) ? undefined : Math.ceil((date.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-    if (days != null) {
-      if (days < 0) return { label: "Expired", tone: "destructive" as const }
-      if (days <= 30) return { label: "Expiring soon", tone: "secondary" as const }
-    }
-  }
-  return {
-    label: company.license_verified ? "Verified" : "Unverified",
-    tone: (company.license_verified ? "secondary" : "outline") as "secondary" | "outline"
-  }
-}
+// Compliance is tracked via the document/requirements system, so this page
+// uses the compliance status summary rather than legacy company fields.
 
 export function CompanyDetailPage({
   company,
@@ -78,6 +55,7 @@ export function CompanyDetailPage({
   const [contactDetailId, setContactDetailId] = useState<string | undefined>()
   const [contactDetailOpen, setContactDetailOpen] = useState(false)
   const [tab, setTab] = useState("overview")
+  const [complianceStatus, setComplianceStatus] = useState<ComplianceStatusSummary | null>(null)
 
   const totals = useMemo(() => {
     const committed = commitments.reduce((sum, c) => sum + (c.total_cents ?? 0), 0)
@@ -86,8 +64,21 @@ export function CompanyDetailPage({
     return { committed, billed, paid }
   }, [commitments, vendorBills])
 
-  const ins = insuranceStatus(company.insurance_expiry)
-  const lic = licenseStatus(company)
+  useEffect(() => {
+    let cancelled = false
+    getCompanyComplianceStatusAction(company.id)
+      .then((status) => {
+        if (cancelled) return
+        setComplianceStatus(status)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setComplianceStatus(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [company.id])
 
   const archive = () => {
     startTransition(async () => {
@@ -176,20 +167,27 @@ export function CompanyDetailPage({
               </CardHeader>
               <CardContent className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Insurance</span>
-                  <Badge variant={ins.tone}>{ins.label}</Badge>
+                  <span className="text-muted-foreground">Status</span>
+                  <Badge variant={complianceStatus?.is_compliant ? "secondary" : "outline"}>
+                    {complianceStatus ? (complianceStatus.is_compliant ? "Compliant" : "Action required") : "—"}
+                  </Badge>
                 </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">License</span>
-                  <Badge variant={lic.tone}>{lic.label}</Badge>
+                  <span className="text-muted-foreground">Missing</span>
+                  <span className="font-medium text-foreground">{complianceStatus?.missing.length ?? "—"}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">W-9</span>
-                  <Badge variant={company.w9_on_file ? "secondary" : "outline"}>{company.w9_on_file ? "On file" : "Missing"}</Badge>
+                  <span className="text-muted-foreground">Pending review</span>
+                  <span className="font-medium text-foreground">{complianceStatus?.pending_review.length ?? "—"}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Prequal</span>
-                  <Badge variant={company.prequalified ? "secondary" : "outline"}>{company.prequalified ? "Prequalified" : "Not prequalified"}</Badge>
+                  <span className="text-muted-foreground">Expired</span>
+                  <span className="font-medium text-foreground">{complianceStatus?.expired.length ?? "—"}</span>
+                </div>
+                <div className="pt-2">
+                  <Button variant="outline" size="sm" onClick={() => setTab("compliance")}>
+                    Review in Compliance tab
+                  </Button>
                 </div>
               </CardContent>
             </Card>

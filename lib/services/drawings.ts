@@ -27,6 +27,7 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 
 // ============================================================================
 // TYPES
@@ -145,17 +146,8 @@ export interface DrawingSheetVersion {
 // MAPPERS
 // ============================================================================
 
-const DRAWING_IMAGES_BUCKET = "drawings-images"
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
-
 function toPublicImageUrl(path?: string | null): string | null {
-  if (!path) return null
-  if (!SUPABASE_URL) {
-    console.error("[drawings] Missing NEXT_PUBLIC_SUPABASE_URL; cannot build image URL")
-    return null
-  }
-  const normalized = path.startsWith("/") ? path.slice(1) : path
-  return `${SUPABASE_URL}/storage/v1/object/public/${DRAWING_IMAGES_BUCKET}/${encodeURI(normalized)}`
+  return buildDrawingsImageUrl(path)
 }
 
 function mapDrawingSet(row: any): DrawingSet {

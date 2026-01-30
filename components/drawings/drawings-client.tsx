@@ -154,6 +154,7 @@ export function DrawingsClient({
 }: DrawingsClientProps) {
   const USE_TILED_VIEWER = process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true"
   const ENABLE_CLIENT_IMAGE_GEN = process.env.NEXT_PUBLIC_FEATURE_DRAWINGS_CLIENT_IMAGE_GEN === "true"
+  const ENABLE_TILES_AUTH = process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -193,6 +194,7 @@ export function DrawingsClient({
   // Viewer state
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerSheet, setViewerSheet] = useState<DrawingSheet | null>(null)
+  const tilesCookieRequestedRef = useRef(false)
   const [viewerUrl, setViewerUrl] = useState<string | null>(null)
   const [viewerMarkups, setViewerMarkups] = useState<DrawingMarkup[]>([])
   const [viewerPins, setViewerPins] = useState<DrawingPin[]>([])
@@ -1960,3 +1962,14 @@ export function DrawingsClient({
     </div>
   )
 }
+  useEffect(() => {
+    if (!ENABLE_TILES_AUTH || tilesCookieRequestedRef.current) return
+    tilesCookieRequestedRef.current = true
+
+    fetch("/api/drawings/tiles-cookie", {
+      method: "POST",
+      credentials: "include",
+    }).catch((error) => {
+      console.warn("[drawings] Failed to set tiles cookie:", error)
+    })
+  }, [ENABLE_TILES_AUTH])

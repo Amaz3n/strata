@@ -11,6 +11,7 @@ export interface OrgMembership {
   role_id: string
   status: string
   role_key?: string
+  last_active_at?: string | null
 }
 
 export interface AuthContext {
@@ -65,7 +66,7 @@ async function fetchMembership(
 ): Promise<OrgMembership | null> {
   const { data, error } = await supabase
     .from("memberships")
-    .select("id, org_id, role_id, status, roles:roles!inner(key)")
+    .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key)")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .maybeSingle()
@@ -82,6 +83,7 @@ async function fetchMembership(
     org_id: data.org_id as string,
     role_id: data.role_id as string,
     status: data.status as string,
+    last_active_at: (data as { last_active_at?: string | null }).last_active_at ?? null,
     role_key: (data as { roles?: { key?: string } }).roles?.key,
   }
 }
@@ -90,7 +92,7 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("memberships")
-    .select("id, org_id, role_id, status, roles:roles!inner(key)")
+    .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key)")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .maybeSingle()
@@ -102,7 +104,29 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
     org_id: data.org_id as string,
     role_id: data.role_id as string,
     status: data.status as string,
+    last_active_at: (data as { last_active_at?: string | null }).last_active_at ?? null,
     role_key: (data as { roles?: { key?: string } }).roles?.key,
+  }
+}
+
+async function touchMembershipActivity(orgId: string, userId: string, lastActiveAt?: string | null) {
+  const now = new Date()
+  if (lastActiveAt) {
+    const last = new Date(lastActiveAt)
+    if (!Number.isNaN(last.getTime()) && now.getTime() - last.getTime() < 15 * 60 * 1000) {
+      return
+    }
+  }
+
+  try {
+    const supabase = createServiceSupabaseClient()
+    await supabase
+      .from("memberships")
+      .update({ last_active_at: now.toISOString() })
+      .eq("org_id", orgId)
+      .eq("user_id", userId)
+  } catch (error) {
+    console.error("Failed to update last active timestamp", error)
   }
 }
 
@@ -218,6 +242,10 @@ export async function requireOrgMembership(
       sameSite: "lax",
       maxAge: 60 * 60 * 24 * 30,
     })
+  }
+
+  if (membership.status === "active") {
+    await touchMembershipActivity(resolvedOrgId, context.user.id, membership.last_active_at)
   }
 
   return { ...context, orgId: resolvedOrgId, membership }

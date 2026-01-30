@@ -33,7 +33,13 @@ async function sha256Hex(input: Uint8Array): Promise<string> {
 }
 
 function buildPublicBaseUrl(supabaseUrl: string, orgId: string, hash: string) {
-  return `${supabaseUrl}/storage/v1/object/public/drawings-tiles/${orgId}/${hash}`
+  const override =
+    Deno.env.get("DRAWINGS_TILES_BASE_URL") ??
+    Deno.env.get("NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
+  const baseUrl = override
+    ? override.replace(/\/$/, "")
+    : `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/public/drawings-tiles`
+  return `${baseUrl}/${orgId}/${hash}`
 }
 
 function clampCrop(
@@ -303,4 +309,3 @@ serve(async (req) => {
     )
   }
 })
-

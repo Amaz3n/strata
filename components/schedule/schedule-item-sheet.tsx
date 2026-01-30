@@ -28,7 +28,6 @@ import { ChangeOrderImpactBadge } from "./change-order-impact-badge"
 import { DrawMilestoneOverlay } from "./draw-milestone-overlay"
 import { CostCodeSelector } from "./cost-code-selector"
 import { formatAmount } from "@/components/midday/format-amount"
-import { useIsMobile } from "@/hooks/use-mobile"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -130,7 +129,6 @@ export function ScheduleItemSheet({
   initialDates,
   projects,
 }: ScheduleItemSheetProps) {
-  const isMobile = useIsMobile()
   const { items, onItemCreate, onItemUpdate, onItemDelete, isLoading } = useSchedule()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [dateRange, setDateRange] = useState<DateRange | undefined>()
@@ -529,12 +527,8 @@ export function ScheduleItemSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className={cn(
-          "flex flex-col p-0 fast-sheet-animation",
-          isMobile 
-            ? "w-full h-screen max-w-full m-0 rounded-none border-0 shadow-2xl" 
-            : "sm:max-w-lg w-full max-w-md ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl"
-        )}
+        mobileFullscreen
+        className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
         style={{
           animationDuration: '150ms',
           transitionDuration: '150ms'

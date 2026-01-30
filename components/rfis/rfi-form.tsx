@@ -71,7 +71,8 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="sm:max-w-xl w-full ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 fast-sheet-animation"
+        mobileFullscreen
+        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
         style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
       >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">

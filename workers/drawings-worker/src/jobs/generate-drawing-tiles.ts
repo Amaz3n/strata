@@ -6,6 +6,7 @@ import { join } from 'path';
 import { createHash } from 'crypto';
 import sharp from 'sharp';
 import { Job } from '../worker';
+import { buildTilesBaseUrl, deleteTileObjects, downloadTileObject, uploadTileObject } from '../storage/tiles';
 
 const TILE_SIZE = 256;
 const OVERLAP = 0; // No overlap for simplicity
@@ -70,15 +71,7 @@ export async function generateDrawingTiles(supabase: SupabaseClient, job: Job): 
 
   try {
     // Download pre-rendered PNG from storage
-    const { data: pngData, error: downloadError } = await supabase.storage
-      .from('drawings-tiles')
-      .download(tempPngPath);
-
-    if (downloadError || !pngData) {
-      throw new Error(`Failed to download pre-rendered PNG: ${downloadError?.message}`);
-    }
-
-    const pngBytes = new Uint8Array(await pngData.arrayBuffer());
+    const pngBytes = await downloadTileObject({ supabase, path: tempPngPath });
     await fs.writeFile(tempLocalPngPath, pngBytes);
     console.log(`Downloaded pre-rendered PNG: ${pngBytes.length} bytes`);
 
@@ -104,16 +97,11 @@ export async function generateDrawingTiles(supabase: SupabaseClient, job: Job): 
       }
     };
 
-    const supabaseUrl = process.env.SUPABASE_URL;
-    if (!supabaseUrl) {
-      throw new Error('Missing SUPABASE_URL environment variable');
-    }
-
-    const tileBaseUrl = `${supabaseUrl}/storage/v1/object/public/drawings-tiles/${basePath}`;
+    const tileBaseUrl = buildTilesBaseUrl(basePath);
 
     // Upload the full-resolution image as a single tile
     const tilePath = `${basePath}/tiles/0/0_0.png`;
-    await uploadToStorage(supabase, tilePath, tempLocalPngPath);
+    await uploadToStorage(supabase, tilePath, tempLocalPngPath, 'image/png');
 
     // Generate and upload thumbnail
     const thumbBuffer = await image
@@ -122,12 +110,12 @@ export async function generateDrawingTiles(supabase: SupabaseClient, job: Job): 
       .toBuffer();
 
     const thumbPath = `${basePath}/thumbnail.png`;
-    await uploadToStorage(supabase, thumbPath, thumbBuffer);
+    await uploadToStorage(supabase, thumbPath, thumbBuffer, 'image/png');
 
     // Upload manifest
     const manifestJson = JSON.stringify(tileManifest);
     const manifestPath = `${basePath}/manifest.json`;
-    await uploadToStorage(supabase, manifestPath, Buffer.from(manifestJson));
+    await uploadToStorage(supabase, manifestPath, Buffer.from(manifestJson), 'application/json');
 
     // Update database (and backfill page_index if missing)
     await supabase
@@ -150,9 +138,7 @@ export async function generateDrawingTiles(supabase: SupabaseClient, job: Job): 
 
     // Delete the temp PNG from storage (no longer needed)
     try {
-      await supabase.storage
-        .from('drawings-tiles')
-        .remove([tempPngPath]);
+      await deleteTileObjects({ supabase, paths: [tempPngPath] });
       console.log(`Cleaned up temp PNG from storage: ${tempPngPath}`);
     } catch (e) {
       console.warn('Failed to delete temp PNG from storage:', e);
@@ -189,17 +175,13 @@ async function uploadToStorage(
     mimeType = contentType || 'application/octet-stream';
   }
 
-  const { error } = await supabase.storage
-    .from('drawings-tiles')
-    .upload(path, buffer, {
-      contentType: mimeType,
-      cacheControl: 'public, max-age=31536000, immutable',
-      upsert: true,
-    });
-
-  if (error && !error.message?.includes?.('already exists')) {
-    throw new Error(`Upload failed: ${error.message}`);
-  }
+  await uploadTileObject({
+    supabase,
+    path,
+    bytes: buffer,
+    contentType: mimeType,
+    cacheControl: 'public, max-age=31536000, immutable',
+  });
 }
 
 async function checkAndUpdateDrawingSetStatus(supabase: SupabaseClient, orgId: string): Promise<void> {

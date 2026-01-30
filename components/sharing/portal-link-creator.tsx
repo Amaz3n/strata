@@ -35,13 +35,14 @@ import {
 interface PortalLinkCreatorProps {
   projectId: string
   onCreated: (token: PortalAccessToken) => void
+  enabled?: boolean
 }
 
 type PermissionPreset = "standard" | "read_only" | "custom"
 
 const defaultExpires = format(addDays(new Date(), 90), "yyyy-MM-dd")
 
-export function PortalLinkCreator({ projectId, onCreated }: PortalLinkCreatorProps) {
+export function PortalLinkCreator({ projectId, onCreated, enabled = true }: PortalLinkCreatorProps) {
   const [portalType, setPortalType] = useState<"client" | "sub">("client")
   const [companyId, setCompanyId] = useState("")
   const [vendors, setVendors] = useState<ProjectVendor[]>([])
@@ -72,6 +73,7 @@ export function PortalLinkCreator({ projectId, onCreated }: PortalLinkCreatorPro
 
   // Load project vendors for sub links.
   useEffect(() => {
+    if (!enabled) return
     if (!projectId) {
       setVendors([])
       return
@@ -85,7 +87,7 @@ export function PortalLinkCreator({ projectId, onCreated }: PortalLinkCreatorPro
         toast.error("Failed to load subcontractor list")
       })
       .finally(() => setIsLoadingVendors(false))
-  }, [projectId])
+  }, [projectId, enabled])
 
   // Reset sub-company selection when switching portal types.
   useEffect(() => {

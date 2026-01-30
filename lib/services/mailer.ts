@@ -123,6 +123,7 @@ export interface InviteEmailPayload {
   inviteLink: string
   orgName?: string | null
   inviterName?: string | null
+  inviterEmail?: string | null
 }
 
 export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void> {
@@ -130,6 +131,8 @@ export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void
     InviteTeamMemberEmail({
       orgName: payload.orgName,
       inviterName: payload.inviterName,
+      inviterEmail: payload.inviterEmail,
+      inviteeEmail: payload.to,
       inviteLink: payload.inviteLink,
     }),
   )

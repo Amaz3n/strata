@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { Job } from '../worker';
+import { uploadTileObject } from '../storage/tiles';
 
 export async function processDrawingSet(supabase: SupabaseClient, job: Job): Promise<void> {
   const { drawingSetId, projectId, sourceFileId, storagePath } = job.payload;
@@ -111,19 +112,18 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
 
         // Upload PNG to drawings-tiles bucket
         const pngBuffer = await fs.readFile(localPngPath);
-        const { error: uploadError } = await supabase.storage
-          .from('drawings-tiles')
-          .upload(storagePngPath, pngBuffer, {
+        try {
+          await uploadTileObject({
+            supabase,
+            path: storagePngPath,
+            bytes: pngBuffer,
             contentType: 'image/png',
             cacheControl: 'public, max-age=3600',
-            upsert: true,
           });
-
-        if (uploadError) {
-          console.warn(`Failed to upload PNG for page ${pageIndex}:`, uploadError);
-        } else {
           tempPngPaths.push(storagePngPath);
           console.log(`Uploaded page ${pageIndex + 1}/${pageCount}`);
+        } catch (uploadError) {
+          console.warn(`Failed to upload PNG for page ${pageIndex}:`, uploadError);
         }
 
         // Clean up local PNG to save disk space

@@ -6,6 +6,8 @@ import { requireOrgContext, type OrgServiceContext } from "@/lib/services/contex
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { hasPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { getDefaultComplianceRequirements } from "@/lib/services/compliance"
+import { setCompanyRequirements } from "@/lib/services/compliance-documents"
 
 function mapCompany(row: any): Company {
   const metadata = row?.metadata ?? {}
@@ -263,6 +265,25 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     entityId: data.id as string,
     after: data,
   })
+
+  // Auto-apply org default compliance requirements for new subs/suppliers.
+  if (data.company_type === "subcontractor" || data.company_type === "supplier") {
+    const defaults = await getDefaultComplianceRequirements(resolvedOrgId).catch(() => [])
+    if (defaults.length > 0) {
+      await setCompanyRequirements({
+        companyId: data.id as string,
+        requirements: defaults.map((d) => ({
+          document_type_id: d.document_type_id,
+          is_required: true,
+          min_coverage_cents: d.min_coverage_cents,
+          notes: d.notes,
+        })),
+        orgId: resolvedOrgId,
+      }).catch(() => {
+        // Best-effort: company creation should succeed even if defaults fail.
+      })
+    }
+  }
 
   return mapCompany(data)
 }

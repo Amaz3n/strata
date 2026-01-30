@@ -128,12 +128,17 @@ function mapTeamMember(row: any, projectCounts: Record<string, number>): TeamMem
   }
 }
 
-export async function listTeamMembers(orgId?: string): Promise<TeamMember[]> {
+export async function listTeamMembers(
+  orgId?: string,
+  options?: { includeProjectCounts?: boolean },
+): Promise<TeamMember[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
-  const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
+  const serviceClient = createServiceSupabaseClient()
+  const includeProjectCounts = options?.includeProjectCounts ?? true
+  const projectCounts = includeProjectCounts ? await mapProjectCounts(serviceClient, resolvedOrgId) : {}
 
-  const { data, error } = await supabase
+  const { data, error } = await serviceClient
     .from("memberships")
     .select(
       `
@@ -151,6 +156,66 @@ export async function listTeamMembers(orgId?: string): Promise<TeamMember[]> {
   }
 
   return (data ?? []).map((row) => mapTeamMember(row, projectCounts))
+}
+
+export async function updateMemberProfile({
+  userId: targetUserId,
+  fullName,
+  orgId,
+}: {
+  userId: string
+  fullName: string
+  orgId?: string
+}) {
+  const normalizedName = fullName.trim()
+  if (!normalizedName) {
+    throw new Error("Name is required")
+  }
+
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: membership, error: membershipError } = await serviceClient
+    .from("memberships")
+    .select("id, org_id, user_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("user_id", targetUserId)
+    .maybeSingle()
+
+  if (membershipError || !membership) {
+    throw new Error("Membership not found")
+  }
+
+  const { data: existingUser } = await serviceClient
+    .from("app_users")
+    .select("id, full_name, email, avatar_url")
+    .eq("id", targetUserId)
+    .maybeSingle()
+
+  const { data, error } = await serviceClient
+    .from("app_users")
+    .update({ full_name: normalizedName })
+    .eq("id", targetUserId)
+    .select("id, full_name, email, avatar_url")
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error(`Failed to update member profile: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "app_user",
+    entityId: data.id as string,
+    before: existingUser,
+    after: data,
+  })
+
+  return data
 }
 
 export async function inviteTeamMember({
@@ -230,10 +295,13 @@ export async function inviteTeamMember({
   // Send invite email with our token-based link
   const orgName = await getOrgName(serviceClient, resolvedOrgId)
   const inviteLink = getInviteLink(inviteToken)
+  const inviter = data.invited_by_user as { full_name?: string | null; email?: string | null } | null
   await sendInviteEmail({
     to: parsed.email,
     inviteLink,
     orgName,
+    inviterName: inviter?.full_name ?? null,
+    inviterEmail: inviter?.email ?? null,
   })
 
   await recordEvent({
@@ -439,6 +507,13 @@ export async function resendInvite(membershipId: string, orgId?: string) {
     throw new Error("Membership user email missing")
   }
 
+  // Get the current user's info (the person resending the invite)
+  const { data: inviterData } = await serviceClient
+    .from("app_users")
+    .select("full_name, email")
+    .eq("id", userId)
+    .maybeSingle()
+
   // Generate new invite token
   const inviteToken = generateInviteToken()
   const inviteTokenExpiresAt = getInviteTokenExpiry()
@@ -462,6 +537,8 @@ export async function resendInvite(membershipId: string, orgId?: string) {
     to: email,
     inviteLink,
     orgName,
+    inviterName: inviterData?.full_name ?? null,
+    inviterEmail: inviterData?.email ?? null,
   })
 
   return true
@@ -566,4 +643,3 @@ export async function acceptInviteByToken(
     orgName: inviteDetails.orgName,
   }
 }
-

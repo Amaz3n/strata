@@ -29,7 +29,7 @@ import {
 } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
-import type { ComplianceRules, TeamMember, User } from "@/lib/types"
+import type { ComplianceRequirementTemplateItem, ComplianceRules, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
 import { InviteMemberDialog } from "@/components/team/invite-member-dialog"
 import Link from "next/link"
@@ -42,7 +42,7 @@ const sections = [
   { value: "notifications", label: "Notifications", description: "How you get updates", icon: Bell },
   { value: "integrations", label: "Integrations", description: "Connect your tools", icon: Link2 },
   { value: "team", label: "Team", description: "Manage internal members", icon: Users },
-  { value: "compliance", label: "Compliance", description: "Payment gating rules", icon: Settings },
+  { value: "compliance", label: "Payables", description: "Payment gating policy", icon: Settings },
   { value: "about", label: "About", description: "About this workspace", icon: Info },
   { value: "danger", label: "Danger zone", description: "Destructive actions", icon: AlertCircle },
 ]
@@ -98,6 +98,7 @@ interface SettingsWindowProps {
   canManageBilling?: boolean
   initialComplianceRules?: ComplianceRules
   canManageCompliance?: boolean
+  initialComplianceRequirementDefaults?: ComplianceRequirementTemplateItem[]
 }
 
 function getInitials(user: User | null) {
@@ -121,12 +122,10 @@ export function SettingsWindow({
   initialBilling = null,
   canManageBilling = true,
   initialComplianceRules = {
-    require_w9: true,
-    require_insurance: true,
-    require_license: false,
     require_lien_waiver: false,
     block_payment_on_missing_docs: true,
   },
+  initialComplianceRequirementDefaults = [],
   canManageCompliance = false,
 }: SettingsWindowProps) {
   const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
@@ -704,6 +703,7 @@ export function SettingsWindow({
                       members={teamMembers}
                       canManageMembers={canManageMembers}
                       canEditRoles={canEditRoles}
+                      showProjectCounts={false}
                       onMemberChange={refreshTeam}
                     />
                   )}
@@ -712,7 +712,11 @@ export function SettingsWindow({
 
               <TabsContent value="compliance" className="m-0 mt-0">
                 <div className="space-y-6">
-                  <ComplianceSettings initialRules={initialComplianceRules} canManage={canManageCompliance} />
+                  <ComplianceSettings
+                    initialRules={initialComplianceRules}
+                    initialRequirementDefaults={initialComplianceRequirementDefaults}
+                    canManage={canManageCompliance}
+                  />
                 </div>
               </TabsContent>
 

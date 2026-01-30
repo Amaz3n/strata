@@ -147,7 +147,7 @@ export function SubmittalDetailSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="sm:max-w-xl w-full overflow-y-auto">
+      <SheetContent side="right" mobileFullscreen className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl">
         <SheetHeader>
           <div className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-primary" />

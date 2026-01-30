@@ -5,6 +5,7 @@ import { redirect } from "next/navigation"
 
 import { acceptInviteSchema } from "@/lib/validation/team"
 import { getInviteDetailsByToken, acceptInviteByToken } from "@/lib/services/team"
+import { createServerSupabaseClient } from "@/lib/supabase/server"
 
 export interface AcceptInviteState {
   error?: string
@@ -31,11 +32,31 @@ export async function acceptInviteAction(
     return { error: firstError }
   }
 
+  // Get invite details first to have the email for auto-login
+  const inviteDetails = await getInviteDetailsByToken(token)
+  if (!inviteDetails) {
+    return { error: "This invitation link has expired or is no longer valid." }
+  }
+
   try {
     const result = await acceptInviteByToken(token, parsed.data.password, parsed.data.fullName)
 
     if (!result) {
       return { error: "This invitation link has expired or is no longer valid." }
+    }
+
+    // Auto-login the user with their new credentials
+    const supabase = await createServerSupabaseClient()
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: inviteDetails.email,
+      password: parsed.data.password,
+    })
+
+    if (signInError) {
+      // If auto-login fails, fall back to manual login
+      console.error("Auto-login failed after invite acceptance", signInError)
+      await setOrgCookie(result.orgId)
+      redirect("/auth/signin?message=Account created successfully. Please sign in.")
     }
 
     await setOrgCookie(result.orgId)
@@ -44,7 +65,8 @@ export async function acceptInviteAction(
     return { error: error instanceof Error ? error.message : "Something went wrong. Please try again." }
   }
 
-  redirect("/auth/signin?message=Account created successfully. Please sign in.")
+  // Redirect to dashboard after successful auto-login
+  redirect("/")
 }
 
 export async function getInviteDetailsAction(token: string): Promise<{

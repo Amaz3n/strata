@@ -11,6 +11,7 @@ import {
   type VendorBillCreate,
 } from "@/lib/validation/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
+import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
@@ -198,9 +199,6 @@ export async function updateVendorBillStatus({
 
   if (parsed.status === "paid" || parsed.status === "partial") {
     const rules = await getComplianceRules(resolvedOrgId).catch(() => ({
-      require_w9: true,
-      require_insurance: true,
-      require_license: false,
       require_lien_waiver: false,
       block_payment_on_missing_docs: true,
     }))
@@ -211,29 +209,22 @@ export async function updateVendorBillStatus({
       }
 
       if (existing.commitment_id) {
-        const { data: commitment } = await supabase
+        const { data: commitment, error: commitmentError } = await supabase
           .from("commitments")
-          .select("company:companies(id, w9_on_file, insurance_expiry, license_expiry)")
+          .select("company_id")
           .eq("id", existing.commitment_id)
           .eq("org_id", resolvedOrgId)
           .maybeSingle()
 
-        const company = (commitment as any)?.company
-        if (company) {
-          if (rules.require_w9 && company.w9_on_file === false) {
-            throw new Error("W-9 required before payment")
-          }
-          if (rules.require_insurance) {
-            const expiry = company.insurance_expiry ? new Date(company.insurance_expiry) : null
-            if (!expiry || Number.isNaN(expiry.getTime()) || expiry.getTime() < Date.now()) {
-              throw new Error("Insurance required before payment")
-            }
-          }
-          if (rules.require_license) {
-            const expiry = company.license_expiry ? new Date(company.license_expiry) : null
-            if (!expiry || Number.isNaN(expiry.getTime()) || expiry.getTime() < Date.now()) {
-              throw new Error("License required before payment")
-            }
+        if (commitmentError) {
+          throw new Error(`Unable to validate compliance: ${commitmentError.message}`)
+        }
+
+        const companyId = (commitment as any)?.company_id as string | undefined
+        if (companyId) {
+          const status = await getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId)
+          if (!status.is_compliant) {
+            throw new Error("Compliance documents required before payment")
           }
         }
       }

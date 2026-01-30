@@ -40,7 +40,8 @@ export function MiddayInvoiceSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-full sm:max-w-3xl ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 bg-[#fdfdfd] dark:bg-[#0f0f0f] [&>button[aria-label='Close']]:hidden [&_[data-slot=sheet-close]]:hidden"
+        mobileFullscreen
+        className="sm:max-w-3xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 bg-[#fdfdfd] dark:bg-[#0f0f0f] [&>button[aria-label='Close']]:hidden [&_[data-slot=sheet-close]]:hidden"
       >
         <div className="flex h-full flex-col gap-4 px-4 py-8 sm:px-5 sm:py-10">
           <div className="flex-1 overflow-hidden">

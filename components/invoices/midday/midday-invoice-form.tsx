@@ -239,7 +239,8 @@ export function MiddayInvoiceForm({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="sm:max-w-5xl w-full ml-auto mr-4 mt-4 h-[calc(100vh-2rem)] rounded-lg border shadow-2xl flex flex-col p-0 bg-[#fdfdfd] dark:bg-[#0f0f0f]"
+        mobileFullscreen
+        className="sm:max-w-5xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 bg-[#fdfdfd] dark:bg-[#0f0f0f]"
       >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/40">
           <SheetTitle className="flex items-center gap-2">

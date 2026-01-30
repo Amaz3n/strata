@@ -8,6 +8,7 @@ import { listInvoices } from "@/lib/services/invoices"
 import { listContacts } from "@/lib/services/contacts"
 import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
+import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 
 /**
  * Fetch all data needed for the Budget tab
@@ -64,17 +65,18 @@ export async function fetchPayablesTabDataAction(projectId: string) {
   const [vendorBills, complianceRules] = await Promise.all([
     listVendorBillsForProject(projectId).catch(() => []),
     getComplianceRules().catch(() => ({
-      require_w9: true,
-      require_insurance: true,
-      require_license: false,
       require_lien_waiver: false,
       block_payment_on_missing_docs: true,
     })),
   ])
 
+  const companyIds = Array.from(new Set(vendorBills.map((b) => b.company_id).filter(Boolean))) as string[]
+  const complianceStatusByCompanyId = await getCompaniesComplianceStatus(companyIds).catch(() => ({}))
+
   return {
     vendorBills,
     complianceRules,
+    complianceStatusByCompanyId,
   }
 }
 

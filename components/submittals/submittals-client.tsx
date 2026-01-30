@@ -110,47 +110,110 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-1 items-center gap-2">
+        <div className="flex flex-1 flex-col sm:flex-row items-stretch sm:items-center gap-2">
           <Input
             placeholder="Search submittals..."
             className="w-full sm:w-72"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              {(["draft", "submitted", "in_review", "approved", "rejected"] as StatusKey[]).map((status) => (
-                <SelectItem key={status} value={status}>
-                  {statusLabels[status]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="hidden sm:flex items-center gap-2">
+            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All statuses</SelectItem>
+                {(["draft", "submitted", "in_review", "approved", "rejected"] as StatusKey[]).map((status) => (
+                  <SelectItem key={status} value={status}>
+                    {statusLabels[status]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-        <Button onClick={() => setSheetOpen(true)}>
+        <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
           <Plus className="mr-2 h-4 w-4" />
           New submittal
         </Button>
       </div>
 
-      <div className="rounded-lg border overflow-hidden">
+      {/* Mobile: Card layout */}
+      <div className="md:hidden space-y-3">
+        {filtered.map((submittal) => (
+          <button
+            key={submittal.id}
+            type="button"
+            onClick={() => handleSubmittalClick(submittal)}
+            className="block w-full text-left rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-muted-foreground">{submittal.submittal_number}</span>
+                  <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[submittal.status] ?? ""}`}>
+                    {statusLabels[submittal.status] ?? submittal.status}
+                  </Badge>
+                </div>
+                <p className="font-semibold mt-1 line-clamp-2">{submittal.title}</p>
+                {submittal.due_date && (
+                  <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                    <Calendar className="h-3 w-3" />
+                    Due {format(new Date(submittal.due_date), "MMM d")}
+                  </p>
+                )}
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                    <MoreHorizontal className="h-4 w-4" />
+                    <span className="sr-only">Actions</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleSubmittalClick(submittal)}>
+                    View details
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </button>
+        ))}
+        {filtered.length === 0 && (
+          <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
+            <div className="flex flex-col items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                <FileText className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="font-medium">No submittals yet</p>
+                <p className="text-sm">Create your first submittal to get started.</p>
+              </div>
+              <Button onClick={() => setSheetOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                Create submittal
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Desktop: Table layout */}
+      <div className="hidden md:block rounded-lg border overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow className="divide-x">

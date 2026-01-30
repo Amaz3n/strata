@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
-import type { ComplianceRules } from "@/lib/types"
+import type { ComplianceRules, ComplianceStatusSummary } from "@/lib/types"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ProjectPayablesClient } from "@/components/payables/project-payables-client"
 import { Card, CardContent } from "@/components/ui/card"
@@ -10,12 +10,14 @@ interface PayablesTabProps {
   projectId: string
   vendorBills: VendorBillSummary[]
   complianceRules: ComplianceRules
+  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
 }
 
 export function PayablesTab({
   projectId,
   vendorBills,
   complianceRules,
+  complianceStatusByCompanyId,
 }: PayablesTabProps) {
   // Calculate summary stats
   const stats = useMemo(() => {
@@ -58,6 +60,7 @@ export function PayablesTab({
         projectId={projectId}
         vendorBills={vendorBills}
         complianceRules={complianceRules}
+        complianceStatusByCompanyId={complianceStatusByCompanyId}
       />
     </div>
   )

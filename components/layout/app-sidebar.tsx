@@ -109,12 +109,6 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number) {
           isActive: pathname.startsWith("/directory"),
         },
         {
-          title: "Compliance",
-          url: "/compliance",
-          icon: CheckSquare,
-          isActive: pathname.startsWith("/compliance"),
-        },
-        {
           title: "Settings",
           url: "/settings",
           icon: Settings,

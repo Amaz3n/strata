@@ -432,6 +432,13 @@ export function SubComplianceTab({
                     d.status === "approved" &&
                     (!d.expiry_date || new Date(d.expiry_date) > new Date())
                 )
+                const expiredDoc = complianceStatus.documents.find(
+                  (d) =>
+                    d.document_type_id === req.document_type_id &&
+                    d.status === "approved" &&
+                    !!d.expiry_date &&
+                    new Date(d.expiry_date) <= new Date()
+                )
                 const pendingDoc = complianceStatus.documents.find(
                   (d) =>
                     d.document_type_id === req.document_type_id &&
@@ -475,6 +482,11 @@ export function SubComplianceTab({
                         <Badge variant="secondary" className="gap-1">
                           <Clock className="h-3 w-3" />
                           Under review
+                        </Badge>
+                      ) : expiredDoc ? (
+                        <Badge variant="outline" className="gap-1 text-orange-600">
+                          <AlertCircle className="h-3 w-3" />
+                          Expired{expiredDoc.expiry_date ? ` (exp ${formatDate(expiredDoc.expiry_date)})` : ""}
                         </Badge>
                       ) : rejectedDoc ? (
                         <div className="text-right">

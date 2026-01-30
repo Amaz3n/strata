@@ -354,6 +354,12 @@ Store secrets in **Secret Manager**:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - (optional) `SUPABASE_STORAGE_BUCKET_INPUT=project-files`
 - (optional) `SUPABASE_STORAGE_BUCKET_OUTPUT=drawings-tiles`
+- (optional, R2 tiles) `DRAWINGS_TILES_STORAGE=r2`
+- (optional, R2 tiles) `DRAWINGS_TILES_BASE_URL=https://<cdn-domain>/drawings-tiles`
+- (optional, R2 tiles) `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
+- (optional, R2 tiles) `R2_BUCKET_DRAWINGS_TILES=drawings-tiles`
+- (optional, R2 tiles) `R2_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com`
+- (optional, R2 tiles) `R2_REGION=auto`, `R2_FORCE_PATH_STYLE=true`
 
 Do NOT bake these into images.
 
@@ -660,4 +666,3 @@ gcloud run deploy drawings-worker \
 - Workers shut down when idle (scale-to-zero)
 - Fast processing (15s avg) minimizes billable time
 - No always-on minimum instances
-
