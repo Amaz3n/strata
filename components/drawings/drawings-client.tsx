@@ -314,6 +314,18 @@ export function DrawingsClient({
   ])
 
   useEffect(() => {
+    if (!ENABLE_TILES_AUTH || tilesCookieRequestedRef.current) return
+    tilesCookieRequestedRef.current = true
+
+    fetch("/api/drawings/tiles-cookie", {
+      method: "POST",
+      credentials: "include",
+    }).catch((error) => {
+      console.warn("[drawings] Failed to set tiles cookie:", error)
+    })
+  }, [ENABLE_TILES_AUTH])
+
+  useEffect(() => {
     if (processingSetIds.length === 0) return
 
     const interval = setInterval(async () => {
@@ -1962,14 +1974,3 @@ export function DrawingsClient({
     </div>
   )
 }
-  useEffect(() => {
-    if (!ENABLE_TILES_AUTH || tilesCookieRequestedRef.current) return
-    tilesCookieRequestedRef.current = true
-
-    fetch("/api/drawings/tiles-cookie", {
-      method: "POST",
-      credentials: "include",
-    }).catch((error) => {
-      console.warn("[drawings] Failed to set tiles cookie:", error)
-    })
-  }, [ENABLE_TILES_AUTH])
