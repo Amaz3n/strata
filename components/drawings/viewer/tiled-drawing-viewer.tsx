@@ -111,6 +111,7 @@ export function TiledDrawingViewer({
       viewer = OSD({
         element: containerRef.current,
         tileSources: [buildTileSource(tileBaseUrl)],
+        crossOriginPolicy: "Anonymous",
         // Interaction
         gestureSettingsMouse: {
           clickToZoom: false,
@@ -133,7 +134,6 @@ export function TiledDrawingViewer({
       })
 
       viewerRef.current = viewer
-      console.log('[TiledViewer] OpenSeadragon initialized with image source:', `${tileBaseUrl}/tiles/0/0_0.png`)
       onReady?.(viewer)
 
       const emitTransform = () => {
@@ -190,7 +190,6 @@ export function TiledDrawingViewer({
     if (!viewerRef.current) return
     try {
       viewerRef.current.open(buildTileSource(tileBaseUrl))
-      console.log('[TiledViewer] Updated tile source:', `${tileBaseUrl}/tiles/0/0_0.png`)
     } catch (e) {
       console.error('[TiledViewer] Failed to update tile source:', e)
     }
@@ -198,4 +197,3 @@ export function TiledDrawingViewer({
 
   return <div ref={containerRef} className={cn("h-full w-full", className)} />
 }
-
