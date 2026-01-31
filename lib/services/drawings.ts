@@ -28,6 +28,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
+import { getDrawingPdfSignedUrl } from "@/lib/storage/drawings-pdfs-storage"
 
 // ============================================================================
 // TYPES
@@ -1354,13 +1355,10 @@ export async function getSheetSignedUrl(
   const storagePath = (version?.files as any)?.storage_path
   if (!storagePath) return null
 
-  const { data: urlData, error } = await supabase.storage
-    .from("project-files")
-    .createSignedUrl(storagePath, expiresIn)
-
-  if (error) {
-    throw new Error(`Failed to generate signed URL: ${error.message}`)
-  }
-
-  return urlData?.signedUrl ?? null
+  return getDrawingPdfSignedUrl({
+    supabase,
+    orgId: resolvedOrgId,
+    path: storagePath,
+    expiresIn,
+  })
 }

@@ -2,11 +2,7 @@ import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { Readable } from "node:stream"
-import {
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from "@aws-sdk/client-s3"
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
@@ -149,4 +145,34 @@ export async function downloadDrawingPdfObject(params: {
   }
   const arrayBuffer = await data.arrayBuffer()
   return Buffer.from(arrayBuffer)
+}
+
+export async function getDrawingPdfSignedUrl(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  expiresIn?: number
+}): Promise<string | null> {
+  const { supabase, orgId } = params
+  const provider = getProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  if (provider === "r2") {
+    const client = getR2Client()
+    const command = new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+    })
+    return getSignedUrl(client, command, {
+      expiresIn: params.expiresIn ?? 3600,
+    })
+  }
+
+  const { data, error } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .createSignedUrl(storagePath, params.expiresIn ?? 3600)
+  if (error) {
+    throw new Error(`Failed to generate signed URL: ${error.message}`)
+  }
+  return data?.signedUrl ?? null
 }
