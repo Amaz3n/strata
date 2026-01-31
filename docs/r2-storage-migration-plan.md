@@ -119,6 +119,7 @@ Fallback: signed URLs per request (slower, more CPU).
 - Add envs:
   - FILES_STORAGE=r2 (new)
   - FILES_BASE_URL=https://cdn.arcnaples.com/project-files
+  - R2_FILES_PREFIX=project-files
   - R2_* credentials (already in worker)
 - Document secrets & deployment steps.
 - Confirm org-scoped key strategy for all objects.

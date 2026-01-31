@@ -14,6 +14,7 @@ export type FilesStorageProvider = "supabase" | "r2"
 
 const SUPABASE_BUCKET = process.env.FILES_SUPABASE_BUCKET ?? "project-files"
 const R2_BUCKET = process.env.R2_BUCKET_FILES ?? "project-files"
+const R2_PREFIX = process.env.R2_FILES_PREFIX ?? "project-files"
 const R2_REGION = process.env.R2_REGION ?? "auto"
 const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === "true"
 
@@ -82,6 +83,11 @@ function getR2Client(): S3Client {
 
 function normalizePath(path: string): string {
   return path.startsWith("/") ? path.slice(1) : path
+}
+
+function normalizeKey(path: string): string {
+  const normalized = normalizePath(path)
+  return getFilesStorageProvider() === "r2" ? `${R2_PREFIX}/${normalized}` : normalized
 }
 
 function assertSafePath(path: string): void {
@@ -158,7 +164,7 @@ export async function uploadFilesObject(params: {
     await client.send(
       new PutObjectCommand({
         Bucket: R2_BUCKET,
-        Key: storagePath,
+        Key: normalizeKey(storagePath),
         Body: bytes,
         ContentType: contentType,
         CacheControl: cacheControl,
@@ -194,7 +200,7 @@ export async function deleteFilesObjects(params: {
     await client.send(
       new DeleteObjectsCommand({
         Bucket: R2_BUCKET,
-        Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+        Delete: { Objects: keys.map((Key) => ({ Key: normalizeKey(Key) })), Quiet: true },
       })
     )
     return
@@ -222,14 +228,14 @@ export async function listFilesObjects(params: {
     const result = await client.send(
       new ListObjectsV2Command({
         Bucket: R2_BUCKET,
-        Prefix: prefix,
+        Prefix: normalizeKey(prefix),
         MaxKeys: limit,
       })
     )
 
     return (
       result.Contents?.map((item) => ({
-        name: item.Key ?? "",
+        name: (item.Key ?? "").replace(new RegExp(`^${R2_PREFIX}/`), ""),
         size: item.Size ?? 0,
         lastModified: item.LastModified?.toISOString(),
       })) ?? []
@@ -267,7 +273,7 @@ export async function downloadFilesObject(params: {
     const result = await client.send(
       new GetObjectCommand({
         Bucket: R2_BUCKET,
-        Key: key,
+        Key: normalizeKey(key),
       })
     )
     if (!result.Body) {
