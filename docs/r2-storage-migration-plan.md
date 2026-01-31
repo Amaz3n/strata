@@ -153,6 +153,12 @@ Update lib/services/drawings-client.ts:
 - Ensure tile manifest and base paths are org-scoped (drawings-tiles/{org_id}/...).
  - Add `/api/drawings/upload-url` to generate signed upload URLs for client-side PDF uploads.
 
+Status:
+- ✅ Client uploads PDFs to R2 via signed URL (`/api/drawings/upload-url`).
+- ✅ Worker downloads PDFs from R2.
+- ✅ Tiles written under `drawings-tiles/{org_id}/...`.
+- ⚠️ Viewer still needs stable CORS headers on `cdn.arcnaples.com` for OpenSeadragon.
+
 ### Phase 3 — Files / Attachments
 Update app/(app)/files/actions.ts:
 - Use shared adapter (R2).
@@ -163,9 +169,18 @@ Update app/(app)/files/actions.ts:
 Update all uploadFileAction users:
 - tasks / RFIs / change orders / closeout / vendor bills / contracts.
 
+Status:
+- ✅ app/(app)/files/actions.ts uses shared adapter for uploads + CDN URL generation.
+- ✅ lib/services/files.ts uses CDN URLs + adapter deletes (org-scoped).
+- ✅ lib/services/file-links.ts uses CDN URLs for attachments.
+- ✅ lib/services/file-versions.ts uses adapter uploads/deletes + CDN URLs.
+
 ### Phase 4 — Daily Logs Photos
 Update app/(app)/projects/[id]/actions.ts:
 - uploadProjectFileAction to R2.
+
+Status:
+- ✅ uploadProjectFileAction uses shared adapter (R2) + CDN URL generation.
 
 ### Phase 5 — Messages / Portal
 Update app/(app)/projects/[id]/messages/actions.ts:
@@ -176,9 +191,19 @@ Portal uploads:
 - lib/services/compliance-documents.ts
 - Portal signed URL/cookie must be scoped to org + project/file.
 
+Status:
+- ✅ messages upload + download URLs use shared adapter (R2/CDN).
+- ✅ portal punch list uploads + attachment URLs use shared adapter (R2/CDN).
+- ✅ portal compliance uploads use shared adapter (R2).
+
 ### Phase 6 — Read Path & Preview
 - Update file preview endpoints to use R2/CDN.
 - Ensure the Service Worker caches CDN paths.
+
+Status:
+- ✅ message attachment previews use CDN URLs.
+- ✅ project file previews use CDN URLs.
+- ✅ Service Worker caches CDN `/project-files/` image requests.
 
 ### Phase 7 — Backfill / Migration
 - Script to copy existing Supabase objects to R2.

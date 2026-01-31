@@ -4,6 +4,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { FileRecord, FileWithUrls } from "@/lib/services/files"
+import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 
 export interface FileLink {
   id: string
@@ -314,24 +315,17 @@ export async function listAttachments(
     throw new Error(`Failed to list attachments: ${error.message}`)
   }
 
-  // Generate signed URLs for each file
   const results: FileLinkWithFile[] = []
 
   for (const row of data ?? []) {
     const fileData = row.files as any
     const file = mapFile(fileData)
 
-    // Generate signed URL
+    // Generate download/thumbnail URL
     try {
-      const { data: urlData } = await supabase.storage
-        .from("project-files")
-        .createSignedUrl(file.storage_path, 3600)
-
-      file.download_url = urlData?.signedUrl
-
-      if (file.mime_type?.startsWith("image/")) {
-        file.thumbnail_url = file.download_url
-      }
+      const publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(resolvedOrgId, file.storage_path))
+      file.download_url = publicUrl ?? undefined
+      if (file.mime_type?.startsWith("image/")) file.thumbnail_url = file.download_url
     } catch (e) {
       console.error("Failed to generate URL for", file.file_name)
     }

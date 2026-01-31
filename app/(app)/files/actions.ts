@@ -20,6 +20,7 @@ import type { FileListFilters, FileUpdate, FileCategory } from "@/lib/validation
 import { requireOrgContext } from "@/lib/services/context"
 import { attachFile, detachFile, listAttachments, detachFileById, listFileLinkSummary } from "@/lib/services/file-links"
 import type { FileLinkWithFile, FileLinkSummary } from "@/lib/services/file-links"
+import { buildFilesPublicUrl, uploadFilesObject } from "@/lib/storage/files-storage"
 import {
   listVersions,
   getVersion,
@@ -272,17 +273,15 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     ? `${orgId}/${projectId}/${timestamp}_${safeName}`
     : `${orgId}/general/${timestamp}_${safeName}`
 
-  // Upload to Supabase Storage
-  const { error: uploadError } = await supabase.storage
-    .from("project-files")
-    .upload(storagePath, file, {
-      contentType: file.type,
-      upsert: false,
-    })
-
-  if (uploadError) {
-    throw new Error(`Failed to upload file: ${uploadError.message}`)
-  }
+  const bytes = Buffer.from(await file.arrayBuffer())
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: storagePath,
+    bytes,
+    contentType: file.type,
+    upsert: false,
+  })
 
   // Infer category from mime type/filename if not provided
   const inferredCategory = category ?? inferCategory(file.name, file.type)
@@ -312,23 +311,8 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     sizeBytes: file.size,
   })
 
-  // Generate signed URL
-  let downloadUrl: string | undefined
-  let thumbnailUrl: string | undefined
-
-  try {
-    const { data: urlData } = await supabase.storage
-      .from("project-files")
-      .createSignedUrl(storagePath, 3600)
-
-    downloadUrl = urlData?.signedUrl
-
-    if (file.type.startsWith("image/")) {
-      thumbnailUrl = downloadUrl
-    }
-  } catch (e) {
-    console.error("Failed to generate URL")
-  }
+  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
+  const thumbnailUrl = file.type.startsWith("image/") ? downloadUrl : undefined
 
   revalidatePath("/files")
   if (projectId) {

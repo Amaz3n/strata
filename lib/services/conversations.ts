@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { Conversation, ConversationChannel, PortalMessage } from "@/lib/types"
 import { requireOrgContext } from "@/lib/services/context"
+import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 
 export interface ConversationWithCompany extends Conversation {
   audience_company_id?: string | null
@@ -367,6 +368,8 @@ export interface MessageAttachment {
   mime_type?: string
   size_bytes?: number
   storage_path?: string
+  download_url?: string
+  thumbnail_url?: string
 }
 
 /**
@@ -392,14 +395,29 @@ export async function getMessageAttachments(params: {
     throw new Error(`Failed to get message attachments: ${error.message}`)
   }
 
-  return (data ?? []).map((row: any) => ({
-    id: row.id,
-    file_id: row.file_id,
-    file_name: row.files?.file_name ?? "Unknown",
-    mime_type: row.files?.mime_type ?? undefined,
-    size_bytes: row.files?.size_bytes ?? undefined,
-    storage_path: row.files?.storage_path ?? undefined,
-  }))
+  return (data ?? []).map((row: any) => {
+    const storagePath = row.files?.storage_path ?? undefined
+    let publicUrl: string | undefined
+    if (storagePath) {
+      try {
+        publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, storagePath)) ?? undefined
+      } catch (error) {
+        console.error("Failed to generate attachment URL")
+      }
+    }
+    const isImage = row.files?.mime_type?.startsWith("image/")
+
+    return {
+      id: row.id,
+      file_id: row.file_id,
+      file_name: row.files?.file_name ?? "Unknown",
+      mime_type: row.files?.mime_type ?? undefined,
+      size_bytes: row.files?.size_bytes ?? undefined,
+      storage_path: storagePath,
+      download_url: publicUrl,
+      thumbnail_url: isImage ? publicUrl : undefined,
+    }
+  })
 }
 
 /**

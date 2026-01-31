@@ -33,6 +33,12 @@ import { createCompany } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
 import { requireOrgContext } from "@/lib/services/context"
 import { createInitialVersion } from "@/lib/services/file-versions"
+import {
+  buildFilesPublicUrl,
+  deleteFilesObjects,
+  ensureOrgScopedPath,
+  uploadFilesObject,
+} from "@/lib/storage/files-storage"
 import { listTemplates as listScheduleTemplates, applyTemplate as applyScheduleTemplate } from "@/lib/services/schedule"
 import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule } from "@/lib/services/draws"
@@ -1357,27 +1363,11 @@ export async function getProjectFilesAction(projectId: string): Promise<Enhanced
     return []
   }
 
-  // Generate signed URLs for files
+  // Generate CDN URLs for files
   const filesWithUrls = await Promise.all(
     (data ?? []).map(async (row) => {
-      let downloadUrl: string | undefined
-      let thumbnailUrl: string | undefined
-
-      // Generate download URL
-      try {
-        const { data: urlData } = await supabase.storage
-          .from("project-files")
-          .createSignedUrl(row.storage_path, 3600) // 1 hour expiry
-
-        downloadUrl = urlData?.signedUrl
-        
-        // For images, use the same URL as thumbnail
-        if (row.mime_type?.startsWith("image/")) {
-          thumbnailUrl = downloadUrl
-        }
-      } catch (e) {
-        console.error("Failed to generate URL for", row.file_name)
-      }
+      const downloadUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, row.storage_path)) ?? undefined
+      const thumbnailUrl = row.mime_type?.startsWith("image/") ? downloadUrl : undefined
 
       const uploader = row.app_users as { full_name?: string; avatar_url?: string } | null
 
@@ -2870,17 +2860,15 @@ export async function uploadProjectFileAction(
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
   const storagePath = `${orgId}/${projectId}/${timestamp}_${safeName}`
 
-  // Upload to Supabase Storage
-  const { error: uploadError } = await supabase.storage
-    .from("project-files")
-    .upload(storagePath, file, {
-      contentType: file.type,
-      upsert: false,
-    })
-
-  if (uploadError) {
-    throw new Error(`Failed to upload file: ${uploadError.message}`)
-  }
+  const bytes = Buffer.from(await file.arrayBuffer())
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: storagePath,
+    bytes,
+    contentType: file.type,
+    upsert: false,
+  })
 
   // Create file record in database
   const { data, error } = await supabase
@@ -2908,7 +2896,11 @@ export async function uploadProjectFileAction(
 
   if (error || !data) {
     // Try to clean up the uploaded file if db insert fails
-    await supabase.storage.from("project-files").remove([storagePath])
+    await deleteFilesObjects({
+      supabase,
+      orgId,
+      paths: [storagePath],
+    })
     throw new Error(`Failed to create file record: ${error?.message}`)
   }
 
@@ -2939,20 +2931,8 @@ export async function uploadProjectFileAction(
 
   revalidatePath(`/projects/${projectId}`)
 
-  // Generate download URL
-  let downloadUrl: string | undefined
-  let thumbnailUrl: string | undefined
-  try {
-    const { data: urlData } = await supabase.storage
-      .from("project-files")
-      .createSignedUrl(storagePath, 3600)
-    downloadUrl = urlData?.signedUrl
-    if (file.type.startsWith("image/")) {
-      thumbnailUrl = downloadUrl
-    }
-  } catch (e) {
-    console.error("Failed to generate URL")
-  }
+  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
+  const thumbnailUrl = file.type.startsWith("image/") ? downloadUrl : undefined
 
   const uploader = data.app_users as { full_name?: string; avatar_url?: string } | null
 
@@ -2997,12 +2977,14 @@ export async function deleteProjectFileAction(projectId: string, fileId: string)
   }
 
   // Delete from storage
-  const { error: storageError } = await supabase.storage
-    .from("project-files")
-    .remove([file.storage_path])
-
-  if (storageError) {
-    console.error("Failed to delete file from storage:", storageError.message)
+  try {
+    await deleteFilesObjects({
+      supabase,
+      orgId,
+      paths: [file.storage_path],
+    })
+  } catch (error) {
+    console.error("Failed to delete file from storage:", error)
     // Continue anyway to clean up db record
   }
 
@@ -3043,13 +3025,9 @@ export async function getFileDownloadUrlAction(fileId: string): Promise<string> 
     throw new Error("File not found")
   }
 
-  const { data: urlData, error: urlError } = await supabase.storage
-    .from("project-files")
-    .createSignedUrl(file.storage_path, 3600) // 1 hour expiry
-
-  if (urlError || !urlData?.signedUrl) {
+  const publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, file.storage_path))
+  if (!publicUrl) {
     throw new Error("Failed to generate download URL")
   }
-
-  return urlData.signedUrl
+  return publicUrl
 }

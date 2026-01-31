@@ -13,6 +13,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { createFileRecord } from "@/lib/services/files"
 import { attachFile } from "@/lib/services/file-links"
 import type { MessageAttachment } from "@/lib/services/conversations"
+import { buildFilesPublicUrl, ensureOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
 
 export async function sendProjectMessageAction(
   projectId: string,
@@ -148,17 +149,15 @@ export async function uploadMessageFileAction(formData: FormData): Promise<{ id:
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
   const storagePath = `${orgId}/${projectId}/messages/${timestamp}_${safeName}`
 
-  // Upload to Supabase Storage
-  const { error: uploadError } = await supabase.storage
-    .from("project-files")
-    .upload(storagePath, file, {
-      contentType: file.type,
-      upsert: false,
-    })
-
-  if (uploadError) {
-    throw new Error(`Failed to upload file: ${uploadError.message}`)
-  }
+  const bytes = Buffer.from(await file.arrayBuffer())
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: storagePath,
+    bytes,
+    contentType: file.type,
+    upsert: false,
+  })
 
   // Infer category from mime type
   let category = "other"
@@ -177,16 +176,7 @@ export async function uploadMessageFileAction(formData: FormData): Promise<{ id:
     source: "message" as any,
   })
 
-  // Generate signed URL
-  let downloadUrl: string | undefined
-  try {
-    const { data: urlData } = await supabase.storage
-      .from("project-files")
-      .createSignedUrl(storagePath, 3600)
-    downloadUrl = urlData?.signedUrl
-  } catch (e) {
-    console.error("Failed to generate URL")
-  }
+  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
 
   return {
     id: record.id,
@@ -279,13 +269,9 @@ export async function getFileSignedUrlAction(fileId: string): Promise<string> {
     throw new Error("File not found")
   }
 
-  const { data: urlData, error } = await supabase.storage
-    .from("project-files")
-    .createSignedUrl(file.storage_path, 3600)
-
-  if (error || !urlData) {
+  const publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, file.storage_path))
+  if (!publicUrl) {
     throw new Error("Failed to generate URL")
   }
-
-  return urlData.signedUrl
+  return publicUrl
 }

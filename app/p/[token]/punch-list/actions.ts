@@ -3,6 +3,7 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { createPunchItemFromPortal, listPunchItems } from "@/lib/services/punch-lists"
+import { buildFilesPublicUrl, deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
 export async function loadPunchItemsAction(token: string) {
   const access = await validatePortalToken(token)
@@ -103,13 +104,15 @@ export async function uploadPunchItemAttachmentAction({
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
   const storagePath = `${access.org_id}/${access.project_id}/punch/${timestamp}_${safeName}`
 
-  const { error: uploadError } = await supabase.storage
-    .from("project-files")
-    .upload(storagePath, file, { contentType: file.type, upsert: false })
-
-  if (uploadError) {
-    throw new Error("Failed to upload file")
-  }
+  const bytes = Buffer.from(await file.arrayBuffer())
+  await uploadFilesObject({
+    supabase,
+    orgId: access.org_id,
+    path: storagePath,
+    bytes,
+    contentType: file.type,
+    upsert: false,
+  })
 
   const { data: fileRecord, error: dbError } = await supabase
     .from("files")
@@ -134,7 +137,11 @@ export async function uploadPunchItemAttachmentAction({
     .single()
 
   if (dbError || !fileRecord) {
-    await supabase.storage.from("project-files").remove([storagePath])
+    await deleteFilesObjects({
+      supabase,
+      orgId: access.org_id,
+      paths: [storagePath],
+    })
     throw new Error("Failed to save file record")
   }
 
@@ -168,11 +175,7 @@ export async function uploadPunchItemAttachmentAction({
     linkId = link.id as string
   }
 
-  const { data: urlData } = await supabase.storage
-    .from("project-files")
-    .createSignedUrl(storagePath, 3600)
-
-  const downloadUrl = urlData?.signedUrl
+  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
 
   return {
     id: fileRecord.id as string,
@@ -223,8 +226,7 @@ export async function listPunchItemAttachmentsAction({
     const storagePath = file?.storage_path as string | undefined
     let signedUrl: string | undefined
     if (storagePath) {
-      const { data: urlData } = await supabase.storage.from("project-files").createSignedUrl(storagePath, 3600)
-      signedUrl = urlData?.signedUrl
+      signedUrl = buildFilesPublicUrl(storagePath) ?? undefined
     }
 
     results.push({
@@ -267,7 +269,6 @@ export async function detachPunchItemAttachmentAction({
     throw new Error(`Failed to remove attachment: ${error.message}`)
   }
 }
-
 
 
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { validatePortalToken } from "@/lib/services/portal-access"
+import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024 // 25MB
 const ALLOWED_TYPES = [
@@ -64,18 +65,15 @@ export async function POST(
     const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
     const storagePath = `${portalToken.org_id}/compliance/${portalToken.company_id}/${timestamp}_${safeName}`
 
-    // Upload to Supabase Storage
-    const { error: uploadError } = await supabase.storage
-      .from("project-files")
-      .upload(storagePath, file, {
-        contentType: file.type,
-        upsert: false,
-      })
-
-    if (uploadError) {
-      console.error("Storage upload error:", uploadError)
-      return NextResponse.json({ error: "Failed to upload file" }, { status: 500 })
-    }
+    const bytes = Buffer.from(await file.arrayBuffer())
+    await uploadFilesObject({
+      supabase,
+      orgId: portalToken.org_id,
+      path: storagePath,
+      bytes,
+      contentType: file.type,
+      upsert: false,
+    })
 
     // Create file record in database
     const { data: fileRecord, error: dbError } = await supabase
@@ -100,7 +98,11 @@ export async function POST(
 
     if (dbError || !fileRecord) {
       // Try to clean up the uploaded file if db insert fails
-      await supabase.storage.from("project-files").remove([storagePath])
+      await deleteFilesObjects({
+        supabase,
+        orgId: portalToken.org_id,
+        paths: [storagePath],
+      })
       console.error("DB insert error:", dbError)
       return NextResponse.json({ error: "Failed to save file record" }, { status: 500 })
     }

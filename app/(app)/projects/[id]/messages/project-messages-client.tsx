@@ -639,7 +639,7 @@ export function ProjectMessagesClient({
                                     {isImageFile(attachment.mime_type) ? (
                                       <div className="relative">
                                         <img
-                                          src={attachment.storage_path ? `/api/files/${attachment.file_id}/preview` : undefined}
+                                          src={attachment.download_url ?? (attachment.storage_path ? `/api/files/${attachment.file_id}/preview` : undefined)}
                                           alt={attachment.file_name}
                                           className="max-w-full sm:max-w-[260px] max-h-[180px] object-cover"
                                           onError={(e) => { e.currentTarget.style.display = "none" }}

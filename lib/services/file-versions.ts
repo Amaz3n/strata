@@ -1,4 +1,10 @@
 import { requireOrgContext } from "@/lib/services/context"
+import {
+  buildFilesPublicUrl,
+  deleteFilesObjects,
+  ensureOrgScopedPath,
+  uploadFilesObject,
+} from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
@@ -237,17 +243,15 @@ export async function createVersion(
   )
   const newStoragePath = `${basePath}/versions/${nextVersionNumber}/${timestamp}_${safeName}`
 
-  // Upload the new file to storage
-  const { error: uploadError } = await supabase.storage
-    .from("project-files")
-    .upload(newStoragePath, file, {
-      contentType: file.type,
-      upsert: false,
-    })
-
-  if (uploadError) {
-    throw new Error(`Failed to upload version: ${uploadError.message}`)
-  }
+  const bytes = Buffer.from(await file.arrayBuffer())
+  await uploadFilesObject({
+    supabase,
+    orgId: resolvedOrgId,
+    path: newStoragePath,
+    bytes,
+    contentType: file.type,
+    upsert: false,
+  })
 
   // Create the version record
   const { data: version, error: versionError } = await supabase
@@ -274,7 +278,11 @@ export async function createVersion(
 
   if (versionError || !version) {
     // Clean up uploaded file
-    await supabase.storage.from("project-files").remove([newStoragePath])
+    await deleteFilesObjects({
+      supabase,
+      orgId: resolvedOrgId,
+      paths: [newStoragePath],
+    })
     throw new Error(`Failed to create version record: ${versionError?.message}`)
   }
 
@@ -483,12 +491,14 @@ export async function deleteVersion(versionId: string, orgId?: string): Promise<
 
   // Delete from storage if there's a storage path
   if (version.storage_path) {
-    const { error: storageError } = await supabase.storage
-      .from("project-files")
-      .remove([version.storage_path])
-
-    if (storageError) {
-      console.error("Failed to delete version from storage:", storageError.message)
+    try {
+      await deleteFilesObjects({
+        supabase,
+        orgId: resolvedOrgId,
+        paths: [version.storage_path],
+      })
+    } catch (error) {
+      console.error("Failed to delete version from storage:", error)
     }
   }
 
@@ -517,7 +527,7 @@ export async function deleteVersion(versionId: string, orgId?: string): Promise<
  */
 export async function getVersionSignedUrl(
   versionId: string,
-  expiresIn: number = 3600,
+  _expiresIn: number = 3600,
   orgId?: string
 ): Promise<string> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
@@ -533,15 +543,12 @@ export async function getVersionSignedUrl(
     throw new Error("Version not found or has no storage path")
   }
 
-  const { data: urlData, error: urlError } = await supabase.storage
-    .from("project-files")
-    .createSignedUrl(version.storage_path, expiresIn)
-
-  if (urlError || !urlData?.signedUrl) {
+  const orgScopedPath = ensureOrgScopedPath(resolvedOrgId, version.storage_path)
+  const publicUrl = buildFilesPublicUrl(orgScopedPath)
+  if (!publicUrl) {
     throw new Error("Failed to generate download URL")
   }
-
-  return urlData.signedUrl
+  return publicUrl
 }
 
 /**

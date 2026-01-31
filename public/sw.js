@@ -1,5 +1,6 @@
 const TILE_CACHE = "drawing-tiles-v1"
 const METADATA_CACHE = "drawing-metadata-v1"
+const FILES_CACHE = "project-files-v1"
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url)
@@ -30,6 +31,22 @@ self.addEventListener("fetch", (event) => {
           return response
         })
         .catch(() => caches.match(event.request))
+    )
+    return
+  }
+
+  // CDN file previews (images): cache-first
+  if (url.pathname.includes("/project-files/") && event.request.destination === "image") {
+    event.respondWith(
+      caches.open(FILES_CACHE).then((cache) =>
+        cache.match(event.request).then((cached) => {
+          if (cached) return cached
+          return fetch(event.request).then((response) => {
+            if (response.ok) cache.put(event.request, response.clone())
+            return response
+          })
+        })
+      )
     )
   }
 })

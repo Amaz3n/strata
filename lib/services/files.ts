@@ -2,6 +2,7 @@ import type { FileCategory, FileSource } from "@/lib/validation/files"
 import type { FileInput, FileUpdate, FileListFilters } from "@/lib/validation/files"
 import { fileInputSchema, fileUpdateSchema, fileListFiltersSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
+import { buildFilesPublicUrl, deleteFilesObjects, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
@@ -407,13 +408,14 @@ export async function deleteFile(fileId: string, orgId?: string): Promise<void> 
     throw new Error("File not found")
   }
 
-  // Delete from storage
-  const { error: storageError } = await supabase.storage
-    .from("project-files")
-    .remove([existing.storage_path])
-
-  if (storageError) {
-    console.error("Failed to delete file from storage:", storageError.message)
+  try {
+    await deleteFilesObjects({
+      supabase,
+      orgId: resolvedOrgId,
+      paths: [existing.storage_path],
+    })
+  } catch (error) {
+    console.error("Failed to delete file from storage:", error)
     // Continue to clean up db record
   }
 
@@ -458,7 +460,7 @@ export async function deleteFile(fileId: string, orgId?: string): Promise<void> 
  */
 export async function getSignedUrl(
   fileId: string,
-  expiresIn: number = 3600,
+  _expiresIn: number = 3600,
   orgId?: string
 ): Promise<string> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
@@ -474,15 +476,12 @@ export async function getSignedUrl(
     throw new Error("File not found")
   }
 
-  const { data: urlData, error: urlError } = await supabase.storage
-    .from("project-files")
-    .createSignedUrl(file.storage_path, expiresIn)
-
-  if (urlError || !urlData?.signedUrl) {
+  const orgScopedPath = ensureOrgScopedPath(resolvedOrgId, file.storage_path)
+  const publicUrl = buildFilesPublicUrl(orgScopedPath)
+  if (!publicUrl) {
     throw new Error("Failed to generate download URL")
   }
-
-  return urlData.signedUrl
+  return publicUrl
 }
 
 /**
@@ -493,47 +492,21 @@ export async function listFilesWithUrls(
   orgId?: string
 ): Promise<FileWithUrls[]> {
   const files = await listFiles(filters, orgId)
-  const { supabase } = await requireOrgContext(orgId)
 
   if (files.length === 0) return []
 
-  const imageFiles = files.filter((file) => file.mime_type?.startsWith("image/"))
-  const imagePaths = imageFiles.map((file) => file.storage_path)
-  const signedByPath = new Map<string, string>()
-
-  if (imagePaths.length > 0) {
-    try {
-      const bucket = supabase.storage.from("project-files") as any
-      if (typeof bucket.createSignedUrls === "function") {
-        const { data } = await bucket.createSignedUrls(imagePaths, 3600)
-        for (const entry of data ?? []) {
-          if (entry?.path && entry?.signedUrl) {
-            signedByPath.set(entry.path, entry.signedUrl)
-          }
-        }
-      } else {
-        await Promise.all(
-          imageFiles.map(async (file) => {
-            const { data } = await bucket.createSignedUrl(file.storage_path, 3600)
-            if (data?.signedUrl) {
-              signedByPath.set(file.storage_path, data.signedUrl)
-            }
-          })
-        )
-      }
-    } catch (e) {
-      console.error("Failed to generate image URLs")
-    }
-  }
-
   return files.map((file) => {
-    const signedUrl = signedByPath.get(file.storage_path)
-    const isImage = file.mime_type?.startsWith("image/")
+    let publicUrl: string | undefined
+    try {
+      publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(file.org_id, file.storage_path)) ?? undefined
+    } catch (error) {
+      console.error("Failed to generate file URL")
+    }
 
     return {
       ...file,
-      download_url: isImage ? signedUrl : undefined,
-      thumbnail_url: isImage ? signedUrl : undefined,
+      download_url: file.mime_type?.startsWith("image/") ? publicUrl : undefined,
+      thumbnail_url: file.mime_type?.startsWith("image/") ? publicUrl : undefined,
     }
   })
 }
