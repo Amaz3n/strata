@@ -15,6 +15,7 @@ import {
   listTilesObjects,
   uploadTilesObject,
 } from "@/lib/storage/drawings-tiles-storage"
+import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
 // These are complete implementations that PDF.js needs for proper rendering
@@ -752,15 +753,11 @@ async function processDrawingSetJob(supabase: ReturnType<typeof createServiceSup
     console.log(`[ProcessSet] Found drawing set: ${drawingSet.title}, file: ${fileRecord.file_name}`)
 
     // 2. Download the PDF
-    const { data: pdfData, error: downloadError } = await supabase.storage
-      .from("project-files")
-      .download(storagePath)
-
-    if (downloadError || !pdfData) {
-      throw new Error(`Failed to download PDF: ${downloadError?.message}`)
-    }
-
-    const pdfBytes = new Uint8Array(await pdfData.arrayBuffer())
+    const pdfBytes = await downloadDrawingPdfObject({
+      supabase,
+      orgId,
+      path: storagePath,
+    })
     console.log(`[ProcessSet] Downloaded PDF: ${pdfBytes.length} bytes`)
 
     // 3. Create placeholder pages for now (PDF processing libraries are problematic)

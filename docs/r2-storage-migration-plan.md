@@ -151,6 +151,7 @@ Update lib/services/drawings-client.ts:
 - Store storage path in DB as R2 path (not Supabase URL).
 - Update worker to download PDFs from R2.
 - Ensure tile manifest and base paths are org-scoped (drawings-tiles/{org_id}/...).
+ - Add `/api/drawings/upload-url` to generate signed upload URLs for client-side PDF uploads.
 
 ### Phase 3 — Files / Attachments
 Update app/(app)/files/actions.ts:

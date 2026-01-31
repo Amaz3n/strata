@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { Job } from '../worker';
+import { downloadPdfObject } from '../storage/pdfs';
 import { uploadTileObject } from '../storage/tiles';
 
 export async function processDrawingSet(supabase: SupabaseClient, job: Job): Promise<void> {
@@ -46,15 +47,10 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
   const tempPdfPath = join(tempDir, `pdf-${drawingSetId}-${Date.now()}.pdf`);
 
   try {
-    const { data: pdfData, error: downloadError } = await supabase.storage
-      .from('project-files')
-      .download(storagePath);
-
-    if (downloadError || !pdfData) {
-      throw new Error(`Failed to download PDF: ${downloadError?.message}`);
-    }
-
-    const pdfBytes = new Uint8Array(await pdfData.arrayBuffer());
+    const pdfBytes = await downloadPdfObject({
+      supabase,
+      path: storagePath,
+    });
     await fs.writeFile(tempPdfPath, pdfBytes);
     console.log(`Downloaded PDF: ${pdfBytes.length} bytes`);
 
