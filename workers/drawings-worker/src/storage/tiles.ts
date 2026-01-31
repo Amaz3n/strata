@@ -11,6 +11,7 @@ type TilesStorageProvider = 'supabase' | 'r2';
 
 const SUPABASE_BUCKET = process.env.DRAWINGS_TILES_SUPABASE_BUCKET ?? 'drawings-tiles';
 const R2_BUCKET = process.env.R2_BUCKET_DRAWINGS_TILES ?? 'drawings-tiles';
+const R2_PREFIX = process.env.R2_DRAWINGS_TILES_PREFIX ?? 'drawings-tiles';
 const R2_REGION = process.env.R2_REGION ?? 'auto';
 const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === 'true';
 
@@ -21,8 +22,26 @@ function getProvider(): TilesStorageProvider {
   return raw.toLowerCase() === 'r2' ? 'r2' : 'supabase';
 }
 
+function isDebugEnabled() {
+  return process.env.DRAWINGS_TILES_DEBUG === 'true';
+}
+
+function debugLog(message: string, meta?: Record<string, any>) {
+  if (!isDebugEnabled()) return;
+  if (meta) {
+    console.log(`[tiles] ${message}`, meta);
+  } else {
+    console.log(`[tiles] ${message}`);
+  }
+}
+
 function normalizePath(path: string): string {
   return path.startsWith('/') ? path.slice(1) : path;
+}
+
+function normalizeKey(path: string): string {
+  const normalized = normalizePath(path);
+  return getProvider() === 'r2' ? `${R2_PREFIX}/${normalized}` : normalized;
 }
 
 function getR2Client(): S3Client {
@@ -74,6 +93,7 @@ export function buildTilesBaseUrl(basePath: string): string {
     throw new Error('Missing DRAWINGS_TILES_BASE_URL for R2 storage');
   }
   if (override) {
+    debugLog('Using override tiles base URL', { provider, baseUrl: override });
     return `${override.replace(/\/$/, '')}/${normalizePath(basePath)}`;
   }
 
@@ -82,6 +102,7 @@ export function buildTilesBaseUrl(basePath: string): string {
     throw new Error('Missing SUPABASE_URL or DRAWINGS_TILES_BASE_URL');
   }
 
+  debugLog('Using Supabase tiles base URL', { provider, supabaseUrl });
   return `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/${SUPABASE_BUCKET}/${normalizePath(basePath)}`;
 }
 
@@ -95,7 +116,9 @@ export async function uploadTileObject(params: {
   const { supabase, path, bytes, contentType } = params;
   const cacheControl = params.cacheControl ?? 'public, max-age=31536000, immutable';
   const provider = getProvider();
-  const key = normalizePath(path);
+  const key = normalizeKey(path);
+
+  debugLog('Uploading tile object', { provider, key, contentType });
 
   if (provider === 'r2') {
     const client = getR2Client();
@@ -128,7 +151,9 @@ export async function downloadTileObject(params: {
 }): Promise<Buffer> {
   const { supabase, path } = params;
   const provider = getProvider();
-  const key = normalizePath(path);
+  const key = normalizeKey(path);
+
+  debugLog('Downloading tile object', { provider, key });
 
   if (provider === 'r2') {
     const client = getR2Client();
@@ -138,6 +163,9 @@ export async function downloadTileObject(params: {
         Key: key,
       })
     );
+    if (!result.Body) {
+      throw new Error(`Failed to download tile object: empty body for ${key}`);
+    }
     return streamToBuffer(result.Body);
   }
 
@@ -156,7 +184,9 @@ export async function deleteTileObjects(params: {
 }): Promise<void> {
   const { supabase, paths } = params;
   const provider = getProvider();
-  const keys = paths.map(normalizePath);
+  const keys = paths.map(normalizeKey);
+
+  debugLog('Deleting tile objects', { provider, count: keys.length });
 
   if (provider === 'r2') {
     const client = getR2Client();

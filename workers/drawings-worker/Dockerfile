@@ -17,11 +17,14 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install Node dependencies
-RUN npm ci --only=production && npm cache clean --force
+# Install dependencies (including dev for build)
+RUN npm ci
 
-# Copy built application
-COPY dist/ ./dist/
+# Copy source
+COPY . .
+
+# Build and prune dev deps
+RUN npm run build && npm prune --omit=dev && npm cache clean --force
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash worker

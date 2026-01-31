@@ -26,6 +26,17 @@ This worker polls the Supabase `outbox` table for drawing-related jobs and proce
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# R2 (required when DRAWINGS_TILES_STORAGE=r2)
+DRAWINGS_TILES_STORAGE=r2
+DRAWINGS_TILES_BASE_URL=https://cdn.arcnaples.com/drawings-tiles
+R2_BUCKET_DRAWINGS_TILES=project-files
+R2_DRAWINGS_TILES_PREFIX=drawings-tiles
+R2_ACCOUNT_ID=your-cloudflare-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key
+R2_SECRET_ACCESS_KEY=your-r2-secret-key
+R2_REGION=auto
+R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
 ```
 
 ## Development

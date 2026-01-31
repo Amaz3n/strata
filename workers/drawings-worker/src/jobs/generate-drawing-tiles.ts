@@ -98,6 +98,9 @@ export async function generateDrawingTiles(supabase: SupabaseClient, job: Job): 
     };
 
     const tileBaseUrl = buildTilesBaseUrl(basePath);
+    if (process.env.DRAWINGS_TILES_DEBUG === 'true') {
+      console.log('[tiles] tile_base_url', tileBaseUrl);
+    }
 
     // Upload the full-resolution image as a single tile
     const tilePath = `${basePath}/tiles/0/0_0.png`;
