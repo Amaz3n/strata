@@ -13,8 +13,8 @@ import {
 export type FilesStorageProvider = "supabase" | "r2"
 
 const SUPABASE_BUCKET = process.env.FILES_SUPABASE_BUCKET ?? "project-files"
-const R2_BUCKET = process.env.R2_BUCKET_FILES ?? "project-files"
-const R2_PREFIX = process.env.R2_FILES_PREFIX ?? "project-files"
+const R2_BUCKET = process.env.R2_BUCKET ?? "project-files"
+const R2_PREFIX = "project-files"
 const R2_REGION = process.env.R2_REGION ?? "auto"
 const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === "true"
 

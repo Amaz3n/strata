@@ -10,8 +10,8 @@ import {
 type TilesStorageProvider = 'supabase' | 'r2';
 
 const SUPABASE_BUCKET = process.env.DRAWINGS_TILES_SUPABASE_BUCKET ?? 'drawings-tiles';
-const R2_BUCKET = process.env.R2_BUCKET_DRAWINGS_TILES ?? 'drawings-tiles';
-const R2_PREFIX = process.env.R2_DRAWINGS_TILES_PREFIX ?? 'drawings-tiles';
+const R2_BUCKET = process.env.R2_BUCKET ?? 'project-files';
+const R2_PREFIX = 'drawings-tiles';
 const R2_REGION = process.env.R2_REGION ?? 'auto';
 const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === 'true';
 

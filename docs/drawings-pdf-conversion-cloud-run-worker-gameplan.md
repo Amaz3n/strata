@@ -357,7 +357,7 @@ Store secrets in **Secret Manager**:
 - (optional, R2 tiles) `DRAWINGS_TILES_STORAGE=r2`
 - (optional, R2 tiles) `DRAWINGS_TILES_BASE_URL=https://<cdn-domain>/drawings-tiles`
 - (optional, R2 tiles) `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
-- (optional, R2 tiles) `R2_BUCKET_DRAWINGS_TILES=drawings-tiles`
+- (optional, R2 tiles) `R2_BUCKET=project-files`
 - (optional, R2 tiles) `R2_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com`
 - (optional, R2 tiles) `R2_REGION=auto`, `R2_FORCE_PATH_STYLE=true`
 

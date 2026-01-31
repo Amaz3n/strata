@@ -15,7 +15,8 @@ import { getDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 type TilesStorageProvider = "supabase" | "r2"
 
 const SUPABASE_BUCKET = process.env.DRAWINGS_TILES_SUPABASE_BUCKET ?? "drawings-tiles"
-const R2_BUCKET = process.env.R2_BUCKET_DRAWINGS_TILES ?? "drawings-tiles"
+const R2_BUCKET = process.env.R2_BUCKET ?? "project-files"
+const R2_PREFIX = "drawings-tiles"
 const R2_REGION = process.env.R2_REGION ?? "auto"
 const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === "true"
 
@@ -70,6 +71,11 @@ function normalizePath(path: string): string {
   return path.startsWith("/") ? path.slice(1) : path
 }
 
+function normalizeKey(path: string): string {
+  const normalized = normalizePath(path)
+  return getTilesStorageProvider() === "r2" ? `${R2_PREFIX}/${normalized}` : normalized
+}
+
 async function streamToBuffer(stream: any): Promise<Buffer> {
   if (stream instanceof Readable) {
     const chunks: Buffer[] = []
@@ -101,7 +107,7 @@ export async function uploadTilesObject(params: {
   const { supabase, path, bytes, contentType } = params
   const cacheControl = params.cacheControl ?? "public, max-age=31536000, immutable"
   const provider = getTilesStorageProvider()
-  const key = normalizePath(path)
+  const key = normalizeKey(path)
 
   if (provider === "r2") {
     const client = getR2Client()
@@ -139,7 +145,7 @@ export async function deleteTilesObjects(params: {
 }): Promise<void> {
   const { supabase, paths } = params
   const provider = getTilesStorageProvider()
-  const keys = paths.map(normalizePath)
+  const keys = paths.map(normalizeKey)
 
   if (provider === "r2") {
     const client = getR2Client()
@@ -170,14 +176,14 @@ export async function listTilesObjects(params: {
     const result = await client.send(
       new ListObjectsV2Command({
         Bucket: R2_BUCKET,
-        Prefix: prefix,
+        Prefix: prefix ? normalizeKey(prefix) : undefined,
         MaxKeys: limit,
       })
     )
 
     return (
       result.Contents?.map((item) => ({
-        name: item.Key ?? "",
+        name: (item.Key ?? "").replace(new RegExp(`^${R2_PREFIX}/`), ""),
         size: item.Size ?? 0,
         lastModified: item.LastModified?.toISOString(),
       })) ?? []
@@ -204,7 +210,7 @@ export async function downloadTilesObject(params: {
 }): Promise<Buffer> {
   const { supabase, path } = params
   const provider = getTilesStorageProvider()
-  const key = normalizePath(path)
+  const key = normalizeKey(path)
 
   if (provider === "r2") {
     const client = getR2Client()

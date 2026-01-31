@@ -86,7 +86,7 @@ Prefer one bucket + prefixes for simplicity unless compliance or lifecycle requi
 5) Add envs (app + workers):
    - `FILES_STORAGE=r2`
    - `FILES_BASE_URL=https://cdn.arcnaples.com/project-files`
-   - `R2_BUCKET_FILES=project-files`
+   - `R2_BUCKET=project-files`
    - `R2_ACCOUNT_ID=...`
    - `R2_ACCESS_KEY_ID=...`
    - `R2_SECRET_ACCESS_KEY=...`
@@ -96,7 +96,7 @@ Prefer one bucket + prefixes for simplicity unless compliance or lifecycle requi
 
 Notes:
 - Keep the bucket private; rely on signed URLs/cookies for read access.
-- Prefixes are the primary tenant boundary (org-scoped paths).
+- Prefixes are fixed in code (`project-files/`, `drawings-tiles/`, `drawings-pdfs/`).
 
 ---
 
@@ -119,7 +119,7 @@ Fallback: signed URLs per request (slower, more CPU).
 - Add envs:
   - FILES_STORAGE=r2 (new)
   - FILES_BASE_URL=https://cdn.arcnaples.com/project-files
-  - R2_FILES_PREFIX=project-files
+  - R2_BUCKET=project-files
   - R2_* credentials (already in worker)
 - Document secrets & deployment steps.
 - Confirm org-scoped key strategy for all objects.
