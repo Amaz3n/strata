@@ -16,13 +16,23 @@ const addressSchema = z
 
 export const companyTypeEnum = z.enum(["subcontractor", "supplier", "client", "architect", "engineer", "other"]) satisfies z.ZodType<CompanyType>
 
+const websiteSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return value
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return `https://${trimmed}`
+  }
+  return trimmed
+}, z.string().url().optional())
+
 export const companyInputSchema = z.object({
   name: z.string().min(2, "Company name is required"),
   company_type: companyTypeEnum,
   trade: z.string().optional(),
   phone: z.string().optional(),
   email: z.string().email().optional(),
-  website: z.string().url().optional(),
+  website: websiteSchema,
   address: addressSchema,
   license_number: z.string().optional(),
   license_expiry: z.string().optional(),
@@ -53,7 +63,6 @@ export const companyFiltersSchema = z
 export type CompanyInput = z.infer<typeof companyInputSchema>
 export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
-
 
 
 

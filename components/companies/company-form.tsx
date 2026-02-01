@@ -61,10 +61,13 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
+  const allowedTypes = new Set(COMPANY_TYPES.map((type) => type.value))
+  const fallbackTrade = company?.trade ?? (company && !allowedTypes.has(company.company_type) ? company.company_type : undefined)
+
   const [formState, setFormState] = useState({
     name: company?.name ?? "",
-    company_type: company?.company_type ?? "subcontractor",
-    trade: company?.trade ?? "none",
+    company_type: allowedTypes.has(company?.company_type ?? "") ? company?.company_type ?? "subcontractor" : "subcontractor",
+    trade: fallbackTrade ?? "none",
     phone: company?.phone ?? "",
     email: company?.email ?? "",
     website: company?.website ?? "",
@@ -90,12 +93,16 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const rawWebsite = formState.website.trim()
+    const normalizedWebsite = rawWebsite
+      ? (/^https?:\/\//i.test(rawWebsite) ? rawWebsite : `https://${rawWebsite}`)
+      : ""
     const payload = {
       ...formState,
       trade: formState.trade === "none" ? undefined : formState.trade,
       phone: formState.phone || undefined,
       email: formState.email || undefined,
-      website: formState.website || undefined,
+      website: normalizedWebsite || undefined,
       license_number: formState.license_number || undefined,
       license_expiry: formState.license_expiry || undefined,
       license_verified: formState.license_verified,
@@ -321,5 +328,3 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     </form>
   )
 }
-
-
