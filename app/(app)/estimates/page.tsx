@@ -17,6 +17,12 @@ export default async function EstimatesPage({ searchParams }: { searchParams: Pr
 
   const recipient =
     typeof resolvedSearchParams?.recipient === "string" ? resolvedSearchParams.recipient : undefined
+  const project =
+    typeof resolvedSearchParams?.project === "string"
+      ? resolvedSearchParams.project
+      : typeof resolvedSearchParams?.project_id === "string"
+        ? resolvedSearchParams.project_id
+        : undefined
 
   return (
     <PageLayout title="Estimates">
@@ -27,6 +33,7 @@ export default async function EstimatesPage({ searchParams }: { searchParams: Pr
           templates={templates}
           costCodes={costCodes}
           initialRecipientId={recipient}
+          initialProjectId={project}
         />
       </div>
     </PageLayout>

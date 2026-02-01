@@ -509,6 +509,7 @@ export async function convertEstimateToProposal({
   return await createProposal(
     {
       project_id: estimate.project_id ?? undefined,
+      opportunity_id: (estimate as any).opportunity_id ?? undefined,
       estimate_id: estimate.id,
       recipient_contact_id: recipient_contact_id ?? estimate.recipient_contact_id ?? undefined,
       title: title ?? estimate.title,
@@ -522,7 +523,6 @@ export async function convertEstimateToProposal({
     resolvedOrgId,
   )
 }
-
 
 
 

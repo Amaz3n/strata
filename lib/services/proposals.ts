@@ -21,6 +21,7 @@ const proposalLineSchema = z.object({
 
 const createProposalSchema = z.object({
   project_id: z.string().uuid().optional().nullable(),
+  opportunity_id: z.string().uuid().optional().nullable(),
   estimate_id: z.string().uuid().optional(),
   recipient_contact_id: z.string().uuid().optional(),
   title: z.string().min(1),
@@ -90,6 +91,7 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
     .insert({
       org_id: resolvedOrgId,
       project_id: parsed.project_id ?? null,
+      opportunity_id: parsed.opportunity_id ?? null,
       estimate_id: parsed.estimate_id ?? null,
       recipient_contact_id: parsed.recipient_contact_id ?? null,
       number,
@@ -276,56 +278,46 @@ export async function acceptProposal(
   let projectId = proposal.project_id as string | null
 
   if (!projectId) {
-    const projectName = proposal.title ?? `Project ${proposal.number ?? ""}`.trim()
-
-    // Try to get the org owner first
-    const { data: orgRow, error: orgError } = await supabase
-      .from("orgs")
-      .select("created_by")
-      .eq("id", proposal.org_id)
-      .single()
-
-    let createdBy = orgRow?.created_by
-
-    // If org doesn't have created_by, try to find an active user in the org
-    if (!createdBy) {
-      const { data: membership, error: membershipError } = await supabase
-        .from("memberships")
-        .select("user_id")
+    const opportunityId = proposal.opportunity_id as string | null
+    if (opportunityId) {
+      const { data: projectFromOpportunity } = await supabase
+        .from("projects")
+        .select("id")
         .eq("org_id", proposal.org_id)
-        .eq("status", "active")
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .single()
+        .eq("opportunity_id", opportunityId)
+        .maybeSingle()
 
-      if (membership?.user_id) {
-        createdBy = membership.user_id
-      }
+      projectId = projectFromOpportunity?.id ?? null
     }
+  }
 
-    if (!createdBy) {
-      throw new Error("Unable to resolve project owner for proposal acceptance")
+  if (!projectId && proposal.estimate_id) {
+    const { data: estimate } = await supabase
+      .from("estimates")
+      .select("project_id, opportunity_id")
+      .eq("org_id", proposal.org_id)
+      .eq("id", proposal.estimate_id)
+      .maybeSingle()
+
+    projectId = estimate?.project_id ?? null
+
+    if (!projectId && estimate?.opportunity_id) {
+      const { data: projectFromEstimateOpportunity } = await supabase
+        .from("projects")
+        .select("id")
+        .eq("org_id", proposal.org_id)
+        .eq("opportunity_id", estimate.opportunity_id)
+        .maybeSingle()
+
+      projectId = projectFromEstimateOpportunity?.id ?? null
     }
-    const { data: newProject, error: projectError } = await supabase
-      .from("projects")
-      .insert({
-        org_id: proposal.org_id,
-        name: projectName,
-        status: "planning",
-        client_id: proposal.recipient_contact_id ?? null,
-        description: proposal.summary ?? null,
-        total_value: proposal.total_cents ?? null,
-        created_by: createdBy,
-      })
-      .select("id")
-      .single()
+  }
 
-    if (projectError || !newProject) {
-      throw new Error(`Failed to create project from proposal: ${projectError?.message}`)
-    }
+  if (!projectId) {
+    throw new Error("Proposal must be linked to a project before acceptance")
+  }
 
-    projectId = newProject.id as string
-
+  if (!proposal.project_id || proposal.project_id !== projectId) {
     const { error: proposalUpdateError } = await supabase
       .from("proposals")
       .update({ project_id: projectId })
@@ -487,4 +479,3 @@ export async function createDrawScheduleFromContract(
 
   return data
 }
-

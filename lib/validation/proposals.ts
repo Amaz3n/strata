@@ -15,6 +15,7 @@ export const proposalLineInputSchema = z.object({
 
 export const proposalInputSchema = z.object({
   project_id: z.string().uuid().optional().nullable(),
+  opportunity_id: z.string().uuid().optional().nullable(),
   estimate_id: z.string().uuid().optional(),
   recipient_contact_id: z.string().uuid().optional(),
   title: z.string().min(1, "Title is required"),

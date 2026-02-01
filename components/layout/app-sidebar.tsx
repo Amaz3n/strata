@@ -50,6 +50,7 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/decisions")) return "decisions"
   if (pathname.includes("/files")) return "files"
   if (pathname.includes("/proposals")) return "proposals"
+  if (pathname.includes("/bids")) return "bids"
   if (pathname.includes("/change-orders")) return "change-orders"
   if (pathname.includes("/invoices")) return "invoices"
   if (pathname.includes("/budget")) return "budget"
@@ -72,7 +73,7 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number) {
       label: "Workspace",
       items: [
         {
-          title: "Pipeline",
+          title: "Opportunities",
           url: "/pipeline",
           icon: Contact,
           isActive: pathname === "/pipeline",
@@ -154,6 +155,12 @@ function buildProjectNavigation(projectId: string, section: string) {
           url: `${base}/files`,
           icon: FileText,
           isActive: section === "files",
+        },
+        {
+          title: "Bids",
+          url: `${base}/bids`,
+          icon: ClipboardList,
+          isActive: section === "bids",
         },
         {
           title: "Messages",

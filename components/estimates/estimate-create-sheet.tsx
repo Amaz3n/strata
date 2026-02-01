@@ -27,6 +27,7 @@ interface EstimateCreateSheetProps {
   templates: EstimateTemplate[]
   costCodes: CostCode[]
   defaultRecipientId?: string
+  defaultProjectId?: string
   onCreate: (input: EstimateInput) => Promise<void> | void
   loading?: boolean
 }
@@ -38,10 +39,12 @@ export function EstimateCreateSheet({
   templates,
   costCodes,
   defaultRecipientId,
+  defaultProjectId,
   onCreate,
   loading,
 }: EstimateCreateSheetProps) {
   const [recipientId, setRecipientId] = useState<string>(defaultRecipientId ?? "")
+  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "")
   const [templateId, setTemplateId] = useState<string>("none")
   const [title, setTitle] = useState("")
   const [summary, setSummary] = useState("")
@@ -67,6 +70,12 @@ export function EstimateCreateSheet({
       setRecipientId(defaultRecipientId)
     }
   }, [defaultRecipientId])
+
+  useEffect(() => {
+    if (defaultProjectId) {
+      setProjectId(defaultProjectId)
+    }
+  }, [defaultProjectId])
 
   useEffect(() => {
     if (templateId === "none") {
@@ -116,6 +125,7 @@ export function EstimateCreateSheet({
 
     const payload: EstimateInput = {
       title: title.trim(),
+      project_id: projectId || undefined,
       recipient_contact_id: recipientId || undefined,
       summary: summary || undefined,
       terms: terms || undefined,
@@ -137,6 +147,7 @@ export function EstimateCreateSheet({
 
   const resetForm = () => {
     setRecipientId(defaultRecipientId ?? "")
+    setProjectId(defaultProjectId ?? "")
     setTemplateId("none")
     setTitle("")
     setSummary("")

@@ -47,6 +47,16 @@ Strata is a comprehensive construction management platform built on Supabase (Po
 - **`tasks`** - Project tasks and assignments
 - **`task_assignments`** - Task-user/contact assignments
 
+#### Pipeline & Preconstruction
+- **`opportunities`** - Pipeline opportunities (job-centric, pre-estimate)
+- **`bid_packages`** - Invite-to-bid packages per project
+- **`bid_invites`** - Invited subcontractors/companies per package
+- **`bid_access_tokens`** - Public portal access tokens for bid invites
+- **`bid_submissions`** - Subcontractor bid submissions (versioned)
+- **`bid_awards`** - Award decisions linked to submissions/commitments
+- **`bid_addenda`** - Addenda issued per bid package
+- **`bid_addendum_acknowledgements`** - Invite acknowledgements of addenda
+
 #### Financial Management
 - **`cost_codes`** - CSI MasterFormat cost codes
 - **`estimates`** - Project estimates and quotes
@@ -407,6 +417,5 @@ RFIs     Submittals  Dailies  Photos    Closeout
 ---
 
 This document provides a comprehensive overview of the Strata database architecture. For specific implementation details, refer to the individual table schemas and migration files.
-
 
 

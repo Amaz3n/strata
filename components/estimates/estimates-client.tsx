@@ -38,9 +38,17 @@ interface EstimatesClientProps {
   templates: EstimateTemplate[]
   costCodes: CostCode[]
   initialRecipientId?: string
+  initialProjectId?: string
 }
 
-export function EstimatesClient({ estimates, contacts, templates, costCodes, initialRecipientId }: EstimatesClientProps) {
+export function EstimatesClient({
+  estimates,
+  contacts,
+  templates,
+  costCodes,
+  initialRecipientId,
+  initialProjectId,
+}: EstimatesClientProps) {
   const [items, setItems] = useState(estimates)
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
@@ -50,10 +58,10 @@ export function EstimatesClient({ estimates, contacts, templates, costCodes, ini
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (initialRecipientId) {
+    if (initialRecipientId || initialProjectId) {
       setCreateOpen(true)
     }
-  }, [initialRecipientId])
+  }, [initialRecipientId, initialProjectId])
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
@@ -139,6 +147,7 @@ export function EstimatesClient({ estimates, contacts, templates, costCodes, ini
         templates={templates}
         costCodes={costCodes}
         defaultRecipientId={initialRecipientId}
+        defaultProjectId={initialProjectId}
         onCreate={handleCreate}
         loading={creating}
       />
