@@ -720,12 +720,20 @@ export function ProjectDetailClient({
       <ProjectSetupWizardSheet
         open={setupWizardOpen}
         onOpenChange={setSetupWizardOpen}
+        onOpenProjectSettings={() => {
+          setSetupWizardOpen(false)
+          setSettingsSheetOpen(true)
+        }}
+        onOpenTeamSheet={() => {
+          setSetupWizardOpen(false)
+          setManageTeamSheetOpen(true)
+        }}
         project={project}
         contacts={contacts}
         team={teamMembers}
         proposals={proposals}
         contract={contract}
-        scheduleItems={scheduleItems}
+        scheduleItemCount={scheduleItems.length}
         drawsCount={draws.length}
         portalTokens={portalTokensState}
       />

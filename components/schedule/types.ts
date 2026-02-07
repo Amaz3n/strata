@@ -184,21 +184,38 @@ export const ITEM_TYPE_ICONS: Record<string, string> = {
   delivery: "Truck",
 }
 
+// Modern vibrant color palette - carefully curated for visual harmony
 export const PHASE_COLORS: Record<string, string> = {
-  pre_construction: "#8b5cf6",
-  site_work: "#f97316",
-  foundation: "#64748b",
-  framing: "#eab308",
-  roofing: "#22c55e",
-  mep_rough: "#3b82f6",
-  insulation: "#ec4899",
-  drywall: "#06b6d4",
-  finishes: "#8b5cf6",
-  mep_trim: "#3b82f6",
-  landscaping: "#22c55e",
-  punch_list: "#f97316",
-  closeout: "#64748b",
+  pre_construction: "#7c3aed", // Vibrant violet
+  site_work: "#f97316",        // Warm orange
+  foundation: "#0ea5e9",       // Sky blue
+  framing: "#eab308",          // Golden yellow
+  roofing: "#10b981",          // Emerald green
+  mep_rough: "#6366f1",        // Indigo
+  insulation: "#ec4899",       // Pink
+  drywall: "#14b8a6",          // Teal
+  finishes: "#a855f7",         // Purple
+  mep_trim: "#3b82f6",         // Blue
+  landscaping: "#22c55e",      // Green
+  punch_list: "#f43f5e",       // Rose red
+  closeout: "#64748b",         // Slate
 }
+
+// Default bar colors for items without a phase - vibrant modern palette
+export const DEFAULT_BAR_COLORS = [
+  "#6366f1", // Indigo
+  "#8b5cf6", // Violet
+  "#a855f7", // Purple
+  "#ec4899", // Pink
+  "#f43f5e", // Rose
+  "#f97316", // Orange
+  "#eab308", // Yellow
+  "#22c55e", // Green
+  "#10b981", // Emerald
+  "#14b8a6", // Teal
+  "#0ea5e9", // Sky
+  "#3b82f6", // Blue
+]
 
 // Utility functions
 export function getDatesBetween(start: Date, end: Date): Date[] {

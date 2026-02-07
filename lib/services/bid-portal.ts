@@ -143,14 +143,30 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     .maybeSingle()
 
   if (error || !tokenRow || !tokenRow.bid_invite) {
+    console.warn("Bid portal token validation failed", {
+      hasSecret: !!process.env.BID_PORTAL_SECRET,
+      tokenPrefix: token.slice(0, 6),
+      tokenHashPrefix: tokenHash.slice(0, 10),
+      error: error?.message,
+      found: !!tokenRow,
+    })
     return null
   }
 
   if (tokenRow.expires_at && new Date(tokenRow.expires_at) < new Date()) {
+    console.warn("Bid portal token expired", {
+      tokenPrefix: token.slice(0, 6),
+      expiresAt: tokenRow.expires_at,
+    })
     return null
   }
 
   if (tokenRow.max_access_count && tokenRow.access_count >= tokenRow.max_access_count) {
+    console.warn("Bid portal token max access reached", {
+      tokenPrefix: token.slice(0, 6),
+      accessCount: tokenRow.access_count,
+      maxAccessCount: tokenRow.max_access_count,
+    })
     return null
   }
 
@@ -161,15 +177,42 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     .maybeSingle()
 
   if (!bidPackage) {
+    console.warn("Bid portal token missing package", {
+      tokenPrefix: token.slice(0, 6),
+      packageId: tokenRow.bid_invite.bid_package_id,
+    })
     return null
   }
 
-  const [projectResult, orgResult] = await Promise.all([
-    supabase.from("projects").select("id, name, status").eq("id", bidPackage.project_id).maybeSingle(),
-    supabase.from("orgs").select("id, name, logo_url").eq("id", tokenRow.org_id).maybeSingle(),
-  ])
+  const projectResult = await supabase
+    .from("projects")
+    .select("id, org_id, name, status")
+    .eq("id", bidPackage.project_id)
+    .maybeSingle()
 
-  if (!projectResult.data || !orgResult.data) {
+  if (!projectResult.data) {
+    console.warn("Bid portal token missing project", {
+      tokenPrefix: token.slice(0, 6),
+      projectId: bidPackage.project_id,
+      orgId: tokenRow.org_id,
+    })
+    return null
+  }
+
+  const resolvedOrgId = projectResult.data.org_id ?? tokenRow.org_id
+  const { data: orgResult, error: orgError } = await supabase
+    .from("orgs")
+    .select("id, name")
+    .eq("id", resolvedOrgId)
+    .maybeSingle()
+
+  if (!orgResult) {
+    console.warn("Bid portal token missing org", {
+      tokenPrefix: token.slice(0, 6),
+      tokenOrgId: tokenRow.org_id,
+      projectOrgId: projectResult.data.org_id,
+      orgError: orgError?.message,
+    })
     return null
   }
 
@@ -210,9 +253,9 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       status: projectResult.data.status,
     },
     org: {
-      id: orgResult.data.id,
-      name: orgResult.data.name,
-      logo_url: orgResult.data.logo_url ?? null,
+      id: orgResult.id,
+      name: orgResult.name,
+      logo_url: null,
     },
   }
 }
@@ -478,6 +521,7 @@ export async function submitBidFromPortal({
     notes?: string | null
     submitted_by_name?: string | null
     submitted_by_email?: string | null
+    file_ids?: string[]
   }
 }): Promise<BidPortalSubmission> {
   const supabase = createServiceSupabaseClient()
@@ -549,6 +593,17 @@ export async function submitBidFromPortal({
     .update({ status: "submitted", submitted_at: now })
     .eq("org_id", access.org_id)
     .eq("id", access.bid_invite_id)
+
+  // Link uploaded files to the submission
+  if (input.file_ids && input.file_ids.length > 0) {
+    const fileLinks = input.file_ids.map((fileId) => ({
+      org_id: access.org_id,
+      file_id: fileId,
+      entity_type: "bid_submission",
+      entity_id: created.id,
+    }))
+    await supabase.from("file_links").insert(fileLinks)
+  }
 
   return {
     id: created.id,

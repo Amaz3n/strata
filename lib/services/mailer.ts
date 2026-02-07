@@ -1,5 +1,6 @@
 import { render } from "@react-email/components"
 import type { ReactElement } from "react"
+import { BidInviteEmail } from "@/lib/emails/bid-invite-email"
 import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
 import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
 
@@ -11,6 +12,11 @@ export interface EmailPayload {
   subject: string
   html: string
   text?: string
+  attachments?: Array<{
+    filename: string
+    content: string
+    contentType?: string
+  }>
 }
 
 /**
@@ -50,6 +56,7 @@ export async function sendEmail(payload: EmailPayload): Promise<void> {
         subject: payload.subject,
         html: payload.html,
         text: payload.text ?? stripHtml(payload.html),
+        attachments: payload.attachments,
       }),
     })
 
@@ -161,6 +168,48 @@ export async function sendReminderSMS(payload: ReminderSMSPayload): Promise<stri
   return undefined
 }
 
+export interface BidInviteEmailPayload {
+  to: string
+  companyName?: string | null
+  contactName?: string | null
+  projectName?: string | null
+  bidPackageTitle: string
+  trade?: string | null
+  dueDate?: string | null
+  orgName?: string | null
+  bidLink: string
+}
+
+export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promise<void> {
+  const dueDate = payload.dueDate
+    ? new Date(payload.dueDate).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : undefined
+
+  const html = await renderEmailTemplate(
+    BidInviteEmail({
+      companyName: payload.companyName,
+      contactName: payload.contactName,
+      projectName: payload.projectName,
+      bidPackageTitle: payload.bidPackageTitle,
+      trade: payload.trade,
+      dueDate,
+      orgName: payload.orgName,
+      bidLink: payload.bidLink,
+    })
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: `Invitation to Bid: ${payload.bidPackageTitle}`,
+    html,
+  })
+}
 
 
 

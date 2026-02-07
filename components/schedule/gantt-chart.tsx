@@ -112,54 +112,65 @@ function SortableTaskRow({ item, isSelected, onSelect }: SortableTaskRowProps) {
       ref={setNodeRef}
       style={style}
       className={cn(
-        "flex items-center gap-2 px-3 border-b cursor-pointer transition-colors",
-        isSelected ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-muted/30",
-        item.is_critical_path && !isSelected && "border-l-2 border-l-orange-500",
-        isDragging && "bg-muted shadow-lg opacity-90"
+        "gantt-sidebar-row",
+        isSelected && "is-selected",
+        item.is_critical_path && "is-critical",
+        isDragging && "is-dragging"
       )}
       onClick={() => onSelect(item)}
     >
-      <div 
-        {...attributes} 
+      {/* Drag handle */}
+      <div
+        {...attributes}
         {...listeners}
-        className="cursor-grab active:cursor-grabbing flex-shrink-0 touch-none"
+        className="gantt-drag-handle cursor-grab active:cursor-grabbing flex-shrink-0 touch-none"
       >
-        <GripVertical className="h-4 w-4 text-muted-foreground/50 hover:text-muted-foreground" />
+        <GripVertical className="h-4 w-4" />
       </div>
+
+      {/* Checkbox */}
       <Checkbox
         checked={item.status === "completed"}
-        className="h-4 w-4 flex-shrink-0"
+        className="h-4 w-4 flex-shrink-0 border-muted-foreground/30"
         onClick={(e) => e.stopPropagation()}
       />
-      <div className={cn("p-1 rounded flex-shrink-0", statusColors.bg)}>
+
+      {/* Status icon */}
+      <div className={cn("gantt-status-icon", statusColors.bg)}>
         {getItemIcon(item.item_type)}
       </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate">{item.name}</div>
+
+      {/* Task info */}
+      <div className="gantt-task-info">
+        <div className="gantt-task-name">{item.name}</div>
         {item.trade && (
-          <div className="text-xs text-muted-foreground truncate capitalize">
+          <div className="gantt-task-meta">
             {item.trade.replace(/_/g, " ")}
           </div>
         )}
       </div>
-      {item.dependencies && item.dependencies.length > 0 && (
-        <Tooltip>
-          <TooltipTrigger>
-            <Link2 className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-          </TooltipTrigger>
-          <TooltipContent>
-            {item.dependencies.length} dependencies
-          </TooltipContent>
-        </Tooltip>
-      )}
-      {item.is_critical_path && (
-        <Tooltip>
-          <TooltipTrigger>
-            <AlertTriangle className="h-3.5 w-3.5 text-orange-500 flex-shrink-0" />
-          </TooltipTrigger>
-          <TooltipContent>Critical path item</TooltipContent>
-        </Tooltip>
-      )}
+
+      {/* Indicators */}
+      <div className="gantt-row-indicators">
+        {item.dependencies && item.dependencies.length > 0 && (
+          <Tooltip>
+            <TooltipTrigger>
+              <Link2 className="h-3.5 w-3.5 gantt-indicator-icon" />
+            </TooltipTrigger>
+            <TooltipContent>
+              {item.dependencies.length} {item.dependencies.length === 1 ? 'dependency' : 'dependencies'}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        {item.is_critical_path && (
+          <Tooltip>
+            <TooltipTrigger>
+              <AlertTriangle className="h-3.5 w-3.5 gantt-indicator-icon is-critical" />
+            </TooltipTrigger>
+            <TooltipContent>Critical path</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
     </div>
   )
 }
@@ -765,23 +776,23 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                       {/* Group header */}
                       {viewState.groupBy !== "none" && (
                         <div
-                          className="flex items-center gap-2 px-3 bg-muted/30 border-b cursor-pointer hover:bg-muted/50 transition-colors"
+                          className="gantt-group-header"
                           style={{ height: GANTT_ROW_HEIGHT }}
                           onClick={() => toggleGroup(groupKey)}
                         >
-                          <Button variant="ghost" size="icon" className="h-5 w-5 p-0">
+                          <Button variant="ghost" size="icon" className="h-6 w-6 p-0 hover:bg-transparent">
                             {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                           </Button>
                           <div
-                            className="w-3 h-3 rounded-full flex-shrink-0"
+                            className="gantt-group-dot"
                             style={{ backgroundColor: PHASE_COLORS[groupKey] || "#64748b" }}
                           />
-                          <span className="text-sm font-medium capitalize truncate">
+                          <span className="gantt-group-name flex-1">
                             {groupKey.replace(/_/g, " ")}
                           </span>
-                          <Badge variant="secondary" className="ml-auto text-xs flex-shrink-0">
+                          <span className="gantt-group-count">
                             {groupItemsList.length}
-                          </Badge>
+                          </span>
                         </div>
                       )}
                       
@@ -853,15 +864,29 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
               {/* Date selection highlight */}
               {selectionPosition && (
                 <div
-                  className="absolute top-0 bottom-0 bg-primary/10 border-x-2 border-primary/30 pointer-events-none z-5"
+                  className="gantt-date-selection absolute top-0 bottom-0 pointer-events-none z-15"
                   style={{ left: selectionPosition.left, width: selectionPosition.width }}
                 >
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-primary text-primary-foreground px-2 py-1 rounded text-xs font-medium shadow-lg">
-                    <Plus className="h-3 w-3 inline mr-1" />
-                    {format(dateSelection!.startDate, "MMM d")}
-                    {!isSameDay(dateSelection!.startDate, dateSelection!.endDate) && 
-                      ` – ${format(dateSelection!.endDate, "MMM d")}`
-                    }
+                  {/* Selection area with gradient */}
+                  <div className="absolute inset-0 bg-gradient-to-b from-primary/15 via-primary/8 to-primary/15 border-x-2 border-primary/40" />
+
+                  {/* Animated top/bottom lines */}
+                  <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary/60 to-transparent" />
+                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-primary/60 to-transparent" />
+
+                  {/* Floating badge */}
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+                    <div className="gantt-selection-badge flex items-center gap-1.5 bg-primary text-primary-foreground pl-2 pr-3 py-1.5 rounded-full text-xs font-medium shadow-lg shadow-primary/25">
+                      <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center">
+                        <Plus className="h-3 w-3" />
+                      </div>
+                      <span>
+                        {format(dateSelection!.startDate, "MMM d")}
+                        {!isSameDay(dateSelection!.startDate, dateSelection!.endDate) &&
+                          <span className="text-primary-foreground/70"> – {format(dateSelection!.endDate, "MMM d")}</span>
+                        }
+                      </span>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1029,18 +1054,19 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                     )
                   }
                   
+                  const isCompleted = item.status === "completed"
+
                   return (
                     <Tooltip key={item.id}>
                       <TooltipTrigger asChild>
                         <div
                           data-bar
                           className={cn(
-                            "absolute rounded-md cursor-pointer group z-10",
-                            "shadow-sm hover:shadow-lg hover:scale-[1.02] hover:-translate-y-0.5",
-                            "transition-all duration-200 ease-out",
-                            isSelected && "ring-2 ring-primary ring-offset-1 scale-[1.02]",
-                            isDragging && "opacity-80 shadow-xl scale-105 z-50",
-                            item.is_critical_path && "ring-1 ring-orange-500/70"
+                            "gantt-task-bar absolute cursor-pointer group z-10",
+                            isSelected && "is-selected",
+                            isDragging && "is-dragging",
+                            item.is_critical_path && "is-critical",
+                            isCompleted && "is-completed"
                           )}
                           style={{
                             left: position.left,
@@ -1048,7 +1074,6 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                             width: position.width,
                             height: GANTT_BAR_HEIGHT,
                             backgroundColor: barColor,
-                            transformOrigin: "center center",
                           }}
                           onClick={(e) => {
                             e.stopPropagation()
@@ -1057,43 +1082,35 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                           }}
                           onMouseDown={(e) => handleDragStart(e, item, "move")}
                         >
-                          {/* Progress fill */}
-                          {progress > 0 && (
-                            <div
-                              className="absolute inset-y-0 left-0 rounded-l-md bg-black/20"
-                              style={{ width: `${progress}%` }}
-                            />
-                          )}
-                          
+                          {/* Progress section */}
+                          <div className="gantt-progress-section">
+                            {progress > 0 && (
+                              <div
+                                className="gantt-progress-fill"
+                                style={{ width: `${progress}%` }}
+                              />
+                            )}
+                          </div>
+
                           {/* Content */}
-                          <div className="relative h-full flex items-center px-2 overflow-hidden">
-                            <span className="text-xs font-medium text-white truncate drop-shadow-sm">
+                          <div className="gantt-bar-content">
+                            <span className="gantt-bar-label flex-1">
                               {item.name}
                             </span>
                             {progress > 0 && progress < 100 && (
-                              <span className="ml-auto text-xs text-white/80 font-medium flex-shrink-0">
+                              <span className="gantt-bar-progress-text">
                                 {progress}%
                               </span>
                             )}
                           </div>
-                          
+
                           {/* Resize handles */}
                           <div
-                            className={cn(
-                              "absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l-md",
-                              "bg-white/0 group-hover:bg-white/40",
-                              "transition-all duration-150",
-                              "hover:!bg-white/60 hover:w-3"
-                            )}
+                            className="gantt-resize-handle gantt-resize-handle-left"
                             onMouseDown={(e) => handleDragStart(e, item, "resize-start")}
                           />
                           <div
-                            className={cn(
-                              "absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r-md",
-                              "bg-white/0 group-hover:bg-white/40",
-                              "transition-all duration-150",
-                              "hover:!bg-white/60 hover:w-3"
-                            )}
+                            className="gantt-resize-handle gantt-resize-handle-right"
                             onMouseDown={(e) => handleDragStart(e, item, "resize-end")}
                           />
                         </div>

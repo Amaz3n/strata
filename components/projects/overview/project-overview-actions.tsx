@@ -6,7 +6,7 @@ import Link from "next/link"
 import { toast } from "sonner"
 import { format, parseISO } from "date-fns"
 
-import type { Project, Contact, PortalAccessToken, Proposal, Contract, DrawSchedule, ScheduleItem, Company, ProjectVendor } from "@/lib/types"
+import type { Project, Contact, PortalAccessToken, Proposal, Contract, DrawSchedule, Company, ProjectVendor } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { loadSharingDataAction, revokePortalTokenAction, setPortalTokenPinAction, removePortalTokenPinAction } from "@/app/(app)/sharing/actions"
 import { updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
@@ -199,7 +199,6 @@ export function ProjectOverviewActions({
     router.refresh()
   }
 
-  const scheduleItems = scheduleItemCount > 0 ? [{ id: "placeholder" } as ScheduleItem] : []
   const status = statusConfig[project.status] || statusConfig.planning
 
   // Check if we have any metadata to show
@@ -462,12 +461,20 @@ export function ProjectOverviewActions({
       <ProjectSetupWizardSheet
         open={setupWizardOpen}
         onOpenChange={setSetupWizardOpen}
+        onOpenProjectSettings={() => {
+          setSetupWizardOpen(false)
+          setSettingsSheetOpen(true)
+        }}
+        onOpenTeamSheet={() => {
+          setSetupWizardOpen(false)
+          setManageTeamOpen(true)
+        }}
         project={project}
         contacts={contacts}
-        team={[]}
+        team={team}
         proposals={proposals}
         contract={contract}
-        scheduleItems={scheduleItems}
+        scheduleItemCount={scheduleItemCount}
         drawsCount={draws.length}
         portalTokens={portalTokensState}
       />

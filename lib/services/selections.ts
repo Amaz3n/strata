@@ -2,6 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import type { Selection, SelectionCategory, SelectionOption } from "@/lib/types"
 import type { SelectionInput } from "@/lib/validation/selections"
 
@@ -127,4 +128,113 @@ export async function createProjectSelection({ input, orgId }: { input: Selectio
   })
 
   return data as Selection
+}
+
+export async function confirmSelectionFromEnvelopeExecution(input: {
+  orgId: string
+  selectionId: string
+  envelopeId?: string | null
+  documentId: string
+  executedFileId: string
+  signerName?: string | null
+  signerEmail?: string | null
+  signerIp?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+
+  const { data: selection, error: selectionError } = await supabase
+    .from("project_selections")
+    .select("id, org_id, project_id, status, confirmed_at, metadata")
+    .eq("org_id", input.orgId)
+    .eq("id", input.selectionId)
+    .maybeSingle()
+
+  if (selectionError || !selection) {
+    throw new Error(`Selection not found for envelope execution: ${selectionError?.message ?? "missing"}`)
+  }
+
+  const existingMetadata = (selection.metadata ?? {}) as Record<string, any>
+  const priorEnvelopeId = existingMetadata.approved_envelope_id ?? null
+  const isConfirmedLifecycleStatus =
+    selection.status === "confirmed" || selection.status === "ordered" || selection.status === "received"
+  const alreadyConfirmedFromSameEnvelope =
+    isConfirmedLifecycleStatus &&
+    existingMetadata.approved_via_envelope &&
+    priorEnvelopeId &&
+    input.envelopeId &&
+    priorEnvelopeId === input.envelopeId
+
+  if (alreadyConfirmedFromSameEnvelope) {
+    await attachFileWithServiceRole({
+      orgId: selection.org_id,
+      fileId: input.executedFileId,
+      projectId: selection.project_id,
+      entityType: "selection",
+      entityId: input.selectionId,
+      linkRole: "executed_selection",
+      createdBy: null,
+    })
+
+    return { success: true, idempotent: true }
+  }
+
+  const nowIso = new Date().toISOString()
+  const metadataPatch = {
+    ...existingMetadata,
+    approved_via_envelope: true,
+    approved_envelope_id: input.envelopeId ?? null,
+    approved_document_id: input.documentId,
+    approved_executed_file_id: input.executedFileId,
+    approved_signer_name: input.signerName ?? null,
+    approved_signer_email: input.signerEmail ?? null,
+    approved_signer_ip: input.signerIp ?? null,
+    approved_at: selection.confirmed_at ?? nowIso,
+  }
+  const needsConfirmationTransition = !isConfirmedLifecycleStatus
+
+  const updatePayload: Record<string, any> = {
+    metadata: metadataPatch,
+  }
+  if (needsConfirmationTransition) {
+    updatePayload.status = "confirmed"
+    updatePayload.confirmed_at = nowIso
+  }
+
+  const { error: updateError } = await supabase
+    .from("project_selections")
+    .update(updatePayload)
+    .eq("org_id", input.orgId)
+    .eq("id", input.selectionId)
+
+  if (updateError) {
+    throw new Error(`Failed to update selection from envelope execution: ${updateError.message}`)
+  }
+
+  await attachFileWithServiceRole({
+    orgId: selection.org_id,
+    fileId: input.executedFileId,
+    projectId: selection.project_id,
+    entityType: "selection",
+    entityId: input.selectionId,
+    linkRole: "executed_selection",
+    createdBy: null,
+  })
+
+  await recordEvent({
+    orgId: selection.org_id,
+    eventType: needsConfirmationTransition ? "selection_confirmed" : "selection_confirmation_synced",
+    entityType: "selection",
+    entityId: input.selectionId,
+    payload: {
+      source: "envelope_execution",
+      envelope_id: input.envelopeId ?? null,
+      document_id: input.documentId,
+      executed_file_id: input.executedFileId,
+      signer_name: input.signerName ?? null,
+      signer_email: input.signerEmail ?? null,
+      transitioned: needsConfirmationTransition,
+    },
+  })
+
+  return { success: true, idempotent: false }
 }

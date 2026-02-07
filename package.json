@@ -73,6 +73,7 @@
     "number-flow": "^0.2.0",
     "openseadragon": "^5.0.1",
     "pdfjs-dist": "^5.4.449",
+    "pdf-lib": "^1.17.1",
     "qrcode": "^1.5.4",
     "react": "19.2.0",
     "react-day-picker": "9.8.0",

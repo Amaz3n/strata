@@ -8,6 +8,7 @@ import {
   getBidPackage,
   listBidInvites,
   createBidInvite,
+  bulkCreateBidInvites,
   generateBidInviteLink,
   listBidAddenda,
   createBidAddendum,
@@ -47,6 +48,13 @@ export async function createBidInviteAction(projectId: string, input: unknown) {
   revalidatePath(`/projects/${projectId}/bids`)
   revalidatePath(`/projects/${projectId}/bids/${invite.bid_package_id}`)
   return invite
+}
+
+export async function bulkCreateBidInvitesAction(projectId: string, bidPackageId: string, input: unknown) {
+  const result = await bulkCreateBidInvites({ input })
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return result
 }
 
 export async function generateBidInviteLinkAction(projectId: string, bidPackageId: string, inviteId: string) {

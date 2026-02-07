@@ -9,9 +9,11 @@ import {
   createBidInviteInputSchema,
   createBidAddendumInputSchema,
   awardBidSubmissionInputSchema,
+  bulkCreateBidInvitesInputSchema,
   type BidPackageStatus,
 } from "@/lib/validation/bids"
 import { createCommitment } from "@/lib/services/commitments"
+import { sendBidInviteEmail } from "@/lib/services/mailer"
 
 export interface BidPackage {
   id: string
@@ -68,6 +70,15 @@ export interface BidSubmission {
   is_current: boolean
   total_cents?: number | null
   currency?: string | null
+  valid_until?: string | null
+  lead_time_days?: number | null
+  duration_days?: number | null
+  start_available_on?: string | null
+  exclusions?: string | null
+  clarifications?: string | null
+  notes?: string | null
+  submitted_by_name?: string | null
+  submitted_by_email?: string | null
   submitted_at?: string | null
   created_at: string
   invite?: BidInvite
@@ -154,6 +165,15 @@ function mapBidSubmission(row: any): BidSubmission {
     is_current: row.is_current,
     total_cents: row.total_cents ?? null,
     currency: row.currency ?? null,
+    valid_until: row.valid_until ?? null,
+    lead_time_days: row.lead_time_days ?? null,
+    duration_days: row.duration_days ?? null,
+    start_available_on: row.start_available_on ?? null,
+    exclusions: row.exclusions ?? null,
+    clarifications: row.clarifications ?? null,
+    notes: row.notes ?? null,
+    submitted_by_name: row.submitted_by_name ?? null,
+    submitted_by_email: row.submitted_by_email ?? null,
     submitted_at: row.submitted_at ?? null,
     created_at: row.created_at,
     invite: row.bid_invite ? mapBidInvite(row.bid_invite) : undefined,
@@ -431,6 +451,232 @@ export async function createBidInvite({
   return mapBidInvite(data)
 }
 
+export interface BulkBidInviteResult {
+  created: BidInvite[]
+  failed: Array<{ identifier: string; error: string }>
+  emailsSent: number
+  companiesCreated: number
+}
+
+export async function bulkCreateBidInvites({
+  input,
+  orgId,
+}: {
+  input: unknown
+  orgId?: string
+}): Promise<BulkBidInviteResult> {
+  const parsed = bulkCreateBidInvitesInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const secret = requireBidPortalSecret()
+
+  // Fetch bid package details for email
+  const { data: bidPackage, error: bidPackageError } = await supabase
+    .from("bid_packages")
+    .select("id, project_id, title, trade, due_at, status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", parsed.bid_package_id)
+    .maybeSingle()
+
+  if (bidPackageError || !bidPackage) {
+    throw new Error("Bid package not found")
+  }
+
+  // Fetch project name for email
+  const { data: project } = await supabase
+    .from("projects")
+    .select("id, name")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", bidPackage.project_id)
+    .maybeSingle()
+
+  // Fetch org name for email
+  const { data: org } = await supabase
+    .from("orgs")
+    .select("id, name")
+    .eq("id", resolvedOrgId)
+    .maybeSingle()
+
+  const created: BidInvite[] = []
+  const failed: Array<{ identifier: string; error: string }> = []
+  let emailsSent = 0
+  let companiesCreated = 0
+
+  for (const inviteItem of parsed.invites) {
+    const identifier = inviteItem.company_id || inviteItem.invite_email || "unknown"
+    try {
+      let companyId = inviteItem.company_id
+
+      // If no company_id but we have an email, create a placeholder company
+      if (!companyId && inviteItem.invite_email) {
+        // Use the provided company name, or derive from email domain
+        const emailDomain = inviteItem.invite_email.split("@")[1] ?? ""
+        const companyName = inviteItem.company_name ||
+          (emailDomain ? emailDomain.split(".")[0].charAt(0).toUpperCase() + emailDomain.split(".")[0].slice(1) : "Unknown Company")
+
+        const { data: newCompany, error: companyError } = await supabase
+          .from("companies")
+          .insert({
+            org_id: resolvedOrgId,
+            name: companyName,
+            email: inviteItem.invite_email,
+            company_type: "subcontractor",
+            metadata: {
+              trade: bidPackage.trade ?? null,
+            },
+          })
+          .select("id")
+          .single()
+
+        if (companyError || !newCompany) {
+          failed.push({
+            identifier,
+            error: companyError?.message ?? "Failed to create company",
+          })
+          continue
+        }
+
+        companyId = newCompany.id
+        companiesCreated++
+      }
+
+      if (!companyId) {
+        failed.push({
+          identifier,
+          error: "No company ID and no email provided",
+        })
+        continue
+      }
+
+      // Create the invite
+      const { data, error } = await supabase
+        .from("bid_invites")
+        .insert({
+          org_id: resolvedOrgId,
+          bid_package_id: parsed.bid_package_id,
+          company_id: companyId,
+          contact_id: inviteItem.contact_id ?? null,
+          invite_email: inviteItem.invite_email ?? null,
+          status: "draft",
+          created_by: userId,
+        })
+        .select(
+          `
+          id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
+          declined_at, created_by, created_at, updated_at,
+          company:companies(id, name, phone, email),
+          contact:contacts(id, full_name, email, phone)
+        `
+        )
+        .single()
+
+      if (error || !data) {
+        const message =
+          (error as any)?.code === "23505"
+            ? "Company already invited to this bid package"
+            : error?.message ?? "Failed to create invite"
+        failed.push({
+          identifier,
+          error: message,
+        })
+        continue
+      }
+
+      const invite = mapBidInvite(data)
+
+      // Generate the access token and link
+      const token = randomBytes(32).toString("hex")
+      const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
+
+      const { error: tokenError } = await supabase.from("bid_access_tokens").insert({
+        org_id: resolvedOrgId,
+        bid_invite_id: invite.id,
+        token_hash: tokenHash,
+        created_by: userId,
+      })
+      if (tokenError) {
+        await supabase
+          .from("bid_invites")
+          .delete()
+          .eq("org_id", resolvedOrgId)
+          .eq("id", invite.id)
+        failed.push({
+          identifier,
+          error: tokenError.message ?? "Failed to create invite access token",
+        })
+        continue
+      }
+
+      // Update invite status to sent
+      await supabase
+        .from("bid_invites")
+        .update({ status: "sent", sent_at: new Date().toISOString() })
+        .eq("org_id", resolvedOrgId)
+        .eq("id", invite.id)
+
+      invite.status = "sent"
+      invite.sent_at = new Date().toISOString()
+
+      const appUrl = getAppUrl()
+      const bidLink = `${appUrl}/b/${token}`
+
+      // Send email if enabled and we have an email address
+      if (parsed.send_emails) {
+        const emailTo =
+          inviteItem.invite_email ||
+          invite.contact?.email ||
+          invite.company?.email
+
+        if (emailTo) {
+          try {
+            await sendBidInviteEmail({
+              to: emailTo,
+              companyName: invite.company?.name,
+              contactName: invite.contact?.full_name,
+              projectName: project?.name,
+              bidPackageTitle: bidPackage.title,
+              trade: bidPackage.trade,
+              dueDate: bidPackage.due_at,
+              orgName: org?.name,
+              bidLink,
+            })
+            emailsSent++
+          } catch (emailError) {
+            console.error("Failed to send bid invite email:", emailError)
+            // Don't fail the invite creation if email fails
+          }
+        }
+      }
+
+      await recordEvent({
+        orgId: resolvedOrgId,
+        eventType: "bid_invite_created",
+        entityType: "bid_invite",
+        entityId: invite.id,
+        payload: { bid_package_id: parsed.bid_package_id, company_id: companyId },
+      })
+
+      await recordAudit({
+        orgId: resolvedOrgId,
+        actorId: userId,
+        action: "insert",
+        entityType: "bid_invite",
+        entityId: invite.id,
+        after: data,
+      })
+
+      created.push(invite)
+    } catch (err) {
+      failed.push({
+        identifier,
+        error: (err as Error)?.message ?? "Unknown error",
+      })
+    }
+  }
+
+  return { created, failed, emailsSent, companiesCreated }
+}
+
 export async function generateBidInviteLink(
   inviteId: string,
   orgId?: string
@@ -464,6 +710,26 @@ export async function generateBidInviteLink(
 
   if (error) {
     throw new Error(`Failed to generate bid link: ${error.message}`)
+  }
+
+  try {
+    const { data: tokenRow, error: tokenLookupError } = await supabase
+      .from("bid_access_tokens")
+      .select("id, token_hash, created_at")
+      .eq("org_id", resolvedOrgId)
+      .eq("token_hash", tokenHash)
+      .maybeSingle()
+
+    console.warn("Bid portal token created", {
+      orgId: resolvedOrgId,
+      inviteId,
+      tokenPrefix: token.slice(0, 6),
+      tokenHashPrefix: tokenHash.slice(0, 10),
+      tokenRowFound: !!tokenRow,
+      tokenLookupError: tokenLookupError?.message,
+    })
+  } catch (logError) {
+    console.warn("Bid portal token debug log failed", { error: (logError as Error)?.message })
   }
 
   if (invite.status === "draft") {
@@ -564,6 +830,8 @@ export async function listBidSubmissions(bidPackageId: string, orgId?: string): 
     .select(
       `
       id, org_id, bid_invite_id, status, version, is_current, total_cents, currency, submitted_at, created_at,
+      valid_until, lead_time_days, duration_days, start_available_on,
+      exclusions, clarifications, notes, submitted_by_name, submitted_by_email,
       bid_invite:bid_invites!inner(
         id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
         declined_at, created_by, created_at, updated_at,

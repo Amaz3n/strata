@@ -1256,3 +1256,81 @@ export interface Proposal {
   created_at?: string | null
   updated_at?: string | null
 }
+
+export type DocumentType = "proposal" | "contract" | "change_order" | "other"
+export type DocumentStatus = "draft" | "sent" | "signed" | "voided" | "expired"
+export type DocumentFieldType = "signature" | "initials" | "text" | "date" | "checkbox" | "name"
+export type DocumentSigningRequestStatus = "draft" | "sent" | "viewed" | "signed" | "voided" | "expired"
+
+export interface Document {
+  id: string
+  org_id: string
+  project_id: string
+  document_type: DocumentType
+  title: string
+  status: DocumentStatus
+  source_file_id: string
+  executed_file_id?: string | null
+  current_revision: number
+  metadata?: Record<string, any>
+  created_by?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentField {
+  id: string
+  org_id: string
+  document_id: string
+  revision: number
+  page_index: number
+  field_type: DocumentFieldType
+  label?: string | null
+  required: boolean
+  signer_role?: string | null
+  x: number
+  y: number
+  w: number
+  h: number
+  sort_order?: number | null
+  metadata?: Record<string, any>
+  created_at: string
+}
+
+export interface DocumentSigningRequest {
+  id: string
+  org_id: string
+  document_id: string
+  revision: number
+  token_hash: string
+  status: DocumentSigningRequestStatus
+  group_id?: string | null
+  signer_role?: string | null
+  sequence?: number | null
+  required?: boolean | null
+  recipient_contact_id?: string | null
+  sent_to_email?: string | null
+  sent_at?: string | null
+  viewed_at?: string | null
+  signed_at?: string | null
+  expires_at?: string | null
+  max_uses: number
+  used_count: number
+  created_by?: string | null
+  created_at: string
+}
+
+export interface DocumentSignature {
+  id: string
+  org_id: string
+  signing_request_id: string
+  document_id: string
+  revision: number
+  signer_name?: string | null
+  signer_email?: string | null
+  signer_ip?: string | null
+  user_agent?: string | null
+  consent_text: string
+  values: Record<string, any>
+  created_at: string
+}

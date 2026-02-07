@@ -263,7 +263,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
       </Button>
 
       {/* Command Dialog - appears centered on screen */}
-      <CommandDialog open={open} onOpenChange={setOpen}>
+      <CommandDialog open={open} onOpenChange={setOpen} commandProps={{ shouldFilter: false }}>
         <CommandInput
           placeholder="Search projects, contacts, invoices, drawings..."
           value={query}
@@ -287,7 +287,15 @@ export function CommandSearch({ className }: CommandSearchProps) {
                     return (
                       <CommandItem
                         key={result.id}
-                        value={result.id}
+                        value={[
+                          result.title,
+                          result.subtitle,
+                          result.description,
+                          result.project_name,
+                          formatEntityType(result.type),
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
                         onSelect={() => handleSelect(result)}
                         className="flex items-start gap-3 py-3 px-2"
                       >

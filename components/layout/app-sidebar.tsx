@@ -48,6 +48,7 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/rfis")) return "rfis"
   if (pathname.includes("/submittals")) return "submittals"
   if (pathname.includes("/decisions")) return "decisions"
+  if (pathname.includes("/documents")) return "documents"
   if (pathname.includes("/files")) return "files"
   if (pathname.includes("/proposals")) return "proposals"
   if (pathname.includes("/bids")) return "bids"
@@ -104,6 +105,12 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number) {
           isActive: pathname.startsWith("/proposals"),
         },
         {
+          title: "Signatures",
+          url: "/documents",
+          icon: ClipboardCheck,
+          isActive: pathname.startsWith("/documents"),
+        },
+        {
           title: "Directory",
           url: "/directory",
           icon: Building2,
@@ -155,6 +162,12 @@ function buildProjectNavigation(projectId: string, section: string) {
           url: `${base}/files`,
           icon: FileText,
           isActive: section === "files",
+        },
+        {
+          title: "Signatures",
+          url: `${base}/documents`,
+          icon: ClipboardCheck,
+          isActive: section === "documents",
         },
         {
           title: "Bids",

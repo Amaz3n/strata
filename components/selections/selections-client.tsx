@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import type { Project, Selection, SelectionCategory, SelectionOption } from "@/lib/types"
 import type { SelectionInput } from "@/lib/validation/selections"
 import { createSelectionAction } from "@/app/(app)/selections/actions"
+import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { SelectionForm } from "@/components/selections/selection-form"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import {
@@ -58,6 +59,8 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
   const [items, setItems] = useState<Selection[]>(data.selections)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
+  const [signatureTarget, setSignatureTarget] = useState<EnvelopeWizardSourceEntity | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const filtered = useMemo(() => {
@@ -101,125 +104,185 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
     })
   }
 
+  const handleOpenSignatureWizard = (input: {
+    selection: Selection
+    categoryName?: string
+    optionName?: string
+  }) => {
+    if (!input.selection.project_id) {
+      toast.error("Selection must belong to a project before requesting signature.")
+      return
+    }
+    if (!input.selection.selected_option_id) {
+      toast.error("Select an option before requesting signature.")
+      return
+    }
+
+    const documentTitle = [input.categoryName, input.optionName].filter(Boolean).join(" - ") || "Selection Approval"
+
+    setSignatureTarget({
+      type: "selection",
+      id: input.selection.id,
+      project_id: input.selection.project_id,
+      title: documentTitle,
+      document_type: "other",
+    })
+    setSignatureWizardOpen(true)
+  }
+
+  const handleSignatureWizardOpenChange = (open: boolean) => {
+    setSignatureWizardOpen(open)
+    if (!open) {
+      setSignatureTarget(null)
+    }
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Selections</h1>
-          <p className="text-muted-foreground text-sm">Assign categories, track choices, and status.</p>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <Badge variant="secondary" className="text-xs">
-              Total {stats.total}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Pending {stats.pending}
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              Received {stats.received}
-            </Badge>
+    <>
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Selections</h1>
+            <p className="text-muted-foreground text-sm">Assign categories, track choices, and status.</p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <Badge variant="secondary" className="text-xs">
+                Total {stats.total}
+              </Badge>
+              <Badge variant="secondary" className="text-xs">
+                Pending {stats.pending}
+              </Badge>
+              <Badge variant="secondary" className="text-xs">
+                Received {stats.received}
+              </Badge>
+            </div>
           </div>
-        </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-full sm:w-[220px]">
-              <SelectValue placeholder="Filter by project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-2" />
-            New selection
-          </Button>
-        </div>
-      </div>
-
-      <SelectionForm
-        open={sheetOpen}
-        onOpenChange={setSheetOpen}
-        projects={projects}
-        categories={data.categories}
-        defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
-        onSubmit={handleCreate}
-        isSubmitting={isPending}
-      />
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((sel) => {
-          const category = categoriesById[sel.category_id]
-          const selectedOption = sel.selected_option_id ? optionsById[sel.selected_option_id] : undefined
-          return (
-            <Card key={sel.id} className="h-full flex flex-col">
-              <CardHeader className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <CardTitle className="text-base font-semibold">
-                    {category?.name ?? "Selection"} {selectedOption ? `— ${selectedOption.name}` : ""}
-                  </CardTitle>
-                  <Badge variant="secondary" className={`capitalize border ${statusStyles[sel.status] ?? ""}`}>
-                    {statusLabels[sel.status] ?? sel.status}
-                  </Badge>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1">
-                    <List className="h-4 w-4" />
-                    {category?.description ?? "No description"}
-                  </span>
-                  {sel.due_date && (
-                    <span className="flex items-center gap-1">
-                      <Calendar className="h-4 w-4" />
-                      Due {formatDate(sel.due_date)}
-                    </span>
-                  )}
-                </div>
-              </CardHeader>
-
-              <CardContent className="flex-1 space-y-3">
-                <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Selected option</span>
-                    <Badge variant="outline" className="text-[11px]">
-                      {selectedOption ? "Chosen" : "Not chosen"}
-                    </Badge>
-                  </div>
-                  <p className="text-sm text-foreground">
-                    {selectedOption
-                      ? selectedOption.name
-                      : "No option selected yet. Clients choose in the portal."}
-                  </p>
-                </div>
-                {sel.notes && <p className="text-xs text-muted-foreground">Notes: {sel.notes}</p>}
-                <SelectionAttachments selection={sel} />
-              </CardContent>
-            </Card>
-          )
-        })}
-
-        {filtered.length === 0 && (
-          <div className="col-span-full rounded-lg border border-dashed p-8 text-center">
-            <p className="text-sm text-muted-foreground">No selections yet.</p>
-            <Button className="mt-3" onClick={() => setSheetOpen(true)}>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+              <SelectTrigger className="w-full sm:w-[220px]">
+                <SelectValue placeholder="Filter by project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
               <Plus className="h-4 w-4 mr-2" />
-              Create your first selection
+              New selection
             </Button>
           </div>
-        )}
+        </div>
 
-        {isPending && filtered.length === 0 && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {[...Array(3)].map((_, idx) => (
-              <Skeleton key={idx} className="h-44 w-full rounded-lg" />
-            ))}
-          </div>
-        )}
+        <SelectionForm
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          projects={projects}
+          categories={data.categories}
+          defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
+          onSubmit={handleCreate}
+          isSubmitting={isPending}
+        />
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {filtered.map((sel) => {
+            const category = categoriesById[sel.category_id]
+            const selectedOption = sel.selected_option_id ? optionsById[sel.selected_option_id] : undefined
+            const canRequestSignature = !!selectedOption
+            return (
+              <Card key={sel.id} className="h-full flex flex-col">
+                <CardHeader className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="text-base font-semibold">
+                      {category?.name ?? "Selection"} {selectedOption ? `— ${selectedOption.name}` : ""}
+                    </CardTitle>
+                    <Badge variant="secondary" className={`capitalize border ${statusStyles[sel.status] ?? ""}`}>
+                      {statusLabels[sel.status] ?? sel.status}
+                    </Badge>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <List className="h-4 w-4" />
+                      {category?.description ?? "No description"}
+                    </span>
+                    {sel.due_date && (
+                      <span className="flex items-center gap-1">
+                        <Calendar className="h-4 w-4" />
+                        Due {formatDate(sel.due_date)}
+                      </span>
+                    )}
+                  </div>
+                </CardHeader>
+
+                <CardContent className="flex-1 space-y-3">
+                  <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Selected option</span>
+                      <Badge variant="outline" className="text-[11px]">
+                        {selectedOption ? "Chosen" : "Not chosen"}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-foreground">
+                      {selectedOption
+                        ? selectedOption.name
+                        : "No option selected yet. Clients choose in the portal."}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!canRequestSignature}
+                    onClick={() =>
+                      handleOpenSignatureWizard({
+                        selection: sel,
+                        categoryName: category?.name,
+                        optionName: selectedOption?.name,
+                      })
+                    }
+                  >
+                    {canRequestSignature ? "Request signature" : "Select option before signature"}
+                  </Button>
+                  {sel.notes && <p className="text-xs text-muted-foreground">Notes: {sel.notes}</p>}
+                  <SelectionAttachments selection={sel} />
+                </CardContent>
+              </Card>
+            )
+          })}
+
+          {filtered.length === 0 && (
+            <div className="col-span-full rounded-lg border border-dashed p-8 text-center">
+              <p className="text-sm text-muted-foreground">No selections yet.</p>
+              <Button className="mt-3" onClick={() => setSheetOpen(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Create your first selection
+              </Button>
+            </div>
+          )}
+
+          {isPending && filtered.length === 0 && (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {[...Array(3)].map((_, idx) => (
+                <Skeleton key={idx} className="h-44 w-full rounded-lg" />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+
+      <EnvelopeWizard
+        open={signatureWizardOpen}
+        onOpenChange={handleSignatureWizardOpenChange}
+        sourceEntity={signatureTarget}
+        sourceLabel="Selection"
+        sheetTitle="Prepare selection approval for signature"
+        sheetDescription="Attach the finalized selection PDF, place signer fields, and send for approval."
+      />
+    </>
   )
 }
 
@@ -322,8 +385,6 @@ function SelectionAttachments({ selection }: { selection: Selection }) {
     </div>
   )
 }
-
-
 
 
 

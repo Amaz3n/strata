@@ -6,6 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
+import { attachFileWithServiceRole } from "@/lib/services/file-links"
 
 type ChangeOrderRow = {
   id: string
@@ -300,65 +301,129 @@ export async function getChangeOrderForPortal(changeOrderId: string, orgId: stri
   return fetchChangeOrder(supabase, { id: changeOrderId, orgId, projectId })
 }
 
-export async function approveChangeOrderFromPortal({
-  changeOrderId,
-  tokenId,
-  signatureData,
-  signatureIp,
-  signerName,
-}: {
+export async function approveChangeOrderFromEnvelopeExecution(input: {
+  orgId: string
   changeOrderId: string
-  tokenId: string
-  signatureData?: string | null
-  signatureIp?: string | null
-  signerName?: string
+  envelopeId?: string | null
+  documentId: string
+  executedFileId: string
+  signerName?: string | null
+  signerEmail?: string | null
+  signerIp?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
 
-  const existing = await fetchChangeOrder(supabase, { id: changeOrderId }).catch(() => null)
-
+  const existing = await fetchChangeOrder(supabase, { id: input.changeOrderId, orgId: input.orgId }).catch(() => null)
   if (!existing) throw new Error("Change order not found")
 
-  const nowIso = new Date().toISOString()
-  const { error: approvalError } = await supabase.from("approvals").insert({
-    org_id: existing.org_id,
-    entity_type: "change_order",
-    entity_id: changeOrderId,
-    approver_id: null,
-    status: "approved",
-    decision_at: nowIso,
-    decision_notes: "Approved via portal",
-    payload: { portal_token_id: tokenId, signer_name: signerName },
-    signature_data: signatureData ?? null,
-    signature_ip: signatureIp ?? null,
-    signed_at: signatureData ? nowIso : null,
-  })
+  const priorEnvelopeId = existing.metadata?.approved_envelope_id ?? null
+  if (
+    existing.status === "approved" &&
+    existing.metadata?.approved_via_envelope &&
+    priorEnvelopeId &&
+    input.envelopeId &&
+    priorEnvelopeId === input.envelopeId
+  ) {
+    return { success: true, idempotent: true }
+  }
 
-  if (approvalError) {
-    throw new Error(`Failed to record approval: ${approvalError.message}`)
+  const nowIso = new Date().toISOString()
+  const metadataPatch = {
+    ...(existing.metadata ?? {}),
+    approved_via_envelope: true,
+    approved_envelope_id: input.envelopeId ?? null,
+    approved_document_id: input.documentId,
+    approved_executed_file_id: input.executedFileId,
+    approved_signer_name: input.signerName ?? null,
+    approved_signer_email: input.signerEmail ?? null,
+    approved_signer_ip: input.signerIp ?? null,
+    approved_at: existing.approved_at ?? nowIso,
+  }
+
+  const needsApprovalTransition = existing.status !== "approved"
+
+  if (needsApprovalTransition) {
+    const { error: approvalError } = await supabase.from("approvals").insert({
+      org_id: existing.org_id,
+      entity_type: "change_order",
+      entity_id: input.changeOrderId,
+      approver_id: null,
+      status: "approved",
+      decision_at: nowIso,
+      decision_notes: "Approved via e-sign envelope execution",
+      payload: {
+        source: "envelope_execution",
+        envelope_id: input.envelopeId ?? null,
+        document_id: input.documentId,
+        executed_file_id: input.executedFileId,
+        signer_name: input.signerName ?? null,
+        signer_email: input.signerEmail ?? null,
+      },
+      signature_data: null,
+      signature_ip: input.signerIp ?? null,
+      signed_at: nowIso,
+    })
+
+    if (approvalError) {
+      throw new Error(`Failed to record envelope approval: ${approvalError.message}`)
+    }
+  }
+
+  const updatePayload: Record<string, any> = {
+    metadata: metadataPatch,
+  }
+
+  if (needsApprovalTransition) {
+    updatePayload.status = "approved"
+    updatePayload.approved_at = nowIso
+    updatePayload.approved_by = null
   }
 
   const { error: updateError } = await supabase
     .from("change_orders")
-    .update({
-      status: "approved",
-      approved_at: nowIso,
-      approved_by: null,
-      metadata: { ...(existing.metadata ?? {}), approved_via_portal: true, portal_token_id: tokenId },
-    })
-    .eq("id", changeOrderId)
+    .update(updatePayload)
+    .eq("org_id", input.orgId)
+    .eq("id", input.changeOrderId)
 
   if (updateError) {
-    throw new Error(`Failed to update change order status: ${updateError.message}`)
+    throw new Error(`Failed to update change order from envelope execution: ${updateError.message}`)
   }
 
-  await applyChangeOrderFinancialImpact({
-    supabase,
+  await attachFileWithServiceRole({
     orgId: existing.org_id,
+    fileId: input.executedFileId,
     projectId: existing.project_id,
+    entityType: "change_order",
+    entityId: input.changeOrderId,
+    linkRole: "executed_change_order",
+    createdBy: null,
   })
 
-  return { success: true }
+  if (needsApprovalTransition) {
+    await applyChangeOrderFinancialImpact({
+      supabase,
+      orgId: existing.org_id,
+      projectId: existing.project_id,
+    })
+  }
+
+  await recordEvent({
+    orgId: existing.org_id,
+    eventType: needsApprovalTransition ? "change_order_approved" : "change_order_approval_synced",
+    entityType: "change_order",
+    entityId: input.changeOrderId,
+    payload: {
+      source: "envelope_execution",
+      envelope_id: input.envelopeId ?? null,
+      document_id: input.documentId,
+      executed_file_id: input.executedFileId,
+      signer_name: input.signerName ?? null,
+      signer_email: input.signerEmail ?? null,
+      transitioned: needsApprovalTransition,
+    },
+  })
+
+  return { success: true, idempotent: false }
 }
 
 export async function approveChangeOrder({

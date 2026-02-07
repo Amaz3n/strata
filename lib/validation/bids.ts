@@ -36,6 +36,23 @@ export const createBidInviteInputSchema = z.object({
   status: bidInviteStatusEnum.optional(),
 })
 
+export const bulkBidInviteItemSchema = z.object({
+  company_id: z.string().uuid().optional().nullable(),
+  contact_id: z.string().uuid().optional().nullable(),
+  invite_email: z.string().email().optional().nullable(),
+  // For email-only invites (new vendors not in directory)
+  company_name: z.string().optional().nullable(),
+}).refine(
+  (data) => data.company_id || data.invite_email,
+  { message: "Either company_id or invite_email is required" }
+)
+
+export const bulkCreateBidInvitesInputSchema = z.object({
+  bid_package_id: z.string().uuid(),
+  invites: z.array(bulkBidInviteItemSchema).min(1, "At least one invite is required"),
+  send_emails: z.boolean().default(true),
+})
+
 export const createBidAddendumInputSchema = z.object({
   bid_package_id: z.string().uuid(),
   title: z.string().optional().nullable(),

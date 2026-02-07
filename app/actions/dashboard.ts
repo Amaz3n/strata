@@ -47,6 +47,7 @@ export async function searchAction(query: string, filters?: any, options?: any) 
       type: result.type,
       title: result.title,
       subtitle: result.subtitle,
+      description: result.description,
       href: result.href,
       project_id: result.project_id,
       project_name: result.project_name,

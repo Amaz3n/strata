@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const proposalLineSchema = z.object({
@@ -208,73 +209,18 @@ export async function sendProposal(proposalId: string, orgId?: string) {
   return proposal
 }
 
-export async function acceptProposal(
-  token: string,
-  signatureData: { signature_svg?: string | null; signer_name: string; signer_ip?: string },
-) {
-  const supabase = createServiceSupabaseClient()
-  const tokenHash = createHmac("sha256", requireProposalSecret()).update(token).digest("hex")
+type ProposalAcceptanceSignatureData = {
+  signature_svg?: string | null
+  signer_name: string
+  signer_ip?: string | null
+  signer_email?: string | null
+  signed_at: string
+  source: "proposal_portal" | "envelope_execution"
+  envelope_id?: string | null
+  document_id?: string | null
+}
 
-  const { data: proposal, error: findError } = await supabase
-    .from("proposals")
-    .select("*, lines:proposal_lines(*), project:projects(name), recipient:contacts(id, full_name)")
-    .eq("token_hash", tokenHash)
-    .in("status", ["draft", "sent"])
-    .maybeSingle()
-
-  if (findError) {
-    console.error("Proposal lookup error:", findError)
-    throw new Error(`Failed to load proposal: ${findError.message}`)
-  }
-
-  console.log("Proposal lookup result:", {
-    found: !!proposal,
-    id: proposal?.id,
-    status: proposal?.status,
-    tokenHash: tokenHash.substring(0, 10) + "..."
-  })
-
-  if (!proposal) {
-    // Let's also check if the proposal exists with any status
-    const { data: anyProposal } = await supabase
-      .from("proposals")
-      .select("id, status")
-      .eq("token_hash", tokenHash)
-      .maybeSingle()
-
-    console.log("Proposal with any status:", anyProposal)
-
-    if (anyProposal?.status === "accepted") {
-      throw new Error("Proposal has already been accepted")
-    }
-
-    throw new Error("Proposal not found")
-  }
-
-  if (proposal.valid_until && new Date(proposal.valid_until) < new Date()) {
-    throw new Error("Proposal has expired")
-  }
-
-  const signaturePayload = {
-    signature_svg: signatureData.signature_svg ?? null,
-    signer_name: signatureData.signer_name,
-    signer_ip: signatureData.signer_ip,
-    signed_at: new Date().toISOString(),
-  }
-
-  const { error: updateError } = await supabase
-    .from("proposals")
-    .update({
-      status: "accepted",
-      accepted_at: new Date().toISOString(),
-      signature_data: signaturePayload,
-    })
-    .eq("id", proposal.id)
-
-  if (updateError) {
-    throw new Error(`Failed to accept proposal: ${updateError.message}`)
-  }
-
+async function resolveProposalProjectId(supabase: any, proposal: any) {
   let projectId = proposal.project_id as string | null
 
   if (!projectId) {
@@ -313,116 +259,256 @@ export async function acceptProposal(
     }
   }
 
+  return projectId
+}
+
+async function finalizeProposalAcceptance(input: {
+  supabase: any
+  proposal: any
+  signaturePayload: ProposalAcceptanceSignatureData
+  executedFileId?: string | null
+}) {
+  const { supabase, proposal, signaturePayload } = input
+  const nowIso = signaturePayload.signed_at
+  const effectiveDate = nowIso.split("T")[0]
+
+  if (proposal.valid_until && new Date(proposal.valid_until) < new Date(nowIso)) {
+    throw new Error("Proposal has expired")
+  }
+
+  const projectId = await resolveProposalProjectId(supabase, proposal)
   if (!projectId) {
     throw new Error("Proposal must be linked to a project before acceptance")
   }
 
-  if (!proposal.project_id || proposal.project_id !== projectId) {
-    const { error: proposalUpdateError } = await supabase
-      .from("proposals")
-      .update({ project_id: projectId })
-      .eq("id", proposal.id)
-
-    if (proposalUpdateError) {
-      throw new Error(`Failed to link proposal to project: ${proposalUpdateError.message}`)
-    }
+  const wasAccepted = proposal.status === "accepted"
+  const proposalUpdatePayload: Record<string, any> = {
+    project_id: projectId,
+    signature_data: signaturePayload,
   }
 
-  const contractNumber = `C-${(proposal.number ?? "").replace(/^P-?/, "") || (proposal.id ?? "").slice(0, 6)}`
-  const { data: contract, error: contractError } = await supabase
-    .from("contracts")
-    .insert({
-      org_id: proposal.org_id,
-      project_id: projectId,
-      proposal_id: proposal.id,
-      number: contractNumber,
-      title: proposal.title ?? `Contract for ${proposal.project?.name ?? "project"}`,
-      status: "active",
-      total_cents: proposal.total_cents,
-      signed_at: new Date().toISOString(),
-      effective_date: new Date().toISOString().split("T")[0],
-      terms: proposal.terms,
-      signature_data: signaturePayload,
-      snapshot: proposal.snapshot,
-    })
-    .select("*")
+  if (!wasAccepted) {
+    proposalUpdatePayload.status = "accepted"
+    proposalUpdatePayload.accepted_at = nowIso
+  }
+
+  const { data: updatedProposal, error: updateProposalError } = await supabase
+    .from("proposals")
+    .update(proposalUpdatePayload)
+    .eq("id", proposal.id)
+    .select("*, lines:proposal_lines(*), project:projects(name), recipient:contacts(id, full_name)")
     .single()
 
-  if (contractError) {
-    throw new Error(`Failed to create contract: ${contractError.message}`)
+  if (updateProposalError || !updatedProposal) {
+    throw new Error(`Failed to accept proposal: ${updateProposalError?.message ?? "missing"}`)
   }
 
-  const budgetLines = (proposal.lines ?? [])
-    .filter((line: any) => line.line_type !== "section" && (!line.is_optional || line.is_selected))
-    .map((line: any, idx: number) => ({
-      org_id: proposal.org_id,
-      cost_code_id: line.cost_code_id ?? null,
-      description: line.description,
-      amount_cents: (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
-      sort_order: idx,
-    }))
+  const snapshotWithExecution = {
+    ...(updatedProposal.snapshot ?? {}),
+    ...(input.executedFileId
+      ? {
+          esign: {
+            executed_file_id: input.executedFileId,
+            source: signaturePayload.source,
+            envelope_id: signaturePayload.envelope_id ?? null,
+            document_id: signaturePayload.document_id ?? null,
+          },
+        }
+      : {}),
+  }
 
-  if (budgetLines.length > 0) {
-    const { data: budget, error: budgetError } = await supabase
-      .from("budgets")
+  const { data: existingContract } = await supabase
+    .from("contracts")
+    .select("*")
+    .eq("org_id", updatedProposal.org_id)
+    .eq("proposal_id", updatedProposal.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  let contract = existingContract
+  let contractCreatedNow = false
+
+  if (!contract) {
+    const contractNumber = `C-${(updatedProposal.number ?? "").replace(/^P-?/, "") || (updatedProposal.id ?? "").slice(0, 6)}`
+    const { data: createdContract, error: contractError } = await supabase
+      .from("contracts")
       .insert({
-        org_id: proposal.org_id,
+        org_id: updatedProposal.org_id,
         project_id: projectId,
-        status: "approved",
-        total_cents: budgetLines.reduce((sum: number, line: any) => sum + (line.amount_cents ?? 0), 0),
+        proposal_id: updatedProposal.id,
+        number: contractNumber,
+        title: updatedProposal.title ?? `Contract for ${updatedProposal.project?.name ?? "project"}`,
+        status: "active",
+        total_cents: updatedProposal.total_cents,
+        signed_at: nowIso,
+        effective_date: effectiveDate,
+        terms: updatedProposal.terms,
+        signature_data: signaturePayload,
+        snapshot: snapshotWithExecution,
       })
-      .select("id")
+      .select("*")
       .single()
 
-    if (budgetError) {
-      throw new Error(`Failed to create budget: ${budgetError.message}`)
+    if (contractError || !createdContract) {
+      throw new Error(`Failed to create contract: ${contractError?.message ?? "missing"}`)
     }
 
-    if (budget) {
-      const linesToInsert = budgetLines.map((line: any) => ({
-        org_id: line.org_id,
-        budget_id: budget.id,
-        cost_code_id: line.cost_code_id,
+    contract = createdContract
+    contractCreatedNow = true
+  } else {
+    const { data: refreshedContract, error: refreshContractError } = await supabase
+      .from("contracts")
+      .update({
+        status: contract.status === "draft" ? "active" : contract.status,
+        signed_at: contract.signed_at ?? nowIso,
+        effective_date: contract.effective_date ?? effectiveDate,
+        signature_data: signaturePayload,
+        snapshot: {
+          ...(contract.snapshot ?? {}),
+          ...snapshotWithExecution,
+        },
+        updated_at: nowIso,
+      })
+      .eq("id", contract.id)
+      .select("*")
+      .single()
+
+    if (refreshContractError || !refreshedContract) {
+      throw new Error(`Failed to refresh contract: ${refreshContractError?.message ?? "missing"}`)
+    }
+
+    contract = refreshedContract
+  }
+
+  if (!contract) {
+    throw new Error("Contract record missing after proposal acceptance")
+  }
+
+  if (input.executedFileId) {
+    await attachFileWithServiceRole({
+      orgId: updatedProposal.org_id,
+      fileId: input.executedFileId,
+      projectId,
+      entityType: "contract",
+      entityId: contract.id,
+      linkRole: "executed_contract",
+      createdBy: null,
+    })
+  }
+
+  if (contractCreatedNow) {
+    const budgetLines = (updatedProposal.lines ?? [])
+      .filter((line: any) => line.line_type !== "section" && (!line.is_optional || line.is_selected))
+      .map((line: any, idx: number) => ({
+        org_id: updatedProposal.org_id,
+        cost_code_id: line.cost_code_id ?? null,
         description: line.description,
-        amount_cents: line.amount_cents,
-        sort_order: line.sort_order,
+        amount_cents: (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
+        sort_order: idx,
       }))
 
-      // Skip budget lines creation for now due to trigger conflict
-      // Budget can be created without lines and lines added manually later
-      console.log("Skipping budget lines creation due to database trigger conflict - budget created successfully")
+    if (budgetLines.length > 0) {
+      const { data: budget, error: budgetError } = await supabase
+        .from("budgets")
+        .insert({
+          org_id: updatedProposal.org_id,
+          project_id: projectId,
+          status: "approved",
+          total_cents: budgetLines.reduce((sum: number, line: any) => sum + (line.amount_cents ?? 0), 0),
+        })
+        .select("id")
+        .single()
+
+      if (budgetError) {
+        throw new Error(`Failed to create budget: ${budgetError.message}`)
+      }
+
+      if (budget) {
+        console.log("Skipping budget lines creation due to database trigger conflict - budget created successfully")
+      }
+    }
+
+    const allowanceLines = (updatedProposal.lines ?? []).filter((line: any) => line.line_type === "allowance")
+    for (const line of allowanceLines) {
+      const { error: allowanceError } = await supabase.from("allowances").insert({
+        org_id: updatedProposal.org_id,
+        project_id: projectId,
+        contract_id: contract.id,
+        name: line.description,
+        budget_cents: line.allowance_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
+      })
+
+      if (allowanceError) {
+        throw new Error(`Failed to create allowance: ${allowanceError.message}`)
+      }
     }
   }
 
-  const allowanceLines = (proposal.lines ?? []).filter((line: any) => line.line_type === "allowance")
-  for (const line of allowanceLines) {
-    const { error: allowanceError } = await supabase.from("allowances").insert({
-      org_id: proposal.org_id,
-      project_id: projectId,
-      contract_id: contract.id,
-      name: line.description,
-      budget_cents: line.allowance_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
-    })
-
-    if (allowanceError) {
-      throw new Error(`Failed to create allowance: ${allowanceError.message}`)
+  if (!wasAccepted) {
+    try {
+      await supabase.from("events").insert({
+        org_id: updatedProposal.org_id,
+        event_type: "proposal_accepted",
+        entity_type: "proposal",
+        entity_id: updatedProposal.id,
+        payload: {
+          contract_id: contract.id,
+          signer_name: signaturePayload.signer_name,
+          source: signaturePayload.source,
+          envelope_id: signaturePayload.envelope_id ?? null,
+          document_id: signaturePayload.document_id ?? null,
+          executed_file_id: input.executedFileId ?? null,
+        },
+        channel: "activity",
+      })
+    } catch (eventError) {
+      console.error("Failed to record proposal accepted event", eventError)
     }
   }
 
-  try {
-    await supabase.from("events").insert({
-      org_id: proposal.org_id,
-      event_type: "proposal_accepted",
-      entity_type: "proposal",
-      entity_id: proposal.id,
-      payload: { contract_id: contract.id, signer_name: signatureData.signer_name },
-      channel: "activity",
-    })
-  } catch (eventError) {
-    console.error("Failed to record proposal accepted event", eventError)
+  return { proposal: updatedProposal, contract }
+}
+
+export async function acceptProposalFromEnvelopeExecution(input: {
+  orgId: string
+  proposalId: string
+  documentId: string
+  envelopeId?: string | null
+  executedFileId: string
+  signerName: string
+  signerEmail?: string | null
+  signerIp?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+
+  const { data: proposal, error: proposalError } = await supabase
+    .from("proposals")
+    .select("*, lines:proposal_lines(*), project:projects(name), recipient:contacts(id, full_name)")
+    .eq("org_id", input.orgId)
+    .eq("id", input.proposalId)
+    .maybeSingle()
+
+  if (proposalError || !proposal) {
+    throw new Error(`Proposal not found for envelope execution: ${proposalError?.message ?? "missing"}`)
   }
 
-  return { proposal, contract }
+  const nowIso = new Date().toISOString()
+  return finalizeProposalAcceptance({
+    supabase,
+    proposal,
+    signaturePayload: {
+      signature_svg: null,
+      signer_name: input.signerName,
+      signer_email: input.signerEmail ?? null,
+      signer_ip: input.signerIp ?? null,
+      signed_at: nowIso,
+      source: "envelope_execution",
+      envelope_id: input.envelopeId ?? null,
+      document_id: input.documentId,
+    },
+    executedFileId: input.executedFileId,
+  })
 }
 
 export async function createDrawScheduleFromContract(

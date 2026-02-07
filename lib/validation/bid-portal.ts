@@ -17,6 +17,7 @@ export const bidPortalSubmissionInputSchema = z.object({
   notes: z.string().optional().nullable(),
   submitted_by_name: z.string().trim().min(1, "Name is required"),
   submitted_by_email: z.string().trim().email("Valid email is required"),
+  file_ids: z.array(z.string().uuid()).optional(),
 })
 
 export type BidPortalSubmissionInput = z.infer<typeof bidPortalSubmissionInputSchema>

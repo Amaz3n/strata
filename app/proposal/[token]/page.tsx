@@ -10,16 +10,38 @@ interface Params {
   params: Promise<{ token: string }>
 }
 
-export default async function ProposalPage({ params }: Params) {
-  const { token } = await params
+function requireProposalSecret() {
   const secret = process.env.PROPOSAL_SECRET
   if (!secret) {
     throw new Error("Missing PROPOSAL_SECRET environment variable")
   }
+  return secret
+}
 
-  const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
-  console.log("Looking up proposal with token:", token.substring(0, 10) + "...", "hash:", tokenHash.substring(0, 10) + "...")
+function pickNextRequiredRequest(
+  requests: Array<{
+    id: string
+    status?: string | null
+    required?: boolean | null
+    sequence?: number | null
+    sent_to_email?: string | null
+  }>,
+) {
+  const ordered = [...requests].sort((a, b) => (a.sequence ?? 1) - (b.sequence ?? 1))
+  const nextRequired = ordered.find(
+    (request) =>
+      request.required !== false &&
+      request.status !== "signed" &&
+      request.status !== "voided" &&
+      request.status !== "expired",
+  )
+  if (!nextRequired?.id) return null
+  return nextRequired
+}
 
+export default async function ProposalPage({ params }: Params) {
+  const { token } = await params
+  const tokenHash = createHmac("sha256", requireProposalSecret()).update(token).digest("hex")
   const supabase = createServiceSupabaseClient()
 
   const { data: proposal, error: proposalError } = await supabase
@@ -37,16 +59,12 @@ export default async function ProposalPage({ params }: Params) {
     .maybeSingle()
 
   if (proposalError) {
-    console.error("Proposal query error:", proposalError)
     throw new Error(`Database error: ${proposalError.message}`)
   }
 
   if (!proposal) {
-    console.log("Proposal not found for token:", token, "hash:", tokenHash)
     notFound()
   }
-
-  console.log("Found proposal:", proposal.id, "status:", proposal.status)
 
   if (!proposal.viewed_at) {
     await supabase.from("proposals").update({ viewed_at: new Date().toISOString() }).eq("id", proposal.id)
@@ -80,9 +98,40 @@ export default async function ProposalPage({ params }: Params) {
     )
   }
 
-  return <ProposalViewClient proposal={proposal as any} token={token} />
+  let canContinueSigning = false
+
+  const { data: proposalDocument } = await supabase
+    .from("documents")
+    .select("id, status")
+    .eq("org_id", proposal.org_id)
+    .eq("source_entity_type", "proposal")
+    .eq("source_entity_id", proposal.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (proposalDocument?.id && proposalDocument.status !== "signed") {
+    const { data: signingRequests } = await supabase
+      .from("document_signing_requests")
+      .select("id, status, required, sequence, sent_to_email")
+      .eq("org_id", proposal.org_id)
+      .eq("document_id", proposalDocument.id)
+      .order("sequence", { ascending: true })
+      .order("created_at", { ascending: true })
+
+    const nextRequired = pickNextRequiredRequest(signingRequests ?? [])
+
+    const recipientEmail = proposal.recipient?.email?.trim()?.toLowerCase() ?? null
+    const nextSignerEmail = nextRequired?.sent_to_email?.trim()?.toLowerCase() ?? null
+    const isIntendedRecipient = !recipientEmail || !nextSignerEmail || recipientEmail === nextSignerEmail
+
+    canContinueSigning = !!nextRequired?.id && isIntendedRecipient
+  }
+
+  return (
+    <ProposalViewClient
+      proposal={proposal as any}
+      continueSigningUrl={canContinueSigning ? `/proposal/${token}/continue` : null}
+    />
+  )
 }
-
-
-
-

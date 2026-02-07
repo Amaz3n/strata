@@ -7,7 +7,7 @@ import {
   listBidInvitesAction,
   listBidSubmissionsAction,
 } from "../actions"
-import { BidPackageDetailClient } from "@/components/bids/bid-package-detail-client"
+import { BidPackageDetailClientNew } from "@/components/bids/bid-package-detail-client-new"
 import { listProjectVendors } from "@/lib/services/project-vendors"
 
 interface BidPackageDetailPageProps {
@@ -43,7 +43,7 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
         { label: bidPackage.title },
       ]}
     >
-      <BidPackageDetailClient
+      <BidPackageDetailClientNew
         projectId={project.id}
         bidPackage={bidPackage}
         invites={invites}

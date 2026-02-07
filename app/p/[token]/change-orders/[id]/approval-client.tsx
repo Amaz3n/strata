@@ -1,41 +1,19 @@
 "use client"
 
-import { useState, useTransition } from "react"
 import { format } from "date-fns"
-import { toast } from "sonner"
 
 import type { ChangeOrder } from "@/lib/types"
-import { approveChangeOrderAction } from "./actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
-import { SignaturePad } from "@/components/portal/signature-pad"
-import { Input } from "@/components/ui/input"
 
 interface Props {
-  token: string
   changeOrder: ChangeOrder & { requires_signature?: boolean | null }
+  continueSigningUrl?: string | null
 }
 
-export function ChangeOrderApprovalClient({ token, changeOrder }: Props) {
-  const [signature, setSignature] = useState<string | null>(null)
-  const [name, setName] = useState("")
-  const [isPending, startTransition] = useTransition()
-  const [approved, setApproved] = useState(false)
-
-  const handleApprove = () => {
-    startTransition(async () => {
-      try {
-        await approveChangeOrderAction({ token, changeOrderId: changeOrder.id, signature, name })
-        setApproved(true)
-        toast.success("Change order approved")
-      } catch (error: any) {
-        console.error("Approval failed", error)
-        toast.error(error?.message ?? "Approval failed")
-      }
-    })
-  }
+export function ChangeOrderApprovalClient({ changeOrder, continueSigningUrl }: Props) {
+  const formatMoney = (cents?: number | null) => `$${((cents ?? 0) / 100).toLocaleString()}`
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-8">
@@ -60,45 +38,42 @@ export function ChangeOrderApprovalClient({ token, changeOrder }: Props) {
             {changeOrder.description && <p className="whitespace-pre-line">{changeOrder.description}</p>}
             {changeOrder.total_cents != null && (
               <p className="text-lg font-semibold text-foreground">
-                Total: ${(changeOrder.total_cents / 100).toLocaleString()}
+                Total: {formatMoney(changeOrder.total_cents)}
               </p>
             )}
+            {changeOrder.approved_at ? (
+              <p className="text-xs text-muted-foreground">
+                Approved on {format(new Date(changeOrder.approved_at), "MMM d, yyyy")}
+              </p>
+            ) : null}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Approve</CardTitle>
+            <CardTitle className="text-base">Approval & Signature</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Approving will notify the builder. {changeOrder.requires_signature ? "Signature is requested below." : ""}
+              Change order approvals now run through Arc's secure document-signing flow.
             </p>
-            <div className="space-y-2">
-              <SignaturePad onChange={setSignature} />
-              <Input
-                placeholder="Type your name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={approved}
-              />
-            </div>
-            <Button
-              onClick={handleApprove}
-              disabled={
-                approved ||
-                isPending ||
-                (changeOrder.requires_signature && !signature) ||
-                name.trim().length === 0
-              }
-            >
-              {isPending ? <Spinner className="mr-2 h-4 w-4" /> : null}
-              {approved ? "Approved" : "Approve change order"}
-            </Button>
+
+            {changeOrder.status === "approved" ? (
+              <div className="rounded-md border bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+                This change order is already approved.
+              </div>
+            ) : continueSigningUrl ? (
+              <Button className="w-full" asChild>
+                <a href={continueSigningUrl}>Continue to secure signing</a>
+              </Button>
+            ) : (
+              <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                The signing link is not active yet. Please use the latest email from your builder.
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
     </div>
   )
 }
-

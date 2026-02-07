@@ -10,16 +10,16 @@ import { Button } from "@/components/ui/button"
 import {
   Sheet,
   SheetContent,
-  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
-import { Calendar, Building2, DollarSign, Clock, FileText, Sparkles } from "@/components/icons"
+import { Clock, Sparkles } from "@/components/icons"
 import { approveChangeOrderAction } from "@/app/(app)/change-orders/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { EnvelopeWizard } from "@/components/esign/envelope-wizard"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
@@ -58,7 +58,6 @@ function formatMoney(cents?: number | null) {
 
 export function ChangeOrderDetailSheet({
   changeOrder,
-  project,
   open,
   onOpenChange,
   onUpdate,
@@ -66,6 +65,7 @@ export function ChangeOrderDetailSheet({
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
+  const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
 
   const loadAttachments = useCallback(async () => {
     if (!changeOrder) return
@@ -98,6 +98,12 @@ export function ChangeOrderDetailSheet({
       loadAttachments()
     }
   }, [open, changeOrder, loadAttachments])
+
+  useEffect(() => {
+    if (!open) {
+      setSignatureWizardOpen(false)
+    }
+  }, [open])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {
@@ -151,16 +157,17 @@ export function ChangeOrderDetailSheet({
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        mobileFullscreen
-        className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation [&>button]:hidden"
-        style={{
-          animationDuration: '150ms',
-          transitionDuration: '150ms'
-        } as React.CSSProperties}
-      >
+    <>
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent
+          side="right"
+          mobileFullscreen
+          className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation [&>button]:hidden"
+          style={{
+            animationDuration: "150ms",
+            transitionDuration: "150ms",
+          }}
+        >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
@@ -345,23 +352,47 @@ export function ChangeOrderDetailSheet({
         </ScrollArea>
 
         {/* Footer */}
-        <div className="flex-shrink-0 border-t bg-muted/30 p-4">
-          <div className="flex gap-2">
-            {canApprove && (
-              <Button onClick={handleApprove} disabled={approving} className="flex-1">
-                {approving ? "Approving..." : "Mark approved"}
+          <div className="flex-shrink-0 border-t bg-muted/30 p-4">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSignatureWizardOpen(true)}
+                className={canApprove ? "flex-1" : "w-1/2"}
+                disabled={!changeOrder.project_id}
+              >
+                Request signature
               </Button>
-            )}
-            <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              className={canApprove ? "flex-1" : "w-full"}
-            >
-              Close
-            </Button>
+              {canApprove && (
+                <Button onClick={handleApprove} disabled={approving} className="flex-1">
+                  {approving ? "Approving..." : "Mark approved"}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                className={canApprove ? "flex-1" : "w-1/2"}
+              >
+                Close
+              </Button>
+            </div>
           </div>
-        </div>
-      </SheetContent>
-    </Sheet>
+        </SheetContent>
+      </Sheet>
+
+      <EnvelopeWizard
+        open={signatureWizardOpen}
+        onOpenChange={setSignatureWizardOpen}
+        sourceEntity={{
+          type: "change_order",
+          id: changeOrder.id,
+          project_id: changeOrder.project_id,
+          title: changeOrder.title,
+          document_type: "change_order",
+        }}
+        sourceLabel="Change order"
+        sheetTitle="Prepare change order for signature"
+      />
+    </>
   )
 }
