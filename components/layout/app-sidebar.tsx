@@ -8,7 +8,6 @@ import {
   MessageSquare,
   Receipt,
   HardHat,
-  Layers,
   ClipboardCheck,
   ClipboardList,
   CheckSquare,
@@ -44,12 +43,12 @@ function getProjectIdFromPath(pathname: string): string | null {
 }
 
 function getProjectSection(pathname: string): string {
-  if (pathname.includes("/drawings")) return "drawings"
+  if (pathname.includes("/drawings")) return "documents"
   if (pathname.includes("/rfis")) return "rfis"
   if (pathname.includes("/submittals")) return "submittals"
   if (pathname.includes("/decisions")) return "decisions"
-  if (pathname.includes("/documents")) return "documents"
-  if (pathname.includes("/files")) return "files"
+  if (pathname.includes("/documents")) return "signatures"
+  if (pathname.includes("/files")) return "documents"
   if (pathname.includes("/proposals")) return "proposals"
   if (pathname.includes("/bids")) return "bids"
   if (pathname.includes("/change-orders")) return "change-orders"
@@ -152,22 +151,16 @@ function buildProjectNavigation(projectId: string, section: string) {
           isActive: section === "tasks",
         },
         {
-          title: "Drawings",
-          url: `${base}/drawings`,
-          icon: Layers,
-          isActive: section === "drawings",
-        },
-        {
-          title: "Files",
+          title: "Documents",
           url: `${base}/files`,
           icon: FileText,
-          isActive: section === "files",
+          isActive: section === "documents",
         },
         {
           title: "Signatures",
           url: `${base}/documents`,
           icon: ClipboardCheck,
-          isActive: section === "documents",
+          isActive: section === "signatures",
         },
         {
           title: "Bids",

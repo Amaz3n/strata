@@ -11,7 +11,6 @@ import {
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 import {
   deleteTilesObjects,
-  getTilesStorageProvider,
   listTilesObjects,
   uploadTilesObject,
 } from "@/lib/storage/drawings-tiles-storage"
@@ -313,111 +312,25 @@ export async function GET(request: NextRequest) {
   if (searchParams.get("delete") === "storage") {
     try {
       console.log("[Cleanup] Starting comprehensive storage cleanup...")
-      const provider = getTilesStorageProvider()
-
-      if (provider === "r2") {
-        const objects = await listTilesObjects({ supabase, limit: 1000 })
-        if (!objects.length) {
-          return NextResponse.json({
-            message: "No R2 objects found",
-            files_found: 0,
-            files_deleted: 0,
-            remaining_files: 0,
-          })
-        }
-
-        await deleteTilesObjects({ supabase, paths: objects.map((o) => o.name) })
-
+      const objects = await listTilesObjects({ supabase, limit: 1000 })
+      if (!objects.length) {
         return NextResponse.json({
-          message: "R2 storage cleanup completed (first 1000 objects)",
-          files_found: objects.length,
-          files_deleted: objects.length,
+          message: "No R2 tile objects found",
+          files_found: 0,
+          files_deleted: 0,
           remaining_files: 0,
-          remaining_list: [],
         })
       }
 
-      // Function to recursively list all files
-      async function listAllFiles(prefix = ""): Promise<string[]> {
-        const allFiles: string[] = []
-
-        const { data: items, error } = await supabase.storage
-          .from("drawings-tiles")
-          .list(prefix, { limit: 1000 })
-
-        if (error) {
-          console.warn(`[Cleanup] Error listing ${prefix}:`, error)
-          return allFiles
-        }
-
-        if (items) {
-          for (const item of items) {
-            const itemPath = prefix ? `${prefix}/${item.name}` : item.name
-
-            if (item.metadata === null) {
-              // This is a folder/prefix, recurse into it
-              console.log(`[Cleanup] Found folder: ${itemPath}`)
-              const subFiles = await listAllFiles(itemPath)
-              allFiles.push(...subFiles)
-            } else {
-              // This is a file
-              allFiles.push(itemPath)
-              console.log(`[Cleanup] Found file: ${itemPath}`)
-            }
-          }
-        }
-
-        return allFiles
-      }
-
-      // Get ALL files recursively
-      console.log("[Cleanup] Listing all files...")
-      const allFiles = await listAllFiles()
-
-      console.log(`[Cleanup] Found ${allFiles.length} total files/folders to process`)
-
-      // Separate actual files from folders
-      const actualFiles = allFiles.filter(path => {
-        // Files have extensions or are in subfolders with filenames
-        return path.includes('.') || path.split('/').length > 2
-      })
-
-      console.log(`[Cleanup] Found ${actualFiles.length} actual files to delete`)
-      console.log("[Cleanup] Files to delete:", actualFiles.slice(0, 10), actualFiles.length > 10 ? `... and ${actualFiles.length - 10} more` : "")
-
-      if (actualFiles.length > 0) {
-        // Delete files in batches of 100 (Supabase limit)
-        const batchSize = 100
-        let totalDeleted = 0
-
-        for (let i = 0; i < actualFiles.length; i += batchSize) {
-          const batch = actualFiles.slice(i, i + batchSize)
-          try {
-            console.log(`[Cleanup] Deleting batch ${Math.floor(i/batchSize) + 1}: ${batch.length} files`)
-            await deleteTilesObjects({ supabase, paths: batch })
-
-            totalDeleted += batch.length
-            console.log(`[Cleanup] Successfully deleted batch ${Math.floor(i/batchSize) + 1}`)
-          } catch (e) {
-            console.error(`[Cleanup] Exception deleting batch ${Math.floor(i/batchSize) + 1}:`, e)
-          }
-        }
-
-        console.log(`[Cleanup] Total files deleted: ${totalDeleted}`)
-      }
-
-      // Final verification
-      const finalFiles = await listAllFiles()
-      const remainingFiles = finalFiles.filter(path => {
-        return path.includes('.') || path.split('/').length > 2
-      })
+      await deleteTilesObjects({ supabase, paths: objects.map((o) => o.name) })
+      const remaining = await listTilesObjects({ supabase, limit: 50 })
 
       return NextResponse.json({
-        message: "Comprehensive storage cleanup completed",
-        files_found: allFiles.length,
-        files_deleted: actualFiles.length,
-        remaining_files: remainingFiles.length,
-        remaining_list: remainingFiles.slice(0, 5)
+        message: "R2 tile storage cleanup completed",
+        files_found: objects.length,
+        files_deleted: objects.length,
+        remaining_files: remaining.length,
+        remaining_list: remaining.map((entry) => entry.name).slice(0, 5),
       })
     } catch (e) {
       console.error("[Cleanup] Storage cleanup failed:", e)
@@ -1131,15 +1044,13 @@ async function generateDrawingTilesInNode(
     }
 
     // 2) Download PDF bytes
-    const { data: pdfFile, error: downloadError } = await supabase.storage
-      .from("project-files")
-      .download(file.storage_path)
-
-    if (downloadError || !pdfFile) {
-      throw new Error(`Failed to download PDF: ${downloadError?.message ?? "unknown error"}`)
-    }
-
-    const pdfBytes = new Uint8Array(await pdfFile.arrayBuffer())
+    const pdfBytes = new Uint8Array(
+      await downloadDrawingPdfObject({
+        supabase,
+        orgId,
+        path: file.storage_path,
+      })
+    )
     const hash = sha256Hex(pdfBytes).slice(0, 16)
 
     console.log(`[TileGen] Downloaded PDF: ${pdfBytes.length} bytes, hash: ${hash}`)

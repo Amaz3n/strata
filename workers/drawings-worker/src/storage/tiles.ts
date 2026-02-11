@@ -7,9 +7,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 
-type TilesStorageProvider = 'supabase' | 'r2';
-
-const SUPABASE_BUCKET = process.env.DRAWINGS_TILES_SUPABASE_BUCKET ?? 'drawings-tiles';
+type TilesStorageProvider = 'r2';
 const R2_BUCKET = process.env.R2_BUCKET ?? 'project-files';
 const R2_PREFIX = 'drawings-tiles';
 const R2_REGION = process.env.R2_REGION ?? 'auto';
@@ -18,8 +16,11 @@ const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === 'true';
 let cachedR2Client: S3Client | null = null;
 
 function getProvider(): TilesStorageProvider {
-  const raw = process.env.DRAWINGS_TILES_STORAGE ?? 'supabase';
-  return raw.toLowerCase() === 'r2' ? 'r2' : 'supabase';
+  const raw = process.env.DRAWINGS_TILES_STORAGE ?? 'r2';
+  if (raw.toLowerCase() !== 'r2') {
+    throw new Error('DRAWINGS_TILES_STORAGE must be set to r2.');
+  }
+  return 'r2';
 }
 
 function isDebugEnabled() {
@@ -41,7 +42,7 @@ function normalizePath(path: string): string {
 
 function normalizeKey(path: string): string {
   const normalized = normalizePath(path);
-  return getProvider() === 'r2' ? `${R2_PREFIX}/${normalized}` : normalized;
+  return `${R2_PREFIX}/${normalized}`;
 }
 
 function getR2Client(): S3Client {
@@ -88,22 +89,12 @@ async function streamToBuffer(stream: any): Promise<Buffer> {
 export function buildTilesBaseUrl(basePath: string): string {
   const override =
     process.env.DRAWINGS_TILES_BASE_URL ?? process.env.NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL;
-  const provider = getProvider();
-  if (provider === 'r2' && !override) {
-    throw new Error('Missing DRAWINGS_TILES_BASE_URL for R2 storage');
-  }
+  getProvider();
   if (override) {
-    debugLog('Using override tiles base URL', { provider, baseUrl: override });
+    debugLog('Using override tiles base URL', { provider: 'r2', baseUrl: override });
     return `${override.replace(/\/$/, '')}/${normalizePath(basePath)}`;
   }
-
-  const supabaseUrl = process.env.SUPABASE_URL;
-  if (!supabaseUrl) {
-    throw new Error('Missing SUPABASE_URL or DRAWINGS_TILES_BASE_URL');
-  }
-
-  debugLog('Using Supabase tiles base URL', { provider, supabaseUrl });
-  return `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/${SUPABASE_BUCKET}/${normalizePath(basePath)}`;
+  throw new Error('Missing DRAWINGS_TILES_BASE_URL or NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL');
 }
 
 export async function uploadTileObject(params: {
@@ -113,91 +104,63 @@ export async function uploadTileObject(params: {
   contentType: string;
   cacheControl?: string;
 }): Promise<void> {
-  const { supabase, path, bytes, contentType } = params;
+  const { supabase: _supabase, path, bytes, contentType } = params;
   const cacheControl = params.cacheControl ?? 'public, max-age=31536000, immutable';
-  const provider = getProvider();
+  getProvider();
   const key = normalizeKey(path);
 
-  debugLog('Uploading tile object', { provider, key, contentType });
+  debugLog('Uploading tile object', { provider: 'r2', key, contentType });
 
-  if (provider === 'r2') {
-    const client = getR2Client();
-    await client.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-        Body: bytes,
-        ContentType: contentType,
-        CacheControl: cacheControl,
-      })
-    );
-    return;
-  }
-
-  const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(key, bytes, {
-    contentType,
-    cacheControl,
-    upsert: true,
-  });
-
-  if (error && !error.message?.includes?.('already exists')) {
-    throw new Error(`Upload failed: ${error.message}`);
-  }
+  const client = getR2Client();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+      Body: bytes,
+      ContentType: contentType,
+      CacheControl: cacheControl,
+    })
+  );
 }
 
 export async function downloadTileObject(params: {
   supabase: SupabaseClient;
   path: string;
 }): Promise<Buffer> {
-  const { supabase, path } = params;
-  const provider = getProvider();
+  const { supabase: _supabase, path } = params;
+  getProvider();
   const key = normalizeKey(path);
 
-  debugLog('Downloading tile object', { provider, key });
+  debugLog('Downloading tile object', { provider: 'r2', key });
 
-  if (provider === 'r2') {
-    const client = getR2Client();
-    const result = await client.send(
-      new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-      })
-    );
-    if (!result.Body) {
-      throw new Error(`Failed to download tile object: empty body for ${key}`);
-    }
-    return streamToBuffer(result.Body);
+  const client = getR2Client();
+  const result = await client.send(
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+    })
+  );
+  if (!result.Body) {
+    throw new Error(`Failed to download tile object: empty body for ${key}`);
   }
-
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).download(key);
-  if (error || !data) {
-    throw new Error(`Failed to download pre-rendered PNG: ${error?.message}`);
-  }
-
-  const bytes = new Uint8Array(await data.arrayBuffer());
-  return Buffer.from(bytes);
+  return streamToBuffer(result.Body);
 }
 
 export async function deleteTileObjects(params: {
   supabase: SupabaseClient;
   paths: string[];
 }): Promise<void> {
-  const { supabase, paths } = params;
-  const provider = getProvider();
+  const { supabase: _supabase, paths } = params;
+  getProvider();
   const keys = paths.map(normalizeKey);
 
-  debugLog('Deleting tile objects', { provider, count: keys.length });
+  debugLog('Deleting tile objects', { provider: 'r2', count: keys.length });
 
-  if (provider === 'r2') {
-    const client = getR2Client();
-    await client.send(
-      new DeleteObjectsCommand({
-        Bucket: R2_BUCKET,
-        Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
-      })
-    );
-    return;
-  }
-
-  await supabase.storage.from(SUPABASE_BUCKET).remove(keys);
+  const client = getR2Client();
+  await client.send(
+    new DeleteObjectsCommand({
+      Bucket: R2_BUCKET,
+      Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+    })
+  );
 }

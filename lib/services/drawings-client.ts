@@ -1,9 +1,7 @@
-import { createClient } from "@/lib/supabase/client"
-
 type UploadUrlResponse = {
   storagePath: string
   uploadUrl: string
-  provider: "supabase" | "r2"
+  provider: "r2"
 }
 
 /**
@@ -12,16 +10,14 @@ type UploadUrlResponse = {
  */
 
 /**
- * Upload a drawing file directly to Supabase Storage from the client
+ * Upload a drawing file directly to R2 from the client
  * This bypasses Next.js Server Actions body size limits
  */
 export async function uploadDrawingFileToStorage(
   file: File,
   projectId: string,
   orgId: string
-): Promise<{ storagePath: string; publicUrl?: string }> {
-  const supabase = createClient()
-
+): Promise<{ storagePath: string }> {
   const response = await fetch("/api/drawings/upload-url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -43,36 +39,21 @@ export async function uploadDrawingFileToStorage(
     throw new Error("Invalid upload response.")
   }
 
-  if (payload.provider === "r2") {
-    const uploadResponse = await fetch(payload.uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": file.type,
-      },
-      body: file,
-    })
-
-    if (!uploadResponse.ok) {
-      throw new Error("Failed to upload file to storage.")
-    }
-
-    return { storagePath }
+  if (payload.provider !== "r2") {
+    throw new Error("R2 uploads are required for drawings.")
   }
 
-  const { error: uploadError } = await supabase.storage
-    .from("project-files")
-    .upload(storagePath, file, {
-      contentType: file.type,
-      upsert: false,
-    })
+  const uploadResponse = await fetch(payload.uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": file.type,
+    },
+    body: file,
+  })
 
-  if (uploadError) {
-    throw new Error(`Failed to upload file: ${uploadError.message}`)
+  if (!uploadResponse.ok) {
+    throw new Error("Failed to upload file to storage.")
   }
 
-  const { data: { publicUrl } } = supabase.storage
-    .from("project-files")
-    .getPublicUrl(storagePath)
-
-  return { storagePath, publicUrl }
+  return { storagePath }
 }

@@ -1,6 +1,5 @@
 "use client"
 
-import { createClient } from "@/lib/supabase/client"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 
 // We'll import PDF.js dynamically to avoid loading issues
@@ -17,6 +16,12 @@ interface ImageGenerationResult {
   height: number
 }
 
+type DrawingsImageUploadUrlResponse = {
+  storagePath: string
+  uploadUrl: string
+  provider: "r2"
+}
+
 /**
  * Generate optimized images from a PDF page using browser Canvas API
  *
@@ -24,7 +29,7 @@ interface ImageGenerationResult {
  * - Works in all browsers (no server dependencies)
  * - Generates 3 resolutions: thumbnail (400px), medium (1200px), full (2400px)
  * - Uses WebP for optimal compression
- * - Uploads directly to Supabase Storage
+ * - Uploads directly to R2 using presigned URLs
  */
 export async function generateImagesFromPDF(
   pdfFile: File,
@@ -100,15 +105,14 @@ export async function generateImagesFromPDF(
 
     onProgress?.("Uploading images...")
 
-    // Upload to Supabase Storage
-    const supabase = createClient()
+    // Upload to R2 storage
     const fullHash = await hashBlob(full)
     const basePath = `${orgId}/${projectId}/drawings/${drawingSetId}/${sheetVersionId}/${fullHash}`
 
     const [thumbUpload, mediumUpload, fullUpload] = await Promise.all([
-      uploadImage(supabase, thumbnail, `${basePath}/thumb.webp`),
-      uploadImage(supabase, medium, `${basePath}/medium.webp`),
-      uploadImage(supabase, full, `${basePath}/full.webp`),
+      uploadImage(thumbnail, `${basePath}/thumb.webp`),
+      uploadImage(medium, `${basePath}/medium.webp`),
+      uploadImage(full, `${basePath}/full.webp`),
     ])
 
     onProgress?.("Complete!")
@@ -164,14 +168,13 @@ export async function generateImagesFromPDF(
       ])
 
       // Upload placeholder images
-      const supabase = createClient()
       const fullHash = await hashBlob(full)
       const basePath = `${orgId}/${projectId}/drawings/${drawingSetId}/${sheetVersionId}/${fullHash}`
 
       const [thumbUpload, mediumUpload, fullUpload] = await Promise.all([
-        uploadImage(supabase, thumbnail, `${basePath}/thumb.webp`),
-        uploadImage(supabase, medium, `${basePath}/medium.webp`),
-        uploadImage(supabase, full, `${basePath}/full.webp`),
+        uploadImage(thumbnail, `${basePath}/thumb.webp`),
+        uploadImage(medium, `${basePath}/medium.webp`),
+        uploadImage(full, `${basePath}/full.webp`),
       ])
 
       return {
@@ -229,32 +232,49 @@ async function resizeCanvas(
 }
 
 /**
- * Upload a blob to Supabase Storage and return public URL
+ * Upload a blob to R2 and return public URL
  */
 async function uploadImage(
-  supabase: ReturnType<typeof createClient>,
   blob: Blob,
   path: string
 ): Promise<{ path: string; publicUrl: string }> {
-  const { error } = await supabase.storage
-    .from("drawings-images")
-    .upload(path, blob, {
+  const uploadPrep = await fetch("/api/drawings/images/upload-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      path,
       contentType: "image/webp",
-      cacheControl: "31536000", // 1 year immutable caching
-      upsert: false,
-    })
+    }),
+  })
 
-  if (error) {
-    throw new Error(`Failed to upload image: ${error.message}`)
+  if (!uploadPrep.ok) {
+    throw new Error("Failed to prepare image upload.")
+  }
+
+  const payload = (await uploadPrep.json()) as DrawingsImageUploadUrlResponse
+
+  if (!payload?.uploadUrl || payload.provider !== "r2") {
+    throw new Error("Invalid image upload URL response.")
+  }
+
+  const uploadResponse = await fetch(payload.uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "image/webp",
+    },
+    body: blob,
+  })
+
+  if (!uploadResponse.ok) {
+    throw new Error("Failed to upload image to R2.")
   }
 
   const publicUrl = buildDrawingsImageUrl(path)
-  if (publicUrl) {
-    return { path, publicUrl }
+  if (!publicUrl) {
+    throw new Error("Missing DRAWINGS_IMAGES_BASE_URL/NEXT_PUBLIC_DRAWINGS_IMAGES_BASE_URL")
   }
 
-  const { data: { publicUrl: fallbackUrl } } = supabase.storage.from("drawings-images").getPublicUrl(path)
-  return { path, publicUrl: fallbackUrl }
+  return { path, publicUrl }
 }
 
 async function hashBlob(blob: Blob): Promise<string> {

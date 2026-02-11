@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { useActionState } from "react"
+import { useSearchParams } from "next/navigation"
 import { GalleryVerticalEnd } from "lucide-react"
 
 import { signInAction, type AuthState } from "@/app/(auth)/auth/actions"
@@ -23,6 +24,11 @@ export function LoginForm({
   ...props
 }: React.ComponentProps<"div">) {
   const [state, formAction, pending] = useActionState(signInAction, initialState)
+  const searchParams = useSearchParams()
+  const inactiveAccount = searchParams.get("reason") === "inactive-account"
+  const displayError =
+    state.error ??
+    (inactiveAccount ? "This account has been archived. Contact your organization admin to restore access." : null)
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
@@ -71,10 +77,10 @@ export function LoginForm({
               </Link>
             </div>
           </Field>
-          {state.error && (
+          {displayError && (
             <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               <AlertCircle className="mt-0.5 h-4 w-4" />
-              <span>{state.error}</span>
+              <span>{displayError}</span>
             </div>
           )}
           <Field>

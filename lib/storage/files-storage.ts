@@ -10,9 +10,8 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3"
 
-export type FilesStorageProvider = "supabase" | "r2"
+export type FilesStorageProvider = "r2"
 
-const SUPABASE_BUCKET = process.env.FILES_SUPABASE_BUCKET ?? "project-files"
 const R2_BUCKET = process.env.R2_BUCKET ?? "project-files"
 const R2_PREFIX = "project-files"
 const R2_REGION = process.env.R2_REGION ?? "auto"
@@ -21,12 +20,11 @@ const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === "true"
 let cachedR2Client: S3Client | null = null
 
 export function getFilesStorageProvider(): FilesStorageProvider {
-  const raw = process.env.FILES_STORAGE ?? "supabase"
-  return raw.toLowerCase() === "r2" ? "r2" : "supabase"
-}
-
-function getSupabaseUrl(): string | null {
-  return process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? null
+  const raw = (process.env.FILES_STORAGE ?? "r2").toLowerCase()
+  if (raw !== "r2") {
+    throw new Error("FILES_STORAGE must be set to r2.")
+  }
+  return "r2"
 }
 
 function normalizeBaseUrl(value?: string | null): string | null {
@@ -39,14 +37,7 @@ export function buildFilesBaseUrl(): string | null {
     process.env.NEXT_PUBLIC_FILES_BASE_URL ?? process.env.FILES_BASE_URL
   if (override) return normalizeBaseUrl(override)
 
-  const provider = getFilesStorageProvider()
-  if (provider === "r2") return null
-
-  const supabaseUrl = getSupabaseUrl()
-  if (!supabaseUrl) return null
-  return normalizeBaseUrl(
-    `${supabaseUrl}/storage/v1/object/public/${SUPABASE_BUCKET}`
-  )
+  return null
 }
 
 function requireFilesBaseUrl(): string {
@@ -87,7 +78,7 @@ function normalizePath(path: string): string {
 
 function normalizeKey(path: string): string {
   const normalized = normalizePath(path)
-  return getFilesStorageProvider() === "r2" ? `${R2_PREFIX}/${normalized}` : normalized
+  return `${R2_PREFIX}/${normalized}`
 }
 
 function assertSafePath(path: string): void {
@@ -154,34 +145,25 @@ export async function uploadFilesObject(params: {
   cacheControl?: string
   upsert?: boolean
 }): Promise<{ storagePath: string }> {
-  const { supabase, orgId, bytes, contentType } = params
+  const { supabase: _supabase, orgId, bytes, contentType } = params
   const cacheControl = params.cacheControl
   const provider = getFilesStorageProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    await client.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: normalizeKey(storagePath),
-        Body: bytes,
-        ContentType: contentType,
-        CacheControl: cacheControl,
-      })
-    )
-    return { storagePath }
+  if (provider !== "r2") {
+    throw new Error("R2 uploads are required. Set FILES_STORAGE=r2.")
   }
 
-  const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(storagePath, bytes, {
-    contentType,
-    cacheControl,
-    upsert: params.upsert ?? false,
-  })
-
-  if (error) {
-    throw new Error(`storage upload failed (${storagePath}): ${error.message}`)
-  }
+  const client = getR2Client()
+  await client.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      Body: bytes,
+      ContentType: contentType,
+      CacheControl: cacheControl,
+    })
+  )
 
   return { storagePath }
 }
@@ -191,25 +173,16 @@ export async function deleteFilesObjects(params: {
   orgId: string
   paths: string[]
 }): Promise<void> {
-  const { supabase, orgId } = params
-  const provider = getFilesStorageProvider()
+  const { supabase: _supabase, orgId } = params
   const keys = params.paths.map((path) => ensureOrgScopedPath(orgId, path))
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    await client.send(
-      new DeleteObjectsCommand({
-        Bucket: R2_BUCKET,
-        Delete: { Objects: keys.map((Key) => ({ Key: normalizeKey(Key) })), Quiet: true },
-      })
-    )
-    return
-  }
-
-  const { error } = await supabase.storage.from(SUPABASE_BUCKET).remove(keys)
-  if (error) {
-    throw new Error(`storage delete failed (${keys.length}): ${error.message}`)
-  }
+  const client = getR2Client()
+  await client.send(
+    new DeleteObjectsCommand({
+      Bucket: R2_BUCKET,
+      Delete: { Objects: keys.map((Key) => ({ Key: normalizeKey(Key) })), Quiet: true },
+    })
+  )
 }
 
 export async function listFilesObjects(params: {
@@ -218,43 +191,24 @@ export async function listFilesObjects(params: {
   prefix?: string
   limit?: number
 }): Promise<Array<{ name: string; size: number; lastModified?: string }>> {
-  const { supabase, orgId } = params
-  const provider = getFilesStorageProvider()
+  const { supabase: _supabase, orgId } = params
   const limit = params.limit ?? 100
   const prefix = params.prefix ? ensureOrgScopedPath(orgId, params.prefix) : `${orgId}/`
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const result = await client.send(
-      new ListObjectsV2Command({
-        Bucket: R2_BUCKET,
-        Prefix: normalizeKey(prefix),
-        MaxKeys: limit,
-      })
-    )
-
-    return (
-      result.Contents?.map((item) => ({
-        name: (item.Key ?? "").replace(new RegExp(`^${R2_PREFIX}/`), ""),
-        size: item.Size ?? 0,
-        lastModified: item.LastModified?.toISOString(),
-      })) ?? []
-    )
-  }
-
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).list(prefix, {
-    limit,
-    sortBy: { column: "name", order: "asc" },
-  })
-  if (error) {
-    throw new Error(`storage list failed (${prefix}): ${error.message}`)
-  }
+  const client = getR2Client()
+  const result = await client.send(
+    new ListObjectsV2Command({
+      Bucket: R2_BUCKET,
+      Prefix: normalizeKey(prefix),
+      MaxKeys: limit,
+    })
+  )
 
   return (
-    data?.map((item) => ({
-      name: joinPath([prefix, item.name]),
-      size: item.metadata?.size || 0,
-      lastModified: item.updated_at ?? undefined,
+    result.Contents?.map((item) => ({
+      name: (item.Key ?? "").replace(new RegExp(`^${R2_PREFIX}/`), ""),
+      size: item.Size ?? 0,
+      lastModified: item.LastModified?.toISOString(),
     })) ?? []
   )
 }
@@ -264,28 +218,18 @@ export async function downloadFilesObject(params: {
   orgId: string
   path: string
 }): Promise<Buffer> {
-  const { supabase, orgId } = params
-  const provider = getFilesStorageProvider()
+  const { supabase: _supabase, orgId } = params
   const key = ensureOrgScopedPath(orgId, params.path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const result = await client.send(
-      new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: normalizeKey(key),
-      })
-    )
-    if (!result.Body) {
-      throw new Error(`Failed to download ${key}: empty body`)
-    }
-    return streamToBuffer(result.Body)
+  const client = getR2Client()
+  const result = await client.send(
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(key),
+    })
+  )
+  if (!result.Body) {
+    throw new Error(`Failed to download ${key}: empty body`)
   }
-
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).download(key)
-  if (error || !data) {
-    throw new Error(`Failed to download ${key}: ${error?.message ?? "unknown error"}`)
-  }
-  const arrayBuffer = await data.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return streamToBuffer(result.Body)
 }

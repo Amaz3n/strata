@@ -173,7 +173,10 @@ export async function uploadMessageFileAction(formData: FormData): Promise<{ id:
     size_bytes: file.size,
     visibility: "private",
     category: category as any,
-    source: "message" as any,
+    folder_path: "/messages",
+    source: "upload",
+    share_with_clients: false,
+    share_with_subs: false,
   })
 
   const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined

@@ -9,13 +9,13 @@ import { downloadPdfObject } from '../storage/pdfs';
 import { uploadTileObject } from '../storage/tiles';
 
 export async function processDrawingSet(supabase: SupabaseClient, job: Job): Promise<void> {
-  const { drawingSetId, projectId, sourceFileId, storagePath } = job.payload;
+  const { drawingSetId, projectId, sourceFileId } = job.payload;
 
   console.log(`📄 Processing drawing set ${drawingSetId}`);
 
   // Validate required parameters
-  if (!drawingSetId || !projectId || !sourceFileId || !storagePath) {
-    throw new Error('Missing required payload fields: drawingSetId, projectId, sourceFileId, storagePath');
+  if (!drawingSetId || !projectId || !sourceFileId) {
+    throw new Error('Missing required payload fields: drawingSetId, projectId, sourceFileId');
   }
 
   // Get drawing set info
@@ -36,6 +36,8 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
     .from('files')
     .select('file_name, storage_path')
     .eq('id', sourceFileId)
+    .eq('org_id', drawingSet.org_id)
+    .eq('project_id', projectId)
     .single();
 
   if (fileError || !fileRecord) {
@@ -49,7 +51,7 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
   try {
     const pdfBytes = await downloadPdfObject({
       supabase,
-      path: storagePath,
+      path: fileRecord.storage_path,
     });
     await fs.writeFile(tempPdfPath, pdfBytes);
     console.log(`Downloaded PDF: ${pdfBytes.length} bytes`);

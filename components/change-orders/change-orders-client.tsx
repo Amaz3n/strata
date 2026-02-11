@@ -53,11 +53,14 @@ interface ChangeOrdersClientProps {
   changeOrders: ChangeOrder[]
   projects: Project[]
   costCodes?: CostCode[]
+  hideProjectFilter?: boolean
 }
 
-export function ChangeOrdersClient({ changeOrders, projects, costCodes }: ChangeOrdersClientProps) {
+export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProjectFilter }: ChangeOrdersClientProps) {
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
-  const [filterProjectId, setFilterProjectId] = useState<string>("all")
+  const [filterProjectId, setFilterProjectId] = useState<string>(() =>
+    hideProjectFilter ? projects[0]?.id ?? "all" : "all",
+  )
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [searchTerm, setSearchTerm] = useState("")
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -139,19 +142,21 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes }: Change
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-            <SelectTrigger className="w-full sm:w-[200px]">
-              <SelectValue placeholder="Filter by project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {!hideProjectFilter && (
+            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+              <SelectTrigger className="w-full sm:w-[200px]">
+                <SelectValue placeholder="Filter by project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
           <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
             <SelectTrigger className="w-full sm:w-[180px]">
@@ -323,7 +328,3 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes }: Change
     </div>
   )
 }
-
-
-
-

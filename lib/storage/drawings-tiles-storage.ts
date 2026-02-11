@@ -12,9 +12,7 @@ import {
 
 import { getDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 
-type TilesStorageProvider = "supabase" | "r2"
-
-const SUPABASE_BUCKET = process.env.DRAWINGS_TILES_SUPABASE_BUCKET ?? "drawings-tiles"
+type TilesStorageProvider = "r2"
 const R2_BUCKET = process.env.R2_BUCKET ?? "project-files"
 const R2_PREFIX = "drawings-tiles"
 const R2_REGION = process.env.R2_REGION ?? "auto"
@@ -23,19 +21,14 @@ const R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE === "true"
 let cachedR2Client: S3Client | null = null
 
 export function getTilesStorageProvider(): TilesStorageProvider {
-  const raw = process.env.DRAWINGS_TILES_STORAGE ?? "supabase"
-  return raw.toLowerCase() === "r2" ? "r2" : "supabase"
+  const raw = process.env.DRAWINGS_TILES_STORAGE ?? "r2"
+  if (raw.toLowerCase() !== "r2") {
+    throw new Error("DRAWINGS_TILES_STORAGE must be set to r2.")
+  }
+  return "r2"
 }
 
 function requireTilesBaseUrl(): string {
-  const override =
-    process.env.DRAWINGS_TILES_BASE_URL ??
-    process.env.NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL
-  const provider = getTilesStorageProvider()
-  if (provider === "r2" && !override) {
-    throw new Error("Missing DRAWINGS_TILES_BASE_URL for R2 storage")
-  }
-
   const baseUrl = getDrawingsTilesBaseUrl()
   if (!baseUrl) {
     throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
@@ -73,7 +66,7 @@ function normalizePath(path: string): string {
 
 function normalizeKey(path: string): string {
   const normalized = normalizePath(path)
-  return getTilesStorageProvider() === "r2" ? `${R2_PREFIX}/${normalized}` : normalized
+  return `${R2_PREFIX}/${normalized}`
 }
 
 async function streamToBuffer(stream: any): Promise<Buffer> {
@@ -104,61 +97,38 @@ export async function uploadTilesObject(params: {
   contentType: string
   cacheControl?: string
 }): Promise<void> {
-  const { supabase, path, bytes, contentType } = params
+  const { supabase: _supabase, path, bytes, contentType } = params
   const cacheControl = params.cacheControl ?? "public, max-age=31536000, immutable"
-  const provider = getTilesStorageProvider()
+  getTilesStorageProvider()
   const key = normalizeKey(path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    await client.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-        Body: bytes,
-        ContentType: contentType,
-        CacheControl: cacheControl,
-      })
-    )
-    return
-  }
-
-  const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(key, bytes, {
-    contentType,
-    cacheControl,
-    upsert: false,
-  })
-
-  if (!error) return
-
-  const msg = (error as any)?.message?.toLowerCase?.() ?? ""
-  if (msg.includes("already exists") || msg.includes("409")) {
-    return
-  }
-
-  throw new Error(`storage upload failed (${key}): ${(error as any)?.message ?? "unknown error"}`)
+  const client = getR2Client()
+  await client.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+      Body: bytes,
+      ContentType: contentType,
+      CacheControl: cacheControl,
+    })
+  )
 }
 
 export async function deleteTilesObjects(params: {
   supabase: SupabaseClient
   paths: string[]
 }): Promise<void> {
-  const { supabase, paths } = params
-  const provider = getTilesStorageProvider()
+  const { supabase: _supabase, paths } = params
+  getTilesStorageProvider()
   const keys = paths.map(normalizeKey)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    await client.send(
-      new DeleteObjectsCommand({
-        Bucket: R2_BUCKET,
-        Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
-      })
-    )
-    return
-  }
-
-  await supabase.storage.from(SUPABASE_BUCKET).remove(keys)
+  const client = getR2Client()
+  await client.send(
+    new DeleteObjectsCommand({
+      Bucket: R2_BUCKET,
+      Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+    })
+  )
 }
 
 export async function listTilesObjects(params: {
@@ -166,40 +136,25 @@ export async function listTilesObjects(params: {
   prefix?: string
   limit?: number
 }): Promise<Array<{ name: string; size: number; lastModified?: string }>> {
-  const { supabase } = params
-  const provider = getTilesStorageProvider()
+  const { supabase: _supabase } = params
+  getTilesStorageProvider()
   const prefix = params.prefix ? normalizePath(params.prefix) : undefined
   const limit = params.limit ?? 100
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const result = await client.send(
-      new ListObjectsV2Command({
-        Bucket: R2_BUCKET,
-        Prefix: prefix ? normalizeKey(prefix) : undefined,
-        MaxKeys: limit,
-      })
-    )
-
-    return (
-      result.Contents?.map((item) => ({
-        name: (item.Key ?? "").replace(new RegExp(`^${R2_PREFIX}/`), ""),
-        size: item.Size ?? 0,
-        lastModified: item.LastModified?.toISOString(),
-      })) ?? []
-    )
-  }
-
-  const { data } = await supabase.storage.from(SUPABASE_BUCKET).list(prefix ?? "", {
-    limit,
-    sortBy: { column: "name", order: "asc" },
-  })
+  const client = getR2Client()
+  const result = await client.send(
+    new ListObjectsV2Command({
+      Bucket: R2_BUCKET,
+      Prefix: prefix ? normalizeKey(prefix) : undefined,
+      MaxKeys: limit,
+    })
+  )
 
   return (
-    data?.map((item) => ({
-      name: item.name,
-      size: item.metadata?.size || 0,
-      lastModified: item.updated_at ?? undefined,
+    result.Contents?.map((item) => ({
+      name: (item.Key ?? "").replace(new RegExp(`^${R2_PREFIX}/`), ""),
+      size: item.Size ?? 0,
+      lastModified: item.LastModified?.toISOString(),
     })) ?? []
   )
 }
@@ -208,25 +163,19 @@ export async function downloadTilesObject(params: {
   supabase: SupabaseClient
   path: string
 }): Promise<Buffer> {
-  const { supabase, path } = params
-  const provider = getTilesStorageProvider()
+  const { supabase: _supabase, path } = params
+  getTilesStorageProvider()
   const key = normalizeKey(path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const result = await client.send(
-      new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-      })
-    )
-    return streamToBuffer(result.Body)
+  const client = getR2Client()
+  const result = await client.send(
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+    })
+  )
+  if (!result.Body) {
+    throw new Error(`Failed to download ${key}: empty body`)
   }
-
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).download(key)
-  if (error || !data) {
-    throw new Error(`Failed to download ${key}: ${error?.message ?? "unknown error"}`)
-  }
-  const arrayBuffer = await data.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return streamToBuffer(result.Body)
 }

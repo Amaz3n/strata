@@ -29,6 +29,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 import { getDrawingPdfSignedUrl } from "@/lib/storage/drawings-pdfs-storage"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 // ============================================================================
 // TYPES
@@ -240,10 +241,11 @@ async function listDrawingSheetsOptimized(
   orgId?: string
 ): Promise<DrawingSheet[]> {
   const parsed = drawingSheetListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const supabase = createServiceSupabaseClient()
 
   let query = supabase
-    .from("drawing_sheets_list")
+    .from("drawing_sheets_list_mv")
     .select("*")
     .eq("org_id", resolvedOrgId)
 
@@ -1227,19 +1229,23 @@ export async function listSheetVersionsWithUrls(
     // Get file URL
     const fileStoragePath = (row.files as any)?.storage_path
     if (fileStoragePath) {
-      const { data: urlData } = await supabase.storage
-        .from("project-files")
-        .createSignedUrl(fileStoragePath, expiresIn)
-      version.file_url = urlData?.signedUrl
+      version.file_url = await getDrawingPdfSignedUrl({
+        supabase,
+        orgId: resolvedOrgId,
+        path: fileStoragePath,
+        expiresIn,
+      }) ?? undefined
     }
 
     // Get thumbnail URL
     const thumbStoragePath = (row.thumbnail as any)?.storage_path
     if (thumbStoragePath) {
-      const { data: urlData } = await supabase.storage
-        .from("project-files")
-        .createSignedUrl(thumbStoragePath, expiresIn)
-      version.thumbnail_url = urlData?.signedUrl
+      version.thumbnail_url = await getDrawingPdfSignedUrl({
+        supabase,
+        orgId: resolvedOrgId,
+        path: thumbStoragePath,
+        expiresIn,
+      }) ?? undefined
     }
 
     versions.push(version)

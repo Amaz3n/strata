@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/sidebar"
 import type { User } from "@/lib/types"
 import { SettingsDialog } from "@/components/settings/settings-dialog"
+import { useHydrated } from "@/hooks/use-hydrated"
 
 export function NavUser({
   user,
@@ -42,6 +43,7 @@ export function NavUser({
   const [signingOut, startSignOut] = useTransition()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string>("profile")
+  const hydrated = useHydrated()
 
   const initials =
     user?.full_name
@@ -52,6 +54,31 @@ export function NavUser({
   const openSettings = (targetTab: string) => {
     setSettingsTab(targetTab)
     setSettingsOpen(true)
+  }
+
+  if (!hydrated) {
+    return (
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            size="lg"
+            className="group-data-[collapsible=icon]:justify-center"
+          >
+            <Avatar className="h-6 w-6 rounded-lg">
+              <AvatarImage src={user?.avatar_url} alt={user?.full_name ?? "User"} />
+              <AvatarFallback className="rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-xs">
+                {initials}
+              </AvatarFallback>
+            </Avatar>
+            {state !== "collapsed" && (
+              <div className="flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">{user?.full_name ?? "Signed In"}</span>
+              </div>
+            )}
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    )
   }
 
   return (

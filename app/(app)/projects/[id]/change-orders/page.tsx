@@ -27,7 +27,12 @@ export default async function ProjectChangeOrdersPage({ params }: ProjectChangeO
   return (
     <PageLayout title="Page">
       <div className="space-y-6">
-        <ChangeOrdersClient changeOrders={changeOrders} projects={[project]} costCodes={costCodes} />
+        <ChangeOrdersClient
+          changeOrders={changeOrders}
+          projects={[project]}
+          costCodes={costCodes}
+          hideProjectFilter
+        />
       </div>
     </PageLayout>
   )

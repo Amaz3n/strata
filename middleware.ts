@@ -51,6 +51,21 @@ export async function middleware(request: NextRequest) {
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
 
+  if (user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {
+    const { count, error: membershipError } = await supabase
+      .from("memberships")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "active")
+
+    if (!membershipError && (count ?? 0) === 0) {
+      await supabase.auth.signOut()
+      const redirectUrl = new URL("/auth/signin", request.url)
+      redirectUrl.searchParams.set("reason", "inactive-account")
+      return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
+    }
+  }
+
   if (user && AUTH_ROUTES.includes(pathname)) {
     const redirectUrl = new URL("/", request.url)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))

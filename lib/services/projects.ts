@@ -7,6 +7,7 @@ import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { ensureDefaultProjectFolders } from "@/lib/services/files"
 
 function mapProject(row: any): Project {
   const location = (row.location ?? {}) as Record<string, unknown>
@@ -93,6 +94,11 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     entityType: "project",
     entityId: data.id as string,
     after: data,
+  })
+
+  // Keep project documents structured from day one.
+  await ensureDefaultProjectFolders(data.id as string, resolvedOrgId).catch((error) => {
+    console.warn("Failed to seed default project folders:", error)
   })
 
   return mapProject(data)

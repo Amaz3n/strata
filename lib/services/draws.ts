@@ -4,6 +4,7 @@ import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
 import { renderDrawSummaryPdf } from "@/lib/pdfs/draw-summary"
+import { uploadFilesObject } from "@/lib/storage/files-storage"
 
 export async function listDueDraws(projectId?: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
@@ -217,14 +218,14 @@ async function generateAndAttachDrawSummary({
   const fileName = `draw-${draw.draw_number}-summary-invoice-${safeInvoice}.pdf`
   const storagePath = `${orgId}/${projectId}/draw-summaries/${timestamp}_${fileName}`
 
-  const file = new File([pdfBuffer as any], fileName, { type: "application/pdf" })
-  const { error: uploadError } = await supabase.storage.from("project-files").upload(storagePath, file, {
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: storagePath,
+    bytes: pdfBuffer,
     contentType: "application/pdf",
     upsert: false,
   })
-  if (uploadError) {
-    throw new Error(`Failed to upload draw summary PDF: ${uploadError.message}`)
-  }
 
   const record = await createFileRecord(
     {
@@ -268,7 +269,6 @@ async function generateAndAttachDrawSummary({
 
   return record.id
 }
-
 
 
 

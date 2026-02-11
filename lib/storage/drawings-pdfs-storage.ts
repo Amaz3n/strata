@@ -7,10 +7,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
 
-type PdfsStorageProvider = "supabase" | "r2"
+type PdfsStorageProvider = "r2"
 
-const SUPABASE_BUCKET =
-  process.env.DRAWINGS_PDFS_SUPABASE_BUCKET ?? "project-files"
 const R2_BUCKET = process.env.R2_BUCKET ?? "project-files"
 const R2_PREFIX = "drawings-pdfs"
 const R2_REGION = process.env.R2_REGION ?? "auto"
@@ -22,8 +20,11 @@ function getProvider(): PdfsStorageProvider {
   const raw =
     process.env.DRAWINGS_PDFS_STORAGE ??
     process.env.FILES_STORAGE ??
-    "supabase"
-  return raw.toLowerCase() === "r2" ? "r2" : "supabase"
+    "r2"
+  if (raw.toLowerCase() !== "r2") {
+    throw new Error("DRAWINGS_PDFS_STORAGE must be set to r2.")
+  }
+  return "r2"
 }
 
 function getR2Client(): S3Client {
@@ -56,7 +57,7 @@ function normalizePath(path: string): string {
 
 function normalizeKey(path: string): string {
   const normalized = normalizePath(path)
-  return getProvider() === "r2" ? `${R2_PREFIX}/${normalized}` : normalized
+  return `${R2_PREFIX}/${normalized}`
 }
 
 async function streamToBuffer(stream: any): Promise<Buffer> {
@@ -84,34 +85,22 @@ export async function createDrawingPdfUploadUrl(params: {
   cacheControl?: string
   expiresIn?: number
 }): Promise<{ storagePath: string; uploadUrl: string; provider: PdfsStorageProvider }> {
-  const { supabase, orgId, contentType } = params
+  const { supabase: _supabase, orgId, contentType } = params
   const provider = getProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const command = new PutObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: normalizeKey(storagePath),
-      ContentType: contentType,
-      CacheControl: params.cacheControl ?? "private, max-age=3600",
-    })
-    const uploadUrl = await getSignedUrl(client, command, {
-      expiresIn: params.expiresIn ?? 600,
-    })
+  const client = getR2Client()
+  const command = new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(storagePath),
+    ContentType: contentType,
+    CacheControl: params.cacheControl ?? "private, max-age=3600",
+  })
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: params.expiresIn ?? 600,
+  })
 
-    return { storagePath, uploadUrl, provider }
-  }
-
-  const { data, error } = await supabase.storage
-    .from(SUPABASE_BUCKET)
-    .createSignedUploadUrl(storagePath)
-
-  if (error || !data?.signedUrl) {
-    throw new Error(`Failed to create signed upload URL: ${error?.message ?? "unknown error"}`)
-  }
-
-  return { storagePath, uploadUrl: data.signedUrl, provider }
+  return { storagePath, uploadUrl, provider }
 }
 
 export async function downloadDrawingPdfObject(params: {
@@ -119,32 +108,21 @@ export async function downloadDrawingPdfObject(params: {
   orgId: string
   path: string
 }): Promise<Buffer> {
-  const { supabase, orgId } = params
-  const provider = getProvider()
+  const { supabase: _supabase, orgId } = params
+  getProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const result = await client.send(
-      new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: normalizeKey(storagePath),
-      })
-    )
-    if (!result.Body) {
-      throw new Error(`Failed to download ${storagePath}: empty body`)
-    }
-    return streamToBuffer(result.Body)
+  const client = getR2Client()
+  const result = await client.send(
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+    })
+  )
+  if (!result.Body) {
+    throw new Error(`Failed to download ${storagePath}: empty body`)
   }
-
-  const { data, error } = await supabase.storage
-    .from(SUPABASE_BUCKET)
-    .download(storagePath)
-  if (error || !data) {
-    throw new Error(`Failed to download ${storagePath}: ${error?.message ?? "unknown error"}`)
-  }
-  const arrayBuffer = await data.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return streamToBuffer(result.Body)
 }
 
 export async function getDrawingPdfSignedUrl(params: {
@@ -153,26 +131,16 @@ export async function getDrawingPdfSignedUrl(params: {
   path: string
   expiresIn?: number
 }): Promise<string | null> {
-  const { supabase, orgId } = params
-  const provider = getProvider()
+  const { supabase: _supabase, orgId } = params
+  getProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
 
-  if (provider === "r2") {
-    const client = getR2Client()
-    const command = new GetObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: normalizeKey(storagePath),
-    })
-    return getSignedUrl(client, command, {
-      expiresIn: params.expiresIn ?? 3600,
-    })
-  }
-
-  const { data, error } = await supabase.storage
-    .from(SUPABASE_BUCKET)
-    .createSignedUrl(storagePath, params.expiresIn ?? 3600)
-  if (error) {
-    throw new Error(`Failed to generate signed URL: ${error.message}`)
-  }
-  return data?.signedUrl ?? null
+  const client = getR2Client()
+  const command = new GetObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(storagePath),
+  })
+  return getSignedUrl(client, command, {
+    expiresIn: params.expiresIn ?? 3600,
+  })
 }

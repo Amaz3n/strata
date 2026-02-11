@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
+import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
+import { getDrawingPdfSignedUrl } from "@/lib/storage/drawings-pdfs-storage"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
@@ -183,13 +185,30 @@ export async function createDrawingSetFromUpload(input: {
   fileSize: number
   mimeType: string
 }): Promise<DrawingSet> {
-  const { supabase, orgId, userId } = await requireOrgContext()
+  const { supabase, orgId } = await requireOrgContext()
+  const { data: project, error: projectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", input.projectId)
+    .maybeSingle()
+
+  if (projectError || !project) {
+    throw new Error("Invalid project scope for drawing upload")
+  }
+
+  const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
+  const expectedPrefix = `${orgId}/${input.projectId}/drawings/sets/`
+
+  if (!normalizedStoragePath.startsWith(expectedPrefix)) {
+    throw new Error("Invalid drawing upload path for project scope")
+  }
 
   // Create file record for the uploaded PDF
   const fileRecord = await createFileRecord({
     project_id: input.projectId,
     file_name: input.fileName,
-    storage_path: input.storagePath,
+    storage_path: normalizedStoragePath,
     mime_type: input.mimeType,
     size_bytes: input.fileSize,
     visibility: "private",
@@ -219,7 +238,7 @@ export async function createDrawingSetFromUpload(input: {
           drawingSetId: drawingSet.id,
           projectId: input.projectId,
           sourceFileId: fileRecord.id,
-          storagePath: input.storagePath,
+          storagePath: fileRecord.storage_path,
           orgId: orgId,
         },
         run_at: new Date().toISOString(),
@@ -320,27 +339,32 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
     throw new Error("Source file not found")
   }
 
-  // Trigger processing again
+  // Queue processing again (worker path supports R2-backed uploads)
   try {
-    const { error: fnError } = await supabase.functions.invoke("process-drawing-set", {
-      body: {
-        drawingSetId: set.id,
-        orgId,
-        projectId: set.project_id,
-        sourceFileId: set.source_file_id,
-        storagePath: fileData.storage_path,
-      },
-    })
+    const { error: jobError } = await supabase
+      .from("outbox")
+      .insert({
+        org_id: orgId,
+        job_type: "process_drawing_set",
+        payload: {
+          drawingSetId: set.id,
+          orgId,
+          projectId: set.project_id,
+          sourceFileId: set.source_file_id,
+          storagePath: fileData.storage_path,
+        },
+        run_at: new Date().toISOString(),
+      })
 
-    if (fnError) {
-      console.error("Failed to trigger drawing processing:", fnError)
+    if (jobError) {
+      console.error("Failed to queue drawing processing:", jobError)
       await updateDrawingSet(set.id, {
         status: "failed",
-        error_message: "Failed to start processing",
+        error_message: "Failed to queue processing",
       })
     }
   } catch (error) {
-    console.error("Failed to invoke edge function:", error)
+    console.error("Failed to queue drawing processing:", error)
   }
 
   revalidatePath("/drawings")
@@ -521,10 +545,7 @@ export async function getSheetOptimizedImageUrlsAction(
   width: number | null
   height: number | null
 } | null> {
-  // Use the scoped client for authorization checks (RLS + org membership),
-  // but use service role for storage signing to avoid Storage RLS edge cases.
   const { supabase, orgId } = await requireOrgContext()
-  const service = createServiceSupabaseClient()
   const { data: sheet, error: sheetError } = await supabase
     .from("drawing_sheets")
     .select("id, current_revision_id")
@@ -565,16 +586,17 @@ export async function getSheetOptimizedImageUrlsAction(
     const storagePath = extractProjectFilesPath(value)
     if (!storagePath) return value
 
-    const { data, error } = await service.storage
-      .from("project-files")
-      .createSignedUrl(storagePath, expiresIn)
-
-    if (error) {
+    try {
+      return await getDrawingPdfSignedUrl({
+        supabase,
+        orgId,
+        path: storagePath,
+        expiresIn,
+      })
+    } catch (error) {
       console.error("Failed to sign image URL:", error)
       return null
     }
-
-    return data?.signedUrl ?? null
   }
 
   const [thumbnailUrl, mediumUrl, fullUrl] = await Promise.all([
@@ -601,14 +623,19 @@ function extractProjectFilesPath(urlOrPath: string): string | null {
     return urlOrPath
   }
 
-  // Expected public URL format:
-  // https://<ref>.supabase.co/storage/v1/object/public/project-files/<path>
-  const marker = "/storage/v1/object/public/project-files/"
-  const idx = urlOrPath.indexOf(marker)
-  if (idx === -1) return null
+  const markers = [
+    "/storage/v1/object/public/project-files/",
+    "/project-files/",
+  ]
 
-  const path = urlOrPath.slice(idx + marker.length)
-  return path ? decodeURIComponent(path) : null
+  for (const marker of markers) {
+    const idx = urlOrPath.indexOf(marker)
+    if (idx === -1) continue
+    const path = urlOrPath.slice(idx + marker.length)
+    if (path) return decodeURIComponent(path)
+  }
+
+  return null
 }
 
 // ============================================================================

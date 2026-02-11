@@ -9,10 +9,20 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { useNotifications } from '@/hooks/use-notifications'
+import { useHydrated } from '@/hooks/use-hydrated'
 import { NotificationList } from './notification-list'
 
 export function NotificationBell() {
   const { unreadCount, isLoading } = useNotifications()
+  const hydrated = useHydrated()
+
+  if (!hydrated) {
+    return (
+      <Button variant="ghost" size="icon" className="relative">
+        <Bell className="h-5 w-5" />
+      </Button>
+    )
+  }
 
   return (
     <Popover>
@@ -35,8 +45,6 @@ export function NotificationBell() {
     </Popover>
   )
 }
-
-
 
 
 

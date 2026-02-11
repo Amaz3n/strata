@@ -27,7 +27,12 @@ export default async function ProjectProposalsPage({ params }: ProjectProposalsP
   return (
     <PageLayout title="Proposals">
       <div className="space-y-6">
-        <ProposalsClient proposals={filtered} projects={[project]} allowNoProject={false} />
+        <ProposalsClient
+          proposals={filtered}
+          projects={[project]}
+          allowNoProject={false}
+          hideAllProjectsFilter
+        />
       </div>
     </PageLayout>
   )

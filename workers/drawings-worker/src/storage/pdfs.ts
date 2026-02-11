@@ -2,9 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { Readable } from 'stream';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
-type PdfsStorageProvider = 'supabase' | 'r2';
-
-const SUPABASE_BUCKET = process.env.DRAWINGS_PDFS_SUPABASE_BUCKET ?? 'project-files';
+type PdfsStorageProvider = 'r2';
 const R2_BUCKET = process.env.R2_BUCKET ?? 'project-files';
 const R2_PREFIX = 'drawings-pdfs';
 const R2_REGION = process.env.R2_REGION ?? 'auto';
@@ -16,8 +14,11 @@ function getProvider(): PdfsStorageProvider {
   const raw =
     process.env.DRAWINGS_PDFS_STORAGE ??
     process.env.DRAWINGS_TILES_STORAGE ??
-    'supabase';
-  return raw.toLowerCase() === 'r2' ? 'r2' : 'supabase';
+    'r2';
+  if (raw.toLowerCase() !== 'r2') {
+    throw new Error('DRAWINGS_PDFS_STORAGE must be set to r2.');
+  }
+  return 'r2';
 }
 
 function normalizePath(path: string): string {
@@ -26,7 +27,7 @@ function normalizePath(path: string): string {
 
 function normalizeKey(path: string): string {
   const normalized = normalizePath(path);
-  return getProvider() === 'r2' ? `${R2_PREFIX}/${normalized}` : normalized;
+  return `${R2_PREFIX}/${normalized}`;
 }
 
 function getR2Client(): S3Client {
@@ -74,29 +75,19 @@ export async function downloadPdfObject(params: {
   supabase: SupabaseClient;
   path: string;
 }): Promise<Buffer> {
-  const { supabase, path } = params;
-  const provider = getProvider();
+  const { supabase: _supabase, path } = params;
+  getProvider();
   const key = normalizeKey(path);
 
-  if (provider === 'r2') {
-    const client = getR2Client();
-    const result = await client.send(
-      new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-      })
-    );
-    if (!result.Body) {
-      throw new Error(`Failed to download PDF: empty body for ${key}`);
-    }
-    return streamToBuffer(result.Body);
+  const client = getR2Client();
+  const result = await client.send(
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+    })
+  );
+  if (!result.Body) {
+    throw new Error(`Failed to download PDF: empty body for ${key}`);
   }
-
-  const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).download(key);
-  if (error || !data) {
-    throw new Error(`Failed to download PDF: ${error?.message}`);
-  }
-
-  const bytes = new Uint8Array(await data.arrayBuffer());
-  return Buffer.from(bytes);
+  return streamToBuffer(result.Body);
 }

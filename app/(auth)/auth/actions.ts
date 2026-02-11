@@ -58,7 +58,17 @@ export async function signInAction(prevState: AuthState, formData: FormData): Pr
   } = await supabase.auth.getUser()
 
   if (user) {
-    await persistOrgCookie(supabase, user.id)
+    const membershipState = await resolveMembershipState(supabase, user.id)
+    if (!membershipState.activeOrgId) {
+      await supabase.auth.signOut()
+      await clearOrgCookie()
+      if (membershipState.hasSuspendedMembership) {
+        return { error: "This account has been archived. Contact your organization admin to restore access." }
+      }
+      return { error: "No active organization is assigned to this account. Contact support for access." }
+    }
+
+    await setOrgCookie(membershipState.activeOrgId)
   }
 
   redirect("/")
@@ -190,26 +200,6 @@ export async function updatePasswordAction(prevState: AuthState, formData: FormD
   redirect("/")
 }
 
-async function persistOrgCookie(supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>, userId: string) {
-  const { data, error } = await supabase
-    .from("memberships")
-    .select("org_id")
-    .eq("user_id", userId)
-    .eq("status", "active")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (error) {
-    console.error("Failed to load default org", error)
-    return
-  }
-
-  if (data?.org_id) {
-    await setOrgCookie(data.org_id)
-  }
-}
-
 async function setOrgCookie(orgId: string) {
   const cookieStore = await cookies()
   if (typeof cookieStore.set === "function") {
@@ -235,6 +225,45 @@ async function clearOrgCookie() {
       sameSite: "lax",
       maxAge: 0,
     })
+  }
+}
+
+async function resolveMembershipState(supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>, userId: string) {
+  const { data: activeMembership, error: activeError } = await supabase
+    .from("memberships")
+    .select("org_id")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (activeError) {
+    console.error("Failed to load active membership", activeError)
+  }
+
+  if (activeMembership?.org_id) {
+    return {
+      activeOrgId: activeMembership.org_id as string,
+      hasSuspendedMembership: false,
+    }
+  }
+
+  const { data: suspendedMembership, error: suspendedError } = await supabase
+    .from("memberships")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("status", "suspended")
+    .limit(1)
+    .maybeSingle()
+
+  if (suspendedError) {
+    console.error("Failed to check suspended membership", suspendedError)
+  }
+
+  return {
+    activeOrgId: null,
+    hasSuspendedMembership: Boolean(suspendedMembership?.id),
   }
 }
 

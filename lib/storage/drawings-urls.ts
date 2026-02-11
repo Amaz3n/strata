@@ -3,25 +3,12 @@ function normalizeBaseUrl(value?: string | null): string | null {
   return value.endsWith("/") ? value.slice(0, -1) : value
 }
 
-function getSupabaseUrl(): string | null {
-  return (
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.SUPABASE_URL ??
-    null
-  )
-}
-
 export function getDrawingsImagesBaseUrl(): string | null {
   const override =
     process.env.NEXT_PUBLIC_DRAWINGS_IMAGES_BASE_URL ??
     process.env.DRAWINGS_IMAGES_BASE_URL
   if (override) return normalizeBaseUrl(override)
-
-  const supabaseUrl = getSupabaseUrl()
-  if (!supabaseUrl) return null
-  return normalizeBaseUrl(
-    `${supabaseUrl}/storage/v1/object/public/drawings-images`
-  )
+  return null
 }
 
 export function getDrawingsTilesBaseUrl(): string | null {
@@ -29,12 +16,7 @@ export function getDrawingsTilesBaseUrl(): string | null {
     process.env.NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL ??
     process.env.DRAWINGS_TILES_BASE_URL
   if (override) return normalizeBaseUrl(override)
-
-  const supabaseUrl = getSupabaseUrl()
-  if (!supabaseUrl) return null
-  return normalizeBaseUrl(
-    `${supabaseUrl}/storage/v1/object/public/drawings-tiles`
-  )
+  return null
 }
 
 export function buildDrawingsImageUrl(path?: string | null): string | null {

@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/sidebar"
 import { switchOrgAction, type OrgMembershipSummary } from "@/app/actions/orgs"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useHydrated } from "@/hooks/use-hydrated"
 
 export function OrgSwitcher({
   org,
@@ -40,6 +41,7 @@ export function OrgSwitcher({
   const [isPending, startTransition] = useTransition()
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const hydrated = useHydrated()
 
   useEffect(() => {
     async function loadOrgs() {
@@ -134,8 +136,20 @@ export function OrgSwitcher({
     )
   }
 
+  if (!hydrated) {
+    return (
+      <SidebarMenu className="w-full">
+        <SidebarMenuItem className="w-full">
+          <SidebarMenuButton className="h-10">
+            {renderCurrent()}
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    )
+  }
+
   return (
-    <SidebarMenu suppressHydrationWarning className="w-full">
+    <SidebarMenu className="w-full">
       <SidebarMenuItem className="w-full">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

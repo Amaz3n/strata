@@ -84,7 +84,7 @@ export async function attachFile(
   // Verify file exists and belongs to org
   const { data: file, error: fileError } = await supabase
     .from("files")
-    .select("id")
+    .select("id, project_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.file_id)
     .single()
@@ -92,6 +92,12 @@ export async function attachFile(
   if (fileError || !file) {
     throw new Error("File not found or access denied")
   }
+
+  if (parsed.project_id && file.project_id && parsed.project_id !== file.project_id) {
+    throw new Error("File project scope does not match attachment scope")
+  }
+
+  const resolvedProjectId = parsed.project_id ?? file.project_id ?? undefined
 
   // Check if link already exists
   const { data: existing } = await supabase
@@ -140,7 +146,7 @@ export async function attachFile(
     .insert({
       org_id: resolvedOrgId,
       file_id: parsed.file_id,
-      project_id: parsed.project_id,
+      project_id: resolvedProjectId,
       entity_type: parsed.entity_type,
       entity_id: parsed.entity_id,
       link_role: parsed.link_role,

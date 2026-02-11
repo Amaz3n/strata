@@ -34,7 +34,7 @@ export default async function AppLayout({
   }
 
   return (
-    <SidebarProvider suppressHydrationWarning>
+    <SidebarProvider>
       <AppSidebar user={currentUser} pipelineBadgeCount={pipelineBadgeCount} />
       <SidebarInset className="min-w-0 overflow-x-hidden">
         <PageTitleProvider>

@@ -390,8 +390,8 @@ export function DrawingsClient({
   }, [sets, selectedSet])
 
   useEffect(() => {
-    if (!selectedSet || !lockSet) return
-    if (initialRevisions.length > 0) return
+    if (!selectedSet) return
+    if (lockSet && initialRevisions.length > 0) return
     fetchRevisions()
   }, [selectedSet, lockSet, fetchRevisions, initialRevisions.length])
 
@@ -1320,7 +1320,7 @@ export function DrawingsClient({
                       const status = resolveSetStatus(set.status)
                       const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
                       const setLink = projectId
-                        ? `/projects/${projectId}/drawings/sets/${set.id}`
+                        ? `/projects/${projectId}/files?tab=drawings&setId=${set.id}`
                         : null
 
                       return (
@@ -1435,7 +1435,7 @@ export function DrawingsClient({
                           const status = resolveSetStatus(set.status)
                           const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
                           const setLink = projectId
-                            ? `/projects/${projectId}/drawings/sets/${set.id}`
+                            ? `/projects/${projectId}/files?tab=drawings&setId=${set.id}`
                             : null
 
                           return (

@@ -54,6 +54,7 @@ interface ProposalsClientProps {
   proposals: ProposalListItem[]
   projects: Array<{ id: string; name: string }>
   allowNoProject?: boolean
+  hideAllProjectsFilter?: boolean
 }
 
 type ProposalEnvelopeStatus = {
@@ -142,10 +143,17 @@ function canPrepareProposalForSignature(proposal: ProposalListItem) {
   return proposal.status !== "accepted" && proposal.esign_status !== "signed"
 }
 
-export function ProposalsClient({ proposals, projects, allowNoProject = true }: ProposalsClientProps) {
+export function ProposalsClient({
+  proposals,
+  projects,
+  allowNoProject = true,
+  hideAllProjectsFilter = false,
+}: ProposalsClientProps) {
   const [items, setItems] = useState<ProposalListItem[]>(proposals)
   const [search, setSearch] = useState("")
-  const [projectFilter, setProjectFilter] = useState("all")
+  const [projectFilter, setProjectFilter] = useState(() =>
+    hideAllProjectsFilter ? projects[0]?.id ?? "all" : "all",
+  )
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, startCreating] = useTransition()
@@ -321,20 +329,22 @@ export function ProposalsClient({ proposals, projects, allowNoProject = true }: 
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-          <Select value={projectFilter} onValueChange={setProjectFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {allowNoProject && <SelectItem value="none">No project yet</SelectItem>}
-              {(projects ?? []).map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {!hideAllProjectsFilter && (
+            <Select value={projectFilter} onValueChange={setProjectFilter}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {allowNoProject && <SelectItem value="none">No project yet</SelectItem>}
+                {(projects ?? []).map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as "all" | StatusKey)}>
             <SelectTrigger className="w-36">
               <SelectValue placeholder="Status" />

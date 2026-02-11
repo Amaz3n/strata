@@ -30,6 +30,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Project } from "@/lib/types"
+import { useHydrated } from "@/hooks/use-hydrated"
 
 function isArchived(status?: Project["status"]) {
   return status === "completed" || status === "cancelled"
@@ -49,6 +50,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
   const [isPending, startTransition] = useTransition()
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const hydrated = useHydrated()
 
   useEffect(() => {
     let mounted = true
@@ -139,6 +141,18 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
           </>
         )}
       </>
+    )
+  }
+
+  if (!hydrated) {
+    return (
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton>
+            {renderCurrent()}
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
     )
   }
 

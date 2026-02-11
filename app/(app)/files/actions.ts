@@ -14,6 +14,13 @@ import {
   getSignedUrl,
   getFileCounts,
   listFolders,
+  createProjectFolder,
+  getProjectFolderPermissions,
+  setProjectFolderPermissions,
+  applyFolderPermissionsToExistingFiles,
+  listFileTimeline,
+  getDefaultFolderForCategory,
+  normalizeFolderPath,
 } from "@/lib/services/files"
 import type { FileRecord, FileWithUrls } from "@/lib/services/files"
 import type { FileListFilters, FileUpdate, FileCategory } from "@/lib/validation/files"
@@ -40,6 +47,7 @@ import { listFileAccessEvents, type FileAccessEvent } from "@/lib/services/file-
 // Re-export types
 export type { FileRecord, FileWithUrls, FileListFilters, FileUpdate, FileCategory, FileLinkWithFile, FileVersion, FileLinkSummary }
 export type { FileAccessEvent }
+export type { ProjectFolderPermissions, FileTimelineEvent } from "@/lib/services/files"
 
 /**
  * List files with optional filters
@@ -69,6 +77,51 @@ export async function getFileCountsAction(projectId?: string): Promise<Record<st
  */
 export async function listFoldersAction(projectId?: string): Promise<string[]> {
   return listFolders(projectId)
+}
+
+/**
+ * Create a virtual folder path for a project.
+ */
+export async function createFolderAction(
+  projectId: string,
+  folderPath: string
+): Promise<string[]> {
+  await createProjectFolder(projectId, folderPath)
+  revalidatePath("/files")
+  revalidatePath(`/projects/${projectId}`)
+  return listFolders(projectId)
+}
+
+/**
+ * Get sharing defaults for a folder path.
+ */
+export async function getFolderPermissionsAction(
+  projectId: string,
+  folderPath: string
+): Promise<{ path: string; share_with_clients: boolean; share_with_subs: boolean; updated_at?: string }> {
+  return getProjectFolderPermissions(projectId, folderPath)
+}
+
+/**
+ * Update folder sharing defaults and optionally apply to existing files.
+ */
+export async function updateFolderPermissionsAction(
+  projectId: string,
+  folderPath: string,
+  permissions: { share_with_clients: boolean; share_with_subs: boolean },
+  applyToExistingFiles: boolean = false
+): Promise<{ affectedFiles: number }> {
+  await setProjectFolderPermissions(projectId, folderPath, permissions)
+
+  let affectedFiles = 0
+  if (applyToExistingFiles) {
+    affectedFiles = await applyFolderPermissionsToExistingFiles(projectId, folderPath)
+  }
+
+  revalidatePath("/files")
+  revalidatePath(`/projects/${projectId}`)
+
+  return { affectedFiles }
 }
 
 /**
@@ -119,6 +172,78 @@ export async function deleteFileAction(fileId: string): Promise<void> {
   revalidatePath("/files")
   if (file?.project_id) {
     revalidatePath(`/projects/${file.project_id}`)
+  }
+}
+
+/**
+ * Bulk move files to a folder (or root when folderPath is null).
+ */
+export async function bulkMoveFilesAction(
+  fileIds: string[],
+  folderPath: string | null,
+  applyFolderDefaults: boolean = true
+): Promise<void> {
+  const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
+  if (uniqueIds.length === 0) return
+
+  const targetFolder = folderPath && folderPath.trim().length > 0
+    ? normalizeFolderPath(folderPath) ?? null
+    : null
+  const projectIds = new Set<string>()
+  const folderDefaultsCache = new Map<string, { share_with_clients: boolean; share_with_subs: boolean }>()
+
+  await Promise.all(
+    uniqueIds.map(async (fileId) => {
+      const existing = await getFile(fileId)
+      if (existing?.project_id) {
+        projectIds.add(existing.project_id)
+      }
+      const updates: FileUpdate = { folder_path: targetFolder }
+
+      if (applyFolderDefaults && targetFolder && existing?.project_id) {
+        const cacheKey = `${existing.project_id}:${targetFolder}`
+        if (!folderDefaultsCache.has(cacheKey)) {
+          const defaults = await getProjectFolderPermissions(existing.project_id, targetFolder)
+          folderDefaultsCache.set(cacheKey, {
+            share_with_clients: defaults.share_with_clients,
+            share_with_subs: defaults.share_with_subs,
+          })
+        }
+        const defaults = folderDefaultsCache.get(cacheKey)!
+        updates.share_with_clients = defaults.share_with_clients
+        updates.share_with_subs = defaults.share_with_subs
+      }
+
+      await updateFile(fileId, updates)
+    })
+  )
+
+  revalidatePath("/files")
+  for (const projectId of projectIds) {
+    revalidatePath(`/projects/${projectId}`)
+  }
+}
+
+/**
+ * Bulk delete files permanently.
+ */
+export async function bulkDeleteFilesAction(fileIds: string[]): Promise<void> {
+  const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
+  if (uniqueIds.length === 0) return
+
+  const projectIds = new Set<string>()
+  const files = await Promise.all(uniqueIds.map((fileId) => getFile(fileId)))
+  for (const file of files) {
+    if (file?.project_id) {
+      projectIds.add(file.project_id)
+    }
+  }
+
+  await Promise.all(uniqueIds.map((fileId) => deleteFile(fileId)))
+
+  revalidatePath("/files")
+  for (const projectId of projectIds) {
+    revalidatePath(`/projects/${projectId}`)
   }
 }
 
@@ -238,6 +363,24 @@ export async function listFileAccessEventsAction(
 }
 
 /**
+ * Consolidated timeline for file lifecycle + access events.
+ */
+export async function listFileTimelineAction(
+  fileId: string,
+  limit: number = 80
+): Promise<Array<{
+  id: string
+  created_at: string
+  source: "access" | "audit" | "event"
+  action: string
+  actor_name?: string
+  actor_email?: string
+  details?: string
+}>> {
+  return listFileTimeline(fileId, limit)
+}
+
+/**
  * Summarize file links for a set of files
  */
 export async function listFileLinkSummaryAction(
@@ -266,6 +409,19 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     throw new Error("No file provided")
   }
 
+  if (projectId) {
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("id", projectId)
+      .maybeSingle()
+
+    if (projectError || !project) {
+      throw new Error("Invalid project scope for upload")
+    }
+  }
+
   // Generate unique storage path
   const timestamp = Date.now()
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
@@ -285,6 +441,22 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
 
   // Infer category from mime type/filename if not provided
   const inferredCategory = category ?? inferCategory(file.name, file.type)
+  const resolvedFolderPath =
+    normalizeFolderPath(folderPath) ??
+    (projectId ? getDefaultFolderForCategory(inferredCategory) : undefined)
+
+  let resolvedShareWithClients = shareWithClientsRaw === "true"
+  let resolvedShareWithSubs = shareWithSubsRaw === "true"
+
+  if (projectId && resolvedFolderPath) {
+    const defaults = await getProjectFolderPermissions(projectId, resolvedFolderPath)
+    if (shareWithClientsRaw === null) {
+      resolvedShareWithClients = defaults.share_with_clients
+    }
+    if (shareWithSubsRaw === null) {
+      resolvedShareWithSubs = defaults.share_with_subs
+    }
+  }
 
   // Create file record
   const record = await createFileRecord({
@@ -295,12 +467,12 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     size_bytes: file.size,
     visibility: "private",
     category: inferredCategory,
-    folder_path: folderPath || undefined,
+    folder_path: resolvedFolderPath,
     description: description || undefined,
     tags,
     source: "upload",
-    share_with_clients: shareWithClientsRaw === "true",
-    share_with_subs: shareWithSubsRaw === "true",
+    share_with_clients: resolvedShareWithClients,
+    share_with_subs: resolvedShareWithSubs,
   })
 
   await createInitialVersion({

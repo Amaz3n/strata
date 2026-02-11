@@ -4,6 +4,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { createVendorBillFromPortal } from "@/lib/services/vendor-bills"
 import { vendorBillCreateSchema, type VendorBillCreate } from "@/lib/validation/vendor-bills"
+import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
 export interface SubmitInvoiceResult {
   success: boolean
@@ -131,15 +132,17 @@ export async function uploadInvoiceFileAction({
     const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
     const storagePath = `${portalToken.org_id}/${portalToken.project_id}/vendor-invoices/${portalToken.company_id}/${timestamp}_${safeName}`
 
-    // Upload to Supabase Storage
-    const { error: uploadError } = await supabase.storage
-      .from("project-files")
-      .upload(storagePath, file, {
+    const fileBytes = new Uint8Array(await file.arrayBuffer())
+    try {
+      await uploadFilesObject({
+        supabase,
+        orgId: portalToken.org_id,
+        path: storagePath,
+        bytes: fileBytes,
         contentType: file.type,
         upsert: false,
       })
-
-    if (uploadError) {
+    } catch (uploadError) {
       console.error("Storage upload error:", uploadError)
       return { success: false, error: "Failed to upload file" }
     }
@@ -167,7 +170,15 @@ export async function uploadInvoiceFileAction({
 
     if (dbError || !fileRecord) {
       // Try to clean up the uploaded file if db insert fails
-      await supabase.storage.from("project-files").remove([storagePath])
+      try {
+        await deleteFilesObjects({
+          supabase,
+          orgId: portalToken.org_id,
+          paths: [storagePath],
+        })
+      } catch (cleanupError) {
+        console.warn("Storage cleanup error:", cleanupError)
+      }
       console.error("DB insert error:", dbError)
       return { success: false, error: "Failed to save file record" }
     }

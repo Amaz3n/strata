@@ -61,17 +61,17 @@ export function FileViewer({
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Find current index when file changes
-  useEffect(() => {
-    if (file && files.length > 0) {
-      const index = files.findIndex((f) => f.id === file.id)
-      if (index >= 0) {
-        setCurrentIndex(index)
-      }
-    }
-  }, [file, files])
-
-  const currentFile = files.length > 0 ? files[currentIndex] : file
+  const hasFileList = files.length > 0
+  const derivedIndexFromFile =
+    hasFileList && file ? files.findIndex((f) => f.id === file.id) : -1
+  const parentControlsSelection = hasFileList && Boolean(file) && Boolean(onFileChange)
+  const activeIndex = parentControlsSelection
+    ? (derivedIndexFromFile >= 0 ? derivedIndexFromFile : 0)
+    : currentIndex
+  const clampedIndex = hasFileList
+    ? Math.min(Math.max(activeIndex, 0), files.length - 1)
+    : 0
+  const currentFile = hasFileList ? files[clampedIndex] : file
 
   // Reset state when file changes
   useEffect(() => {
@@ -80,15 +80,9 @@ export function FileViewer({
     setIsLoading(true)
     setImageDimensions(null)
   }, [file?.id])
-
-  useEffect(() => {
-    if (currentFile) {
-      onFileChange?.(currentFile)
-    }
-  }, [currentFile, onFileChange])
   const hasMultiple = files.length > 1
-  const canPrev = hasMultiple && currentIndex > 0
-  const canNext = hasMultiple && currentIndex < files.length - 1
+  const canPrev = hasMultiple && clampedIndex > 0
+  const canNext = hasMultiple && clampedIndex < files.length - 1
   const hasVersionsPanel =
     Boolean(versions) &&
     Boolean(
@@ -102,23 +96,37 @@ export function FileViewer({
 
   const handlePrev = useCallback(() => {
     if (canPrev) {
-      setCurrentIndex((i) => i - 1)
+      if (parentControlsSelection && onFileChange) {
+        const prevFile = files[clampedIndex - 1]
+        if (prevFile) {
+          onFileChange(prevFile)
+        }
+      } else {
+        setCurrentIndex((i) => Math.max(i - 1, 0))
+      }
       setIsLoading(true)
       setZoom(1)
       setRotation(0)
       setImageDimensions(null)
     }
-  }, [canPrev])
+  }, [canPrev, parentControlsSelection, onFileChange, files, clampedIndex])
 
   const handleNext = useCallback(() => {
     if (canNext) {
-      setCurrentIndex((i) => i + 1)
+      if (parentControlsSelection && onFileChange) {
+        const nextFile = files[clampedIndex + 1]
+        if (nextFile) {
+          onFileChange(nextFile)
+        }
+      } else {
+        setCurrentIndex((i) => i + 1)
+      }
       setIsLoading(true)
       setZoom(1)
       setRotation(0)
       setImageDimensions(null)
     }
-  }, [canNext])
+  }, [canNext, parentControlsSelection, onFileChange, files, clampedIndex])
 
   // Handle image load to get dimensions
   const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -258,7 +266,7 @@ export function FileViewer({
                 )}
                 {hasMultiple && (
                   <span className="ml-2">
-                    • {currentIndex + 1} of {files.length}
+                    • {clampedIndex + 1} of {files.length}
                   </span>
                 )}
               </p>

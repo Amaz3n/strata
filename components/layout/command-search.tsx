@@ -37,6 +37,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import { useHydrated } from "@/hooks/use-hydrated"
 
 interface SearchResult {
   id: string
@@ -61,6 +62,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const hydrated = useHydrated()
   const router = useRouter()
 
   // Search function using server action
@@ -263,80 +265,82 @@ export function CommandSearch({ className }: CommandSearchProps) {
       </Button>
 
       {/* Command Dialog - appears centered on screen */}
-      <CommandDialog open={open} onOpenChange={setOpen} commandProps={{ shouldFilter: false }}>
-        <CommandInput
-          placeholder="Search projects, contacts, invoices, drawings..."
-          value={query}
-          onValueChange={setQuery}
-        />
-        <CommandList>
-          {isLoading && (
-            <div className="py-6 text-center text-sm text-muted-foreground">
-              Searching...
-            </div>
-          )}
-          {!isLoading && query && results.length === 0 && (
-            <CommandEmpty>No results found.</CommandEmpty>
-          )}
-          {!isLoading && results.length > 0 && (
-            <>
-              {Object.entries(groupResults(results)).map(([groupName, groupResults]) => (
-                <CommandGroup key={groupName} heading={groupName}>
-                  {groupResults.map((result) => {
-                    const IconComponent = result.icon
-                    return (
-                      <CommandItem
-                        key={result.id}
-                        value={[
-                          result.title,
-                          result.subtitle,
-                          result.description,
-                          result.project_name,
-                          formatEntityType(result.type),
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        onSelect={() => handleSelect(result)}
-                        className="flex items-start gap-3 py-3 px-2"
-                      >
-                        <IconComponent className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
-                        <div className="flex flex-col gap-1 flex-1 min-w-0">
-                          <div className="font-medium truncate">{result.title}</div>
-                          {result.subtitle && (
-                            <div className="text-xs text-muted-foreground truncate">
-                              {result.subtitle}
-                            </div>
-                          )}
-                          {result.description && (
-                            <div className="text-xs text-muted-foreground truncate line-clamp-2">
-                              {result.description}
-                            </div>
-                          )}
-                          {result.project_name && (
-                            <div className="text-xs text-muted-foreground/70 truncate">
-                              in {result.project_name}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          <Badge variant="secondary" className={`${getTypeColor(result.type)} text-xs`}>
-                            {formatEntityType(result.type)}
-                          </Badge>
-                          {result.updated_at && (
-                            <div className="text-xs text-muted-foreground">
-                              {formatRelativeTime(result.updated_at)}
-                            </div>
-                          )}
-                        </div>
-                      </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
-              ))}
-            </>
-          )}
-        </CommandList>
-      </CommandDialog>
+      {hydrated && (
+        <CommandDialog open={open} onOpenChange={setOpen} commandProps={{ shouldFilter: false }}>
+          <CommandInput
+            placeholder="Search projects, contacts, invoices, drawings..."
+            value={query}
+            onValueChange={setQuery}
+          />
+          <CommandList>
+            {isLoading && (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                Searching...
+              </div>
+            )}
+            {!isLoading && query && results.length === 0 && (
+              <CommandEmpty>No results found.</CommandEmpty>
+            )}
+            {!isLoading && results.length > 0 && (
+              <>
+                {Object.entries(groupResults(results)).map(([groupName, groupResults]) => (
+                  <CommandGroup key={groupName} heading={groupName}>
+                    {groupResults.map((result) => {
+                      const IconComponent = result.icon
+                      return (
+                        <CommandItem
+                          key={result.id}
+                          value={[
+                            result.title,
+                            result.subtitle,
+                            result.description,
+                            result.project_name,
+                            formatEntityType(result.type),
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          onSelect={() => handleSelect(result)}
+                          className="flex items-start gap-3 py-3 px-2"
+                        >
+                          <IconComponent className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+                          <div className="flex flex-col gap-1 flex-1 min-w-0">
+                            <div className="font-medium truncate">{result.title}</div>
+                            {result.subtitle && (
+                              <div className="text-xs text-muted-foreground truncate">
+                                {result.subtitle}
+                              </div>
+                            )}
+                            {result.description && (
+                              <div className="text-xs text-muted-foreground truncate line-clamp-2">
+                                {result.description}
+                              </div>
+                            )}
+                            {result.project_name && (
+                              <div className="text-xs text-muted-foreground/70 truncate">
+                                in {result.project_name}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <Badge variant="secondary" className={`${getTypeColor(result.type)} text-xs`}>
+                              {formatEntityType(result.type)}
+                            </Badge>
+                            {result.updated_at && (
+                              <div className="text-xs text-muted-foreground">
+                                {formatRelativeTime(result.updated_at)}
+                              </div>
+                            )}
+                          </div>
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                ))}
+              </>
+            )}
+          </CommandList>
+        </CommandDialog>
+      )}
     </div>
   )
 }

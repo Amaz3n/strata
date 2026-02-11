@@ -1,6 +1,6 @@
 import type React from "react"
 import type { Metadata, Viewport } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
+import { DM_Sans, DM_Mono } from "next/font/google"
 import Script from "next/script"
 import { Analytics } from "@vercel/analytics/react"
 import "./globals.css"
@@ -8,8 +8,8 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "@/components/ui/sonner"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 
-const _geist = Geist({ subsets: ["latin"] })
-const _geistMono = Geist_Mono({ subsets: ["latin"] })
+const _dmSans = DM_Sans({ subsets: ["latin"], variable: "--font-dm-sans" })
+const _dmMono = DM_Mono({ weight: "400", subsets: ["latin"], variable: "--font-dm-mono" })
 
 // <CHANGE> Updated metadata for Arc
 export const metadata: Metadata = {
@@ -20,7 +20,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: "#1a1b2e",
+  themeColor: "#171a2c",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -34,7 +34,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="font-sans antialiased">
+      <body className={`${_dmSans.variable} ${_dmMono.variable} font-sans antialiased`} style={{ fontOpticalSizing: "auto" }}>
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"

@@ -16,7 +16,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
@@ -58,17 +57,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
-import { BidStatusBadge } from "@/components/bids/bid-status-badge"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { formatFileSize, getMimeIcon, isPreviewable } from "@/components/files/types"
 import { FileViewer } from "@/components/files/file-viewer"
 import {
   attachFileAction,
   detachFileLinkAction,
+  listFilesAction,
+  listFoldersAction,
   listAttachmentsAction,
   uploadFileAction,
 } from "@/app/(app)/files/actions"
+import type { FileWithUrls } from "@/app/(app)/files/actions"
 import {
   createBidAddendumAction,
   bulkCreateBidInvitesAction,
@@ -82,25 +82,23 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { CalendarDays } from "@/components/icons"
 import {
   Building2,
-  Check,
   Clock,
   Copy,
   Download,
   Edit,
-  ExternalLink,
   Eye,
-  File,
   FileText,
   Loader2,
   Mail,
   MoreHorizontal,
+  MoreVertical,
+  FolderOpen,
   Plus,
   Search,
+  Settings,
   Trash2,
   Trophy,
   Upload,
-  User,
-  Users,
   X,
 } from "lucide-react"
 
@@ -110,7 +108,78 @@ function normalizeTrade(value?: string | null): string {
   return value?.trim().toLowerCase() ?? ""
 }
 
-function mapAttachments(links: any[]): AttachedFile[] {
+type BidPackageAttachment = AttachedFile & { folder_path?: string | null }
+
+interface AttachmentFolderNode {
+  id: string
+  name: string
+  path: string
+  files: BidPackageAttachment[]
+  children: AttachmentFolderNode[]
+}
+
+function normalizeFolderPath(value?: string | null): string {
+  if (!value) return ""
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  return withLeadingSlash.replace(/\/+/g, "/").replace(/\/$/, "")
+}
+
+function countNodeFiles(node: AttachmentFolderNode): number {
+  return node.files.length + node.children.reduce((sum, child) => sum + countNodeFiles(child), 0)
+}
+
+function buildAttachmentFolderTree(attachments: BidPackageAttachment[]): AttachmentFolderNode {
+  const root: AttachmentFolderNode = {
+    id: "root",
+    name: "root",
+    path: "",
+    files: [],
+    children: [],
+  }
+
+  for (const attachment of attachments) {
+    const normalizedPath = normalizeFolderPath(attachment.folder_path)
+    if (!normalizedPath) {
+      root.files.push(attachment)
+      continue
+    }
+
+    const parts = normalizedPath.split("/").filter(Boolean)
+    let current = root
+    let runningPath = ""
+
+    for (const part of parts) {
+      runningPath = `${runningPath}/${part}`
+      let child = current.children.find((node) => node.path === runningPath)
+      if (!child) {
+        child = {
+          id: runningPath,
+          name: part,
+          path: runningPath,
+          files: [],
+          children: [],
+        }
+        current.children.push(child)
+      }
+      current = child
+    }
+
+    current.files.push(attachment)
+  }
+
+  const sortNode = (node: AttachmentFolderNode) => {
+    node.children.sort((a, b) => a.name.localeCompare(b.name))
+    node.files.sort((a, b) => a.file_name.localeCompare(b.file_name))
+    node.children.forEach(sortNode)
+  }
+  sortNode(root)
+
+  return root
+}
+
+function mapAttachments(links: any[]): BidPackageAttachment[] {
   return (links ?? []).map((link) => ({
     id: link.file.id,
     linkId: link.id,
@@ -121,6 +190,7 @@ function mapAttachments(links: any[]): AttachedFile[] {
     thumbnail_url: link.file.thumbnail_url,
     created_at: link.created_at,
     link_role: link.link_role,
+    folder_path: link.file.folder_path ?? null,
   }))
 }
 
@@ -129,74 +199,140 @@ function formatCurrency(cents: number | null | undefined): string {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
-function getInviteStatusColor(status: string): string {
-  switch (status) {
-    case "submitted":
-      return "bg-emerald-500/15 text-emerald-600 border-emerald-500/30"
-    case "sent":
-      return "bg-blue-500/15 text-blue-600 border-blue-500/30"
-    case "viewed":
-      return "bg-violet-500/15 text-violet-600 border-violet-500/30"
-    case "declined":
-      return "bg-rose-500/15 text-rose-600 border-rose-500/30"
-    case "withdrawn":
-      return "bg-slate-500/15 text-slate-600 border-slate-500/30"
-    default:
-      return "bg-muted text-muted-foreground border-muted"
+function getVendorStatusInfo(invite: BidInvite, submission?: BidSubmission | null): {
+  status: string
+  color: string
+  activity: string
+} {
+  if (submission?.status === "submitted" && submission.is_current) {
+    return {
+      status: "Submitted",
+      color: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
+      activity: submission.submitted_at
+        ? `Submitted ${formatDistanceToNow(new Date(submission.submitted_at), { addSuffix: true })}`
+        : "Submitted",
+    }
   }
-}
 
-function getInviteStatusInfo(invite: BidInvite): { activity: string } {
   switch (invite.status) {
     case "submitted":
       return {
+        status: "Submitted",
+        color: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
         activity: invite.submitted_at
           ? `Submitted ${formatDistanceToNow(new Date(invite.submitted_at), { addSuffix: true })}`
           : "Submitted",
       }
     case "viewed":
       return {
+        status: "Viewed",
+        color: "bg-violet-500/15 text-violet-600 border-violet-500/30",
         activity: invite.last_viewed_at
           ? `Viewed ${formatDistanceToNow(new Date(invite.last_viewed_at), { addSuffix: true })}`
           : "Viewed",
       }
     case "declined":
       return {
+        status: "Declined",
+        color: "bg-rose-500/15 text-rose-600 border-rose-500/30",
         activity: invite.declined_at
           ? `Declined ${formatDistanceToNow(new Date(invite.declined_at), { addSuffix: true })}`
           : "Declined",
       }
     case "sent":
       return {
+        status: "Invited",
+        color: "bg-blue-500/15 text-blue-600 border-blue-500/30",
         activity: invite.sent_at
           ? `Sent ${formatDistanceToNow(new Date(invite.sent_at), { addSuffix: true })}`
           : "Awaiting response",
       }
     case "draft":
       return {
+        status: "Draft",
+        color: "bg-muted text-muted-foreground border-muted",
         activity: "Not sent yet",
       }
     default:
       return {
+        status: invite.status,
+        color: "bg-muted text-muted-foreground border-muted",
         activity: "—",
       }
   }
 }
 
-// Cleaner documents uploader component for bid packages
-interface BidDocumentsUploaderProps {
-  attachments: AttachedFile[]
-  onAttach: (files: File[]) => Promise<void>
-  onDetach: (linkId: string) => Promise<void>
+interface BidPackageDetailClientProps {
   projectId: string
+  bidPackage: BidPackage
+  invites: BidInvite[]
+  addenda: BidAddendum[]
+  submissions: BidSubmission[]
+  companies: Company[]
+  projectVendors: ProjectVendor[]
 }
 
-function BidDocumentsUploader({
-  attachments,
-  onAttach,
-  onDetach,
+export function BidPackageDetailClientNew({
   projectId,
-}: BidDocumentsUploaderProps) {
+  bidPackage,
+  invites,
+  addenda,
+  submissions,
+  companies,
+  projectVendors,
+}: BidPackageDetailClientProps) {
+  // Core state
+  const [current, setCurrent] = useState(bidPackage)
+  const [inviteList, setInviteList] = useState(invites)
+  const [addendumList, setAddendumList] = useState(addenda)
+  const [submissionList] = useState(submissions)
+
+  // Edit form state
+  const [title, setTitle] = useState(bidPackage.title)
+  const [trade, setTrade] = useState(bidPackage.trade ?? "")
+  const [dueAt, setDueAt] = useState<Date | undefined>(
+    bidPackage.due_at ? new Date(bidPackage.due_at) : undefined
+  )
+  const [status, setStatus] = useState<BidPackageStatus>(bidPackage.status)
+  const [scope, setScope] = useState(bidPackage.scope ?? "")
+  const [instructions, setInstructions] = useState(bidPackage.instructions ?? "")
+
+  // Invite form state
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set())
+  const [companySearch, setCompanySearch] = useState("")
+  const [sendEmails, setSendEmails] = useState(true)
+  const [tradeFilter, setTradeFilter] = useState<string>(normalizeTrade(bidPackage.trade) || "all")
+  const [emailInvites, setEmailInvites] = useState<Array<{ email: string; companyName: string }>>([])
+  const [newEmailInput, setNewEmailInput] = useState("")
+  const [newCompanyNameInput, setNewCompanyNameInput] = useState("")
+
+  // Addendum form state
+  const [addendumTitle, setAddendumTitle] = useState("")
+  const [addendumMessage, setAddendumMessage] = useState("")
+
+  // Attachments state
+  const [packageAttachments, setPackageAttachments] = useState<BidPackageAttachment[]>([])
+  const [addendumAttachments, setAddendumAttachments] = useState<Record<string, AttachedFile[]>>({})
+  const [submissionAttachments, setSubmissionAttachments] = useState<Record<string, AttachedFile[]>>({})
+  const [isLoadingSubmissionAttachments, setIsLoadingSubmissionAttachments] = useState(false)
+  const [projectFiles, setProjectFiles] = useState<FileWithUrls[]>([])
+  const [projectFolders, setProjectFolders] = useState<string[]>([])
+  const [projectFileSearch, setProjectFileSearch] = useState("")
+  const [projectFolderFilter, setProjectFolderFilter] = useState("all")
+  const [selectedProjectFileIds, setSelectedProjectFileIds] = useState<Set<string>>(new Set())
+  const [isLoadingProjectFiles, setIsLoadingProjectFiles] = useState(false)
+
+  // UI state
+  const [editSheetOpen, setEditSheetOpen] = useState(false)
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
+  const [addendumDialogOpen, setAddendumDialogOpen] = useState(false)
+  const [awardDialogOpen, setAwardDialogOpen] = useState(false)
+  const [selectedSubmission, setSelectedSubmission] = useState<BidSubmission | null>(null)
+  const [submissionSheetOpen, setSubmissionSheetOpen] = useState(false)
+  const [detailSubmission, setDetailSubmission] = useState<BidSubmission | null>(null)
+  const [projectFilesSheetOpen, setProjectFilesSheetOpen] = useState(false)
+
+  // File upload state
   const [isUploading, setIsUploading] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -204,23 +340,231 @@ function BidDocumentsUploader({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragCounterRef = useRef(0)
 
+  // Transitions
+  const [isSaving, startSaving] = useTransition()
+  const [isInviting, startInviting] = useTransition()
+  const [isAddingAddendum, startAddingAddendum] = useTransition()
+  const [isAwarding, startAwarding] = useTransition()
+  const [isLinkingFiles, startLinkingFiles] = useTransition()
+
+  // Derived state
+  const vendorCompanyIds = useMemo(
+    () => new Set(projectVendors.map((vendor) => vendor.company_id).filter(Boolean)),
+    [projectVendors]
+  )
+
+  const invitedCompanyIds = useMemo(
+    () => new Set(inviteList.map((inv) => inv.company_id)),
+    [inviteList]
+  )
+
+  const submissionByInviteId = useMemo(() => {
+    const map = new Map<string, BidSubmission>()
+    for (const sub of submissionList) {
+      if (sub.is_current && sub.invite_id) {
+        map.set(sub.invite_id, sub)
+      }
+    }
+    return map
+  }, [submissionList])
+
+  const availableTrades = useMemo(() => {
+    const tradeMap = new Map<string, string>()
+    const addTrade = (tradeValue?: string | null) => {
+      const normalized = normalizeTrade(tradeValue)
+      if (!normalized) return
+      if (!tradeMap.has(normalized) && tradeValue) {
+        tradeMap.set(normalized, tradeValue.trim())
+      }
+    }
+    addTrade(bidPackage.trade)
+    for (const company of companies) {
+      addTrade(company.trade)
+    }
+    return Array.from(tradeMap.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [bidPackage.trade, companies])
+
+  const filteredCompanies = useMemo(() => {
+    const searchLower = companySearch.toLowerCase().trim()
+    return companies
+      .filter((company) => {
+        if (tradeFilter !== "all" && normalizeTrade(company.trade) !== tradeFilter) {
+          return false
+        }
+        if (searchLower && !company.name.toLowerCase().includes(searchLower)) {
+          return false
+        }
+        return true
+      })
+      .sort((a, b) => {
+        const aIsVendor = vendorCompanyIds.has(a.id)
+        const bIsVendor = vendorCompanyIds.has(b.id)
+        if (aIsVendor && !bIsVendor) return -1
+        if (!aIsVendor && bIsVendor) return 1
+        return a.name.localeCompare(b.name)
+      })
+  }, [companies, companySearch, tradeFilter, vendorCompanyIds])
+
+  const getCompanyContactInfo = useCallback(
+    (companyId: string) => {
+      const vendor = projectVendors.find((v) => v.company_id === companyId && v.contact)
+      return vendor?.contact ?? null
+    },
+    [projectVendors]
+  )
+
+  const dueDate = current.due_at ? new Date(current.due_at) : null
+  const isOverdue = dueDate && isPast(dueDate) && !["awarded", "closed", "cancelled"].includes(current.status)
+  const attachedFileIds = useMemo(
+    () => new Set(packageAttachments.map((attachment) => attachment.id)),
+    [packageAttachments]
+  )
+
+  const attachmentsTree = useMemo(
+    () => buildAttachmentFolderTree(packageAttachments),
+    [packageAttachments]
+  )
+
+  const projectFolderOptions = useMemo(() => {
+    const fromFiles = projectFiles
+      .map((file) => normalizeFolderPath(file.folder_path))
+      .filter(Boolean)
+    const merged = new Set<string>([...projectFolders.map((value) => normalizeFolderPath(value)), ...fromFiles])
+    return Array.from(merged).sort((a, b) => a.localeCompare(b))
+  }, [projectFiles, projectFolders])
+
+  const filteredProjectFiles = useMemo(() => {
+    const searchValue = projectFileSearch.trim().toLowerCase()
+    return projectFiles
+      .filter((file) => {
+        const normalizedFolder = normalizeFolderPath(file.folder_path)
+        if (projectFolderFilter !== "all") {
+          if (normalizedFolder !== projectFolderFilter && !normalizedFolder.startsWith(`${projectFolderFilter}/`)) {
+            return false
+          }
+        }
+
+        if (!searchValue) return true
+        const inName = file.file_name.toLowerCase().includes(searchValue)
+        const inFolder = normalizedFolder.toLowerCase().includes(searchValue)
+        const inTags = (file.tags ?? []).some((tag) => tag.toLowerCase().includes(searchValue))
+        return inName || inFolder || inTags
+      })
+      .sort((a, b) => {
+        const aFolder = normalizeFolderPath(a.folder_path)
+        const bFolder = normalizeFolderPath(b.folder_path)
+        if (aFolder !== bFolder) return aFolder.localeCompare(bFolder)
+        return a.file_name.localeCompare(b.file_name)
+      })
+  }, [projectFiles, projectFileSearch, projectFolderFilter])
+
+  // Attachments loading
+  const loadPackageAttachments = useCallback(async () => {
+    const links = await listAttachmentsAction("bid_package", bidPackage.id)
+    setPackageAttachments(mapAttachments(links))
+  }, [bidPackage.id])
+
+  const loadAddendumAttachments = useCallback(async () => {
+    const entries: Record<string, AttachedFile[]> = {}
+    for (const addendum of addendumList) {
+      const links = await listAttachmentsAction("bid_addendum", addendum.id)
+      entries[addendum.id] = mapAttachments(links)
+    }
+    setAddendumAttachments(entries)
+  }, [addendumList])
+
+  useEffect(() => {
+    loadPackageAttachments()
+  }, [loadPackageAttachments])
+
+  useEffect(() => {
+    loadAddendumAttachments()
+  }, [loadAddendumAttachments])
+
+  const loadProjectFiles = useCallback(async () => {
+    setIsLoadingProjectFiles(true)
+    try {
+      const pageSize = 200
+      let offset = 0
+      let hasMore = true
+      let allFiles: FileWithUrls[] = []
+
+      while (hasMore) {
+        const page = await listFilesAction({
+          project_id: projectId,
+          include_archived: false,
+          limit: pageSize,
+          offset,
+        })
+        allFiles = [...allFiles, ...page]
+        hasMore = page.length === pageSize
+        offset += pageSize
+      }
+
+      const folders = await listFoldersAction(projectId)
+      setProjectFiles(allFiles)
+      setProjectFolders(folders)
+    } catch {
+      toast.error("Failed to load project files")
+    } finally {
+      setIsLoadingProjectFiles(false)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    if (!projectFilesSheetOpen) return
+    loadProjectFiles()
+  }, [projectFilesSheetOpen, loadProjectFiles])
+
+  const loadSubmissionAttachments = useCallback(async (submissionId: string) => {
+    setIsLoadingSubmissionAttachments(true)
+    try {
+      const links = await listAttachmentsAction("bid_submission", submissionId)
+      const attachments = mapAttachments(links)
+      setSubmissionAttachments((prev) => ({ ...prev, [submissionId]: attachments }))
+      return attachments
+    } catch {
+      toast.error("Failed to load submission attachments")
+      return []
+    } finally {
+      setIsLoadingSubmissionAttachments(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!submissionSheetOpen || !detailSubmission) return
+    if (submissionAttachments[detailSubmission.id]) return
+    loadSubmissionAttachments(detailSubmission.id)
+  }, [submissionSheetOpen, detailSubmission, submissionAttachments, loadSubmissionAttachments])
+
+  // File upload handlers
   const handleFiles = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return
       setIsUploading(true)
       try {
-        await onAttach(files)
+        for (const file of files) {
+          const formData = new FormData()
+          formData.append("file", file)
+          formData.append("projectId", projectId)
+          formData.append("category", "plans")
+          const uploaded = await uploadFileAction(formData)
+          await attachFileAction(uploaded.id, "bid_package", bidPackage.id, projectId)
+        }
+        await loadPackageAttachments()
         toast.success(`${files.length} file${files.length > 1 ? "s" : ""} uploaded`)
-      } catch (error) {
+      } catch {
         toast.error("Failed to upload files")
       } finally {
         setIsUploading(false)
       }
     },
-    [onAttach]
+    [projectId, bidPackage.id, loadPackageAttachments]
   )
 
-  const handleInputChange = useCallback(
+  const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? [])
       if (fileInputRef.current) fileInputRef.current.value = ""
@@ -260,19 +604,72 @@ function BidDocumentsUploader({
     [handleFiles]
   )
 
-  const handleDetach = useCallback(
+  const handleFileDetach = useCallback(
     async (attachment: AttachedFile) => {
       try {
-        await onDetach(attachment.linkId)
+        await detachFileLinkAction(attachment.linkId)
+        await loadPackageAttachments()
         toast.success(`Removed ${attachment.file_name}`)
-      } catch (error) {
+      } catch {
         toast.error("Failed to remove file")
       }
     },
-    [onDetach]
+    [loadPackageAttachments]
   )
 
-  const handlePreview = useCallback((attachment: AttachedFile) => {
+  const toggleProjectFileSelection = useCallback((fileId: string) => {
+    setSelectedProjectFileIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(fileId)) {
+        next.delete(fileId)
+      } else {
+        next.add(fileId)
+      }
+      return next
+    })
+  }, [])
+
+  const selectAllVisibleProjectFiles = useCallback(() => {
+    setSelectedProjectFileIds((prev) => {
+      const next = new Set(prev)
+      for (const file of filteredProjectFiles) {
+        if (!attachedFileIds.has(file.id)) {
+          next.add(file.id)
+        }
+      }
+      return next
+    })
+  }, [filteredProjectFiles, attachedFileIds])
+
+  const clearProjectFileSelection = useCallback(() => {
+    setSelectedProjectFileIds(new Set())
+  }, [])
+
+  const handleAttachSelectedProjectFiles = useCallback(() => {
+    if (selectedProjectFileIds.size === 0) {
+      toast.error("Select at least one file")
+      return
+    }
+
+    const fileIds = Array.from(selectedProjectFileIds)
+    startLinkingFiles(async () => {
+      try {
+        await Promise.all(
+          fileIds.map((fileId) => attachFileAction(fileId, "bid_package", bidPackage.id, projectId))
+        )
+        await loadPackageAttachments()
+        setProjectFilesSheetOpen(false)
+        setSelectedProjectFileIds(new Set())
+        setProjectFileSearch("")
+        setProjectFolderFilter("all")
+        toast.success(`Added ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} from project files`)
+      } catch {
+        toast.error("Failed to attach selected files")
+      }
+    })
+  }, [selectedProjectFileIds, bidPackage.id, projectId, loadPackageAttachments, startLinkingFiles])
+
+  const handleFilePreview = useCallback((attachment: AttachedFile) => {
     setViewerFile({
       id: attachment.id,
       org_id: "",
@@ -288,7 +685,7 @@ function BidDocumentsUploader({
     setViewerOpen(true)
   }, [])
 
-  const handleDownload = useCallback((attachment: AttachedFile) => {
+  const handleFileDownload = useCallback((attachment: AttachedFile) => {
     if (attachment.download_url) {
       const link = document.createElement("a")
       link.href = attachment.download_url
@@ -297,7 +694,7 @@ function BidDocumentsUploader({
     }
   }, [])
 
-  const previewableFiles = attachments
+  const previewableFiles = packageAttachments
     .filter((a) => isPreviewable(a.mime_type))
     .map((a) => ({
       id: a.id,
@@ -311,311 +708,6 @@ function BidDocumentsUploader({
       download_url: a.download_url,
       thumbnail_url: a.thumbnail_url,
     }))
-
-  return (
-    <div
-      className="space-y-4"
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
-    >
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={handleInputChange}
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.dwg,.dxf,.txt,.csv,.zip"
-      />
-
-      {/* Upload zone */}
-      <div
-        className={cn(
-          "relative flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 transition-all cursor-pointer",
-          isDragging
-            ? "border-primary bg-primary/5"
-            : "border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/50"
-        )}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        {isUploading ? (
-          <>
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <p className="mt-2 text-sm font-medium">Uploading...</p>
-          </>
-        ) : (
-          <>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-              <Upload className="h-6 w-6 text-muted-foreground" />
-            </div>
-            <p className="mt-3 text-sm font-medium">
-              {isDragging ? "Drop files here" : "Drag & drop files here"}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              or click to browse
-            </p>
-          </>
-        )}
-      </div>
-
-      {/* Files grid */}
-      {attachments.length > 0 && (
-        <div className="grid gap-2 sm:grid-cols-2">
-          {attachments.map((attachment) => (
-            <div
-              key={attachment.linkId}
-              className="group flex items-center gap-3 rounded-lg border bg-card p-3 transition-colors hover:bg-accent/50"
-            >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-xl">
-                {getMimeIcon(attachment.mime_type)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{attachment.file_name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {formatFileSize(attachment.size_bytes)}
-                </p>
-              </div>
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                {isPreviewable(attachment.mime_type) && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handlePreview(attachment)
-                    }}
-                  >
-                    <Eye className="h-4 w-4" />
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDownload(attachment)
-                  }}
-                >
-                  <Download className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-destructive hover:text-destructive"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDetach(attachment)
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <FileViewer
-        file={viewerFile}
-        files={previewableFiles}
-        open={viewerOpen}
-        onOpenChange={setViewerOpen}
-        onDownload={(f) => {
-          const attachment = attachments.find((a) => a.id === f.id)
-          if (attachment) handleDownload(attachment)
-        }}
-      />
-    </div>
-  )
-}
-
-interface BidPackageDetailClientProps {
-  projectId: string
-  bidPackage: BidPackage
-  invites: BidInvite[]
-  addenda: BidAddendum[]
-  submissions: BidSubmission[]
-  companies: Company[]
-  projectVendors: ProjectVendor[]
-}
-
-export function BidPackageDetailClientNew({
-  projectId,
-  bidPackage,
-  invites,
-  addenda,
-  submissions,
-  companies,
-  projectVendors,
-}: BidPackageDetailClientProps) {
-  // Core state
-  const [current, setCurrent] = useState(bidPackage)
-  const [inviteList, setInviteList] = useState(invites)
-  const [addendumList, setAddendumList] = useState(addenda)
-  const [submissionList] = useState(submissions)
-
-  // Edit form state
-  const [title, setTitle] = useState(bidPackage.title)
-  const [trade, setTrade] = useState(bidPackage.trade ?? "")
-  const [dueAt, setDueAt] = useState<Date | undefined>(
-    bidPackage.due_at ? new Date(bidPackage.due_at) : undefined
-  )
-  const [status, setStatus] = useState<BidPackageStatus>(bidPackage.status)
-  const [scope, setScope] = useState(bidPackage.scope ?? "")
-  const [instructions, setInstructions] = useState(bidPackage.instructions ?? "")
-
-  // Invite form state - now supports multi-select
-  const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set())
-  const [companySearch, setCompanySearch] = useState("")
-  const [sendEmails, setSendEmails] = useState(true)
-  const [tradeFilter, setTradeFilter] = useState<string>(normalizeTrade(bidPackage.trade) || "all")
-  // Email-only invites for new vendors not in directory
-  const [emailInvites, setEmailInvites] = useState<Array<{ email: string; companyName: string }>>([])
-  const [newEmailInput, setNewEmailInput] = useState("")
-  const [newCompanyNameInput, setNewCompanyNameInput] = useState("")
-
-  // Addendum form state
-  const [addendumTitle, setAddendumTitle] = useState("")
-  const [addendumMessage, setAddendumMessage] = useState("")
-
-  // Attachments state
-  const [packageAttachments, setPackageAttachments] = useState<AttachedFile[]>([])
-  const [addendumAttachments, setAddendumAttachments] = useState<Record<string, AttachedFile[]>>({})
-  const [submissionAttachments, setSubmissionAttachments] = useState<Record<string, AttachedFile[]>>({})
-  const [isLoadingSubmissionAttachments, setIsLoadingSubmissionAttachments] = useState(false)
-
-  // Dialogs state
-  const [editSheetOpen, setEditSheetOpen] = useState(false)
-  const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
-  const [addendumDialogOpen, setAddendumDialogOpen] = useState(false)
-  const [awardDialogOpen, setAwardDialogOpen] = useState(false)
-  const [selectedSubmission, setSelectedSubmission] = useState<BidSubmission | null>(null)
-  const [submissionSheetOpen, setSubmissionSheetOpen] = useState(false)
-  const [detailSubmission, setDetailSubmission] = useState<BidSubmission | null>(null)
-
-  // Transitions
-  const [isSaving, startSaving] = useTransition()
-  const [isInviting, startInviting] = useTransition()
-  const [isAddingAddendum, startAddingAddendum] = useTransition()
-  const [isAwarding, startAwarding] = useTransition()
-
-  // Derived state
-  const vendorCompanyIds = useMemo(
-    () => new Set(projectVendors.map((vendor) => vendor.company_id).filter(Boolean)),
-    [projectVendors]
-  )
-
-  // Companies already invited to this bid package
-  const invitedCompanyIds = useMemo(
-    () => new Set(inviteList.map((inv) => inv.company_id)),
-    [inviteList]
-  )
-
-  // Unique trades from all companies for the filter dropdown
-  const availableTrades = useMemo(() => {
-    const tradeMap = new Map<string, string>()
-    const addTrade = (tradeValue?: string | null) => {
-      const normalized = normalizeTrade(tradeValue)
-      if (!normalized) return
-      if (!tradeMap.has(normalized) && tradeValue) {
-        tradeMap.set(normalized, tradeValue.trim())
-      }
-    }
-    addTrade(bidPackage.trade)
-    for (const company of companies) {
-      addTrade(company.trade)
-    }
-    return Array.from(tradeMap.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label))
-  }, [bidPackage.trade, companies])
-
-  // Filtered and sorted companies for the invite dialog
-  const filteredCompanies = useMemo(() => {
-    const searchLower = companySearch.toLowerCase().trim()
-    return companies
-      .filter((company) => {
-        // Filter by trade
-        if (tradeFilter !== "all" && normalizeTrade(company.trade) !== tradeFilter) {
-          return false
-        }
-        // Filter by search term
-        if (searchLower && !company.name.toLowerCase().includes(searchLower)) {
-          return false
-        }
-        return true
-      })
-      .sort((a, b) => {
-        // Sort: project vendors first, then alphabetically
-        const aIsVendor = vendorCompanyIds.has(a.id)
-        const bIsVendor = vendorCompanyIds.has(b.id)
-        if (aIsVendor && !bIsVendor) return -1
-        if (!aIsVendor && bIsVendor) return 1
-        return a.name.localeCompare(b.name)
-      })
-  }, [companies, companySearch, tradeFilter, vendorCompanyIds])
-
-  // Get contact/email for a company from project vendors
-  const getCompanyContactInfo = useCallback(
-    (companyId: string) => {
-      const vendor = projectVendors.find((v) => v.company_id === companyId && v.contact)
-      return vendor?.contact ?? null
-    },
-    [projectVendors]
-  )
-
-  const dueDate = current.due_at ? new Date(current.due_at) : null
-  const isOverdue = dueDate && isPast(dueDate) && !["awarded", "closed", "cancelled"].includes(current.status)
-  const submittedCount = submissionList.filter((s) => s.status === "submitted" && s.is_current).length
-  const sentInvitesCount = inviteList.filter((i) => i.status !== "draft").length
-
-  // Attachments loading
-  const loadPackageAttachments = useCallback(async () => {
-    const links = await listAttachmentsAction("bid_package", bidPackage.id)
-    setPackageAttachments(mapAttachments(links))
-  }, [bidPackage.id])
-
-  const loadAddendumAttachments = useCallback(async () => {
-    const entries: Record<string, AttachedFile[]> = {}
-    for (const addendum of addendumList) {
-      const links = await listAttachmentsAction("bid_addendum", addendum.id)
-      entries[addendum.id] = mapAttachments(links)
-    }
-    setAddendumAttachments(entries)
-  }, [addendumList])
-
-  useEffect(() => {
-    loadPackageAttachments()
-  }, [loadPackageAttachments])
-
-  useEffect(() => {
-    loadAddendumAttachments()
-  }, [loadAddendumAttachments])
-
-  const loadSubmissionAttachments = useCallback(async (submissionId: string) => {
-    setIsLoadingSubmissionAttachments(true)
-    try {
-      const links = await listAttachmentsAction("bid_submission", submissionId)
-      const attachments = mapAttachments(links)
-      setSubmissionAttachments((prev) => ({ ...prev, [submissionId]: attachments }))
-      return attachments
-    } catch (error) {
-      console.error("Failed to load submission attachments:", error)
-      toast.error("Failed to load submission attachments")
-      return []
-    } finally {
-      setIsLoadingSubmissionAttachments(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!submissionSheetOpen || !detailSubmission) return
-    if (submissionAttachments[detailSubmission.id]) return
-    loadSubmissionAttachments(detailSubmission.id)
-  }, [submissionSheetOpen, detailSubmission, submissionAttachments, loadSubmissionAttachments])
 
   // Handlers
   const handleSave = () => {
@@ -657,19 +749,16 @@ export function BidPackageDetailClientNew({
     }
     startInviting(async () => {
       try {
-        // Build the invite items - for each company, try to get a contact from project vendors
         const companyInviteItems = Array.from(selectedCompanyIds).map((companyId) => {
           const contact = getCompanyContactInfo(companyId)
           const company = companies.find((c) => c.id === companyId)
           return {
             company_id: companyId,
             contact_id: contact?.id ?? null,
-            // Use contact email, or fall back to company email
             invite_email: contact?.email || company?.email || null,
           }
         })
 
-        // Add email-only invites (new vendors)
         const emailOnlyInviteItems = emailInvites.map((item) => ({
           company_id: null,
           contact_id: null,
@@ -683,10 +772,7 @@ export function BidPackageDetailClientNew({
           send_emails: sendEmails,
         })
 
-        // Add created invites to the list
         setInviteList((prev) => [...result.created, ...prev])
-
-        // Reset form
         setSelectedCompanyIds(new Set())
         setCompanySearch("")
         setEmailInvites([])
@@ -694,7 +780,6 @@ export function BidPackageDetailClientNew({
         setNewCompanyNameInput("")
         setInviteDialogOpen(false)
 
-        // Show success message with details
         const successCount = result.created.length
         const failedCount = result.failed.length
         const emailCount = result.emailsSent
@@ -705,30 +790,14 @@ export function BidPackageDetailClientNew({
           parts.push(`${emailCount} email${emailCount !== 1 ? "s" : ""} sent`)
         }
         if (newCompanies > 0) {
-          parts.push(`${newCompanies} new compan${newCompanies !== 1 ? "ies" : "y"} added to directory`)
+          parts.push(`${newCompanies} new compan${newCompanies !== 1 ? "ies" : "y"} added`)
         }
 
-        const failureSummary =
-          failedCount > 0
-            ? (() => {
-                const details = result.failed
-                  .slice(0, 3)
-                  .map((item) => `${item.identifier}: ${item.error}`)
-                  .join("; ")
-                const more = failedCount > 3 ? ` (+${failedCount - 3} more)` : ""
-                return `Failed: ${details}${more}`
-              })()
-            : ""
-
-        const description = [parts.join(", "), failureSummary].filter(Boolean).join(" · ") || undefined
-
         if (failedCount > 0) {
-          toast.warning(`Created ${successCount} invites, ${failedCount} failed`, {
-            description,
-          })
+          toast.warning(`Created ${successCount} invites, ${failedCount} failed`)
         } else {
           toast.success(`Created ${successCount} invite${successCount !== 1 ? "s" : ""}`, {
-            description,
+            description: parts.join(", ") || undefined,
           })
         }
       } catch (error: any) {
@@ -741,24 +810,19 @@ export function BidPackageDetailClientNew({
     const email = newEmailInput.trim().toLowerCase()
     if (!email) return
 
-    // Basic email validation
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       toast.error("Please enter a valid email address")
       return
     }
 
-    // Check if already added
     if (emailInvites.some((inv) => inv.email === email)) {
       toast.error("This email has already been added")
       return
     }
 
-    // Check if a company with this email already exists
     const existingCompany = companies.find((c) => c.email?.toLowerCase() === email)
     if (existingCompany) {
-      toast.error(`A company with this email already exists: ${existingCompany.name}`, {
-        description: "Select it from the list instead",
-      })
+      toast.error(`A company with this email already exists: ${existingCompany.name}`)
       return
     }
 
@@ -853,22 +917,6 @@ export function BidPackageDetailClientNew({
     setSubmissionSheetOpen(true)
   }, [])
 
-  const handleSubmissionAttachments = useCallback(
-    async (submission: BidSubmission) => {
-      const existing = submissionAttachments[submission.id]
-      const attachments = existing ?? (await loadSubmissionAttachments(submission.id))
-      if (attachments.length === 1 && attachments[0].download_url) {
-        const link = document.createElement("a")
-        link.href = attachments[0].download_url
-        link.download = attachments[0].file_name
-        link.click()
-        return
-      }
-      openSubmissionSheet(submission)
-    },
-    [loadSubmissionAttachments, openSubmissionSheet, submissionAttachments]
-  )
-
   const handleAward = () => {
     if (!selectedSubmission) return
     startAwarding(async () => {
@@ -885,35 +933,27 @@ export function BidPackageDetailClientNew({
     })
   }
 
-  const handleAttach = useCallback(
-    async (files: File[], entityType: "bid_package" | "bid_addendum", entityId: string) => {
+  const handleAddendumAttach = useCallback(
+    async (files: File[], addendumId: string) => {
       for (const file of files) {
         const formData = new FormData()
         formData.append("file", file)
         formData.append("projectId", projectId)
         formData.append("category", "plans")
         const uploaded = await uploadFileAction(formData)
-        await attachFileAction(uploaded.id, entityType, entityId, projectId)
+        await attachFileAction(uploaded.id, "bid_addendum", addendumId, projectId)
       }
-      if (entityType === "bid_package") {
-        await loadPackageAttachments()
-      } else {
-        await loadAddendumAttachments()
-      }
+      await loadAddendumAttachments()
     },
-    [projectId, loadPackageAttachments, loadAddendumAttachments]
+    [projectId, loadAddendumAttachments]
   )
 
-  const handleDetach = useCallback(
-    async (linkId: string, entityType: "bid_package" | "bid_addendum") => {
+  const handleAddendumDetach = useCallback(
+    async (linkId: string) => {
       await detachFileLinkAction(linkId)
-      if (entityType === "bid_package") {
-        await loadPackageAttachments()
-      } else {
-        await loadAddendumAttachments()
-      }
+      await loadAddendumAttachments()
     },
-    [loadPackageAttachments, loadAddendumAttachments]
+    [loadAddendumAttachments]
   )
 
   const detailAttachments = detailSubmission
@@ -939,9 +979,66 @@ export function BidPackageDetailClientNew({
     detailSubmission?.exclusions || detailSubmission?.clarifications || detailSubmission?.notes
   )
 
+  const hasOverviewContent = current.title || current.scope || current.instructions || current.trade || dueDate
+  const hasDocumentTreeContent = attachmentsTree.children.length > 0 || attachmentsTree.files.length > 0
+
+  const renderDocumentAttachmentRow = (attachment: BidPackageAttachment, nested = false) => (
+    <div
+      key={attachment.linkId}
+      className={cn(
+        "group flex items-center gap-2 rounded-md p-2 hover:bg-muted/50 transition-colors",
+        nested && "ml-2"
+      )}
+    >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-muted text-sm">
+        {getMimeIcon(attachment.mime_type)}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate leading-tight">{attachment.file_name}</p>
+        <p className="text-[11px] text-muted-foreground">{formatFileSize(attachment.size_bytes)}</p>
+      </div>
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        {isPreviewable(attachment.mime_type) && (
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleFilePreview(attachment)}>
+            <Eye className="h-3 w-3" />
+          </Button>
+        )}
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleFileDownload(attachment)}>
+          <Download className="h-3 w-3" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={() => handleFileDetach(attachment)}>
+          <Trash2 className="h-3 w-3" />
+        </Button>
+      </div>
+    </div>
+  )
+
+  const renderFolderNode = (node: AttachmentFolderNode): React.ReactNode => (
+    <details key={node.path} open className="rounded-md border bg-background/60">
+      <summary className="cursor-pointer list-none px-3 py-2.5 hover:bg-muted/40">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <p className="truncate text-sm font-medium">{node.name}</p>
+          </div>
+          <Badge variant="secondary" className="text-[10px]">
+            {countNodeFiles(node)}
+          </Badge>
+        </div>
+      </summary>
+      <div className="border-t px-2 py-1">
+        <div className="space-y-1">
+          {node.children.map((child) => renderFolderNode(child))}
+          {node.files.map((attachment) => renderDocumentAttachmentRow(attachment, true))}
+        </div>
+      </div>
+    </details>
+  )
+
   return (
     <TooltipProvider>
       <div className="flex flex-col gap-6">
+        {/* Edit Sheet */}
         <Sheet open={editSheetOpen} onOpenChange={setEditSheetOpen}>
           <SheetContent
             side="right"
@@ -1051,6 +1148,7 @@ export function BidPackageDetailClientNew({
           </SheetContent>
         </Sheet>
 
+        {/* Submission Detail Sheet */}
         <Sheet
           open={submissionSheetOpen}
           onOpenChange={(open) => {
@@ -1117,28 +1215,6 @@ export function BidPackageDetailClientNew({
                           {formatDateValue(detailSubmission.valid_until)}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Lead time</span>
-                        <span className="font-medium">
-                          {detailSubmission.lead_time_days != null
-                            ? `${detailSubmission.lead_time_days} day${detailSubmission.lead_time_days === 1 ? "" : "s"}`
-                            : "—"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Duration</span>
-                        <span className="font-medium">
-                          {detailSubmission.duration_days != null
-                            ? `${detailSubmission.duration_days} day${detailSubmission.duration_days === 1 ? "" : "s"}`
-                            : "—"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Start available</span>
-                        <span className="font-medium">
-                          {formatDateValue(detailSubmission.start_available_on)}
-                        </span>
-                      </div>
                     </div>
                   </div>
 
@@ -1180,7 +1256,7 @@ export function BidPackageDetailClientNew({
                     <div>
                       <h4 className="text-sm font-semibold">Attachments</h4>
                       <p className="text-xs text-muted-foreground">
-                        Estimate, PDFs, and any supporting documents submitted with the bid.
+                        Documents submitted with the bid.
                       </p>
                     </div>
                     {isLoadingSubmissionAttachments && detailAttachments.length === 0 ? (
@@ -1194,8 +1270,8 @@ export function BidPackageDetailClientNew({
                         entityId={detailSubmission.id}
                         projectId={projectId}
                         attachments={detailAttachments}
-                        onAttach={async (_files, _linkRole) => {}}
-                        onDetach={async (_linkId) => {}}
+                        onAttach={async () => {}}
+                        onDetach={async () => {}}
                         readOnly
                       />
                     )}
@@ -1210,1014 +1286,641 @@ export function BidPackageDetailClientNew({
           </SheetContent>
         </Sheet>
 
-        {/* Stats Bar */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Card>
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
-                  isOverdue ? "bg-rose-500/15 text-rose-600" : "bg-muted"
-                )}>
-                  <Clock className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">Due</p>
-                  <p className={cn("text-sm font-medium truncate", isOverdue && "text-rose-600")}>
-                    {dueDate ? formatDistanceToNow(dueDate, { addSuffix: true }) : "No deadline"}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-                  <Users className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">Invites</p>
-                  <p className="text-sm font-medium">
-                    {sentInvitesCount} sent
-                    {inviteList.length > sentInvitesCount && (
-                      <span className="text-muted-foreground"> · {inviteList.length - sentInvitesCount} draft</span>
-                    )}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
-                  submittedCount > 0 ? "bg-emerald-500/15 text-emerald-600" : "bg-muted"
-                )}>
-                  <FileText className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">Submissions</p>
-                  <p className="text-sm font-medium">
-                    {submittedCount} received
-                  </p>
+        <Sheet
+          open={projectFilesSheetOpen}
+          onOpenChange={(open) => {
+            setProjectFilesSheetOpen(open)
+            if (!open) {
+              setSelectedProjectFileIds(new Set())
+              setProjectFileSearch("")
+              setProjectFolderFilter("all")
+            }
+          }}
+        >
+          <SheetContent
+            side="right"
+            mobileFullscreen
+            className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
+            style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
+          >
+            <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
+              <SheetTitle>Add from project files</SheetTitle>
+              <SheetDescription className="text-sm text-muted-foreground">
+                Link existing project files into this bid package without re-uploading.
+              </SheetDescription>
+            </SheetHeader>
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              <div className="flex gap-2">
+                <Select value={projectFolderFilter} onValueChange={setProjectFolderFilter}>
+                  <SelectTrigger className="w-[220px]">
+                    <SelectValue placeholder="All folders" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All folders</SelectItem>
+                    {projectFolderOptions.map((folder) => (
+                      <SelectItem key={folder} value={folder}>
+                        {folder}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={projectFileSearch}
+                    onChange={(e) => setProjectFileSearch(e.target.value)}
+                    placeholder="Search files, folders, or tags..."
+                    className="pl-9"
+                  />
                 </div>
               </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-                  <File className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">Documents</p>
-                  <p className="text-sm font-medium">
-                    {packageAttachments.length} files · {addendumList.length} addenda
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
 
-        {/* Main Content Tabs */}
-        <Tabs defaultValue="invites" className="w-full">
-          <TabsList>
-            <TabsTrigger value="invites">
-              Invites
-              {inviteList.length > 0 && (
-                <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs">
-                  {inviteList.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="submissions">
-              Submissions
-              {submittedCount > 0 && (
-                <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs bg-emerald-500/15 text-emerald-600">
-                  {submittedCount}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="documents">Documents</TabsTrigger>
-            <TabsTrigger value="details">Details</TabsTrigger>
-          </TabsList>
-
-          {/* Invites Tab */}
-          <TabsContent value="invites" className="mt-4 space-y-4">
-            {/* Summary stats */}
-            {inviteList.length > 0 && (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="rounded-lg border bg-card p-3">
-                  <p className="text-xs text-muted-foreground">Total Invited</p>
-                  <p className="text-xl font-semibold">{inviteList.length}</p>
-                </div>
-                <div className="rounded-lg border bg-card p-3">
-                  <p className="text-xs text-muted-foreground">Awaiting Response</p>
-                  <p className="text-xl font-semibold text-blue-600">
-                    {inviteList.filter((i) => i.status === "sent" || i.status === "viewed").length}
-                  </p>
-                </div>
-                <div className="rounded-lg border bg-card p-3">
-                  <p className="text-xs text-muted-foreground">Submitted</p>
-                  <p className="text-xl font-semibold text-emerald-600">
-                    {inviteList.filter((i) => i.status === "submitted").length}
-                  </p>
-                </div>
-                <div className="rounded-lg border bg-card p-3">
-                  <p className="text-xs text-muted-foreground">Declined</p>
-                  <p className="text-xl font-semibold text-rose-600">
-                    {inviteList.filter((i) => i.status === "declined").length}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <Card className="border-0 shadow-none bg-transparent">
-              <CardHeader className="flex flex-row items-center justify-end pb-4">
-                <Dialog open={inviteDialogOpen} onOpenChange={(open) => {
-                  setInviteDialogOpen(open)
-                  if (!open) {
-                    setSelectedCompanyIds(new Set())
-                    setCompanySearch("")
-                    setEmailInvites([])
-                    setNewEmailInput("")
-                    setNewCompanyNameInput("")
-                    setTradeFilter(normalizeTrade(bidPackage.trade) || "all")
-                  }
-                }}>
-                  <DialogTrigger asChild>
-                    <Button size="sm">
-                      <Plus className="mr-2 h-4 w-4" />
-                      Add invites
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">
+                  {selectedProjectFileIds.size} selected
+                </span>
+                <div className="flex gap-2">
+                  <Button type="button" variant="ghost" size="sm" onClick={selectAllVisibleProjectFiles} className="h-7 text-xs">
+                    Select visible
+                  </Button>
+                  {selectedProjectFileIds.size > 0 && (
+                    <Button type="button" variant="ghost" size="sm" onClick={clearProjectFileSelection} className="h-7 text-xs">
+                      Clear
                     </Button>
-                  </DialogTrigger>
-                  <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle>Invite vendors</DialogTitle>
-                      <DialogDescription>
-                        Select companies to invite or add new vendors by email.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                      {/* Trade filter and search */}
-                      <div className="flex gap-2">
-                        <Select value={tradeFilter} onValueChange={setTradeFilter}>
-                          <SelectTrigger className="w-[140px]">
-                            <SelectValue placeholder="All trades" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">All trades</SelectItem>
-                            {availableTrades.map((trade) => (
-                              <SelectItem key={trade.value} value={trade.value}>
-                                {trade.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <div className="relative flex-1">
-                          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                          <Input
-                            value={companySearch}
-                            onChange={(e) => setCompanySearch(e.target.value)}
-                            placeholder="Search companies..."
-                            className="pl-9"
-                          />
-                        </div>
-                      </div>
+                  )}
+                </div>
+              </div>
 
-                      {/* Selection actions */}
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">
-                          {selectedCompanyIds.size} from directory
-                          {emailInvites.length > 0 && ` + ${emailInvites.length} by email`}
-                        </span>
-                        <div className="flex gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={selectAllFiltered}
-                            className="h-7 text-xs"
+              <ScrollArea className="h-[460px] rounded-md border">
+                <div className="p-2">
+                  {isLoadingProjectFiles ? (
+                    <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Loading project files...
+                    </div>
+                  ) : filteredProjectFiles.length === 0 ? (
+                    <p className="py-10 text-center text-sm text-muted-foreground">
+                      No files found for this filter.
+                    </p>
+                  ) : (
+                    <div className="space-y-1">
+                      {filteredProjectFiles.map((file) => {
+                        const normalizedFolder = normalizeFolderPath(file.folder_path) || "Unsorted"
+                        const isAlreadyAttached = attachedFileIds.has(file.id)
+                        const isSelected = selectedProjectFileIds.has(file.id)
+
+                        return (
+                          <label
+                            key={file.id}
+                            className={cn(
+                              "flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer transition-colors",
+                              isAlreadyAttached
+                                ? "opacity-50 cursor-not-allowed bg-muted/50"
+                                : isSelected
+                                  ? "bg-accent"
+                                  : "hover:bg-muted/50"
+                            )}
                           >
-                            Select all
-                          </Button>
-                          {(selectedCompanyIds.size > 0 || emailInvites.length > 0) && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={clearSelection}
-                              className="h-7 text-xs"
-                            >
-                              Clear
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Company list with checkboxes */}
-                      <ScrollArea className="h-[280px] rounded-md border">
-                        <div className="p-2">
-                          {filteredCompanies.length === 0 ? (
-                            <p className="py-6 text-center text-sm text-muted-foreground">
-                              No companies found
-                            </p>
-                          ) : (
-                            <div className="space-y-1">
-                              {filteredCompanies.map((company) => {
-                                const isAlreadyInvited = invitedCompanyIds.has(company.id)
-                                const isSelected = selectedCompanyIds.has(company.id)
-                                const isVendor = vendorCompanyIds.has(company.id)
-                                const contact = getCompanyContactInfo(company.id)
-                                const hasEmail = !!(contact?.email || company.email)
-
-                                return (
-                                  <label
-                                    key={company.id}
-                                    className={cn(
-                                      "flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer transition-colors",
-                                      isAlreadyInvited
-                                        ? "opacity-50 cursor-not-allowed bg-muted/50"
-                                        : isSelected
-                                          ? "bg-accent"
-                                          : "hover:bg-muted/50"
-                                    )}
-                                  >
-                                    <Checkbox
-                                      checked={isSelected}
-                                      disabled={isAlreadyInvited}
-                                      onCheckedChange={() => {
-                                        if (!isAlreadyInvited) {
-                                          toggleCompanySelection(company.id)
-                                        }
-                                      }}
-                                    />
-                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                                      <Building2 className="h-4 w-4 text-muted-foreground" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
-                                        <p className="text-sm font-medium truncate">{company.name}</p>
-                                        {company.trade && (
-                                          <Badge variant="outline" className="text-[10px] px-1 py-0 text-muted-foreground">
-                                            {company.trade}
-                                          </Badge>
-                                        )}
-                                        {isVendor && (
-                                          <Badge variant="secondary" className="text-[10px] px-1 py-0">
-                                            Vendor
-                                          </Badge>
-                                        )}
-                                        {isAlreadyInvited && (
-                                          <Badge variant="outline" className="text-[10px] px-1 py-0 bg-blue-500/10 text-blue-600 border-blue-500/20">
-                                            Invited
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      <p className="text-xs text-muted-foreground truncate">
-                                        {contact?.full_name
-                                          ? `${contact.full_name}${contact.email ? ` · ${contact.email}` : ""}`
-                                          : company.email || "No contact"}
-                                      </p>
-                                    </div>
-                                    {!hasEmail && !isAlreadyInvited && (
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <Mail className="h-4 w-4 text-amber-500" />
-                                        </TooltipTrigger>
-                                        <TooltipContent>No email address</TooltipContent>
-                                      </Tooltip>
-                                    )}
-                                  </label>
-                                )
-                              })}
+                            <Checkbox
+                              checked={isSelected}
+                              disabled={isAlreadyAttached}
+                              onCheckedChange={() => {
+                                if (!isAlreadyAttached) toggleProjectFileSelection(file.id)
+                              }}
+                            />
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-muted text-sm">
+                              {getMimeIcon(file.mime_type)}
                             </div>
-                          )}
-                        </div>
-                      </ScrollArea>
-
-                      {/* Invite by email - for new vendors */}
-                      <div className="space-y-3 rounded-md border p-3">
-                        <div className="flex items-center gap-2">
-                          <Mail className="h-4 w-4 text-muted-foreground" />
-                          <p className="text-sm font-medium">Invite by email</p>
-                          <span className="text-xs text-muted-foreground">(vendors not in directory)</span>
-                        </div>
-                        <div className="flex gap-2">
-                          <Input
-                            value={newEmailInput}
-                            onChange={(e) => setNewEmailInput(e.target.value)}
-                            placeholder="email@company.com"
-                            type="email"
-                            className="flex-1"
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault()
-                                addEmailInvite()
-                              }
-                            }}
-                          />
-                          <Input
-                            value={newCompanyNameInput}
-                            onChange={(e) => setNewCompanyNameInput(e.target.value)}
-                            placeholder="Company name (optional)"
-                            className="flex-1"
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault()
-                                addEmailInvite()
-                              }
-                            }}
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={addEmailInvite}
-                            disabled={!newEmailInput.trim()}
-                          >
-                            Add
-                          </Button>
-                        </div>
-                        {emailInvites.length > 0 && (
-                          <div className="space-y-1">
-                            {emailInvites.map((item) => (
-                              <div
-                                key={item.email}
-                                className="flex items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1.5 text-sm"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Mail className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                  <span className="truncate">{item.email}</span>
-                                  {item.companyName && (
-                                    <span className="text-muted-foreground truncate">({item.companyName})</span>
-                                  )}
-                                </div>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 w-6 p-0 shrink-0"
-                                  onClick={() => removeEmailInvite(item.email)}
-                                >
-                                  <span className="sr-only">Remove</span>
-                                  <X className="h-3.5 w-3.5" />
-                                </Button>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="truncate text-sm font-medium">{file.file_name}</p>
+                                {isAlreadyAttached && (
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 bg-blue-500/10 text-blue-600">
+                                    Linked
+                                  </Badge>
+                                )}
                               </div>
-                            ))}
+                              <p className="truncate text-xs text-muted-foreground">
+                                {normalizedFolder}
+                              </p>
+                            </div>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
+            <SheetFooter className="border-t bg-background/80 px-6 py-4">
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <SheetClose asChild>
+                  <Button variant="outline" className="w-full sm:flex-1">
+                    Cancel
+                  </Button>
+                </SheetClose>
+                <Button onClick={handleAttachSelectedProjectFiles} disabled={isLinkingFiles || selectedProjectFileIds.size === 0} className="w-full sm:flex-1">
+                  {isLinkingFiles && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {selectedProjectFileIds.size === 0 ? "Select files" : `Add ${selectedProjectFileIds.size} file${selectedProjectFileIds.size === 1 ? "" : "s"}`}
+                </Button>
+              </div>
+            </SheetFooter>
+          </SheetContent>
+        </Sheet>
+
+        {/* Package Overview Card */}
+        {hasOverviewContent && (
+          <Card className="overflow-hidden">
+            <CardContent className="p-0">
+              <div className="grid gap-0 md:grid-cols-[minmax(0,1.8fr)_minmax(0,1fr)_minmax(0,1fr)_64px]">
+                <div className="space-y-1 border-b px-5 py-4 md:border-b-0 md:border-r">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Bid Package
+                  </p>
+                  <h2 className="text-lg font-semibold leading-tight">{current.title}</h2>
+                </div>
+                <div className="space-y-1 border-b px-5 py-4 md:border-b-0 md:border-r">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Trade
+                  </p>
+                  <p className="text-sm font-medium">{current.trade || "—"}</p>
+                </div>
+                <div className="space-y-1 border-b px-5 py-4 md:border-b-0 md:border-r">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Due
+                  </p>
+                  <p className={cn("text-sm font-medium", isOverdue && "text-rose-600")}>
+                    {dueDate ? format(dueDate, "MMM d, yyyy 'at' h:mm a") : "—"}
+                  </p>
+                </div>
+                <div className="flex items-center justify-end border-b px-3 py-2 md:border-b-0 md:px-4">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => setEditSheetOpen(true)}>
+                        <Edit className="mr-2 h-4 w-4" />
+                        Edit package
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setAddendumDialogOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Issue addendum
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+              {(current.scope || current.instructions) && (
+                <div className="grid gap-0 border-t bg-muted/20 md:grid-cols-2">
+                    {current.scope && (
+                      <div className={cn("px-5 py-4", current.instructions && "md:border-r")}>
+                        <p className="text-xs font-medium text-muted-foreground mb-1.5">Scope of Work</p>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{current.scope}</p>
+                      </div>
+                    )}
+                    {current.instructions && (
+                      <div className="px-5 py-4">
+                        <p className="text-xs font-medium text-muted-foreground mb-1.5">Bid Instructions</p>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{current.instructions}</p>
+                      </div>
+                    )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Addenda - Only shown if there are addenda */}
+        {addendumList.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                {addendumList.length} Addend{addendumList.length === 1 ? "um" : "a"}
+              </h3>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {addendumList.map((addendum) => (
+                <div
+                  key={addendum.id}
+                  className="rounded-lg border bg-card p-4"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-amber-500/10">
+                      <FileText className="h-4 w-4 text-amber-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">
+                        Addendum {addendum.number}
+                        {addendum.title && <span className="font-normal text-muted-foreground"> · {addendum.title}</span>}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {addendum.issued_at && format(new Date(addendum.issued_at), "MMM d, yyyy")}
+                      </p>
+                      {addendum.message && (
+                        <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{addendum.message}</p>
+                      )}
+                    </div>
+                  </div>
+                  {(addendumAttachments[addendum.id]?.length > 0) && (
+                    <div className="mt-3 pt-3 border-t">
+                      <EntityAttachments
+                        entityType="bid_addendum"
+                        entityId={addendum.id}
+                        projectId={projectId}
+                        attachments={addendumAttachments[addendum.id] ?? []}
+                        onAttach={(files) => handleAddendumAttach(files, addendum.id)}
+                        onDetach={handleAddendumDetach}
+                        compact
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Main Content: Vendors + Documents side by side */}
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,4fr)_minmax(0,1.4fr)]">
+          {/* Vendors Table */}
+          <Card className="flex h-[700px] flex-col overflow-hidden">
+            <CardHeader className="flex flex-row items-center justify-between border-b pb-4">
+              <div>
+                <CardTitle className="text-base">Vendors</CardTitle>
+                <CardDescription>Invited vendors and their bid submissions</CardDescription>
+              </div>
+              <Dialog open={inviteDialogOpen} onOpenChange={(open) => {
+                setInviteDialogOpen(open)
+                if (!open) {
+                  setSelectedCompanyIds(new Set())
+                  setCompanySearch("")
+                  setEmailInvites([])
+                  setNewEmailInput("")
+                  setNewCompanyNameInput("")
+                  setTradeFilter(normalizeTrade(bidPackage.trade) || "all")
+                }
+              }}>
+                <DialogTrigger asChild>
+                  <Button size="sm">
+                    <Plus className="mr-2 h-4 w-4" />
+                    Invite
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>Invite vendors</DialogTitle>
+                    <DialogDescription>
+                      Select companies to invite or add new vendors by email.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="grid gap-4 py-4">
+                    <div className="flex gap-2">
+                      <Select value={tradeFilter} onValueChange={setTradeFilter}>
+                        <SelectTrigger className="w-[140px]">
+                          <SelectValue placeholder="All trades" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All trades</SelectItem>
+                          {availableTrades.map((trade) => (
+                            <SelectItem key={trade.value} value={trade.value}>
+                              {trade.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          value={companySearch}
+                          onChange={(e) => setCompanySearch(e.target.value)}
+                          placeholder="Search companies..."
+                          className="pl-9"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {selectedCompanyIds.size} selected
+                        {emailInvites.length > 0 && ` + ${emailInvites.length} by email`}
+                      </span>
+                      <div className="flex gap-2">
+                        <Button type="button" variant="ghost" size="sm" onClick={selectAllFiltered} className="h-7 text-xs">
+                          Select all
+                        </Button>
+                        {(selectedCompanyIds.size > 0 || emailInvites.length > 0) && (
+                          <Button type="button" variant="ghost" size="sm" onClick={clearSelection} className="h-7 text-xs">
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <ScrollArea className="h-[280px] rounded-md border">
+                      <div className="p-2">
+                        {filteredCompanies.length === 0 ? (
+                          <p className="py-6 text-center text-sm text-muted-foreground">No companies found</p>
+                        ) : (
+                          <div className="space-y-1">
+                            {filteredCompanies.map((company) => {
+                              const isAlreadyInvited = invitedCompanyIds.has(company.id)
+                              const isSelected = selectedCompanyIds.has(company.id)
+                              const isVendor = vendorCompanyIds.has(company.id)
+                              const contact = getCompanyContactInfo(company.id)
+                              const hasEmail = !!(contact?.email || company.email)
+
+                              return (
+                                <label
+                                  key={company.id}
+                                  className={cn(
+                                    "flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer transition-colors",
+                                    isAlreadyInvited ? "opacity-50 cursor-not-allowed bg-muted/50" : isSelected ? "bg-accent" : "hover:bg-muted/50"
+                                  )}
+                                >
+                                  <Checkbox
+                                    checked={isSelected}
+                                    disabled={isAlreadyInvited}
+                                    onCheckedChange={() => { if (!isAlreadyInvited) toggleCompanySelection(company.id) }}
+                                  />
+                                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <p className="text-sm font-medium truncate">{company.name}</p>
+                                      {isVendor && <Badge variant="secondary" className="text-[10px] px-1 py-0">Vendor</Badge>}
+                                      {isAlreadyInvited && <Badge variant="outline" className="text-[10px] px-1 py-0 bg-blue-500/10 text-blue-600">Invited</Badge>}
+                                    </div>
+                                    <p className="text-xs text-muted-foreground truncate">
+                                      {contact?.full_name ? `${contact.full_name}${contact.email ? ` · ${contact.email}` : ""}` : company.email || "No contact"}
+                                    </p>
+                                  </div>
+                                  {!hasEmail && !isAlreadyInvited && (
+                                    <Tooltip><TooltipTrigger asChild><Mail className="h-4 w-4 text-amber-500" /></TooltipTrigger><TooltipContent>No email</TooltipContent></Tooltip>
+                                  )}
+                                </label>
+                              )
+                            })}
                           </div>
                         )}
-                        <p className="text-xs text-muted-foreground">
-                          New vendors will be added to your directory automatically.
-                        </p>
                       </div>
+                    </ScrollArea>
 
-                      {/* Send emails toggle */}
-                      <label className="flex items-center gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/50">
-                        <Checkbox
-                          checked={sendEmails}
-                          onCheckedChange={(checked) => setSendEmails(checked === true)}
-                        />
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">Send invitation emails</p>
-                          <p className="text-xs text-muted-foreground">
-                            Automatically email vendors with the bid link
-                          </p>
+                    <div className="space-y-3 rounded-md border p-3">
+                      <p className="text-sm font-medium">Invite by email</p>
+                      <div className="flex gap-2">
+                        <Input value={newEmailInput} onChange={(e) => setNewEmailInput(e.target.value)} placeholder="email@company.com" type="email" className="flex-1" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addEmailInvite() } }} />
+                        <Input value={newCompanyNameInput} onChange={(e) => setNewCompanyNameInput(e.target.value)} placeholder="Company" className="w-28" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addEmailInvite() } }} />
+                        <Button type="button" variant="outline" size="sm" onClick={addEmailInvite} disabled={!newEmailInput.trim()}>Add</Button>
+                      </div>
+                      {emailInvites.length > 0 && (
+                        <div className="space-y-1">
+                          {emailInvites.map((item) => (
+                            <div key={item.email} className="flex items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1.5 text-sm">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <Mail className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                <span className="truncate">{item.email}</span>
+                                {item.companyName && <span className="text-muted-foreground truncate">({item.companyName})</span>}
+                              </div>
+                              <Button type="button" variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => removeEmailInvite(item.email)}><X className="h-3.5 w-3.5" /></Button>
+                            </div>
+                          ))}
                         </div>
-                        <Mail className="h-4 w-4 text-muted-foreground" />
-                      </label>
+                      )}
                     </div>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="outline">Cancel</Button>
-                      </DialogClose>
-                      <Button onClick={handleBulkInvite} disabled={isInviting || totalInviteCount === 0}>
-                        {isInviting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {totalInviteCount === 0
-                          ? "Select companies or add emails"
-                          : `Invite ${totalInviteCount} vendor${totalInviteCount === 1 ? "" : "s"}`}
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+
+                    <label className="flex items-center gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/50">
+                      <Checkbox checked={sendEmails} onCheckedChange={(checked) => setSendEmails(checked === true)} />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">Send invitation emails</p>
+                        <p className="text-xs text-muted-foreground">Automatically email vendors with the bid link</p>
+                      </div>
+                    </label>
+                  </div>
+                  <DialogFooter>
+                    <DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose>
+                    <Button onClick={handleBulkInvite} disabled={isInviting || totalInviteCount === 0}>
+                      {isInviting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      {totalInviteCount === 0 ? "Select vendors" : `Invite ${totalInviteCount}`}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </CardHeader>
+            <CardContent className="flex-1 overflow-hidden p-0">
+              {inviteList.length === 0 ? (
+                <div className="flex h-full items-center justify-center p-8 text-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                      <Building2 className="h-6 w-6 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="font-medium">No vendors invited yet</p>
+                      <p className="text-sm text-muted-foreground">Invite vendors to receive bids.</p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full overflow-auto">
+                  <Table className="border-collapse">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="px-4 py-3 border-r">Company</TableHead>
+                        <TableHead className="px-4 py-3 hidden sm:table-cell border-r">Status</TableHead>
+                        <TableHead className="px-4 py-3 hidden lg:table-cell border-r">Last activity</TableHead>
+                        <TableHead className="px-4 py-3 text-right border-r">Bid amount</TableHead>
+                        <TableHead className="px-4 py-3 w-[80px]"><span className="sr-only">Actions</span></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {inviteList.map((invite) => {
+                        const submission = submissionByInviteId.get(invite.id)
+                        const statusInfo = getVendorStatusInfo(invite, submission)
+                        const isAwarded = submission?.is_current && current.status === "awarded"
+
+                        return (
+                          <TableRow key={invite.id} className={cn("group hover:bg-muted/40", isAwarded && "bg-amber-50/50")}>
+                            <TableCell className="px-4 py-3 border-r">
+                              <div className="flex items-center gap-3">
+                                <div className={cn(
+                                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+                                  isAwarded ? "bg-amber-100" : submission ? "bg-emerald-500/15" : invite.status === "viewed" ? "bg-violet-500/15" : invite.status === "declined" ? "bg-rose-500/15" : "bg-muted"
+                                )}>
+                                  {isAwarded ? <Trophy className="h-4 w-4 text-amber-600" /> : <Building2 className={cn("h-4 w-4", submission ? "text-emerald-600" : invite.status === "viewed" ? "text-violet-600" : invite.status === "declined" ? "text-rose-600" : "text-muted-foreground")} />}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">{invite.company?.name ?? "Unknown"}</p>
+                                  <p className="text-xs text-muted-foreground truncate">{invite.contact?.full_name ?? invite.invite_email ?? ""}</p>
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-4 py-3 hidden sm:table-cell border-r">
+                              <Badge variant="outline" className={cn("capitalize text-xs", statusInfo.color)}>
+                                {isAwarded ? "Awarded" : statusInfo.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="px-4 py-3 hidden lg:table-cell border-r">
+                              <span className="text-sm text-muted-foreground">{statusInfo.activity}</span>
+                            </TableCell>
+                            <TableCell className="px-4 py-3 text-right border-r">
+                              {submission ? (
+                                <button type="button" className="text-sm font-semibold tabular-nums hover:underline" onClick={() => openSubmissionSheet(submission)}>
+                                  {formatCurrency(submission.total_cents)}
+                                </button>
+                              ) : (
+                                <span className="text-sm text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="px-4 py-3">
+                              <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {submission && current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
+                                  <Button size="sm" variant="outline" onClick={() => openAwardDialog(submission)} className="h-7 text-xs">
+                                    Award
+                                  </Button>
+                                )}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    {submission && <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}><Eye className="mr-2 h-4 w-4" />View submission</DropdownMenuItem>}
+                                    <DropdownMenuItem onClick={() => handleGenerateLink(invite)}><Copy className="mr-2 h-4 w-4" />Copy link</DropdownMenuItem>
+                                    {(invite.invite_email || invite.contact?.email) && <DropdownMenuItem><Mail className="mr-2 h-4 w-4" />Resend</DropdownMenuItem>}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Documents Sidebar */}
+          <div
+            className="flex flex-col"
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileInputChange}
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.dwg,.dxf,.txt,.csv,.zip"
+            />
+            <Card className="flex h-[700px] flex-col overflow-hidden">
+              <CardHeader className="flex flex-row items-center justify-between border-b pb-4">
+                <div>
+                  <CardTitle className="text-base">Documents</CardTitle>
+                  <CardDescription>Package files and plans</CardDescription>
+                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" disabled={isUploading}>
+                      {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+                      <Upload className="mr-2 h-4 w-4" />
+                      Upload new file
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => setProjectFilesSheetOpen(true)}>
+                      <FolderOpen className="mr-2 h-4 w-4" />
+                      Add from project files
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </CardHeader>
-              <CardContent className="p-0">
-                {inviteList.length === 0 ? (
-                  <div className="p-6">
-                    <Empty className="border">
-                      <EmptyHeader>
-                        <EmptyMedia variant="icon">
-                          <Users />
-                        </EmptyMedia>
-                        <EmptyTitle>No invites yet</EmptyTitle>
-                        <EmptyDescription>
-                          Add vendors to invite them to submit bids for this package.
-                        </EmptyDescription>
-                      </EmptyHeader>
-                      <Button size="sm" onClick={() => setInviteDialogOpen(true)}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Add invites
-                      </Button>
-                    </Empty>
+              <CardContent className="flex-1 overflow-y-auto p-3">
+                {packageAttachments.length === 0 ? (
+                  <div
+                    className={cn(
+                      "flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-colors",
+                      isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-primary/50"
+                    )}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload className="h-6 w-6 text-muted-foreground mb-2" />
+                    <p className="text-xs text-muted-foreground">
+                      {isDragging ? "Drop files" : "Drop files or click"}
+                    </p>
                   </div>
                 ) : (
-                  <div className="rounded-lg border overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="divide-x">
-                          <TableHead className="px-4 py-4">Company</TableHead>
-                          <TableHead className="px-4 py-4 hidden sm:table-cell">Contact</TableHead>
-                          <TableHead className="px-4 py-4">Status</TableHead>
-                          <TableHead className="px-4 py-4 hidden md:table-cell">Activity</TableHead>
-                          <TableHead className="px-4 py-4 w-[120px] text-right">
-                            <span className="sr-only">Actions</span>
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {inviteList.map((invite) => {
-                          const statusInfo = getInviteStatusInfo(invite)
-                          return (
-                            <TableRow key={invite.id} className="group divide-x hover:bg-muted/40">
-                              <TableCell className="px-4 py-4">
-                                <div className="flex items-center gap-3">
-                                  <div className={cn(
-                                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                                    invite.status === "submitted" ? "bg-emerald-500/15" :
-                                    invite.status === "viewed" ? "bg-violet-500/15" :
-                                    invite.status === "declined" ? "bg-rose-500/15" :
-                                    "bg-muted"
-                                  )}>
-                                    <Building2 className={cn(
-                                      "h-4 w-4",
-                                      invite.status === "submitted" ? "text-emerald-600" :
-                                      invite.status === "viewed" ? "text-violet-600" :
-                                      invite.status === "declined" ? "text-rose-600" :
-                                      "text-muted-foreground"
-                                    )} />
-                                  </div>
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-medium truncate">
-                                      {invite.company?.name ?? "Unknown company"}
-                                    </p>
-                                    <p className="text-xs text-muted-foreground truncate sm:hidden">
-                                      {invite.contact?.full_name ?? invite.invite_email ?? "No contact"}
-                                    </p>
-                                  </div>
-                                </div>
-                              </TableCell>
-                              <TableCell className="px-4 py-4 hidden sm:table-cell">
-                                <div className="min-w-0">
-                                  {invite.contact?.full_name ? (
-                                    <>
-                                      <p className="text-sm truncate">{invite.contact.full_name}</p>
-                                      <p className="text-xs text-muted-foreground truncate">
-                                        {invite.contact.email ?? invite.invite_email ?? ""}
-                                      </p>
-                                    </>
-                                  ) : invite.invite_email ? (
-                                    <p className="text-sm truncate">{invite.invite_email}</p>
-                                  ) : (
-                                    <p className="text-sm text-muted-foreground">—</p>
-                                  )}
-                                </div>
-                              </TableCell>
-                              <TableCell className="px-4 py-4">
-                                <Badge
-                                  variant="outline"
-                                  className={cn(
-                                    "capitalize whitespace-nowrap",
-                                    getInviteStatusColor(invite.status)
-                                  )}
-                                >
-                                  {invite.status}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="px-4 py-4 hidden md:table-cell">
-                                <p className="text-xs text-muted-foreground whitespace-nowrap">
-                                  {statusInfo.activity}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-4">
-                                <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-8 w-8"
-                                        onClick={() => handleGenerateLink(invite)}
-                                      >
-                                        <Copy className="h-4 w-4" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Copy bid link</TooltipContent>
-                                  </Tooltip>
-                                  <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                      <Button variant="ghost" size="icon" className="h-8 w-8">
-                                        <MoreHorizontal className="h-4 w-4" />
-                                      </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="end">
-                                      <DropdownMenuItem onClick={() => handleGenerateLink(invite)}>
-                                        <Copy className="mr-2 h-4 w-4" />
-                                        Copy bid link
-                                      </DropdownMenuItem>
-                                      {(invite.invite_email || invite.contact?.email) && (
-                                        <DropdownMenuItem>
-                                          <Mail className="mr-2 h-4 w-4" />
-                                          Resend invite
-                                        </DropdownMenuItem>
-                                      )}
-                                      <DropdownMenuSeparator />
-                                      <DropdownMenuItem>
-                                        <ExternalLink className="mr-2 h-4 w-4" />
-                                        View company
-                                      </DropdownMenuItem>
-                                    </DropdownMenuContent>
-                                  </DropdownMenu>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          )
-                        })}
-                      </TableBody>
-                    </Table>
+                  <div className="space-y-2">
+                    {attachmentsTree.children.map((node) => renderFolderNode(node))}
+                    {attachmentsTree.files.length > 0 && (
+                      <div className="rounded-md border bg-background/60">
+                        <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          Unsorted
+                        </div>
+                        <div className="p-1">
+                          {attachmentsTree.files.map((attachment) => renderDocumentAttachmentRow(attachment))}
+                        </div>
+                      </div>
+                    )}
+                    {!hasDocumentTreeContent && (
+                      <p className="py-4 text-center text-sm text-muted-foreground">
+                        No linked files to show.
+                      </p>
+                    )}
                   </div>
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>
+        </div>
 
-          {/* Submissions Tab */}
-          <TabsContent value="submissions" className="mt-4 space-y-4">
-            {/* Mobile: Card layout */}
-            <div className="md:hidden space-y-3">
-              {submissionList.length === 0 ? (
-                <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                      <FileText className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <p className="font-medium">No submissions yet</p>
-                      <p className="text-sm">Submissions will appear here once vendors respond.</p>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                submissionList.map((submission) => (
-                  <div
-                    key={submission.id}
-                    className={cn(
-                      "rounded-lg border bg-card p-4 transition-colors",
-                      submission.is_current && current.status === "awarded" && "border-amber-200 bg-amber-50/50"
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <button
-                            type="button"
-                            className="font-semibold truncate hover:underline text-left"
-                            onClick={() => openSubmissionSheet(submission)}
-                          >
-                            {submission.invite?.company?.name ?? "Unknown company"}
-                          </button>
-                          <Badge variant="outline" className={cn(
-                            "text-xs capitalize",
-                            submission.status === "submitted" && "bg-emerald-500/15 text-emerald-600 border-emerald-500/30"
-                          )}>
-                            {submission.status}
-                          </Badge>
-                          {submission.is_current && current.status === "awarded" && (
-                            <Badge className="bg-amber-500/15 text-amber-600 border-amber-500/30">
-                              <Trophy className="mr-1 h-3 w-3" />
-                              Awarded
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {submission.submitted_at
-                            ? format(new Date(submission.submitted_at), "MMM d, yyyy 'at' h:mm a")
-                            : "Not submitted"}
-                        </p>
-                        <p className="text-lg font-semibold mt-2 tabular-nums">
-                          {formatCurrency(submission.total_cents)}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => openSubmissionSheet(submission)}
-                          aria-label="View submission details"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                        {current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openAwardDialog(submission)}
-                          >
-                            <Trophy className="h-4 w-4 mr-1" />
-                            Award
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+        {/* File Viewer */}
+        <FileViewer
+          file={viewerFile}
+          files={previewableFiles}
+          open={viewerOpen}
+          onOpenChange={setViewerOpen}
+          onDownload={(f) => {
+            const attachment = packageAttachments.find((a) => a.id === f.id)
+            if (attachment) handleFileDownload(attachment)
+          }}
+        />
 
-            {/* Desktop: Table layout */}
-            <div className="hidden md:block rounded-lg border overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="divide-x">
-                    <TableHead className="px-4 py-4">Vendor</TableHead>
-                    <TableHead className="px-4 py-4">Contact</TableHead>
-                    <TableHead className="px-4 py-4 text-center">Submitted</TableHead>
-                    <TableHead className="px-4 py-4 text-right">Amount</TableHead>
-                    <TableHead className="px-4 py-4 text-center">Status</TableHead>
-                    <TableHead className="px-4 py-4 w-[100px]">
-                      <span className="sr-only">Actions</span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {submissionList.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">
-                        <div className="flex flex-col items-center gap-4">
-                          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                            <FileText className="h-6 w-6" />
-                          </div>
-                          <div>
-                            <p className="font-medium">No submissions yet</p>
-                            <p className="text-sm">Submissions will appear here once vendors respond to your invites.</p>
-                          </div>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    submissionList.map((submission) => (
-                      <TableRow
-                        key={submission.id}
-                        className={cn(
-                          "group divide-x hover:bg-muted/40",
-                          submission.is_current && current.status === "awarded" && "bg-amber-50/50"
-                        )}
-                      >
-                        <TableCell className="px-4 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className={cn(
-                              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-                              submission.is_current && current.status === "awarded"
-                                ? "bg-amber-100"
-                                : submission.status === "submitted"
-                                  ? "bg-emerald-500/15"
-                                  : "bg-muted"
-                            )}>
-                              {submission.is_current && current.status === "awarded" ? (
-                                <Trophy className="h-4 w-4 text-amber-600" />
-                              ) : (
-                                <Building2 className={cn(
-                                  "h-4 w-4",
-                                  submission.status === "submitted"
-                                    ? "text-emerald-600"
-                                    : "text-muted-foreground"
-                                )} />
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              <button
-                                type="button"
-                                className="text-sm font-medium truncate text-left hover:underline"
-                                onClick={() => openSubmissionSheet(submission)}
-                              >
-                                {submission.invite?.company?.name ?? "Unknown company"}
-                              </button>
-                              <p className="text-xs text-muted-foreground">
-                                Version {submission.version}
-                                {submission.is_current && (
-                                  <span className="ml-1.5 text-emerald-600">(Current)</span>
-                                )}
-                              </p>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-4 py-4">
-                          <div className="min-w-0">
-                            {submission.submitted_by_name ? (
-                              <>
-                                <p className="text-sm truncate">{submission.submitted_by_name}</p>
-                                <p className="text-xs text-muted-foreground truncate">
-                                  {submission.submitted_by_email ?? ""}
-                                </p>
-                              </>
-                            ) : (
-                              <p className="text-sm text-muted-foreground">—</p>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-4 py-4 text-center">
-                          <p className="text-sm text-muted-foreground whitespace-nowrap">
-                            {submission.submitted_at
-                              ? format(new Date(submission.submitted_at), "MMM d, yyyy")
-                              : "—"}
-                          </p>
-                          {submission.submitted_at && (
-                            <p className="text-xs text-muted-foreground">
-                              {format(new Date(submission.submitted_at), "h:mm a")}
-                            </p>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-4 py-4 text-right">
-                          <p className="text-sm font-semibold tabular-nums">
-                            {formatCurrency(submission.total_cents)}
-                          </p>
-                          {submission.valid_until && (
-                            <p className="text-xs text-muted-foreground">
-                              Valid until {format(new Date(submission.valid_until), "MMM d")}
-                            </p>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-4 py-4 text-center">
-                          {submission.is_current && current.status === "awarded" ? (
-                            <Badge className="bg-amber-500/15 text-amber-600 border-amber-500/30">
-                              <Trophy className="mr-1 h-3 w-3" />
-                              Awarded
-                            </Badge>
-                          ) : (
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                "capitalize whitespace-nowrap",
-                                submission.status === "submitted" && "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
-                                submission.status === "revised" && "bg-blue-500/15 text-blue-600 border-blue-500/30"
-                              )}
-                            >
-                              {submission.status}
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-4 py-4">
-                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => openAwardDialog(submission)}
-                                  >
-                                    <Trophy className="h-4 w-4 mr-1" />
-                                    Award
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Award this bid</TooltipContent>
-                              </Tooltip>
-                            )}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-8 w-8">
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}>
-                                  <Eye className="mr-2 h-4 w-4" />
-                                  View details
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onSelect={() => handleSubmissionAttachments(submission)}>
-                                  <Download className="mr-2 h-4 w-4" />
-                                  Download attachments
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </TabsContent>
-
-          {/* Documents Tab */}
-          <TabsContent value="documents" className="mt-4 space-y-6">
-            {/* Bid Documents Section */}
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold">Bid Documents</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Plans, specifications, and other documents for bidders
-                  </p>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {packageAttachments.length} file{packageAttachments.length !== 1 ? "s" : ""}
-                </p>
+        {/* Addendum Dialog */}
+        <Dialog open={addendumDialogOpen} onOpenChange={setAddendumDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Issue addendum</DialogTitle>
+              <DialogDescription>Create an amendment to this bid package. Vendors will be notified.</DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="space-y-2">
+                <Label>Title</Label>
+                <Input value={addendumTitle} onChange={(e) => setAddendumTitle(e.target.value)} placeholder="e.g. Updated specifications" />
               </div>
-
-              <BidDocumentsUploader
-                attachments={packageAttachments}
-                onAttach={(files) => handleAttach(files, "bid_package", bidPackage.id)}
-                onDetach={(linkId) => handleDetach(linkId, "bid_package")}
-                projectId={projectId}
-              />
-            </div>
-
-            {/* Addenda Section */}
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold">Addenda</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Amendments and clarifications to the bid package
-                  </p>
-                </div>
-                <Dialog open={addendumDialogOpen} onOpenChange={setAddendumDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button size="sm" variant="outline">
-                      <Plus className="mr-2 h-4 w-4" />
-                      Issue addendum
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Issue addendum</DialogTitle>
-                      <DialogDescription>
-                        Create an amendment to this bid package. Vendors will be notified.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                      <div className="space-y-2">
-                        <Label>Title</Label>
-                        <Input
-                          value={addendumTitle}
-                          onChange={(e) => setAddendumTitle(e.target.value)}
-                          placeholder="e.g. Updated specifications"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Message</Label>
-                        <Textarea
-                          value={addendumMessage}
-                          onChange={(e) => setAddendumMessage(e.target.value)}
-                          placeholder="Describe the changes..."
-                          rows={4}
-                        />
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="outline">Cancel</Button>
-                      </DialogClose>
-                      <Button onClick={handleAddendum} disabled={isAddingAddendum}>
-                        {isAddingAddendum && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        Issue addendum
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+              <div className="space-y-2">
+                <Label>Message</Label>
+                <Textarea value={addendumMessage} onChange={(e) => setAddendumMessage(e.target.value)} placeholder="Describe the changes..." rows={4} />
               </div>
-
-              {addendumList.length === 0 ? (
-                <div className="rounded-lg border border-dashed p-6 text-center">
-                  <FileText className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                  <p className="mt-2 text-sm text-muted-foreground">No addenda issued yet</p>
-                  <p className="text-xs text-muted-foreground">
-                    Issue addenda to communicate changes or clarifications
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {addendumList.map((addendum) => (
-                    <div
-                      key={addendum.id}
-                      className="rounded-lg border bg-card overflow-hidden"
-                    >
-                      <div className="flex items-start gap-4 p-4">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
-                          <FileText className="h-5 w-5 text-amber-600" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-medium">Addendum {addendum.number}</h4>
-                            {addendum.title && (
-                              <>
-                                <span className="text-muted-foreground">·</span>
-                                <span className="text-sm truncate">{addendum.title}</span>
-                              </>
-                            )}
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-0.5">
-                            Issued {addendum.issued_at && format(new Date(addendum.issued_at), "MMM d, yyyy 'at' h:mm a")}
-                          </p>
-                          {addendum.message && (
-                            <p className="text-sm text-muted-foreground mt-2 whitespace-pre-wrap line-clamp-2">
-                              {addendum.message}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      {(addendumAttachments[addendum.id]?.length > 0 || true) && (
-                        <div className="border-t bg-muted/30 px-4 py-3">
-                          <EntityAttachments
-                            entityType="bid_addendum"
-                            entityId={addendum.id}
-                            projectId={projectId}
-                            attachments={addendumAttachments[addendum.id] ?? []}
-                            onAttach={(files) => handleAttach(files, "bid_addendum", addendum.id)}
-                            onDetach={(linkId) => handleDetach(linkId, "bid_addendum")}
-                            compact
-                          />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
-          </TabsContent>
-
-          {/* Details Tab */}
-          <TabsContent value="details" className="mt-4">
-            <Card className="overflow-hidden border-0 shadow-sm bg-gradient-to-br from-muted/40 via-background to-background">
-              <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/30">
-                <div className="space-y-1">
-                  <CardTitle className="text-base">Package details</CardTitle>
-                  <CardDescription>Scope, schedule, and instructions for bidders</CardDescription>
-                </div>
-                <Button size="sm" variant="outline" onClick={() => setEditSheetOpen(true)}>
-                  <Edit className="mr-2 h-4 w-4" />
-                  Edit
-                </Button>
-              </CardHeader>
-              <CardContent className="p-6 space-y-6">
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="rounded-lg border bg-card/80 p-4 space-y-2">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Trade</p>
-                    <p className="text-sm font-medium">{current.trade || "Not specified"}</p>
-                    <p className="text-xs text-muted-foreground">Primary scope classification</p>
-                  </div>
-                  <div className="rounded-lg border bg-card/80 p-4 space-y-2">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Due date</p>
-                    <p className={cn("text-sm font-medium", isOverdue && "text-rose-600")}>
-                      {dueDate ? format(dueDate, "MMMM d, yyyy 'at' h:mm a") : "No deadline"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {dueDate ? `Due ${formatDistanceToNow(dueDate, { addSuffix: true })}` : "Set a deadline to keep bids on track"}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border bg-card/80 p-4 space-y-2">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Status</p>
-                    <div>
-                      <BidStatusBadge status={current.status} />
-                    </div>
-                    <p className="text-xs text-muted-foreground">Current package state</p>
-                  </div>
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <div className="rounded-lg border bg-card p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Scope of work</p>
-                      <Badge variant="outline" className="text-[10px] uppercase tracking-wide">Scope</Badge>
-                    </div>
-                    {current.scope ? (
-                      <p className="text-sm whitespace-pre-wrap leading-relaxed">{current.scope}</p>
-                    ) : (
-                      <p className="text-sm text-muted-foreground italic">No scope defined</p>
-                    )}
-                  </div>
-
-                  <div className="rounded-lg border bg-card p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Bid instructions</p>
-                      <Badge variant="outline" className="text-[10px] uppercase tracking-wide">Instructions</Badge>
-                    </div>
-                    {current.instructions ? (
-                      <p className="text-sm whitespace-pre-wrap leading-relaxed">{current.instructions}</p>
-                    ) : (
-                      <p className="text-sm text-muted-foreground italic">No instructions provided</p>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+            <DialogFooter>
+              <DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose>
+              <Button onClick={handleAddendum} disabled={isAddingAddendum}>
+                {isAddingAddendum && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Issue addendum
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Award Confirmation Dialog */}
         <AlertDialog open={awardDialogOpen} onOpenChange={setAwardDialogOpen}>
@@ -2225,15 +1928,7 @@ export function BidPackageDetailClientNew({
             <AlertDialogHeader>
               <AlertDialogTitle>Award this bid?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will award the bid to{" "}
-                <span className="font-medium text-foreground">
-                  {selectedSubmission?.invite?.company?.name}
-                </span>{" "}
-                for{" "}
-                <span className="font-medium text-foreground">
-                  {formatCurrency(selectedSubmission?.total_cents)}
-                </span>
-                . A commitment will be created automatically.
+                This will award the bid to <span className="font-medium text-foreground">{selectedSubmission?.invite?.company?.name}</span> for <span className="font-medium text-foreground">{formatCurrency(selectedSubmission?.total_cents)}</span>. A commitment will be created automatically.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
