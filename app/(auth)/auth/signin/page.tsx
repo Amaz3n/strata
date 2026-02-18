@@ -9,7 +9,9 @@ export default function SignInPage() {
         <Suspense>
           <InviteHashHandler />
         </Suspense>
-        <LoginForm />
+        <Suspense>
+          <LoginForm />
+        </Suspense>
       </div>
     </div>
   )
