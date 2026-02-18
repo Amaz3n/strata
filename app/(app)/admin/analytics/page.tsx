@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
-import { requirePermissionGuard } from "@/lib/auth/guards"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { SystemMetrics } from "@/components/admin/system-metrics"
 import { UsageCharts } from "@/components/admin/usage-charts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
 
 export default async function AnalyticsPage() {
-  await requirePermissionGuard("billing.manage")
+  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
 
   return (
     <PageLayout

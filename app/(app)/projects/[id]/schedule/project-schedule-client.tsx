@@ -8,6 +8,7 @@ import type { ScheduleItem } from "@/lib/types"
 import {
   createProjectScheduleItemAction,
   updateProjectScheduleItemAction,
+  bulkUpdateProjectScheduleItemsAction,
   deleteProjectScheduleItemAction,
 } from "../actions"
 
@@ -34,6 +35,14 @@ export function ProjectScheduleClient({ projectId, initialItems }: ProjectSchedu
           const updated = await updateProjectScheduleItemAction(projectId, id, updates)
           setItems((prev) => prev.map((item) => (item.id === id ? updated : item)))
           return updated
+        }}
+        onItemsBulkUpdate={async (updates) => {
+          const updatedItems = await bulkUpdateProjectScheduleItemsAction(projectId, { items: updates })
+          if (updatedItems.length > 0) {
+            const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
+            setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
+          }
+          return updatedItems
         }}
         onItemDelete={async (id) => {
           await deleteProjectScheduleItemAction(projectId, id)

@@ -14,7 +14,16 @@ import {
   createBidAddendum,
   listBidSubmissions,
   awardBidSubmission,
+  pauseBidInviteAccess,
+  resumeBidInviteAccess,
+  revokeBidInviteAccess,
+  setBidInviteRequireAccount,
 } from "@/lib/services/bids"
+import {
+  pauseBidInviteAccountGrants,
+  resumeBidInviteAccountGrants,
+  revokeBidInviteAccountGrants,
+} from "@/lib/services/external-portal-auth"
 
 export async function listBidPackagesAction(projectId: string) {
   return listBidPackages(projectId)
@@ -62,6 +71,60 @@ export async function generateBidInviteLinkAction(projectId: string, bidPackageI
   revalidatePath(`/projects/${projectId}/bids`)
   revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
   return result
+}
+
+export async function pauseBidInviteAccessAction(projectId: string, bidPackageId: string, inviteId: string) {
+  await pauseBidInviteAccess(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
+}
+
+export async function resumeBidInviteAccessAction(projectId: string, bidPackageId: string, inviteId: string) {
+  await resumeBidInviteAccess(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
+}
+
+export async function revokeBidInviteAccessAction(projectId: string, bidPackageId: string, inviteId: string) {
+  await revokeBidInviteAccess(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
+}
+
+export async function setBidInviteRequireAccountAction(
+  projectId: string,
+  bidPackageId: string,
+  inviteId: string,
+  requireAccount: boolean,
+) {
+  await setBidInviteRequireAccount({ inviteId, requireAccount })
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
+}
+
+export async function pauseBidInviteAccountGrantsAction(projectId: string, bidPackageId: string, inviteId: string) {
+  await pauseBidInviteAccountGrants(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
+}
+
+export async function resumeBidInviteAccountGrantsAction(projectId: string, bidPackageId: string, inviteId: string) {
+  await resumeBidInviteAccountGrants(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
+}
+
+export async function revokeBidInviteAccountGrantsAction(projectId: string, bidPackageId: string, inviteId: string) {
+  await revokeBidInviteAccountGrants(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return { success: true }
 }
 
 export async function listBidAddendaAction(bidPackageId: string) {

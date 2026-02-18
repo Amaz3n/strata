@@ -30,7 +30,6 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Separator } from "@/components/ui/separator"
 import {
   GanttChart,
-  Calendar,
   Clock,
   Plus,
   Download,
@@ -78,7 +77,7 @@ const groupByOptions: { value: GroupByOption; label: string }[] = [
 
 export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToolbarProps) {
   const isMobile = useIsMobile()
-  const { viewState, setViewState, items, baselines, scrollToToday } = useSchedule()
+  const { viewState, setViewState, scrollToToday } = useSchedule()
   const [isExporting, setIsExporting] = useState<"pdf" | "csv" | null>(null)
 
   // Export handlers
@@ -316,21 +315,6 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
                   <AlertTriangle className="h-4 w-4 mr-2" />
                   Highlight Critical Path
                 </DropdownMenuCheckboxItem>
-                <DropdownMenuCheckboxItem
-                  checked={viewState.showBaseline}
-                  onCheckedChange={(checked) => setViewState({ showBaseline: checked })}
-                  disabled={baselines.length === 0}
-                >
-                  <Baseline className="h-4 w-4 mr-2" />
-                  Show Baseline
-                </DropdownMenuCheckboxItem>
-                <DropdownMenuCheckboxItem
-                  checked={viewState.showWeekends}
-                  onCheckedChange={(checked) => setViewState({ showWeekends: checked })}
-                >
-                  <Calendar className="h-4 w-4 mr-2" />
-                  Show Weekends
-                </DropdownMenuCheckboxItem>
               </DropdownMenuContent>
             </DropdownMenu>
 
@@ -392,4 +376,3 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
     </div>
   )
 }
-

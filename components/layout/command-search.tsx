@@ -12,7 +12,6 @@ import {
   Receipt,
   CreditCard,
   FileSpreadsheet,
-  Wrench,
   MessageSquare,
   CheckCircle,
   Layers,
@@ -26,17 +25,16 @@ import {
 } from "@/components/icons"
 
 import {
-  Command,
   CommandDialog,
   CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
 } from "@/components/ui/command"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
 import { useHydrated } from "@/hooks/use-hydrated"
 
 interface SearchResult {
@@ -56,6 +54,61 @@ interface SearchResult {
 interface CommandSearchProps {
   className?: string
 }
+
+const QUICK_JUMPS = [
+  {
+    id: "quick-projects",
+    title: "All projects",
+    subtitle: "Browse and jump to any project",
+    href: "/projects",
+    icon: Building2,
+  },
+  {
+    id: "quick-files",
+    title: "Files",
+    subtitle: "Open your document workspace",
+    href: "/files",
+    icon: FolderOpen,
+  },
+  {
+    id: "quick-tasks",
+    title: "Tasks",
+    subtitle: "Review open action items",
+    href: "/tasks",
+    icon: CheckSquare,
+  },
+  {
+    id: "quick-messages",
+    title: "Messages",
+    subtitle: "Open your inbox",
+    href: "/messages",
+    icon: MessageSquare,
+  },
+]
+
+const SEARCH_HINTS = [
+  {
+    id: "hint-invoice",
+    title: "Find invoices",
+    subtitle: 'Try "invoice 1021" or client name',
+    query: "invoice ",
+    icon: Receipt,
+  },
+  {
+    id: "hint-drawing",
+    title: "Find drawings",
+    subtitle: 'Try "sheet A1" or set name',
+    query: "drawing ",
+    icon: Layers,
+  },
+  {
+    id: "hint-rfi",
+    title: "Find RFIs/Submittals",
+    subtitle: 'Try "rfi", "submittal", or spec section',
+    query: "rfi ",
+    icon: AlertTriangle,
+  },
+]
 
 export function CommandSearch({ className }: CommandSearchProps) {
   const [open, setOpen] = useState(false)
@@ -160,6 +213,12 @@ export function CommandSearch({ className }: CommandSearchProps) {
     router.push(result.href)
   }
 
+  const handleQuickJump = (href: string) => {
+    setOpen(false)
+    setQuery("")
+    router.push(href)
+  }
+
   const getTypeColor = (type: SearchResult["type"]) => {
     switch (type) {
       case "project":
@@ -236,18 +295,20 @@ export function CommandSearch({ className }: CommandSearchProps) {
     return `${Math.floor(diffDays / 30)}mo ago`
   }
 
+  const hasQuery = query.trim().length > 0
+
   return (
     <div className={className}>
       {/* Desktop version - button that opens command dialog */}
       <div className="hidden lg:block">
         <Button
           variant="ghost"
-          className="relative h-9 w-64 justify-start rounded-none border border-input bg-secondary px-3 text-sm font-normal text-muted-foreground shadow-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+          className="relative h-9 w-72 justify-start rounded-none border border-border/80 bg-popover/90 px-3 text-sm font-normal text-muted-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-popover/80 transition-colors hover:bg-accent/50 hover:text-foreground"
           onClick={() => setOpen(true)}
         >
           <Search className="mr-2 h-4 w-4" />
           <span className="truncate">Search projects, files, contacts...</span>
-          <kbd className="pointer-events-none absolute right-1.5 top-1.5 hidden h-5 select-none items-center gap-1 rounded-none border border-border/60 bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
+          <kbd className="pointer-events-none absolute right-1.5 top-1.5 hidden h-5 select-none items-center gap-1 rounded-none border border-border/60 bg-background/80 px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
             <span className="text-xs">⌘</span>K
           </kbd>
         </Button>
@@ -266,22 +327,75 @@ export function CommandSearch({ className }: CommandSearchProps) {
 
       {/* Command Dialog - appears centered on screen */}
       {hydrated && (
-        <CommandDialog open={open} onOpenChange={setOpen} commandProps={{ shouldFilter: false }}>
+        <CommandDialog
+          open={open}
+          onOpenChange={setOpen}
+          className="max-w-2xl rounded-none border-border/80 bg-popover/95 p-0 shadow-2xl backdrop-blur supports-[backdrop-filter]:bg-popover/90"
+          commandProps={{
+            shouldFilter: false,
+            className: "min-h-[420px] [&_[data-slot=command-input-wrapper]]:h-12 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide",
+          }}
+        >
           <CommandInput
             placeholder="Search projects, contacts, invoices, drawings..."
             value={query}
             onValueChange={setQuery}
           />
-          <CommandList>
+          <CommandList className="max-h-[70vh]">
             {isLoading && (
               <div className="py-6 text-center text-sm text-muted-foreground">
                 Searching...
               </div>
             )}
-            {!isLoading && query && results.length === 0 && (
+            {!isLoading && hasQuery && results.length === 0 && (
               <CommandEmpty>No results found.</CommandEmpty>
             )}
-            {!isLoading && results.length > 0 && (
+            {!isLoading && !hasQuery && (
+              <>
+                <CommandGroup heading="Quick jump">
+                  {QUICK_JUMPS.map((item) => {
+                    const IconComponent = item.icon
+                    return (
+                      <CommandItem
+                        key={item.id}
+                        value={`${item.title} ${item.subtitle}`}
+                        onSelect={() => handleQuickJump(item.href)}
+                        className="group gap-3 rounded-none border border-transparent px-2.5 py-2.5 data-[selected=true]:border-primary/30 data-[selected=true]:bg-primary/5"
+                      >
+                        <div className="flex size-8 shrink-0 items-center justify-center rounded-none border border-border/70 bg-background/70">
+                          <IconComponent className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium text-foreground">{item.title}</div>
+                          <div className="truncate text-xs text-muted-foreground">{item.subtitle}</div>
+                        </div>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+                <CommandSeparator />
+                <CommandGroup heading="Search tips">
+                  {SEARCH_HINTS.map((item) => {
+                    const IconComponent = item.icon
+                    return (
+                      <CommandItem
+                        key={item.id}
+                        value={`${item.title} ${item.subtitle}`}
+                        onSelect={() => setQuery(item.query)}
+                        className="gap-3 rounded-none px-2.5 py-2.5"
+                      >
+                        <IconComponent className="h-4 w-4 text-muted-foreground" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium">{item.title}</div>
+                          <div className="truncate text-xs text-muted-foreground">{item.subtitle}</div>
+                        </div>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              </>
+            )}
+            {!isLoading && hasQuery && results.length > 0 && (
               <>
                 {Object.entries(groupResults(results)).map(([groupName, groupResults]) => (
                   <CommandGroup key={groupName} heading={groupName}>
@@ -300,28 +414,30 @@ export function CommandSearch({ className }: CommandSearchProps) {
                             .filter(Boolean)
                             .join(" ")}
                           onSelect={() => handleSelect(result)}
-                          className="flex items-start gap-3 py-3 px-2"
+                          className="flex items-start gap-3 rounded-none border border-transparent px-2.5 py-2.5 data-[selected=true]:border-primary/30 data-[selected=true]:bg-primary/5"
                         >
-                          <IconComponent className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
-                          <div className="flex flex-col gap-1 flex-1 min-w-0">
-                            <div className="font-medium truncate">{result.title}</div>
+                          <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-none border border-border/70 bg-background/70">
+                            <IconComponent className="h-4 w-4 text-muted-foreground" />
+                          </div>
+                          <div className="flex min-w-0 flex-1 flex-col gap-1">
+                            <div className="truncate font-medium">{result.title}</div>
                             {result.subtitle && (
-                              <div className="text-xs text-muted-foreground truncate">
+                              <div className="truncate text-xs text-muted-foreground">
                                 {result.subtitle}
                               </div>
                             )}
                             {result.description && (
-                              <div className="text-xs text-muted-foreground truncate line-clamp-2">
+                              <div className="line-clamp-2 truncate text-xs text-muted-foreground">
                                 {result.description}
                               </div>
                             )}
                             {result.project_name && (
-                              <div className="text-xs text-muted-foreground/70 truncate">
+                              <div className="truncate text-xs text-muted-foreground/70">
                                 in {result.project_name}
                               </div>
                             )}
                           </div>
-                          <div className="flex flex-col items-end gap-1 shrink-0">
+                          <div className="flex shrink-0 flex-col items-end gap-1">
                             <Badge variant="secondary" className={`${getTypeColor(result.type)} text-xs`}>
                               {formatEntityType(result.type)}
                             </Badge>

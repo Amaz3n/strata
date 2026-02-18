@@ -1,10 +1,10 @@
 "use client"
 
-import { useState, useCallback, useTransition } from "react"
+import { useState, useCallback, useTransition, type ReactNode } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { PortalHeader } from "@/components/portal/portal-header"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
+import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, MessageCircle } from "lucide-react"
+import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import {
   SubBottomNav,
   SubComplianceTab,
@@ -65,128 +65,91 @@ export function SubPortalClient({
     })
   }, [token])
 
-  if (!pinVerified) {
+  const tabs: Array<{ id: SubPortalTab; label: string; icon: typeof LayoutDashboard; indicator?: ReactNode }> = [
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { id: "documents", label: "Documents", icon: FileText },
+    {
+      id: "rfis",
+      label: "RFIs",
+      icon: HelpCircle,
+      indicator: data.pendingRfiCount > 0 ? <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" /> : null,
+    },
+    {
+      id: "submittals",
+      label: "Submittals",
+      icon: FileText,
+      indicator: data.pendingSubmittalCount > 0 ? <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" /> : null,
+    },
+    {
+      id: "compliance",
+      label: "Compliance",
+      icon: ShieldCheck,
+      indicator: complianceIssues > 0 ? <span className="ml-1.5 h-2 w-2 rounded-full bg-orange-500" /> : null,
+    },
+    { id: "messages", label: "Messages", icon: MessageCircle },
+  ]
+
+  const desktopTabs = tabs.filter((tab) => tab.id !== "messages")
+
+  const renderTab = (tab: SubPortalTab) => {
+    if (tab === "dashboard") {
+      return <SubDashboard data={data} token={token} canSubmitInvoices={canSubmitInvoices} />
+    }
+    if (tab === "documents") {
+      return <SubDocumentsTab files={data.sharedFiles} canDownload={canDownloadFiles} portalToken={token} />
+    }
+    if (tab === "rfis") return <SubRfisTab rfis={data.rfis} token={token} />
+    if (tab === "submittals") return <SubSubmittalsTab submittals={data.submittals} token={token} />
+    if (tab === "compliance") {
+      return (
+        <SubComplianceTab
+          complianceStatus={complianceStatus}
+          documentTypes={complianceDocumentTypes}
+          token={token}
+          canUpload={canUploadComplianceDocs}
+          onRefresh={refreshCompliance}
+        />
+      )
+    }
     return (
-      <PortalPinGate
+      <SubMessagesTab
+        messages={data.messages}
         token={token}
-        projectName={data.project.name}
-        orgName={data.org.name}
-        onSuccess={() => setPinVerified(true)}
+        canMessage={canMessage}
+        senderName={data.company.name}
       />
     )
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <PortalHeader orgName={data.org.name} project={data.project} />
-
-      {isMobile ? (
-        <>
-          <main className="flex-1 overflow-y-auto px-3 py-4 pb-20">
-            {activeTab === "dashboard" && (
-              <SubDashboard
-                data={data}
-                token={token}
-                canSubmitInvoices={canSubmitInvoices}
-              />
-            )}
-            {activeTab === "documents" && (
-              <SubDocumentsTab
-                files={data.sharedFiles}
-                canDownload={canDownloadFiles}
-                portalToken={token}
-              />
-            )}
-            {activeTab === "rfis" && (
-              <SubRfisTab rfis={data.rfis} token={token} />
-            )}
-            {activeTab === "submittals" && (
-              <SubSubmittalsTab submittals={data.submittals} token={token} />
-            )}
-            {activeTab === "compliance" && (
-              <SubComplianceTab
-                complianceStatus={complianceStatus}
-                documentTypes={complianceDocumentTypes}
-                token={token}
-                canUpload={canUploadComplianceDocs}
-                onRefresh={refreshCompliance}
-              />
-            )}
-            {activeTab === "messages" && (
-              <SubMessagesTab
-                messages={data.messages}
-                token={token}
-                canMessage={canMessage}
-                senderName={data.company.name}
-              />
-            )}
-          </main>
-          <SubBottomNav
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            hasAttentionItems={hasAttentionItems}
-            pendingRfis={data.pendingRfiCount}
-            pendingSubmittals={data.pendingSubmittalCount}
-            complianceIssues={complianceIssues}
-          />
-        </>
-      ) : (
-        <main className="flex-1 mx-auto w-full max-w-4xl px-4 py-6">
-          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as SubPortalTab)}>
-            <TabsList className="w-full justify-start mb-4">
-              <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
-              <TabsTrigger value="documents">Documents</TabsTrigger>
-              <TabsTrigger value="rfis" className="relative">
-                RFIs
-                {data.pendingRfiCount > 0 && (
-                  <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" />
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="submittals" className="relative">
-                Submittals
-                {data.pendingSubmittalCount > 0 && (
-                  <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" />
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="compliance" className="relative">
-                Compliance
-                {complianceIssues > 0 && (
-                  <span className="ml-1.5 h-2 w-2 rounded-full bg-orange-500" />
-                )}
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="dashboard">
-              <SubDashboard
-                data={data}
-                token={token}
-                canSubmitInvoices={canSubmitInvoices}
-              />
-            </TabsContent>
-            <TabsContent value="documents">
-              <SubDocumentsTab
-                files={data.sharedFiles}
-                canDownload={canDownloadFiles}
-                portalToken={token}
-              />
-            </TabsContent>
-            <TabsContent value="rfis">
-              <SubRfisTab rfis={data.rfis} token={token} />
-            </TabsContent>
-            <TabsContent value="submittals">
-              <SubSubmittalsTab submittals={data.submittals} token={token} />
-            </TabsContent>
-            <TabsContent value="compliance">
-              <SubComplianceTab
-                complianceStatus={complianceStatus}
-                documentTypes={complianceDocumentTypes}
-                token={token}
-                canUpload={canUploadComplianceDocs}
-                onRefresh={refreshCompliance}
-              />
-            </TabsContent>
-          </Tabs>
-        </main>
-      )}
-    </div>
+    <ExternalPortalShell
+      orgName={data.org.name}
+      project={data.project}
+      isMobile={isMobile}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      tabs={tabs}
+      desktopTabs={desktopTabs}
+      renderTab={renderTab}
+      pinVerified={pinVerified}
+      pinGate={
+        <PortalPinGate
+          token={token}
+          projectName={data.project.name}
+          orgName={data.org.name}
+          onSuccess={() => setPinVerified(true)}
+        />
+      }
+      mobileNav={
+        <SubBottomNav
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          hasAttentionItems={hasAttentionItems}
+          pendingRfis={data.pendingRfiCount}
+          pendingSubmittals={data.pendingSubmittalCount}
+          complianceIssues={complianceIssues}
+        />
+      }
+    />
   )
 }

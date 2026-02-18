@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
-import type { Rfi, Project } from "@/lib/types"
+import type { Rfi, Project, RfiResponse } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -45,19 +45,19 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/files/actions"
-import { addRfiResponseAction, decideRfiAction } from "@/app/(app)/rfis/actions"
+import { addRfiResponseAction, decideRfiAction, listRfiResponsesAction } from "@/app/(app)/rfis/actions"
 import { rfiResponseInputSchema, rfiDecisionSchema, type RfiResponseInput, type RfiDecisionInput } from "@/lib/validation/rfis"
 
 const statusLabels: Record<string, string> = {
+  draft: "Draft",
   open: "Open",
-  in_review: "In review",
   answered: "Answered",
   closed: "Closed",
 }
 
 const statusStyles: Record<string, string> = {
+  draft: "bg-zinc-500/15 text-zinc-600 border-zinc-500/30",
   open: "bg-warning/20 text-warning border-warning/40",
-  in_review: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   answered: "bg-success/20 text-success border-success/30",
   closed: "bg-muted text-muted-foreground border-muted",
 }
@@ -67,7 +67,7 @@ interface RfiDetailSheetProps {
   project?: Project
   open: boolean
   onOpenChange: (open: boolean) => void
-  onUpdate?: (rfi: Rfi) => void
+  onUpdate?: () => void
 }
 
 export function RfiDetailSheet({
@@ -81,6 +81,8 @@ export function RfiDetailSheet({
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showResponseForm, setShowResponseForm] = useState(false)
+  const [responses, setResponses] = useState<RfiResponse[]>([])
+  const [isLoadingResponses, setIsLoadingResponses] = useState(false)
 
   const responseForm = useForm<RfiResponseInput>({
     resolver: zodResolver(rfiResponseInputSchema),
@@ -144,6 +146,20 @@ export function RfiDetailSheet({
     }
   }, [rfi])
 
+  const loadResponses = useCallback(async () => {
+    if (!rfi) return
+    setIsLoadingResponses(true)
+    try {
+      const data = await listRfiResponsesAction(rfi.id)
+      setResponses(data)
+    } catch (error) {
+      console.error("Failed to load RFI responses:", error)
+      setResponses([])
+    } finally {
+      setIsLoadingResponses(false)
+    }
+  }, [rfi])
+
   // Load attachments when sheet opens
   useEffect(() => {
     if (open && rfi) {
@@ -161,10 +177,10 @@ export function RfiDetailSheet({
             console.warn("Failed to backfill legacy RFI attachment link", error)
           }
         }
-        await loadAttachments()
+        await Promise.all([loadAttachments(), loadResponses()])
       })()
     }
-  }, [open, rfi, loadAttachments])
+  }, [open, rfi, loadAttachments, loadResponses])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {
@@ -202,7 +218,7 @@ export function RfiDetailSheet({
       toast.success("Response added", { description: "Your response has been recorded." })
       setShowResponseForm(false)
       responseForm.reset()
-      onUpdate?.(rfi) // Trigger parent update
+      await Promise.all([loadResponses(), onUpdate?.()])
     } catch (error: any) {
       console.error("Failed to add response:", error)
       toast.error("Failed to add response", { description: error?.message ?? "Please try again." })
@@ -218,7 +234,7 @@ export function RfiDetailSheet({
     try {
       await decideRfiAction(values)
       toast.success("Decision recorded", { description: "The RFI decision has been recorded." })
-      onUpdate?.(rfi) // Trigger parent update
+      await onUpdate?.()
     } catch (error: any) {
       console.error("Failed to record decision:", error)
       toast.error("Failed to record decision", { description: error?.message ?? "Please try again." })
@@ -284,6 +300,21 @@ export function RfiDetailSheet({
                 {rfi.priority} priority
               </Badge>
             )}
+            {rfi.location && (
+              <Badge variant="outline" className="text-xs">Location: {rfi.location}</Badge>
+            )}
+            {rfi.drawing_reference && (
+              <Badge variant="outline" className="text-xs">Drawing: {rfi.drawing_reference}</Badge>
+            )}
+            {rfi.spec_reference && (
+              <Badge variant="outline" className="text-xs">Spec: {rfi.spec_reference}</Badge>
+            )}
+            {typeof rfi.schedule_impact_days === "number" && (
+              <Badge variant="outline" className="text-xs">Schedule impact: {rfi.schedule_impact_days}d</Badge>
+            )}
+            {typeof rfi.cost_impact_cents === "number" && (
+              <Badge variant="outline" className="text-xs">Cost impact: ${(rfi.cost_impact_cents / 100).toLocaleString()}</Badge>
+            )}
           </div>
 
           <Separator />
@@ -296,23 +327,32 @@ export function RfiDetailSheet({
             </div>
           </div>
 
-          {/* Answer (if answered) */}
-          {rfi.answered_at && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h4 className="text-sm font-medium">Response</h4>
-                <span className="text-xs text-muted-foreground">
-                  Answered {formatDate(rfi.answered_at)}
-                </span>
-              </div>
-              <div className="rounded-lg border bg-success/5 border-success/20 p-4">
-                <p className="text-sm">
-                  {/* Response would go here if tracked */}
-                  Response recorded
-                </p>
-              </div>
+          {/* Response thread */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium">Responses</h4>
+              {rfi.answered_at && (
+                <span className="text-xs text-muted-foreground">Answered {formatDate(rfi.answered_at)}</span>
+              )}
             </div>
-          )}
+            <div className="space-y-2">
+              {isLoadingResponses ? (
+                <p className="text-sm text-muted-foreground">Loading responses...</p>
+              ) : responses.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No responses yet.</p>
+              ) : (
+                responses.map((response) => (
+                  <div key={response.id} className="rounded-lg border p-3 space-y-1">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span className="capitalize">{response.response_type}</span>
+                      <span>{formatDate(response.created_at)}</span>
+                    </div>
+                    <p className="text-sm whitespace-pre-wrap">{response.body}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
 
           {/* Decision info */}
           {rfi.decision_status && (

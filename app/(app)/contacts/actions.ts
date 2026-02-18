@@ -153,6 +153,7 @@ export async function importContactsCsvAction(csvText: string) {
         full_name: row.full_name || row.name || "",
         email: row.email || undefined,
         phone: row.phone || undefined,
+        address: row.address || undefined,
         role: row.role || undefined,
         contact_type,
         external_crm_id: row.external_crm_id || undefined,
@@ -168,6 +169,7 @@ export async function importContactsCsvAction(csvText: string) {
         full_name: parsed.data.full_name,
         email: parsed.data.email ?? null,
         phone: parsed.data.phone ?? null,
+        address: parsed.data.address ? { formatted: parsed.data.address } : null,
         role: parsed.data.role ?? null,
         contact_type: parsed.data.contact_type ?? "subcontractor",
         primary_company_id: parsed.data.primary_company_id ?? null,
@@ -193,4 +195,3 @@ export async function importContactsCsvAction(csvText: string) {
   revalidatePath("/directory")
   return { created: insertPayload.length }
  }
-

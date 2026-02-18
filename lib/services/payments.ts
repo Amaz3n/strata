@@ -18,6 +18,7 @@ import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
+import { requireAuthorization } from "@/lib/services/authorization"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 const PAY_PATH = `${APP_URL}/p/pay`
@@ -255,7 +256,16 @@ async function ensureReceiptForPayment({
 
 export async function generatePayLink(input: GeneratePayLinkInput, orgId?: string) {
   const parsed = generatePayLinkInputSchema.parse(input)
-  const { orgId: resolvedOrgId, supabase } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "invoice.send",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: parsed.invoice_id,
+  })
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
@@ -373,7 +383,16 @@ export async function getInvoiceForPayLink(token: string) {
 
 export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId?: string) {
   const parsed = createPaymentIntentInputSchema.parse(input)
-  const { orgId: resolvedOrgId, supabase } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "payment.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: parsed.invoice_id,
+  })
 
   const invoice = await getInvoiceTotals(supabase, parsed.invoice_id, resolvedOrgId)
   const amount = parsed.amount_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
@@ -434,6 +453,15 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     const ctx = await requireOrgContext(orgId)
     resolvedOrgId = ctx.orgId
     invoiceId = invoiceId ?? parsed.invoice_id ?? undefined
+    await requireAuthorization({
+      permission: "payment.release",
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      supabase: ctx.supabase,
+      logDecision: true,
+      resourceType: "invoice",
+      resourceId: invoiceId ?? undefined,
+    })
   }
 
   if (!resolvedOrgId || !invoiceId) {
@@ -541,7 +569,16 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
 }
 
 export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "payment.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: invoiceId,
+  })
   const { data, error } = await supabase
     .from("payments")
     .select("*")
@@ -555,7 +592,16 @@ export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) 
 
 export async function upsertReminderRule(input: unknown, orgId?: string) {
   const parsed = reminderRuleSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "invoice.send",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: parsed.invoice_id,
+  })
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
@@ -591,7 +637,16 @@ export async function upsertReminderRule(input: unknown, orgId?: string) {
 
 export async function upsertLateFeeRule(input: unknown, orgId?: string) {
   const parsed = lateFeeRuleSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "payment.release",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: parsed.project_id ? "project" : "org",
+    resourceId: parsed.project_id ?? resolvedOrgId,
+  })
 
   const { data, error } = await supabase
     .from("late_fees")

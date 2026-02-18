@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
-import { requirePermissionGuard } from "@/lib/auth/guards"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { AuditLogTable } from "@/components/admin/audit-log-table"
 import { AuditLogFilters } from "@/components/admin/audit-log-filters"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,7 +13,7 @@ export default async function AuditPage({
 }: {
   searchParams: { [key: string]: string | string[] | undefined }
 }) {
-  await requirePermissionGuard("audit.read")
+  await requireAnyPermissionGuard(["audit.read", "platform.support.read"])
 
   const search = typeof searchParams.search === 'string' ? searchParams.search : ''
   const action = typeof searchParams.action === 'string' ? searchParams.action : 'all'

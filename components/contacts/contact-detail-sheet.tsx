@@ -25,9 +25,10 @@ interface ContactDetailSheetProps {
   contactId?: string
   open: boolean
   onOpenChange: (open: boolean) => void
+  onEditContact?: (contact: Contact) => void
 }
 
-export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDetailSheetProps) {
+export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContact }: ContactDetailSheetProps) {
   const [data, setData] = useState<ContactDetail | null>(null)
   const [isPending, startTransition] = useTransition()
   const [isTrackingCrm, setIsTrackingCrm] = useState(false)
@@ -55,7 +56,7 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
       await trackInCrmAction(contact.id)
       router.refresh()
       toast({ title: "Contact tracked in Pipeline" })
-      router.push(`/prospects`)
+      router.push("/pipeline?view=prospects")
     } catch (error) {
       toast({ title: "Failed to track in Pipeline", description: (error as Error).message })
     } finally {
@@ -105,6 +106,9 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
                   )}
                   {contact.notes && (
                     <div className="text-muted-foreground text-sm whitespace-pre-wrap">{contact.notes}</div>
+                  )}
+                  {contact.address?.formatted && (
+                    <div className="text-muted-foreground text-sm whitespace-pre-wrap">{contact.address.formatted}</div>
                   )}
                   {(contact.crm_source || contact.external_crm_id) && (
                     <div className="text-xs text-muted-foreground">
@@ -179,6 +183,15 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
                   {isTrackingCrm ? "Tracking..." : "Track in Pipeline"}
                 </Button>
                 <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      if (!contact) return
+                      onEditContact?.(contact)
+                    }}
+                  >
+                    Edit contact
+                  </Button>
                   <Button variant="outline" asChild>
                     <Link href={`/estimates?recipient=${contact.id}`}>Create estimate</Link>
                   </Button>
@@ -194,8 +207,6 @@ export function ContactDetailSheet({ contactId, open, onOpenChange }: ContactDet
     </Sheet>
   )
 }
-
-
 
 
 

@@ -22,6 +22,8 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/files/actions"
+import { generateInvoicePdfAction } from "@/app/(app)/invoices/actions"
+import { toast } from "sonner"
 
 type Props = {
   trigger?: React.ReactNode
@@ -89,6 +91,7 @@ export function InvoiceDetailSheet({
 }: Props) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [pdfLoading, setPdfLoading] = useState(false)
 
   useEffect(() => {
     if (!open || !invoice?.id) return
@@ -202,6 +205,8 @@ export function InvoiceDetailSheet({
   const sentToArray = invoice?.sent_to_emails ?? (metadata.sent_to ?? metadata.sentTo ?? []) ?? []
   const customerName = (invoice?.customer_name as string | undefined) ?? metadata.customer_name ?? sentToArray?.[0] ?? "Customer"
   const customerInitial = customerName?.[0] ?? "C"
+  const numberAdjustedByQbo = Boolean(metadata.invoice_number_changed)
+  const previousInvoiceNumber = metadata.invoice_number_previous as string | undefined
   const sentAtValue = (invoice as any)?.sent_at ?? metadata.sent_at ?? metadata.sentAt
   const sentToValue =
     typeof sentToArray === "string"
@@ -228,6 +233,22 @@ export function InvoiceDetailSheet({
       qbo_id: item.qbo_id,
     }))
   }, [syncHistory])
+
+  const handleDownloadPdf = async () => {
+    if (!invoice?.id) return
+    setPdfLoading(true)
+    try {
+      const result = await generateInvoicePdfAction(invoice.id)
+      if (result.downloadUrl && typeof window !== "undefined") {
+        window.open(result.downloadUrl, "_blank", "noopener,noreferrer")
+      }
+      toast.success("Invoice PDF saved to Arc")
+    } catch (error: any) {
+      toast.error("Failed to generate invoice PDF", { description: error?.message ?? "Please try again." })
+    } finally {
+      setPdfLoading(false)
+    }
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -300,6 +321,12 @@ export function InvoiceDetailSheet({
             </div>
           ) : (
             <div className="px-5 py-5 space-y-4">
+            {numberAdjustedByQbo && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                Invoice number updated after a QuickBooks conflict
+                {previousInvoiceNumber ? ` (previous: ${previousInvoiceNumber}).` : "."}
+              </div>
+            )}
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>Due date</span>
               <span className="text-foreground">
@@ -366,9 +393,8 @@ export function InvoiceDetailSheet({
                 <Button
                   variant="secondary"
                   className="size-[38px] hover:bg-secondary shrink-0"
-                  onClick={() => {
-                    if (typeof window !== "undefined") window.print()
-                  }}
+                  onClick={handleDownloadPdf}
+                  disabled={pdfLoading || !invoice?.id}
                 >
                   <Download className="h-4 w-4" />
                 </Button>
@@ -379,7 +405,7 @@ export function InvoiceDetailSheet({
                 {onManualResync && (
                   <Button size="sm" variant="outline" onClick={onManualResync} disabled={manualResyncing}>
                     <RefreshCw className={`h-4 w-4 mr-2 ${manualResyncing ? "animate-spin" : ""}`} />
-                    {manualResyncing ? "Resyncing..." : "Manual resync"}
+                    {manualResyncing ? "Syncing..." : "Sync now"}
                   </Button>
                 )}
               </div>

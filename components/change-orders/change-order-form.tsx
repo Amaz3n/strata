@@ -336,19 +336,19 @@ export function ChangeOrderForm({
                         </Button>
                       </div>
 
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3">
                         <FormField
                           control={form.control}
                           name={`lines.${index}.cost_code_id`}
                           render={({ field }) => (
-                            <FormItem className="md:col-span-2 space-y-2">
+                            <FormItem className="space-y-2 min-w-0">
                               <FormLabel className="text-xs font-medium text-muted-foreground">Cost code</FormLabel>
                               <Select
                                 value={field.value ?? "none"}
                                 onValueChange={(value) => field.onChange(value === "none" ? undefined : value)}
                               >
                                 <FormControl>
-                                  <SelectTrigger>
+                                  <SelectTrigger className="w-full min-w-0 max-w-full [&_[data-slot=select-value]]:block [&_[data-slot=select-value]]:truncate">
                                     <SelectValue placeholder="No cost code" />
                                   </SelectTrigger>
                                 </FormControl>
@@ -356,7 +356,7 @@ export function ChangeOrderForm({
                                   <SelectItem value="none">No cost code</SelectItem>
                                   {costCodes.map((code) => (
                                     <SelectItem key={code.id} value={code.id}>
-                                      {code.code} · {code.name}
+                                      <span className="block truncate">{code.code} · {code.name}</span>
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
@@ -369,7 +369,7 @@ export function ChangeOrderForm({
                           control={form.control}
                           name={`lines.${index}.quantity`}
                           render={({ field }) => (
-                            <FormItem className="space-y-2">
+                            <FormItem className="space-y-2 min-w-0">
                               <FormLabel className="text-xs font-medium text-muted-foreground">Qty</FormLabel>
                               <FormControl>
                                 <Input
@@ -390,7 +390,7 @@ export function ChangeOrderForm({
                           control={form.control}
                           name={`lines.${index}.unit_cost`}
                           render={({ field }) => (
-                            <FormItem className="space-y-2">
+                            <FormItem className="space-y-2 min-w-0">
                               <FormLabel className="text-xs font-medium text-muted-foreground">Unit cost</FormLabel>
                               <FormControl>
                                 <Input
@@ -411,7 +411,7 @@ export function ChangeOrderForm({
                           control={form.control}
                           name={`lines.${index}.allowance`}
                           render={({ field }) => (
-                            <FormItem className="space-y-2">
+                            <FormItem className="space-y-2 min-w-0">
                               <FormLabel className="text-xs font-medium text-muted-foreground">Allowance</FormLabel>
                               <FormControl>
                                 <Input
@@ -536,4 +536,3 @@ export function ChangeOrderForm({
     </Sheet>
   )
 }
-

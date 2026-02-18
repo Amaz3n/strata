@@ -1,9 +1,9 @@
 "use client"
 
-import { Home, FileText, Bell, Send } from "lucide-react"
+import { Home, FileText, Bell, Send, MessageSquare } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type BidPortalTab = "home" | "documents" | "addenda" | "submit"
+export type BidPortalTab = "home" | "documents" | "addenda" | "rfis" | "submit"
 
 interface BidBottomNavProps {
   activeTab: BidPortalTab
@@ -16,6 +16,7 @@ const tabs: { value: BidPortalTab; label: string; icon: typeof Home }[] = [
   { value: "home", label: "Home", icon: Home },
   { value: "documents", label: "Files", icon: FileText },
   { value: "addenda", label: "Addenda", icon: Bell },
+  { value: "rfis", label: "RFIs", icon: MessageSquare },
   { value: "submit", label: "Submit", icon: Send },
 ]
 
@@ -27,7 +28,7 @@ export function BidBottomNav({
 }: BidBottomNavProps) {
   return (
     <nav className="fixed bottom-0 inset-x-0 z-50 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="grid grid-cols-4 h-16">
+      <div className="grid grid-cols-5 h-16">
         {tabs.map(({ value, label, icon: Icon }) => {
           const isActive = activeTab === value
           const showBadge = value === "addenda" && unacknowledgedAddenda > 0

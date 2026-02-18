@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { authorize, requireAuthorization } from "@/lib/services/authorization"
 import { isPlatformAdminId } from "@/lib/auth/platform"
 
 type PermissionRow = { role?: { permissions?: { permission_key: string }[] } }
@@ -47,8 +48,9 @@ export async function getUserPermissions(userId: string, orgId: string, supabase
   if (isPlatformAdminId(userId, undefined)) {
     return ["*"]
   }
+
   // Always use service role to bypass restrictive RLS on role_permissions.
-  const client = createServiceSupabaseClient()
+  const client = supabase ?? createServiceSupabaseClient()
   return fetchPermissions({ supabase: client, orgId, userId })
 }
 
@@ -59,67 +61,85 @@ export async function getCurrentUserPermissions(orgId?: string) {
 }
 
 export async function hasPermission(permission: string, ctx?: Partial<PermissionContext>) {
-  if (ctx?.userId && isPlatformAdminId(ctx.userId, undefined)) return true
+  if (ctx?.userId) {
+    const decision = await authorize({
+      permission,
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      supabase: ctx.supabase,
+      logDecision: true,
+    })
+    return decision.allowed
+  }
+
   const resolved = await resolveContext(ctx)
-  const permissions = await getUserPermissions(resolved.userId, resolved.orgId, resolved.supabase)
-  return permissions.includes(permission)
+  const decision = await authorize({
+    permission,
+    userId: resolved.userId,
+    orgId: resolved.orgId,
+    supabase: resolved.supabase,
+    logDecision: true,
+  })
+  return decision.allowed
 }
 
 export async function hasAnyPermission(permissionsToCheck: string[], ctx?: Partial<PermissionContext>) {
-  if (ctx?.userId && isPlatformAdminId(ctx.userId, undefined)) return true
-  const resolved = await resolveContext(ctx)
-  const permissions = await getUserPermissions(resolved.userId, resolved.orgId, resolved.supabase)
-  return permissionsToCheck.some((p) => permissions.includes(p))
-}
-
-export async function requirePermission(permission: string, ctx?: Partial<PermissionContext>) {
-  const allowed = await hasPermission(permission, ctx)
-  if (!allowed) {
-    throw new Error(`Missing permission: ${permission}`)
+  for (const permission of permissionsToCheck) {
+    if (await hasPermission(permission, ctx)) {
+      return true
+    }
   }
-}
-
-export async function requireAnyPermission(permissionsToCheck: string[], ctx?: Partial<PermissionContext>) {
-  const allowed = await hasAnyPermission(permissionsToCheck, ctx)
-  if (!allowed) {
-    throw new Error(`Missing permission: ${permissionsToCheck.join(" or ")}`)
-  }
-}
-
-export async function hasProjectPermission(userId: string, projectId: string, permission: string) {
-  if (isPlatformAdminId(userId, undefined)) return true
-  const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase
-    .from("project_members")
-    .select("org_id, role:roles!inner(permissions:role_permissions(permission_key))")
-    .eq("project_id", projectId)
-    .eq("user_id", userId)
-    .eq("status", "active")
-    .order("created_at", { ascending: true })
-    .limit(1)
-
-  if (error) {
-    console.error("Unable to load project permissions", error)
-    return false
-  }
-
-  const row = Array.isArray(data) ? data[0] : (data as PermissionRow & { org_id?: string } | null)
-  const projectPerms = normalizePermissionRow(row)
-  if (projectPerms.includes(permission)) {
-    return true
-  }
-
-  if (row?.org_id) {
-    return hasPermission(permission, { orgId: row.org_id, userId, supabase })
-  }
-
   return false
 }
 
-export async function requireProjectPermission(userId: string, projectId: string, permission: string) {
-  const allowed = await hasProjectPermission(userId, projectId, permission)
-  if (!allowed) {
-    throw new Error(`Missing project permission: ${permission}`)
+export async function requirePermission(permission: string, ctx?: Partial<PermissionContext>) {
+  if (ctx?.userId) {
+    await requireAuthorization({
+      permission,
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      supabase: ctx.supabase,
+      logDecision: true,
+    })
+    return
   }
+
+  const resolved = await resolveContext(ctx)
+  await requireAuthorization({
+    permission,
+    userId: resolved.userId,
+    orgId: resolved.orgId,
+    supabase: resolved.supabase,
+    logDecision: true,
+  })
 }
 
+export async function requireAnyPermission(permissionsToCheck: string[], ctx?: Partial<PermissionContext>) {
+  for (const permission of permissionsToCheck) {
+    if (await hasPermission(permission, ctx)) {
+      return
+    }
+  }
+  throw new Error(`Missing permission: ${permissionsToCheck.join(" or ")}`)
+}
+
+export async function hasProjectPermission(userId: string, projectId: string, permission: string) {
+  const decision = await authorize({
+    permission,
+    userId,
+    projectId,
+    supabase: createServiceSupabaseClient(),
+    logDecision: true,
+  })
+  return decision.allowed
+}
+
+export async function requireProjectPermission(userId: string, projectId: string, permission: string) {
+  await requireAuthorization({
+    permission,
+    userId,
+    projectId,
+    supabase: createServiceSupabaseClient(),
+    logDecision: true,
+  })
+}

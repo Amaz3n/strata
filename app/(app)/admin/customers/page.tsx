@@ -1,8 +1,9 @@
 import { PageLayout } from "@/components/layout/page-layout"
-import { requirePermissionGuard } from "@/lib/auth/guards"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { CustomersClient } from "@/components/admin/customers-table"
 import { getCustomers } from "@/lib/services/admin"
-import { provisionCustomerAction } from "@/app/(app)/admin/customers/actions"
+import { extendCustomerTrialAction, provisionCustomerAction } from "@/app/(app)/admin/customers/actions"
+import { enterOrgContextAction, setOrganizationStatusAction } from "@/app/(app)/platform/actions"
 
 export const dynamic = 'force-dynamic'
 
@@ -11,7 +12,7 @@ export default async function CustomersPage({
 }: {
   searchParams: { [key: string]: string | string[] | undefined }
 }) {
-  await requirePermissionGuard("billing.manage")
+  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
 
   const search = typeof searchParams.search === 'string' ? searchParams.search : ''
   const status = typeof searchParams.status === 'string' ? searchParams.status : 'all'
@@ -45,6 +46,9 @@ export default async function CustomersPage({
           plan={plan}
           page={page}
           onProvision={provisionCustomerAction}
+          onExtendTrial={extendCustomerTrialAction}
+          onEnterContext={enterOrgContextAction}
+          onSetStatus={setOrganizationStatusAction}
         />
       </div>
     </PageLayout>

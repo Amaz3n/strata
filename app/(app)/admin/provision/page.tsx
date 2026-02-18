@@ -1,11 +1,13 @@
 import { PageLayout } from "@/components/layout/page-layout"
-import { requirePermissionGuard } from "@/lib/auth/guards"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { ProvisionOrgForm } from "@/components/admin/provision-form"
+import { getPlans } from "@/lib/services/admin"
 
 export const dynamic = "force-dynamic"
 
 export default async function ProvisionPage() {
-  await requirePermissionGuard("billing.manage")
+  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
+  const plans = await getPlans()
 
   return (
     <PageLayout
@@ -22,14 +24,11 @@ export default async function ProvisionPage() {
             Create a new builder org, invite the primary owner, and start a trial.
           </p>
         </div>
-        <ProvisionOrgForm />
+        <ProvisionOrgForm plans={plans} />
       </div>
     </PageLayout>
   )
 }
-
-
-
 
 
 

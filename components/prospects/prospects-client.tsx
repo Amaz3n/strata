@@ -1,8 +1,9 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import type { ReactNode } from "react"
 
 import type { Prospect } from "@/lib/services/crm"
 import type { TeamMember } from "@/lib/types"
@@ -47,17 +48,21 @@ interface ProspectsClientProps {
   teamMembers: TeamMember[]
   canCreate?: boolean
   canEdit?: boolean
+  headerLeft?: ReactNode
+  initialStatusFilter?: LeadStatus
 }
 
 export function ProspectsClient({
   prospects,
   teamMembers,
   canCreate = false,
-  canEdit = false
+  canEdit = false,
+  headerLeft,
+  initialStatusFilter,
 }: ProspectsClientProps) {
   const [items, setItems] = useState(prospects)
   const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>(initialStatusFilter ?? "all")
   const [ownerFilter, setOwnerFilter] = useState("all")
   const [createOpen, setCreateOpen] = useState(false)
 
@@ -68,7 +73,9 @@ export function ProspectsClient({
   const [followUpContact, setFollowUpContact] = useState<Prospect | undefined>()
   const [statusContact, setStatusContact] = useState<Prospect | undefined>()
 
-  const [creating, startCreating] = useTransition()
+  useEffect(() => {
+    setStatusFilter(initialStatusFilter ?? "all")
+  }, [initialStatusFilter])
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
@@ -142,48 +149,50 @@ export function ProspectsClient({
         />
       )}
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-1 items-center gap-2">
-          <Input
-            placeholder="Search prospects..."
-            className="w-full sm:w-72"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <Select value={ownerFilter} onValueChange={setOwnerFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Owner" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All owners</SelectItem>
-              <SelectItem value="unassigned">Unassigned</SelectItem>
-              {teamMembers.map((member) => (
-                <SelectItem key={member.user.id} value={member.user.id}>
-                  {member.user.full_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              {(["new", "contacted", "qualified", "estimating", "won", "lost"] as StatusKey[]).map((status) => (
-                <SelectItem key={status} value={status}>
-                  {statusLabels[status]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>{headerLeft}</div>
         {canCreate && (
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="mr-2 h-4 w-4" />
             Add prospect
           </Button>
         )}
+      </div>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <Input
+          placeholder="Search prospects..."
+          className="w-full sm:w-72"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Owner" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All owners</SelectItem>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {teamMembers.map((member) => (
+              <SelectItem key={member.user.id} value={member.user.id}>
+                {member.user.full_name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusKey | "all")}>
+          <SelectTrigger className="w-36">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {(["new", "contacted", "qualified", "estimating", "won", "lost"] as StatusKey[]).map((status) => (
+              <SelectItem key={status} value={status}>
+                {statusLabels[status]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="rounded-lg border overflow-hidden">

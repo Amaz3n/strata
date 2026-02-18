@@ -5,7 +5,9 @@ import {
   recordBidPortalAccess,
   validateBidPortalToken,
 } from "@/lib/services/bid-portal"
+import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 import { BidPortalClientNew } from "@/components/bid-portal/bid-portal-client-new"
+import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { createHmac } from "crypto"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -83,6 +85,24 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
         </Card>
       </div>
     )
+  }
+
+  if (access.require_account) {
+    const hasAccountAccess = await hasExternalPortalGrantForToken({
+      orgId: access.org_id,
+      tokenId: access.id,
+      tokenType: "bid",
+    })
+    if (!hasAccountAccess) {
+      return (
+        <PortalAccountGate
+          token={token}
+          tokenType="bid"
+          orgName={access.org.name}
+          projectName={access.project.name}
+        />
+      )
+    }
   }
 
   const data = await loadBidPortalData(access)

@@ -15,6 +15,7 @@ import {
 import { toast } from "sonner"
 
 import type { Company, Contact, Project, Task, ScheduleItem, PortalAccessToken, ProjectVendor, Contract, DrawSchedule, Retainage, Proposal } from "@/lib/types"
+import type { ExternalPortalAccount } from "@/lib/types"
 import type {
   ProjectStats,
   ProjectTeamMember,
@@ -34,12 +35,23 @@ import {
   getProjectVendorsAction,
   createAndAssignVendorAction,
 } from "./actions"
-import { loadSharingDataAction, revokePortalTokenAction, setPortalTokenPinAction, removePortalTokenPinAction } from "@/app/(app)/sharing/actions"
+import {
+  loadSharingDataAction,
+  loadProjectExternalPortalAccountsAction,
+  revokePortalTokenAction,
+  pausePortalTokenAction,
+  resumePortalTokenAction,
+  setPortalTokenRequireAccountAction,
+  setExternalPortalAccountStatusAction,
+  setPortalTokenPinAction,
+  removePortalTokenPinAction,
+} from "@/app/(app)/sharing/actions"
 import type { ProjectInput } from "@/lib/validation/projects"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { cn } from "@/lib/utils"
 import { AccessTokenGenerator } from "@/components/sharing/access-token-generator"
 import { AccessTokenList } from "@/components/sharing/access-token-list"
+import { PortalAccountList } from "@/components/sharing/portal-account-list"
 import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
 import { ProjectDirectory, DIRECTORY_ROLE_FILTERS } from "@/components/projects/project-directory"
 import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
@@ -200,13 +212,16 @@ export function ProjectDetailClient({
   const [sharingSheetOpen, setSharingSheetOpen] = useState(false)
   const [setupWizardOpen, setSetupWizardOpen] = useState(false)
   const [portalTokensState, setPortalTokensState] = useState<PortalAccessToken[]>(portalTokens)
+  const [externalAccounts, setExternalAccounts] = useState<ExternalPortalAccount[]>([])
   const [sharingLoading, setSharingLoading] = useState(false)
   const [sharingLastLoadedAt, setSharingLastLoadedAt] = useState<Date | null>(portalTokens.length ? new Date() : null)
   const [sharingInitialized, setSharingInitialized] = useState(Boolean(portalTokens.length))
+  const [accountsInitialized, setAccountsInitialized] = useState(false)
 
   useEffect(() => {
     setPortalTokensState(portalTokens)
     setSharingInitialized(Boolean(portalTokens.length))
+    setAccountsInitialized(false)
     setSharingLastLoadedAt(portalTokens.length ? new Date() : null)
   }, [portalTokens])
 
@@ -256,8 +271,8 @@ export function ProjectDetailClient({
   const [manageTeamSheetOpen, setManageTeamSheetOpen] = useState(false)
   const [assigningVendor, setAssigningVendor] = useState(false)
   const { clientActiveLinks, subActiveLinks, activeTokens } = useMemo(() => {
-    const activeClient = portalTokensState.filter((token) => token.portal_type === "client" && !token.revoked_at).length
-    const activeSubs = portalTokensState.filter((token) => token.portal_type === "sub" && !token.revoked_at).length
+    const activeClient = portalTokensState.filter((token) => token.portal_type === "client" && !token.revoked_at && !token.paused_at).length
+    const activeSubs = portalTokensState.filter((token) => token.portal_type === "sub" && !token.revoked_at && !token.paused_at).length
     const actives = portalTokensState.filter((token) => !token.revoked_at)
     return { clientActiveLinks: activeClient, subActiveLinks: activeSubs, activeTokens: actives }
   }, [portalTokensState])
@@ -266,9 +281,14 @@ export function ProjectDetailClient({
   const refreshPortalTokens = useCallback(async () => {
     setSharingLoading(true)
     try {
-      const tokens = await loadSharingDataAction(project.id)
+      const [tokens, accounts] = await Promise.all([
+        loadSharingDataAction(project.id),
+        loadProjectExternalPortalAccountsAction(project.id),
+      ])
       setPortalTokensState(tokens)
+      setExternalAccounts(accounts)
       setSharingInitialized(true)
+      setAccountsInitialized(true)
       setSharingLastLoadedAt(new Date())
     } catch (error) {
       console.error(error)
@@ -319,6 +339,83 @@ export function ProjectDetailClient({
     }
   }
 
+  async function handleTokenPause(tokenId: string) {
+    setSharingLoading(true)
+    try {
+      await pausePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      setPortalTokensState((prev) =>
+        prev.map((token) => (token.id === tokenId ? { ...token, paused_at: new Date().toISOString() } : token))
+      )
+      toast.success("Access paused")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to pause access")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  async function handleTokenResume(tokenId: string) {
+    setSharingLoading(true)
+    try {
+      await resumePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      setPortalTokensState((prev) =>
+        prev.map((token) => (token.id === tokenId ? { ...token, paused_at: null } : token))
+      )
+      toast.success("Access resumed")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to resume access")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  async function handleSetRequireAccount(tokenId: string, requireAccount: boolean) {
+    setSharingLoading(true)
+    try {
+      await setPortalTokenRequireAccountAction({
+        token_id: tokenId,
+        project_id: project.id,
+        require_account: requireAccount,
+      })
+      setPortalTokensState((prev) =>
+        prev.map((token) => (token.id === tokenId ? { ...token, require_account: requireAccount } : token))
+      )
+      toast.success(requireAccount ? "Account required enabled" : "Link-only access enabled")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to update access mode")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
+  async function handleSetAccountStatus(accountId: string, status: "active" | "paused" | "revoked") {
+    setSharingLoading(true)
+    try {
+      await setExternalPortalAccountStatusAction({ account_id: accountId, project_id: project.id, status })
+      setExternalAccounts((prev) =>
+        prev.map((account) =>
+          account.id === accountId
+            ? {
+                ...account,
+                status,
+                paused_at: status === "paused" ? new Date().toISOString() : null,
+                revoked_at: status === "revoked" ? new Date().toISOString() : null,
+              }
+            : account
+        )
+      )
+      toast.success(`Account ${status}`)
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to update account status")
+    } finally {
+      setSharingLoading(false)
+    }
+  }
+
   async function handleClearPin(tokenId: string) {
     setSharingLoading(true)
     try {
@@ -336,10 +433,10 @@ export function ProjectDetailClient({
   }
 
   useEffect(() => {
-    if (sharingSheetOpen && !sharingInitialized) {
+    if (sharingSheetOpen && (!sharingInitialized || !accountsInitialized)) {
       void refreshPortalTokens()
     }
-  }, [sharingInitialized, sharingSheetOpen, refreshPortalTokens])
+  }, [accountsInitialized, sharingInitialized, sharingSheetOpen, refreshPortalTokens])
 
   const loadTeamDirectory = useCallback(async () => {
     setTeamDirectoryLoading(true)
@@ -1060,9 +1157,32 @@ export function ProjectDetailClient({
                                 projectId={project.id}
                                 tokens={activeTokens}
                                 onRevoke={handleTokenRevoke}
+                                onPause={handleTokenPause}
+                                onResume={handleTokenResume}
+                                onSetRequireAccount={handleSetRequireAccount}
                                 isLoading={sharingLoading}
                                 onSetPin={handleSetPin}
                                 onClearPin={handleClearPin}
+                              />
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      </Accordion>
+
+                      <Accordion type="single" collapsible className="rounded-xl border bg-card/70 shadow-sm">
+                        <AccordionItem value="claimed-accounts" className="border-none">
+                          <AccordionTrigger className="px-4">
+                            <div className="flex w-full items-center justify-between gap-3">
+                              <span className="text-sm font-medium">Claimed accounts</span>
+                              <Badge variant="outline" className="text-xs">{externalAccounts.length}</Badge>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4">
+                            <div className="pt-2">
+                              <PortalAccountList
+                                accounts={externalAccounts}
+                                isLoading={sharingLoading}
+                                onSetStatus={handleSetAccountStatus}
                               />
                             </div>
                           </AccordionContent>

@@ -23,7 +23,7 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="w-[min(1500px,95vw)] max-w-none sm:max-w-none p-0 overflow-hidden"
+        className="w-[min(1500px,95vw)] max-w-none overflow-hidden border border-border/80 bg-background/95 p-0 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)] backdrop-blur supports-[backdrop-filter]:bg-background/85 sm:max-w-none"
         showCloseButton
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>

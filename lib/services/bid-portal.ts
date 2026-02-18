@@ -3,7 +3,7 @@ import { compare } from "bcryptjs"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
-import type { FileMetadata } from "@/lib/types"
+import type { FileMetadata, Rfi } from "@/lib/types"
 
 const PIN_SALT_ROUNDS = 10
 const MAX_PIN_ATTEMPTS = 5
@@ -41,6 +41,7 @@ export interface BidPortalAccess {
   access_count: number
   last_accessed_at?: string | null
   pin_required: boolean
+  require_account?: boolean
   pin_locked_until?: string | null
   invite: BidPortalInvite
   bidPackage: BidPortalPackage
@@ -83,6 +84,7 @@ export interface BidPortalData {
   addenda: BidPortalAddendum[]
   submissions: BidPortalSubmission[]
   currentSubmission?: BidPortalSubmission
+  rfis: Rfi[]
 }
 
 function getBidPortalSecret() {
@@ -130,7 +132,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     .select(
       `
       id, org_id, bid_invite_id, expires_at, max_access_count, access_count, last_accessed_at,
-      pin_required, pin_locked_until, revoked_at,
+      pin_required, require_account, pin_locked_until, paused_at, revoked_at,
       bid_invite:bid_invites(
         id, bid_package_id, status, invite_email, sent_at, last_viewed_at, submitted_at,
         company:companies(id, name, email, phone),
@@ -153,6 +155,11 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     return null
   }
 
+  const inviteRow = Array.isArray(tokenRow.bid_invite) ? tokenRow.bid_invite[0] : tokenRow.bid_invite
+  if (!inviteRow) {
+    return null
+  }
+
   if (tokenRow.expires_at && new Date(tokenRow.expires_at) < new Date()) {
     console.warn("Bid portal token expired", {
       tokenPrefix: token.slice(0, 6),
@@ -170,16 +177,24 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     return null
   }
 
+  if (tokenRow.paused_at) {
+    console.warn("Bid portal token paused", {
+      tokenPrefix: token.slice(0, 6),
+      pausedAt: tokenRow.paused_at,
+    })
+    return null
+  }
+
   const { data: bidPackage } = await supabase
     .from("bid_packages")
     .select("id, project_id, title, trade, scope, instructions, due_at, status")
-    .eq("id", tokenRow.bid_invite.bid_package_id)
+    .eq("id", inviteRow.bid_package_id)
     .maybeSingle()
 
   if (!bidPackage) {
     console.warn("Bid portal token missing package", {
       tokenPrefix: token.slice(0, 6),
-      packageId: tokenRow.bid_invite.bid_package_id,
+      packageId: inviteRow.bid_package_id,
     })
     return null
   }
@@ -225,17 +240,18 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     access_count: tokenRow.access_count ?? 0,
     last_accessed_at: tokenRow.last_accessed_at ?? null,
     pin_required: !!tokenRow.pin_required,
+    require_account: !!tokenRow.require_account,
     pin_locked_until: tokenRow.pin_locked_until ?? null,
     invite: {
-      id: tokenRow.bid_invite.id,
-      bid_package_id: tokenRow.bid_invite.bid_package_id,
-      status: tokenRow.bid_invite.status,
-      invite_email: tokenRow.bid_invite.invite_email ?? null,
-      sent_at: tokenRow.bid_invite.sent_at ?? null,
-      last_viewed_at: tokenRow.bid_invite.last_viewed_at ?? null,
-      submitted_at: tokenRow.bid_invite.submitted_at ?? null,
-      company: tokenRow.bid_invite.company ?? null,
-      contact: tokenRow.bid_invite.contact ?? null,
+      id: inviteRow.id,
+      bid_package_id: inviteRow.bid_package_id,
+      status: inviteRow.status,
+      invite_email: inviteRow.invite_email ?? null,
+      sent_at: inviteRow.sent_at ?? null,
+      last_viewed_at: inviteRow.last_viewed_at ?? null,
+      submitted_at: inviteRow.submitted_at ?? null,
+      company: Array.isArray(inviteRow.company) ? inviteRow.company[0] ?? null : inviteRow.company ?? null,
+      contact: Array.isArray(inviteRow.contact) ? inviteRow.contact[0] ?? null : inviteRow.contact ?? null,
     },
     bidPackage: {
       id: bidPackage.id,
@@ -351,8 +367,9 @@ export async function validateBidPortalPin({
 
 export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPortalData> {
   const supabase = createServiceSupabaseClient()
+  const assignedCompanyId = access.invite.company?.id ?? null
 
-  const [packageLinksResult, addendaResult, submissionsResult] = await Promise.all([
+  const [packageLinksResult, addendaResult, submissionsResult, rfisResult] = await Promise.all([
     supabase
       .from("file_links")
       .select(
@@ -382,6 +399,17 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
       .eq("org_id", access.org_id)
       .eq("bid_invite_id", access.bid_invite_id)
       .order("version", { ascending: false }),
+    assignedCompanyId
+      ? supabase
+          .from("rfis")
+          .select(
+            "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, submitted_at, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
+          )
+          .eq("org_id", access.org_id)
+          .eq("project_id", access.project.id)
+          .eq("assigned_company_id", assignedCompanyId)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] }),
   ])
 
   const packageFiles = (packageLinksResult.data ?? [])
@@ -459,6 +487,7 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
     })),
     submissions,
     currentSubmission: submissions.find((item) => item.is_current),
+    rfis: (rfisResult.data ?? []) as Rfi[],
   }
 }
 

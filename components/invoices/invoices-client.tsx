@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
@@ -11,12 +11,14 @@ import {
   createInvoiceAction,
   generateInvoiceLinkAction,
   getInvoiceDetailAction,
+  listInvoicesAction,
   manualResyncInvoiceAction,
+  retryFailedInvoiceSyncsAction,
   sendInvoiceReminderAction,
   syncPendingInvoicesNowAction,
   updateInvoiceAction,
 } from "@/app/(app)/invoices/actions"
-import { MiddayInvoiceSheet } from "@/components/invoices/midday/midday-invoice-sheet"
+import { InvoiceComposerSheet } from "@/components/invoices/invoice-composer-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -39,13 +41,15 @@ import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, Re
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 
-type StatusKey = "draft" | "sent" | "partial" | "paid" | "overdue" | "void"
+type StatusKey = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
 type StatusFilter = StatusKey | "all"
 type DueFilter = "any" | "due_soon" | "overdue" | "no_due"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
+  saved: "Saved",
   sent: "Sent",
   partial: "Partial",
   paid: "Paid",
@@ -55,6 +59,7 @@ const statusLabels: Record<StatusKey, string> = {
 
 const statusStyles: Record<StatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
+  saved: "bg-muted text-muted-foreground border-muted",
   sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   partial: "bg-purple-500/15 text-purple-700 border-purple-500/30",
   paid: "bg-success/20 text-success border-success/30",
@@ -69,7 +74,7 @@ function formatMoneyFromCents(cents?: number | null) {
 
 function resolveStatusKey(status?: string | null): StatusKey {
   if (!status) return "draft"
-  const allowed: StatusKey[] = ["draft", "sent", "partial", "paid", "overdue", "void"]
+  const allowed: StatusKey[] = ["draft", "saved", "sent", "partial", "paid", "overdue", "void"]
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
 }
 
@@ -94,7 +99,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   const [dueFilter, setDueFilter] = useState<DueFilter>("any")
   const [searchTerm, setSearchTerm] = useState("")
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [isPending, startTransition] = useTransition()
+  const [isCreating, setIsCreating] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
   const [linkingId, setLinkingId] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -106,7 +111,11 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
     Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
   >()
   const [isResyncing, setIsResyncing] = useState(false)
-  const [isSyncingAll, setIsSyncingAll] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
+  const [queueRefreshing, setQueueRefreshing] = useState(false)
+  const [queueSyncingPending, setQueueSyncingPending] = useState(false)
+  const [queueRetryingFailed, setQueueRetryingFailed] = useState(false)
+  const [queueSyncingInvoiceId, setQueueSyncingInvoiceId] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null)
@@ -128,6 +137,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   const filtered = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
     const today = new Date()
+    today.setHours(0, 0, 0, 0)
     const soon = addDays(today, 7)
 
     return items.filter((item) => {
@@ -136,6 +146,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       const matchesStatus = statusFilter === "all" || resolvedStatus === statusFilter
 
       const dueDate = item.due_date ? new Date(item.due_date) : null
+      if (dueDate) dueDate.setHours(0, 0, 0, 0)
       const matchesDue =
         dueFilter === "any"
           ? true
@@ -160,35 +171,117 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   const visibleIds = useMemo(() => filtered.map((item) => item.id), [filtered])
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
   const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id)) && !allVisibleSelected
+  const qboPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
+  const qboErrorCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "error").length, [items])
+  const queueItems = useMemo(
+    () =>
+      items
+        .filter((item) => item.qbo_sync_status === "pending" || item.qbo_sync_status === "error")
+        .sort((a, b) => Number(new Date(b.created_at ?? 0)) - Number(new Date(a.created_at ?? 0))),
+    [items],
+  )
 
-  async function handleCreate(values: InvoiceInput, sendToClient: boolean) {
-    startTransition(async () => {
-      try {
-        const created = await createInvoiceAction(values)
-        setItems((prev) => [created, ...prev])
-        setSheetOpen(false)
-        toast.success(sendToClient ? "Invoice sent" : "Draft saved", {
-          description: sendToClient ? "Client can now view this invoice." : "You can send when ready.",
-        })
-      } catch (error: any) {
-        console.error(error)
-        toast.error("Could not save invoice", { description: error?.message ?? "Please try again." })
-      }
-    })
+  async function refreshInvoices() {
+    setQueueRefreshing(true)
+    try {
+      const scopedProjectId = projects.length === 1 ? projects[0]?.id : undefined
+      const fresh = await listInvoicesAction(scopedProjectId)
+      setItems(fresh)
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not refresh invoices", { description: error?.message ?? "Please try again." })
+    } finally {
+      setQueueRefreshing(false)
+    }
   }
 
-  async function handleUpdate(values: InvoiceInput, sendToClient: boolean) {
-    if (!editingInvoice) return
+  async function handleQueueSyncPending() {
+    setQueueSyncingPending(true)
+    try {
+      const result = await syncPendingInvoicesNowAction()
+      toast.success("Sync run complete", {
+        description: `${result.processed ?? 0} pending invoices synced`,
+      })
+      await refreshInvoices()
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Sync failed", { description: error?.message ?? "Please try again." })
+    } finally {
+      setQueueSyncingPending(false)
+    }
+  }
+
+  async function handleQueueRetryFailed() {
+    setQueueRetryingFailed(true)
+    try {
+      const result = await retryFailedInvoiceSyncsAction()
+      toast.success("Retry queued", {
+        description: `${result.retried_invoices ?? 0} failed invoices retried`,
+      })
+      await refreshInvoices()
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Retry failed", { description: error?.message ?? "Please try again." })
+    } finally {
+      setQueueRetryingFailed(false)
+    }
+  }
+
+  async function handleQueueSyncOne(invoiceId: string) {
+    setQueueSyncingInvoiceId(invoiceId)
+    try {
+      await manualResyncInvoiceAction(invoiceId)
+      toast.success("Invoice synced")
+      await refreshInvoices()
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Sync failed", { description: error?.message ?? "Please try again." })
+    } finally {
+      setQueueSyncingInvoiceId(null)
+    }
+  }
+
+  async function handleCreate(values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) {
+    setIsCreating(true)
+    try {
+      const created = await createInvoiceAction(values)
+      setItems((prev) => [created, ...prev])
+      setSheetOpen(false)
+      if (!options?.silent) {
+        toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
+          description: sendToClient ? "Client can now view this invoice." : "Invoice saved to receivables.",
+        })
+      }
+      return created
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not save invoice", { description: error?.message ?? "Please try again." })
+      throw error
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  async function handleUpdate(values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) {
+    if (!editingInvoice) {
+      throw new Error("No invoice selected for editing")
+    }
     setIsUpdating(true)
     try {
       const updated = await updateInvoiceAction(editingInvoice.id, values)
       setItems((prev) => prev.map((inv) => (inv.id === updated.id ? updated : inv)))
-      toast.success(sendToClient ? "Invoice sent" : "Invoice updated")
-      setEditOpen(false)
-      setEditingInvoice(null)
+      if (!options?.silent) {
+        toast.success(sendToClient ? "Invoice sent" : "Invoice saved")
+      }
+      if (sendToClient) {
+        setEditOpen(false)
+        setEditingInvoice(null)
+      }
+      return updated
     } catch (error: any) {
       console.error(error)
       toast.error("Could not update invoice", { description: error?.message ?? "Please try again." })
+      throw error
     } finally {
       setIsUpdating(false)
     }
@@ -333,7 +426,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                       onValueChange={(value) => setStatusFilter(value as StatusFilter)}
                     >
                       <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
-                      {(["draft", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
+                      {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
                         <DropdownMenuRadioItem key={status} value={status}>
                           {statusLabels[status]}
                         </DropdownMenuRadioItem>
@@ -347,31 +440,13 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2">
-          <Button variant="outline" onClick={async () => {
-            setIsSyncingAll(true)
-            try {
-              await syncPendingInvoicesNowAction()
-              toast.success("Queued invoices synced to QuickBooks")
-              if (typeof window !== "undefined") {
-                window.location.reload()
-              }
-            } catch (error: any) {
-              console.error(error)
-              toast.error("Sync failed", { description: error?.message ?? "Please try again." })
-            } finally {
-              setIsSyncingAll(false)
-            }
-          }}>
-            {isSyncingAll ? (
-              <>
-                <RefreshCcw className="h-4 w-4 mr-2 animate-spin" />
-                Sync pending
-              </>
-            ) : (
-              <>
-                <RefreshCcw className="h-4 w-4 mr-2" />
-                Sync pending
-              </>
+          <Button variant="outline" onClick={() => setQueueOpen(true)} className="w-full sm:w-auto">
+            <RefreshCcw className="h-4 w-4 mr-2" />
+            Sync queue
+            {(qboPendingCount > 0 || qboErrorCount > 0) && (
+              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px]">
+                {qboPendingCount} pending / {qboErrorCount} failed
+              </span>
             )}
           </Button>
           <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
@@ -381,18 +456,18 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
         </div>
       </div>
 
-      <MiddayInvoiceSheet
+      <InvoiceComposerSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         projects={projects}
         defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
         onSubmit={handleCreate}
-        isSubmitting={isPending}
+        isSubmitting={isCreating}
         builderInfo={builderInfo}
         contacts={contacts}
         costCodes={costCodes}
       />
-      <MiddayInvoiceSheet
+      <InvoiceComposerSheet
         open={editOpen}
         onOpenChange={(open) => {
           setEditOpen(open)
@@ -408,6 +483,65 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
         mode="edit"
         invoice={editingInvoice}
       />
+      <Sheet open={queueOpen} onOpenChange={setQueueOpen}>
+        <SheetContent side="right" className="sm:max-w-xl w-full overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>QuickBooks Sync Queue</SheetTitle>
+            <SheetDescription>Review pending and failed invoice syncs, then trigger targeted actions.</SheetDescription>
+          </SheetHeader>
+          <div className="mt-6 space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Pending</p>
+                <p className="text-2xl font-semibold">{qboPendingCount}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Failed</p>
+                <p className="text-2xl font-semibold">{qboErrorCount}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={refreshInvoices} disabled={queueRefreshing}>
+                {queueRefreshing ? "Refreshing..." : "Refresh"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleQueueSyncPending} disabled={queueSyncingPending || qboPendingCount === 0}>
+                {queueSyncingPending ? "Syncing pending..." : "Sync pending"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleQueueRetryFailed} disabled={queueRetryingFailed || qboErrorCount === 0}>
+                {queueRetryingFailed ? "Retrying failed..." : "Retry failed"}
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              {queueItems.length === 0 ? (
+                <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">No invoices in sync queue.</div>
+              ) : (
+                queueItems.map((invoice) => (
+                  <div key={invoice.id} className="rounded-md border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-medium truncate">{invoice.invoice_number || invoice.title || "Untitled invoice"}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)} • {invoice.qbo_sync_status === "error" ? "Failed" : "Pending"}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={queueSyncingInvoiceId === invoice.id}
+                        onClick={() => handleQueueSyncOne(invoice.id)}
+                      >
+                        {queueSyncingInvoiceId === invoice.id ? "Syncing..." : "Sync now"}
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <AnimatePresence>
         <div className="rounded-lg border overflow-hidden">
@@ -542,7 +676,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                   </TableRow>
                 )
               })}
-              {filtered.length === 0 && !isPending && (
+              {filtered.length === 0 && !isCreating && (
                 <TableRow className="divide-x">
                   <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                     <div className="flex flex-col items-center gap-4">
@@ -561,7 +695,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                   </TableCell>
                 </TableRow>
               )}
-              {isPending && filtered.length === 0 && (
+              {isCreating && filtered.length === 0 && (
                 <TableRow className="divide-x">
                   <TableCell colSpan={7}>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

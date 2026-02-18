@@ -63,6 +63,15 @@ export interface DragState {
   originalEnd: Date
 }
 
+export interface ScheduleBulkItemUpdate {
+  id: string
+  start_date?: string
+  end_date?: string
+  sort_order?: number
+  progress?: number
+  status?: ScheduleItem["status"]
+}
+
 // Schedule context
 export interface ScheduleContextValue {
   // Data
@@ -82,6 +91,7 @@ export interface ScheduleContextValue {
   
   // Actions
   onItemUpdate: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
+  onItemsBulkUpdate: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete: (id: string) => Promise<void>
   onDependencyCreate: (from: string, to: string, type?: string) => Promise<void>
@@ -287,10 +297,18 @@ export function formatDate(date: Date, format: "short" | "medium" | "long" = "me
 
 export function parseDate(dateString?: string): Date | null {
   if (!dateString) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    const [year, month, day] = dateString.split("-").map(Number)
+    const date = new Date(year, month - 1, day)
+    return isNaN(date.getTime()) ? null : date
+  }
   const date = new Date(dateString)
   return isNaN(date.getTime()) ? null : date
 }
 
 export function toDateString(date: Date): string {
-  return date.toISOString().split("T")[0]
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
 }

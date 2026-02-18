@@ -4,9 +4,10 @@ import { randomUUID } from "crypto"
 import { cookies } from "next/headers"
 
 import { getQBOAuthUrl } from "@/lib/integrations/accounting/qbo-auth"
-import { disconnectQBO, getQBOConnection, updateQBOSettings } from "@/lib/services/qbo-connection"
+import { disconnectQBO, getQBOConnection, getQBODiagnostics, refreshQBOTokenNow, updateQBOSettings } from "@/lib/services/qbo-connection"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { retryFailedQBOSyncJobs } from "@/lib/services/qbo-sync"
 
 export async function connectQBOAction() {
   const { supabase, orgId, userId } = await requireOrgContext()
@@ -46,4 +47,22 @@ export async function updateQBOSettingsAction(settings: Record<string, any>) {
 
 export async function getQBOConnectionAction() {
   return getQBOConnection()
+}
+
+export async function getQBODiagnosticsAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  return getQBODiagnostics(orgId)
+}
+
+export async function refreshQBOTokenAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  return refreshQBOTokenNow(orgId)
+}
+
+export async function retryFailedQBOJobsAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  return retryFailedQBOSyncJobs(orgId)
 }

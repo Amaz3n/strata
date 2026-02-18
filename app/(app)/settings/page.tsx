@@ -2,7 +2,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getQBOConnection } from "@/lib/services/qbo-connection"
-import { listTeamMembers } from "@/lib/services/team"
+import { listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getOrgBilling } from "@/lib/services/orgs"
 import { getOrgAccessState } from "@/lib/services/access"
@@ -25,11 +25,12 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
   const isLocked = accessState.locked
   const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
 
-  const [qboConnection, teamMembers] = isLocked
-    ? [null, initialTab === "team" ? [] : undefined]
+  const [qboConnection, teamMembers, roleOptions] = isLocked
+    ? [null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
     : await Promise.all([
         getQBOConnection(),
         initialTab === "team" ? listTeamMembers(undefined, { includeProjectCounts: false }) : Promise.resolve(undefined),
+        initialTab === "team" ? listAssignableOrgRoles().catch(() => []) : Promise.resolve(undefined),
       ])
   const permissions = permissionResult?.permissions ?? []
   const canManageMembers = permissions.includes("members.manage")
@@ -58,6 +59,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
         initialTab={initialTab}
         initialQboConnection={qboConnection}
         teamMembers={teamMembers}
+        roleOptions={roleOptions}
         canManageMembers={canManageMembers}
         canEditRoles={canEditRoles}
         initialBilling={billing}

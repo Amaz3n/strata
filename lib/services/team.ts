@@ -2,14 +2,14 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { randomBytes } from "node:crypto"
 
-import type { TeamMember, OrgRole } from "@/lib/types"
+import type { TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
 import { inviteMemberSchema, memberStatusSchema, updateMemberRoleSchema, type InviteMemberInput } from "@/lib/validation/team"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { sendInviteEmail } from "@/lib/services/mailer"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { authorize, requireAuthorization } from "@/lib/services/authorization"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
   const { data, error } = await client.from("roles").select("id").eq("scope", "org").eq("key", role).maybeSingle()
@@ -17,6 +17,103 @@ async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
     throw new Error(`Role ${role} not found`)
   }
   return data.id as string
+}
+
+function normalizeRoleLabel(label: string | null | undefined, roleKey: string) {
+  const candidate = (label ?? "")
+    .replace(/^org[\s_-]+/i, "")
+    .trim()
+  if (candidate) return candidate
+  return roleKey
+    .replace(/^org_/, "")
+    .split("_")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ")
+}
+
+function defaultRoleDescription(roleKey: string) {
+  const descriptions: Record<string, string> = {
+    org_owner: "Full account control, including organization settings, billing, and team role management.",
+    org_office_admin: "Administrative control across projects and teams, including member management and business operations.",
+    org_project_lead: "Execution-focused access for project delivery, field workflows, and day-to-day coordination.",
+    org_viewer: "View-only access across shared data with no write or approval permissions.",
+  }
+
+  return descriptions[roleKey]
+}
+
+export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOption[]> {
+  const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
+  const adminDecision = await authorize({
+    permission: "org.admin",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "org",
+    resourceId: resolvedOrgId,
+  })
+
+  if (!adminDecision.allowed) {
+    await requireAuthorization({
+      permission: "members.manage",
+      userId,
+      orgId: resolvedOrgId,
+      supabase,
+      logDecision: true,
+      resourceType: "org",
+      resourceId: resolvedOrgId,
+    })
+  }
+
+  const serviceClient = createServiceSupabaseClient()
+  const { data, error } = await serviceClient
+    .from("roles")
+    .select("key, label, description")
+    .eq("scope", "org")
+    .order("label", { ascending: true })
+
+  if (error) {
+    throw new Error(`Failed to load assignable org roles: ${error.message}`)
+  }
+
+  const allowedRoleKeys = new Set(["org_owner", "org_office_admin", "org_project_lead", "org_viewer"])
+  const options = (data ?? [])
+    .filter((row: any) => typeof row?.key === "string" && allowedRoleKeys.has(row.key))
+    .map((row: any) => ({
+      key: row.key as string,
+      label: normalizeRoleLabel((row.label as string | null) ?? null, row.key as string),
+      description: ((row.description as string | null) ?? undefined) ?? defaultRoleDescription(row.key as string),
+    }))
+
+  if (options.length > 0) {
+    return Array.from(allowedRoleKeys)
+      .map((key) => options.find((option) => option.key === key))
+      .filter((option): option is OrgRoleOption => Boolean(option))
+  }
+
+  return [
+    {
+      key: "org_owner",
+      label: "Owner",
+      description: defaultRoleDescription("org_owner"),
+    },
+    {
+      key: "org_office_admin",
+      label: "Office Admin",
+      description: defaultRoleDescription("org_office_admin"),
+    },
+    {
+      key: "org_project_lead",
+      label: "Project Lead",
+      description: defaultRoleDescription("org_project_lead"),
+    },
+    {
+      key: "org_viewer",
+      label: "Viewer",
+      description: defaultRoleDescription("org_viewer"),
+    },
+  ]
 }
 
 function getAuthRedirectBaseUrl() {
@@ -59,6 +156,26 @@ async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
   }, {})
 }
 
+async function mapMfaEnabledByUser(serviceClient: SupabaseClient, userIds: string[]) {
+  if (userIds.length === 0) return {}
+  const output: Record<string, boolean> = {}
+
+  await Promise.all(
+    userIds.map(async (memberUserId) => {
+      const { data, error } = await serviceClient.auth.admin.mfa.listFactors({ userId: memberUserId })
+      if (error) {
+        console.error("Failed to load member MFA factors", { memberUserId, error })
+        output[memberUserId] = false
+        return
+      }
+
+      output[memberUserId] = (data.factors ?? []).some((factor) => factor.status === "verified")
+    }),
+  )
+
+  return output
+}
+
 function generateTempPassword() {
   return randomBytes(12).toString("base64url").slice(0, 16)
 }
@@ -99,10 +216,10 @@ async function createUserForInvite(client: SupabaseClient, email: string) {
   return { userId: data?.user?.id, isExisting: false }
 }
 
-function mapTeamMember(row: any, projectCounts: Record<string, number>): TeamMember {
+function mapTeamMember(row: any, projectCounts: Record<string, number>, mfaEnabledByUser: Record<string, boolean>): TeamMember {
   const user = row.user || row.users
   const invitedBy = row.invited_by_user || row.invited_by
-  const roleKey = row.role?.key ?? "staff"
+  const roleKey = row.role?.key ?? "org_project_lead"
 
   return {
     id: row.id,
@@ -113,7 +230,9 @@ function mapTeamMember(row: any, projectCounts: Record<string, number>): TeamMem
       avatar_url: user?.avatar_url ?? undefined,
     },
     role: roleKey,
+    role_label: normalizeRoleLabel((row.role?.label as string | null) ?? null, roleKey),
     status: row.status ?? "invited",
+    mfa_enabled: Boolean(user?.id ? mfaEnabledByUser[user.id] : false),
     project_count: projectCounts[user?.id] ?? 0,
     last_active_at: row.last_active_at ?? undefined,
     invited_by: invitedBy
@@ -133,7 +252,26 @@ export async function listTeamMembers(
   options?: { includeProjectCounts?: boolean },
 ): Promise<TeamMember[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  const memberDecision = await authorize({
+    permission: "org.member",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "org",
+    resourceId: resolvedOrgId,
+  })
+  if (!memberDecision.allowed) {
+    await requireAuthorization({
+      permission: "org.read",
+      userId,
+      orgId: resolvedOrgId,
+      supabase,
+      logDecision: true,
+      resourceType: "org",
+      resourceId: resolvedOrgId,
+    })
+  }
   const serviceClient = createServiceSupabaseClient()
   const includeProjectCounts = options?.includeProjectCounts ?? true
   const projectCounts = includeProjectCounts ? await mapProjectCounts(serviceClient, resolvedOrgId) : {}
@@ -155,7 +293,15 @@ export async function listTeamMembers(
     throw new Error(`Failed to list team members: ${error.message}`)
   }
 
-  return (data ?? []).map((row) => mapTeamMember(row, projectCounts))
+  const userIds = (data ?? [])
+    .map((row: any) => {
+      const user = row.user || row.users
+      return user?.id as string | undefined
+    })
+    .filter((id: string | undefined): id is string => Boolean(id))
+  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, userIds)
+
+  return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser))
 }
 
 export async function updateMemberProfile({
@@ -173,7 +319,15 @@ export async function updateMemberProfile({
   }
 
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "app_user",
+    resourceId: targetUserId,
+  })
 
   const serviceClient = createServiceSupabaseClient()
 
@@ -227,7 +381,15 @@ export async function inviteTeamMember({
 }): Promise<TeamMember & { tempPassword?: string }> {
   const parsed = inviteMemberSchema.parse(input)
   const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
-  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "org",
+    resourceId: resolvedOrgId,
+  })
   const serviceClient = createServiceSupabaseClient()
 
   const { data: existingUser } = await serviceClient
@@ -322,7 +484,9 @@ export async function inviteTeamMember({
   })
 
   const projectCounts = await mapProjectCounts(serviceClient, resolvedOrgId)
-  return mapTeamMember(data, projectCounts)
+  const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
+  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
+  return mapTeamMember(data, projectCounts, mfaEnabledByUser)
 }
 
 export async function updateMemberRole({
@@ -336,7 +500,15 @@ export async function updateMemberRole({
 }) {
   const parsed = updateMemberRoleSchema.parse({ role })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.admin", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "org.admin",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId: membershipId,
+  })
   const serviceClient = createServiceSupabaseClient()
   const roleId = await resolveRoleId(serviceClient, parsed.role)
 
@@ -380,13 +552,23 @@ export async function updateMemberRole({
   })
 
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
-  return mapTeamMember(data, projectCounts)
+  const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
+  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
+  return mapTeamMember(data, projectCounts, mfaEnabledByUser)
 }
 
 async function updateMemberStatus(membershipId: string, status: "active" | "invited" | "suspended", orgId?: string) {
   memberStatusSchema.parse({ status })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId: membershipId,
+  })
 
   const { data: existing, error: fetchError } = await supabase
     .from("memberships")
@@ -428,7 +610,9 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
   })
 
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
-  return mapTeamMember(data, projectCounts)
+  const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
+  const mfaEnabledByUser = await mapMfaEnabledByUser(createServiceSupabaseClient(), [selectedUser?.id].filter(Boolean))
+  return mapTeamMember(data, projectCounts, mfaEnabledByUser)
 }
 
 export function suspendMember(membershipId: string, orgId?: string) {
@@ -441,7 +625,15 @@ export function reactivateMember(membershipId: string, orgId?: string) {
 
 export async function removeMember(membershipId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId: membershipId,
+  })
 
   const { data: membership, error: fetchError } = await supabase
     .from("memberships")
@@ -487,7 +679,15 @@ export async function removeMember(membershipId: string, orgId?: string) {
 
 export async function resendInvite(membershipId: string, orgId?: string) {
   const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
-  await requirePermission("members.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId: membershipId,
+  })
   const serviceClient = createServiceSupabaseClient()
 
   const { data, error } = await serviceClient
@@ -542,6 +742,66 @@ export async function resendInvite(membershipId: string, orgId?: string) {
   })
 
   return true
+}
+
+export async function resetMemberMfa(membershipId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId: membershipId,
+  })
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: membership, error: membershipError } = await serviceClient
+    .from("memberships")
+    .select("id, org_id, user_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", membershipId)
+    .maybeSingle()
+
+  if (membershipError || !membership?.user_id) {
+    throw new Error("Membership not found")
+  }
+
+  const { data: factorData, error: factorError } = await serviceClient.auth.admin.mfa.listFactors({
+    userId: membership.user_id,
+  })
+
+  if (factorError) {
+    throw new Error(`Failed to load MFA factors: ${factorError.message}`)
+  }
+
+  const factors = (factorData?.factors ?? []).filter((factor) => factor.status === "verified")
+  if (factors.length === 0) {
+    return { reset: false }
+  }
+
+  for (const factor of factors) {
+    const { error: deleteError } = await serviceClient.auth.admin.mfa.deleteFactor({
+      userId: membership.user_id,
+      id: factor.id,
+    })
+    if (deleteError) {
+      throw new Error(`Failed to reset MFA: ${deleteError.message}`)
+    }
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "membership",
+    entityId: membershipId,
+    before: { mfa_factor_count: factors.length },
+    after: { mfa_factor_count: 0 },
+  })
+
+  return { reset: true, deletedFactors: factors.length }
 }
 
 export async function getInviteDetailsByToken(token: string): Promise<{

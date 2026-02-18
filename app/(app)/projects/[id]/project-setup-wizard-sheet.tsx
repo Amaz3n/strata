@@ -1,16 +1,19 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import type { Contact, Contract, PortalAccessToken, Project, Proposal } from "@/lib/types"
-import type { ProjectTeamMember } from "./actions"
+import type { ProjectTeamMember, TeamDirectoryEntry } from "./actions"
 import {
   applyScheduleTemplateAction,
   createClientContactAndAssignAction,
   createDrawScheduleFromContractAction,
+  getProjectTeamDirectoryAction,
   listScheduleTemplatesAction,
+  sendClientPortalInviteAction,
   setProjectManagerAction,
   updateProjectSettingsAction,
 } from "./actions"
@@ -31,6 +34,7 @@ import {
   CheckCircle2,
   ChevronRight,
   DollarSign,
+  FileText,
   Link2,
   MapPin,
   Settings,
@@ -87,7 +91,6 @@ export function ProjectSetupWizardSheet({
   team,
   proposals,
   contract,
-  scheduleItems,
   scheduleItemCount,
   drawsCount,
   portalTokens,
@@ -109,10 +112,16 @@ export function ProjectSetupWizardSheet({
   const [activeTab, setActiveTab] = useState("basics")
   const [templates, setTemplates] = useState<ScheduleTemplate[]>([])
   const [templatesLoading, setTemplatesLoading] = useState(false)
+  const [templatesError, setTemplatesError] = useState<string | null>(null)
+  const [hasAttemptedTemplateLoad, setHasAttemptedTemplateLoad] = useState(false)
+  const [directoryPeople, setDirectoryPeople] = useState<TeamDirectoryEntry[]>([])
+  const [directoryLoading, setDirectoryLoading] = useState(false)
+  const [hasAttemptedDirectoryLoad, setHasAttemptedDirectoryLoad] = useState(false)
 
   const safeContacts = useMemo(() => (Array.isArray(contacts) ? contacts : []), [contacts])
   const safeTeam = useMemo(() => (Array.isArray(team) ? team : []), [team])
   const [localContacts, setLocalContacts] = useState<Contact[]>(safeContacts)
+  const [createdClientPortalToken, setCreatedClientPortalToken] = useState<PortalAccessToken | null>(null)
 
   const [savingBasics, startSavingBasics] = useTransition()
   const [savingPm, startSavingPm] = useTransition()
@@ -120,6 +129,7 @@ export function ProjectSetupWizardSheet({
   const [creatingDraws, startCreatingDraws] = useTransition()
   const [creatingPortal, startCreatingPortal] = useTransition()
   const [creatingContact, startCreatingContact] = useTransition()
+  const [sendingPortalInvite, startSendingPortalInvite] = useTransition()
 
   const [projectStatus, setProjectStatus] = useState<Project["status"]>(project.status)
   const [address, setAddress] = useState(project.address ?? "")
@@ -134,16 +144,58 @@ export function ProjectSetupWizardSheet({
   const [pmUserId, setPmUserId] = useState<string>("")
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("")
   const [drawPresetKey, setDrawPresetKey] = useState<string>(DRAW_PRESETS[0].key)
+  const [portalOrigin, setPortalOrigin] = useState("")
+
+  const activeClientPortalToken = useMemo(
+    () => {
+      if (createdClientPortalToken && !createdClientPortalToken.revoked_at) return createdClientPortalToken
+      return (Array.isArray(portalTokens) ? portalTokens : []).find((token) => token.portal_type === "client" && !token.revoked_at) ?? null
+    },
+    [createdClientPortalToken, portalTokens],
+  )
 
   const hasClientPortal = useMemo(
-    () => (Array.isArray(portalTokens) ? portalTokens : []).some((t) => t.portal_type === "client" && !t.revoked_at),
-    [portalTokens],
+    () => !!activeClientPortalToken,
+    [activeClientPortalToken],
   )
+  const hasProposal = useMemo(() => proposals.length > 0, [proposals])
 
   const hasAcceptedProposal = useMemo(
     () => proposals.some((p) => p.status === "accepted" || !!p.accepted_at),
     [proposals],
   )
+  const hasContract = !!contract
+
+  const pmCandidates = useMemo(() => {
+    const members = new Map<string, { user_id: string; full_name: string; email: string; source: "project" | "org" }>()
+
+    safeTeam.forEach((member) => {
+      members.set(member.user_id, {
+        user_id: member.user_id,
+        full_name: member.full_name,
+        email: member.email ?? "",
+        source: "project",
+      })
+    })
+
+    directoryPeople.forEach((person) => {
+      if (members.has(person.user_id)) return
+      members.set(person.user_id, {
+        user_id: person.user_id,
+        full_name: person.full_name,
+        email: person.email ?? "",
+        source: "org",
+      })
+    })
+
+    return Array.from(members.values()).sort((a, b) => a.full_name.localeCompare(b.full_name))
+  }, [directoryPeople, safeTeam])
+
+  const selectedClientContactId = clientId !== "none" ? clientId : (project.client_id ?? activeClientPortalToken?.contact_id ?? null)
+  const selectedClientContact = localContacts.find((contact) => contact.id === selectedClientContactId)
+  const portalLink = activeClientPortalToken
+    ? `${portalOrigin || process.env.NEXT_PUBLIC_APP_URL || ""}/p/${activeClientPortalToken.token}`
+    : ""
 
   const steps = useMemo(() => {
     const hasClient = clientId !== "none"
@@ -157,6 +209,13 @@ export function ProjectSetupWizardSheet({
         done: hasClient && !!address.trim(),
       },
       {
+        key: "precon",
+        label: "Precon",
+        description: "Pipeline, estimate, proposal, and bids handoff.",
+        icon: Sparkles,
+        done: hasProposal || hasContract,
+      },
+      {
         key: "team",
         label: "Team",
         description: "Assign a project manager.",
@@ -164,9 +223,16 @@ export function ProjectSetupWizardSheet({
         done: hasPm,
       },
       {
+        key: "contract",
+        label: "Contract",
+        description: "Execute contract with BYO docs e-sign.",
+        icon: FileText,
+        done: hasContract,
+      },
+      {
         key: "schedule",
         label: "Schedule",
-        description: "Apply a schedule template.",
+        description: "Optional: apply starter milestones.",
         icon: CalendarDays,
         done: scheduleItemCount > 0,
       },
@@ -185,7 +251,7 @@ export function ProjectSetupWizardSheet({
         done: hasClientPortal,
       },
     ]
-  }, [address, clientId, drawsCount, hasClientPortal, pmUserId, scheduleItemCount, safeTeam])
+  }, [address, clientId, drawsCount, hasClientPortal, hasContract, hasProposal, pmUserId, scheduleItemCount, safeTeam])
 
   const doneCount = steps.filter((s) => s.done).length
   const progress = Math.round((doneCount / steps.length) * 100)
@@ -210,39 +276,96 @@ export function ProjectSetupWizardSheet({
     setPmUserId(currentPm?.user_id ?? "")
     const stepOrder = [
       { key: "basics", done: !!project.client_id && !!(project.address ?? "").trim() },
+      { key: "precon", done: hasProposal || !!contract },
       { key: "team", done: safeTeam.some((m) => m.role === "pm" || m.role === "project_manager") },
+      { key: "contract", done: !!contract },
       { key: "schedule", done: scheduleItemCount > 0 },
       { key: "draws", done: drawsCount > 0 },
       { key: "portal", done: hasClientPortal },
     ]
     const firstIncomplete = stepOrder.find((step) => !step.done)
     setActiveTab(firstIncomplete?.key ?? "basics")
-  }, [open, project, safeTeam, scheduleItemCount, drawsCount, hasClientPortal])
+  }, [open, project, safeTeam, scheduleItemCount, drawsCount, hasClientPortal, hasProposal, contract])
 
   useEffect(() => {
     setLocalContacts(safeContacts)
   }, [safeContacts])
 
   useEffect(() => {
+    if (typeof window === "undefined") return
+    setPortalOrigin(window.location.origin)
+  }, [])
+
+  useEffect(() => {
     if (!open) return
-    if (templates.length > 0 || templatesLoading) return
+    if (activeClientPortalToken) {
+      setCreatedClientPortalToken(activeClientPortalToken)
+    }
+  }, [open, activeClientPortalToken])
+
+  useEffect(() => {
+    if (!open || hasAttemptedTemplateLoad) return
+    setHasAttemptedTemplateLoad(true)
+    setTemplatesError(null)
     setTemplatesLoading(true)
     void listScheduleTemplatesAction()
       .then((data: any[]) => {
         setTemplates(
-          (data ?? []).map((t) => ({
-            id: t.id,
-            name: t.name,
-            description: t.description ?? undefined,
+          (data ?? []).map((template) => ({
+            id: template.id,
+            name: template.name,
+            description: template.description ?? undefined,
           })),
         )
       })
       .catch((error: any) => {
         console.error(error)
-        toast.error("Could not load schedule templates")
+        setTemplatesError(error?.message ?? "Could not load templates")
       })
       .finally(() => setTemplatesLoading(false))
-  }, [open, templates.length, templatesLoading])
+  }, [open, hasAttemptedTemplateLoad])
+
+  useEffect(() => {
+    if (!open || hasAttemptedDirectoryLoad) return
+    setHasAttemptedDirectoryLoad(true)
+    setDirectoryLoading(true)
+    void getProjectTeamDirectoryAction(project.id)
+      .then((result) => {
+        setDirectoryPeople(result.people ?? [])
+      })
+      .catch((error: any) => {
+        console.error(error)
+        toast.error("Could not load org team directory")
+      })
+      .finally(() => setDirectoryLoading(false))
+  }, [open, hasAttemptedDirectoryLoad, project.id])
+
+  useEffect(() => {
+    if (open) return
+    setHasAttemptedTemplateLoad(false)
+    setHasAttemptedDirectoryLoad(false)
+  }, [open])
+
+  function retryTemplatesLoad() {
+    setHasAttemptedTemplateLoad(false)
+  }
+
+  function copyPortalLink() {
+    if (!portalLink) return
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      toast.error("Could not copy portal link")
+      return
+    }
+    void navigator.clipboard
+      .writeText(portalLink)
+      .then(() => toast.success("Portal link copied"))
+      .catch(() => toast.error("Could not copy portal link"))
+  }
+
+  function openPortalLink() {
+    if (!portalLink) return
+    window.open(portalLink, "_blank", "noopener,noreferrer")
+  }
 
   function refresh() {
     router.refresh()
@@ -607,11 +730,65 @@ export function ProjectSetupWizardSheet({
                       {renderStepFooter()}
                     </TabsContent>
 
+                    <TabsContent value="precon" className="space-y-4">
+                      <Card className="border-border/60 shadow-none">
+                        <CardHeader>
+                          <CardTitle className="text-base">Preconstruction handoff</CardTitle>
+                          <CardDescription>
+                            Move from inbound lead to signed project with the full precon stack.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                              <span className="text-sm font-medium">Pipeline tracking</span>
+                              <Badge variant="secondary">Workspace</Badge>
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                              <span className="text-sm font-medium">Estimate</span>
+                              <Badge variant={hasProposal || hasContract ? "secondary" : "outline"}>
+                                {hasProposal || hasContract ? "Started" : "Pending"}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                              <span className="text-sm font-medium">Proposal</span>
+                              <Badge variant={hasProposal ? "secondary" : "outline"}>
+                                {hasProposal ? "Ready" : "Missing"}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                              <span className="text-sm font-medium">Bid packages</span>
+                              <Badge variant="outline">Optional</Badge>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            <Button asChild variant="outline" size="sm">
+                              <Link href="/pipeline?view=prospects">Open pipeline</Link>
+                            </Button>
+                            <Button asChild variant="outline" size="sm">
+                              <Link href={`/estimates?project=${project.id}`}>Open estimates</Link>
+                            </Button>
+                            <Button asChild size="sm">
+                              <Link href={`/projects/${project.id}/proposals`}>Open proposals</Link>
+                            </Button>
+                            <Button asChild variant="outline" size="sm">
+                              <Link href={`/projects/${project.id}/bids`}>Open bids</Link>
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {renderStepFooter()}
+                    </TabsContent>
+
                     <TabsContent value="team" className="space-y-4">
                       <Card className="border-border/60 shadow-none">
                         <CardHeader>
                           <CardTitle className="text-base">Assign project manager</CardTitle>
-                          <CardDescription>Sets the PM shown on the client portal.</CardDescription>
+                          <CardDescription>
+                            Sets the PM shown on the client portal. You can choose existing project members or anyone on your org team.
+                          </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                           <div className="space-y-2">
@@ -621,13 +798,24 @@ export function ProjectSetupWizardSheet({
                                 <SelectValue placeholder="Select a team member" />
                               </SelectTrigger>
                               <SelectContent>
-                                {safeTeam.map((member) => (
+                                {pmCandidates.length === 0 ? (
+                                  <div className="px-2 py-3 text-xs text-muted-foreground">
+                                    {directoryLoading ? "Loading team..." : "No team members found"}
+                                  </div>
+                                ) : null}
+                                {pmCandidates.map((member) => (
                                   <SelectItem key={member.user_id} value={member.user_id}>
                                     {member.full_name} {member.email ? `• ${member.email}` : ""}
+                                    {member.source === "project" ? " • On project" : " • Org team"}
                                   </SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
+                          </div>
+
+                          <div className="rounded-lg border bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+                            Recommended setup: assign a PM here, then use <span className="font-medium text-foreground">Manage team</span> to add
+                            superintendent, estimator/precon, and finance roles.
                           </div>
 
                           <div className="flex items-center justify-between gap-2">
@@ -662,11 +850,55 @@ export function ProjectSetupWizardSheet({
                       {renderStepFooter()}
                     </TabsContent>
 
+                    <TabsContent value="contract" className="space-y-4">
+                      <Card className="border-border/60 shadow-none">
+                        <CardHeader>
+                          <CardTitle className="text-base">Contract execution (BYO docs)</CardTitle>
+                          <CardDescription>
+                            Use Signatures to upload your own contract PDF, place fields, and execute.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div className="flex items-center justify-between rounded-lg border p-3">
+                            <div>
+                              <div className="text-sm font-medium">Contract record</div>
+                              <div className="text-xs text-muted-foreground">
+                                {contract ? `${contract.title} • ${contract.status}` : (hasAcceptedProposal ? "Not found yet" : "Created after proposal acceptance")}
+                              </div>
+                            </div>
+                            <Badge variant={contract ? "secondary" : "outline"}>{contract ? "Ready" : "Missing"}</Badge>
+                          </div>
+
+                          <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+                            Contracts no longer need a fixed built-in form. Upload your own agreement and send it through the unified e-sign flow.
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap gap-2">
+                              <Button asChild size="sm">
+                                <Link href="/documents">Open Signatures</Link>
+                              </Button>
+                              <Button asChild variant="outline" size="sm">
+                                <Link href={`/projects/${project.id}/documents`}>Project documents</Link>
+                              </Button>
+                            </div>
+                            <Button asChild variant="outline" size="sm">
+                              <Link href={`/projects/${project.id}/proposals`}>Open proposals</Link>
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {renderStepFooter()}
+                    </TabsContent>
+
                     <TabsContent value="schedule" className="space-y-4">
                       <Card className="border-border/60 shadow-none">
                         <CardHeader>
                           <CardTitle className="text-base">Apply schedule template</CardTitle>
-                          <CardDescription>Only available if the schedule is currently empty.</CardDescription>
+                          <CardDescription>
+                            Optional starter milestones. Skip this if your team builds schedules manually.
+                          </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                           <div className="space-y-2">
@@ -683,36 +915,54 @@ export function ProjectSetupWizardSheet({
                                 ))}
                               </SelectContent>
                             </Select>
-                            {selectedTemplateId
-                              ? (
-                                <p className="text-xs text-muted-foreground">
-                                  {templates.find((t) => t.id === selectedTemplateId)?.description ?? ""}
-                                </p>
-                              )
-                              : null}
+                            {selectedTemplateId ? (
+                              <p className="text-xs text-muted-foreground">
+                                {templates.find((t) => t.id === selectedTemplateId)?.description ?? ""}
+                              </p>
+                            ) : null}
+                            {templatesError ? (
+                              <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                                Could not load schedule templates. You can retry or start from the schedule page.
+                              </div>
+                            ) : null}
+                            {!templatesLoading && templates.length === 0 && !templatesError ? (
+                              <div className="rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                                No templates are configured yet for this org.
+                              </div>
+                            ) : null}
                           </div>
 
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
                             <p className="text-sm text-muted-foreground">
                               Current schedule items: <span className="font-medium text-foreground">{scheduleItemCount}</span>
                             </p>
-                            <Button
-                              onClick={() => {
-                                startApplyingTemplate(async () => {
-                                  try {
-                                    await applyScheduleTemplateAction(project.id, selectedTemplateId)
-                                    toast.success("Schedule template applied")
-                                    refresh()
-                                  } catch (error: any) {
-                                    console.error(error)
-                                    toast.error(error?.message ?? "Could not apply template")
-                                  }
-                                })
-                              }}
-                              disabled={applyingTemplate || !selectedTemplateId || scheduleItemCount > 0}
-                            >
-                              {applyingTemplate ? "Applying..." : "Apply template"}
-                            </Button>
+                            <div className="flex flex-wrap gap-2">
+                              <Button asChild variant="outline" size="sm">
+                                <Link href={`/projects/${project.id}/schedule`}>Open schedule</Link>
+                              </Button>
+                              {templatesError ? (
+                                <Button size="sm" variant="outline" onClick={retryTemplatesLoad} disabled={templatesLoading}>
+                                  Retry templates
+                                </Button>
+                              ) : null}
+                              <Button
+                                onClick={() => {
+                                  startApplyingTemplate(async () => {
+                                    try {
+                                      await applyScheduleTemplateAction(project.id, selectedTemplateId)
+                                      toast.success("Schedule template applied")
+                                      refresh()
+                                    } catch (error: any) {
+                                      console.error(error)
+                                      toast.error(error?.message ?? "Could not apply template")
+                                    }
+                                  })
+                                }}
+                                disabled={applyingTemplate || !selectedTemplateId || scheduleItemCount > 0}
+                              >
+                                {applyingTemplate ? "Applying..." : "Apply template"}
+                              </Button>
+                            </div>
                           </div>
                         </CardContent>
                       </Card>
@@ -819,32 +1069,53 @@ export function ProjectSetupWizardSheet({
                       <Card className="border-border/60 shadow-none">
                         <CardHeader>
                           <CardTitle className="text-base">Invite client to portal</CardTitle>
-                          <CardDescription>Creates a client portal link with sensible defaults.</CardDescription>
+                          <CardDescription>
+                            Create or reuse the client portal link, then copy it or email it directly to the client.
+                          </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                           <div className="flex items-center justify-between rounded-lg border p-3">
                             <div>
                               <div className="text-sm font-medium">Client portal link</div>
                               <div className="text-xs text-muted-foreground">
-                                {hasClientPortal ? "Active link exists" : "No active link yet"}
+                                {activeClientPortalToken ? "Active link exists" : "No active link yet"}
                               </div>
                             </div>
-                            <Badge variant={hasClientPortal ? "secondary" : "outline"}>{hasClientPortal ? "Ready" : "Missing"}</Badge>
+                            <Badge variant={activeClientPortalToken ? "secondary" : "outline"}>
+                              {activeClientPortalToken ? "Ready" : "Missing"}
+                            </Badge>
                           </div>
 
-                          <div className="flex items-center justify-end">
+                          {portalLink ? (
+                            <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                              <div className="text-xs font-medium text-muted-foreground">Portal URL</div>
+                              <div className="break-all rounded-md border bg-background px-2 py-1.5 font-mono text-xs">
+                                {portalLink}
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button variant="outline" size="sm" onClick={copyPortalLink}>
+                                  Copy link
+                                </Button>
+                                <Button variant="outline" size="sm" onClick={openPortalLink}>
+                                  Open link
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div className="flex flex-wrap items-center justify-between gap-2">
                             <Button
                               onClick={() => {
                                 startCreatingPortal(async () => {
                                   try {
-                                    if (hasClientPortal) {
+                                    if (activeClientPortalToken) {
                                       toast.success("Client portal link already exists")
                                       return
                                     }
 
-                                    const contactIdValue = project.client_id ?? undefined
+                                    const contactIdValue = clientId !== "none" ? clientId : (project.client_id ?? undefined)
 
-                                    await createPortalTokenAction({
+                                    const token = await createPortalTokenAction({
                                       project_id: project.id,
                                       portal_type: "client",
                                       contact_id: contactIdValue,
@@ -865,6 +1136,7 @@ export function ProjectSetupWizardSheet({
                                       },
                                     })
 
+                                    setCreatedClientPortalToken(token as PortalAccessToken)
                                     toast.success("Client portal link created")
                                     refresh()
                                   } catch (error: any) {
@@ -875,9 +1147,39 @@ export function ProjectSetupWizardSheet({
                               }}
                               disabled={creatingPortal}
                             >
-                              {creatingPortal ? "Creating..." : hasClientPortal ? "Portal ready" : "Create client portal link"}
+                              {creatingPortal ? "Creating..." : activeClientPortalToken ? "Portal ready" : "Create client portal link"}
+                            </Button>
+
+                            <Button
+                              variant="outline"
+                              onClick={() => {
+                                startSendingPortalInvite(async () => {
+                                  try {
+                                    if (!activeClientPortalToken) {
+                                      toast.error("Create a portal link first")
+                                      return
+                                    }
+                                    await sendClientPortalInviteAction({
+                                      projectId: project.id,
+                                      portalTokenId: activeClientPortalToken.id,
+                                      contactId: selectedClientContact?.id,
+                                    })
+                                    toast.success("Client invite sent")
+                                  } catch (error: any) {
+                                    console.error(error)
+                                    toast.error(error?.message ?? "Could not send invite")
+                                  }
+                                })
+                              }}
+                              disabled={sendingPortalInvite || !activeClientPortalToken}
+                            >
+                              {sendingPortalInvite ? "Sending invite..." : "Email invite to client"}
                             </Button>
                           </div>
+
+                          <p className="text-xs text-muted-foreground">
+                            Invite will be sent to: {selectedClientContact?.email ?? "No client email selected"}
+                          </p>
                         </CardContent>
                       </Card>
 

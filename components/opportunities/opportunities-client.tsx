@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import type { ReactNode } from "react"
 
 import type { Contact, TeamMember } from "@/lib/types"
 import type { Opportunity } from "@/lib/services/opportunities"
@@ -58,6 +59,7 @@ interface OpportunitiesClientProps {
   clients: Contact[]
   canCreate?: boolean
   canEdit?: boolean
+  headerLeft?: ReactNode
 }
 
 export function OpportunitiesClient({
@@ -66,6 +68,7 @@ export function OpportunitiesClient({
   clients,
   canCreate = false,
   canEdit = false,
+  headerLeft,
 }: OpportunitiesClientProps) {
   const router = useRouter()
   const [items] = useState(opportunities)
@@ -132,48 +135,50 @@ export function OpportunitiesClient({
       <AddOpportunityDialog open={createOpen} onOpenChange={setCreateOpen} teamMembers={teamMembers} clients={clients} />
       <OpportunityDetailSheet opportunityId={detailId} open={detailOpen} onOpenChange={setDetailOpen} teamMembers={teamMembers} />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-1 items-center gap-2">
-          <Input
-            placeholder="Search opportunities..."
-            className="w-full sm:w-72"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <Select value={ownerFilter} onValueChange={setOwnerFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Owner" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All owners</SelectItem>
-              <SelectItem value="unassigned">Unassigned</SelectItem>
-              {teamMembers.map((member) => (
-                <SelectItem key={member.user.id} value={member.user.id}>
-                  {member.user.full_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as OpportunityStatus | "all")}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              {statusOptions.map((status) => (
-                <SelectItem key={status} value={status}>
-                  {status[0].toUpperCase() + status.slice(1)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>{headerLeft}</div>
         {canCreate && (
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="mr-2 h-4 w-4" />
             Add opportunity
           </Button>
         )}
+      </div>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <Input
+          placeholder="Search opportunities..."
+          className="w-full sm:w-72"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Owner" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All owners</SelectItem>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {teamMembers.map((member) => (
+              <SelectItem key={member.user.id} value={member.user.id}>
+                {member.user.full_name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as OpportunityStatus | "all")}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {statusOptions.map((status) => (
+              <SelectItem key={status} value={status}>
+                {status[0].toUpperCase() + status.slice(1)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="rounded-lg border overflow-hidden">

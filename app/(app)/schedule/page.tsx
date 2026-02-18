@@ -7,6 +7,7 @@ import {
   listDependenciesForProjectsAction,
   createScheduleItemAction,
   updateScheduleItemAction,
+  bulkUpdateScheduleItemsAction,
   deleteScheduleItemAction,
 } from "./actions"
 import { ScheduleOverviewClient } from "@/components/schedule/schedule-overview-client"
@@ -29,6 +30,11 @@ async function ScheduleContent() {
   async function handleItemUpdate(id: string, updates: Partial<ScheduleItem>): Promise<ScheduleItem> {
     "use server"
     return updateScheduleItemAction(id, updates)
+  }
+
+  async function handleItemsBulkUpdate(updates: { id: string; start_date?: string; end_date?: string; sort_order?: number; progress?: number; status?: ScheduleItem["status"] }[]): Promise<ScheduleItem[]> {
+    "use server"
+    return bulkUpdateScheduleItemsAction({ items: updates })
   }
 
   async function handleItemCreate(item: Partial<ScheduleItem>): Promise<ScheduleItem> {
@@ -59,6 +65,7 @@ async function ScheduleContent() {
       allItems={allItems}
       allDependencies={allDependencies}
       onItemUpdate={handleItemUpdate}
+      onItemsBulkUpdate={handleItemsBulkUpdate}
       onItemCreate={handleItemCreate}
       onItemDelete={handleItemDelete}
       onDependencyCreate={handleDependencyCreate}

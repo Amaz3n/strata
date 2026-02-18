@@ -944,29 +944,15 @@ export async function createRfiFromDrawingAction(input: {
   projectId: string
   subject: string
   question: string
-  priority?: "low" | "medium" | "high" | "urgent"
+  priority?: "low" | "normal" | "high" | "urgent"
 }) {
-  const { supabase, orgId } = await requireOrgContext()
-
-  const { data: last } = await supabase
-    .from("rfis")
-    .select("rfi_number")
-    .eq("org_id", orgId)
-    .eq("project_id", input.projectId)
-    .order("rfi_number", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  const nextNumber = (last?.rfi_number ?? 0) + 1
-
   return createRfi({
     input: {
       project_id: input.projectId,
-      rfi_number: nextNumber,
       subject: input.subject,
       question: input.question,
       status: "open",
-      priority: input.priority ?? "medium",
+      priority: input.priority ?? "normal",
       due_date: null,
       attachment_file_id: null,
     },

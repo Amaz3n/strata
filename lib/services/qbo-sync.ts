@@ -3,11 +3,13 @@ import { QBOClient, QBOError } from "@/lib/integrations/accounting/qbo-api"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { incrementInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { recordEvent } from "@/lib/services/events"
+import { logQBO } from "@/lib/services/qbo-logger"
 
 interface InvoiceLineRow {
   description: string
   quantity: number
   unit_price_cents: number
+  metadata?: Record<string, any> | null
 }
 
 interface InvoiceForSync {
@@ -31,13 +33,14 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
 
   if (!client) {
     await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId)
+    await markConnectionError(orgId, "No active QBO connection")
     return { success: false, error: "No active QBO connection" }
   }
 
   const { data: invoice, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, metadata, invoice_lines (description, quantity, unit_price_cents)",
+      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, metadata, invoice_lines (description, quantity, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -52,12 +55,20 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     lines: (invoice as any).invoice_lines ?? [],
   } as InvoiceForSync
 
+  const { data: connection } = await supabase
+    .from("qbo_connections")
+    .select("settings")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .maybeSingle()
+
+  const defaultIncomeAccountId = (connection?.settings as any)?.default_income_account_id as string | undefined
   let existingSync: any = null
   let qboInvoice: any = null
 
   try {
     const customer = await client.getOrCreateCustomer(resolveCustomerName(typedInvoice))
-    const defaultItem = await client.getDefaultServiceItem()
+    const defaultItem = await client.getDefaultServiceItem(defaultIncomeAccountId)
 
     existingSync = await supabase
       .from("qbo_sync_records")
@@ -66,6 +77,15 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       .eq("entity_type", "invoice")
       .eq("entity_id", invoiceId)
       .maybeSingle()
+
+    if (typedInvoice.project_id && customer.Id) {
+      await upsertSyncRecord({
+        orgId,
+        entityId: typedInvoice.project_id,
+        qboId: customer.Id,
+        entityType: "customer",
+      })
+    }
 
     qboInvoice = {
       Id: existingSync.data?.qbo_id,
@@ -82,6 +102,9 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
           ItemRef: defaultItem,
           Qty: line.quantity,
           UnitPrice: line.unit_price_cents / 100,
+          TaxCodeRef: {
+            value: (line.metadata as any)?.taxable === false ? "NON" : "TAX",
+          },
         },
       })),
       PrivateNote: typedInvoice.title ?? undefined,
@@ -107,6 +130,9 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
         qbo_sync_status: "synced",
       })
       .eq("id", invoiceId)
+
+    await markConnectionHealthy(orgId)
+    logQBO("info", "invoice_sync_success", { orgId, invoiceId, qboId: result.Id })
 
     return { success: true, qbo_id: result.Id }
   } catch (err: any) {
@@ -154,6 +180,15 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
           })
           .eq("id", invoiceId)
 
+        await markConnectionHealthy(orgId)
+        logQBO("warn", "invoice_sync_docnumber_adjusted", {
+          orgId,
+          invoiceId,
+          previousNumber: typedInvoice.invoice_number,
+          nextNumber,
+          qboId: retryResult.Id,
+        })
+
         await recordEvent({
           orgId,
           eventType: "invoice_number_changed",
@@ -170,69 +205,123 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
         return { success: true, qbo_id: retryResult.Id }
       } catch (retryError: any) {
         await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
+        await markSyncRecordError(orgId, "invoice", invoiceId, retryError?.message ?? "DocNumber conflict")
+        await markConnectionError(orgId, retryError?.message ?? "DocNumber conflict")
+        logQBO("error", "invoice_sync_docnumber_retry_failed", {
+          orgId,
+          invoiceId,
+          error: retryError?.message ?? String(retryError),
+        })
         return { success: false, error: retryError?.message ?? "DocNumber conflict" }
       }
     }
 
     const errorMessage = err instanceof QBOError ? err.message : String(err)
     await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
+    await markSyncRecordError(orgId, "invoice", invoiceId, errorMessage)
+    await markConnectionError(orgId, errorMessage)
+    logQBO("error", "invoice_sync_failed", { orgId, invoiceId, error: errorMessage })
     return { success: false, error: errorMessage }
   }
+}
+
+export async function forceSyncInvoiceToQBO(invoiceId: string, orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  await supabase.from("invoices").update({ qbo_sync_status: "pending" }).eq("id", invoiceId).eq("org_id", orgId)
+  return syncInvoiceToQBO(invoiceId, orgId)
 }
 
 export async function syncPaymentToQBO(paymentId: string, orgId: string) {
   const supabase = createServiceSupabaseClient()
   const client = await QBOClient.forOrg(orgId)
-  if (!client) return { success: false, error: "No active QBO connection" }
+  if (!client) {
+    await markConnectionError(orgId, "No active QBO connection")
+    return { success: false, error: "No active QBO connection" }
+  }
 
-  const { data: payment, error } = await supabase
-    .from("payments")
-    .select(
-      "id, org_id, invoice_id, amount_cents, provider, method, metadata, invoice:invoices(qbo_id, org_id, project_id)",
-    )
-    .eq("id", paymentId)
-    .eq("org_id", orgId)
-    .single()
-
-  if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
-  
-  const invoice = Array.isArray(payment.invoice) ? payment.invoice[0] : payment.invoice
-  if (!invoice?.qbo_id) return { success: false, error: "Invoice not synced to QBO" }
-
-  const { data: customerSync } = await supabase
+  const { data: existingPaymentSync } = await supabase
     .from("qbo_sync_records")
     .select("qbo_id")
     .eq("org_id", orgId)
-    .eq("entity_type", "customer")
-    .eq("entity_id", invoice.project_id)
+    .eq("entity_type", "payment")
+    .eq("entity_id", paymentId)
     .maybeSingle()
 
-  const customerRef = customerSync?.qbo_id
-    ? { value: customerSync.qbo_id }
-    : await (async () => {
-        const cust = await client.getOrCreateCustomer("Customer")
-        return { value: cust.Id! }
-      })()
+  if (existingPaymentSync?.qbo_id) {
+    return { success: true, qbo_id: existingPaymentSync.qbo_id }
+  }
 
-  const qboPayment = await client.createPayment({
-    CustomerRef: customerRef,
-    TotalAmt: payment.amount_cents / 100,
-    Line: [
-      {
-        Amount: payment.amount_cents / 100,
-        LinkedTxn: [{ TxnId: invoice.qbo_id, TxnType: "Invoice" }],
-      },
-    ],
-  })
+  try {
+    const { data: payment, error } = await supabase
+      .from("payments")
+      .select(
+        "id, org_id, invoice_id, amount_cents, provider, method, metadata, invoice:invoices(qbo_id, org_id, project_id, title, metadata)",
+      )
+      .eq("id", paymentId)
+      .eq("org_id", orgId)
+      .single()
 
-  await upsertSyncRecord({
-    orgId,
-    entityId: paymentId,
-    qboId: qboPayment.Id,
-    entityType: "payment",
-  })
+    if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
+    
+    const invoice = Array.isArray(payment.invoice) ? payment.invoice[0] : payment.invoice
+    if (!invoice?.qbo_id) return { success: false, error: "Invoice not synced to QBO" }
 
-  return { success: true, qbo_id: qboPayment.Id }
+    const { data: customerSync } = await supabase
+      .from("qbo_sync_records")
+      .select("qbo_id")
+      .eq("org_id", orgId)
+      .eq("entity_type", "customer")
+      .eq("entity_id", invoice.project_id)
+      .maybeSingle()
+
+    const customerRef = customerSync?.qbo_id
+      ? { value: customerSync.qbo_id }
+      : await (async () => {
+          const derivedName =
+            (invoice as any)?.metadata?.customer_name ??
+            (invoice as any)?.title ??
+            "Customer"
+          const cust = await client.getOrCreateCustomer(String(derivedName))
+          if (invoice.project_id && cust.Id) {
+            await upsertSyncRecord({
+              orgId,
+              entityId: invoice.project_id,
+              qboId: cust.Id,
+              entityType: "customer",
+            })
+          }
+          return { value: cust.Id! }
+        })()
+
+    const qboPayment = await client.createPayment({
+      CustomerRef: customerRef,
+      TotalAmt: payment.amount_cents / 100,
+      Line: [
+        {
+          Amount: payment.amount_cents / 100,
+          LinkedTxn: [{ TxnId: invoice.qbo_id, TxnType: "Invoice" }],
+        },
+      ],
+    })
+
+    await upsertSyncRecord({
+      orgId,
+      entityId: paymentId,
+      qboId: qboPayment.Id,
+      entityType: "payment",
+    })
+
+    await markConnectionHealthy(orgId)
+    logQBO("info", "payment_sync_success", { orgId, paymentId, qboId: qboPayment.Id })
+
+    return { success: true, qbo_id: qboPayment.Id }
+  } catch (error: any) {
+    const message = error?.message ?? String(error)
+    await markSyncRecordError(orgId, "payment", paymentId, message)
+    await markConnectionError(orgId, message)
+    logQBO("error", "payment_sync_failed", { orgId, paymentId, error: message })
+    return { success: false, error: message }
+  }
 }
 
 export async function enqueueInvoiceSync(invoiceId: string, orgId: string) {
@@ -256,6 +345,7 @@ export async function enqueueInvoiceSync(invoiceId: string, orgId: string) {
     orgId,
     jobType: "qbo_sync_invoice",
     payload: { invoice_id: invoiceId },
+    dedupeByPayloadKeys: ["invoice_id"],
   })
 }
 
@@ -277,7 +367,65 @@ export async function enqueuePaymentSync(paymentId: string, orgId: string) {
     orgId,
     jobType: "qbo_sync_payment",
     payload: { payment_id: paymentId },
+    dedupeByPayloadKeys: ["payment_id"],
   })
+}
+
+export async function retryFailedQBOSyncJobs(orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  let retriedInvoices = 0
+  let retriedPayments = 0
+
+  const { data: failedInvoices } = await supabase
+    .from("invoices")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("qbo_sync_status", "error")
+    .limit(50)
+
+  for (const row of failedInvoices ?? []) {
+    await enqueueInvoiceSync(row.id, orgId)
+    retriedInvoices += 1
+  }
+
+  const { data: failedPayments } = await supabase
+    .from("qbo_sync_records")
+    .select("entity_id")
+    .eq("org_id", orgId)
+    .eq("entity_type", "payment")
+    .eq("status", "error")
+    .limit(50)
+
+  for (const row of failedPayments ?? []) {
+    if (!row.entity_id) continue
+    await enqueuePaymentSync(row.entity_id, orgId)
+    retriedPayments += 1
+  }
+
+  const { count: failedOutboxCount } = await supabase
+    .from("outbox")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+    .eq("status", "failed")
+
+  if ((failedOutboxCount ?? 0) > 0) {
+    await supabase
+      .from("outbox")
+      .update({
+        status: "pending",
+        run_at: new Date().toISOString(),
+      })
+      .eq("org_id", orgId)
+      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+      .eq("status", "failed")
+  }
+
+  return {
+    retried_invoices: retriedInvoices,
+    retried_payments: retriedPayments,
+    reopened_outbox_jobs: failedOutboxCount ?? 0,
+  }
 }
 
 async function upsertSyncRecord(input: {
@@ -310,15 +458,65 @@ async function upsertSyncRecord(input: {
         qbo_sync_token: input.syncToken,
         last_synced_at: new Date().toISOString(),
         status: "synced",
+        error_message: null,
       },
       { onConflict: "org_id,entity_type,entity_id" },
     )
 }
 
+async function markSyncRecordError(orgId: string, entityType: string, entityId: string, message: string) {
+  const supabase = createServiceSupabaseClient()
+  await supabase
+    .from("qbo_sync_records")
+    .update({
+      status: "error",
+      error_message: message.slice(0, 4000),
+      last_synced_at: new Date().toISOString(),
+    })
+    .eq("org_id", orgId)
+    .eq("entity_type", entityType)
+    .eq("entity_id", entityId)
+}
+
+async function markConnectionHealthy(orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  await supabase
+    .from("qbo_connections")
+    .update({
+      last_sync_at: new Date().toISOString(),
+      last_error: null,
+    })
+    .eq("org_id", orgId)
+    .eq("status", "active")
+}
+
+async function markConnectionError(orgId: string, error: string) {
+  const supabase = createServiceSupabaseClient()
+  await supabase
+    .from("qbo_connections")
+    .update({
+      last_error: error.slice(0, 4000),
+    })
+    .eq("org_id", orgId)
+    .eq("status", "active")
+}
+
 function resolveCustomerName(invoice: InvoiceForSync) {
+  const metadataName = (invoice.metadata as any)?.customer_name
+  if (metadataName && String(metadataName).trim()) {
+    return String(metadataName).trim()
+  }
+  const customerEmail = (invoice.metadata as any)?.customer_email
+  if (customerEmail && String(customerEmail).trim()) {
+    return String(customerEmail).trim()
+  }
+  const projectName = (invoice.metadata as any)?.project_name
+  if (projectName && String(projectName).trim()) {
+    return String(projectName).trim()
+  }
   const title = invoice.title?.trim()
   if (title) return title
-  return "Customer"
+  return `Customer ${invoice.invoice_number}`
 }
 
 function isDuplicateDocNumber(error: QBOError) {

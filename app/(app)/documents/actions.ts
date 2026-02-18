@@ -1,6 +1,6 @@
 "use server"
 
-import { createHmac, randomBytes } from "crypto"
+import { createHmac, randomBytes, randomUUID } from "crypto"
 
 import {
   ENVELOPE_EVENT_TYPES,
@@ -30,6 +30,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import { sendEmail } from "@/lib/services/mailer"
 import {
   buildOrgScopedPath,
+  createFilesUploadUrl,
   getFilesStorageProvider,
   uploadFilesObject,
 } from "@/lib/storage/files-storage"
@@ -196,6 +197,88 @@ export async function createDocumentAction(input: {
   metadata?: Record<string, any>
 }) {
   return createDocument(input)
+}
+
+export async function createVersionedSourceDocumentDraftAction(input: {
+  project_id: string
+  document_type: "proposal" | "contract" | "change_order" | "other"
+  title: string
+  source_file_id: string
+  source_entity_type: UnifiedSignableEntityType
+  source_entity_id: string
+  metadata?: Record<string, any>
+}) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("project.manage", { supabase, orgId, userId })
+  await assertUnifiedESignEnabled({ supabase, orgId })
+
+  const { data: latestDocument, error: latestError } = await supabase
+    .from("documents")
+    .select("id, document_type, metadata, created_at")
+    .eq("org_id", orgId)
+    .eq("source_entity_type", input.source_entity_type)
+    .eq("source_entity_id", input.source_entity_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (latestError) {
+    throw new Error(`Failed to inspect existing document versions: ${latestError.message}`)
+  }
+
+  const latestVersion = Number(latestDocument?.metadata?.version_number ?? 0)
+  const nextVersionNumber = Number.isFinite(latestVersion) && latestVersion > 0 ? latestVersion + 1 : 1
+  const familyKey = `${input.source_entity_type}:${input.source_entity_id}`
+
+  const createdDocument = await createDocument(
+    {
+      project_id: input.project_id,
+      document_type: input.document_type,
+      title: input.title,
+      source_file_id: input.source_file_id,
+      source_entity_type: input.source_entity_type,
+      source_entity_id: input.source_entity_id,
+      metadata: {
+        ...(input.metadata ?? {}),
+        version_family_key: familyKey,
+        version_number: nextVersionNumber,
+        is_current_version: true,
+        supersedes_document_id: latestDocument?.id ?? null,
+        ...(latestDocument?.document_type && latestDocument.document_type !== input.document_type
+          ? { overrides_document_type_from: latestDocument.document_type }
+          : {}),
+      },
+    },
+    orgId,
+  )
+
+  if (latestDocument?.id) {
+    const previousMetadata = {
+      ...(latestDocument.metadata ?? {}),
+      is_current_version: false,
+      superseded_by_document_id: createdDocument.id,
+    }
+
+    const { error: previousUpdateError } = await supabase
+      .from("documents")
+      .update({
+        metadata: previousMetadata,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("org_id", orgId)
+      .eq("id", latestDocument.id)
+
+    if (previousUpdateError) {
+      throw new Error(`Failed to mark prior document version: ${previousUpdateError.message}`)
+    }
+  }
+
+  return {
+    document: createdDocument,
+    version_number: nextVersionNumber,
+    supersedes_document_id: latestDocument?.id ?? null,
+    superseded_document_type: latestDocument?.document_type ?? null,
+  }
 }
 
 export async function listDocumentFieldsAction(documentId: string, revision = 1) {
@@ -418,6 +501,132 @@ export async function getSourceEntityDraftAction(input: {
   }
 }
 
+export async function getDraftDocumentByIdAction(documentId: string) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.member", { supabase, orgId, userId })
+  await assertUnifiedESignEnabled({ supabase, orgId })
+
+  const { data: draftDocument, error: docsError } = await supabase
+    .from("documents")
+    .select("id, title, document_type, status, source_file_id, source_entity_type, source_entity_id, metadata, created_at")
+    .eq("org_id", orgId)
+    .eq("id", documentId)
+    .eq("status", "draft")
+    .maybeSingle()
+
+  if (docsError) {
+    throw new Error(`Failed to load draft document: ${docsError.message}`)
+  }
+  if (!draftDocument) return null
+
+  const [fieldsResult, fileResult] = await Promise.all([
+    listDocumentFields({ documentId: draftDocument.id, revision: 1 }),
+    supabase
+      .from("files")
+      .select("id, file_name, mime_type")
+      .eq("org_id", orgId)
+      .eq("id", draftDocument.source_file_id)
+      .maybeSingle(),
+  ])
+
+  if (fileResult.error || !fileResult.data) {
+    throw new Error(`Failed to load draft source file: ${fileResult.error?.message ?? "missing"}`)
+  }
+
+  const { data: draftEnvelope } = await supabase
+    .from("envelopes")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("document_id", draftDocument.id)
+    .eq("status", "draft")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  let draftRecipients: Array<Record<string, any>> =
+    Array.isArray(draftDocument.metadata?.draft_recipients) ? draftDocument.metadata.draft_recipients : []
+
+  if (draftEnvelope?.id) {
+    const { data: envelopeRecipients, error: envelopeRecipientsError } = await supabase
+      .from("envelope_recipients")
+      .select("recipient_type, contact_id, user_id, name, email, role, signer_role, sequence, required")
+      .eq("org_id", orgId)
+      .eq("envelope_id", draftEnvelope.id)
+      .order("sequence", { ascending: true })
+      .order("created_at", { ascending: true })
+
+    if (!envelopeRecipientsError && envelopeRecipients) {
+      draftRecipients = envelopeRecipients.map((recipient) => ({
+        type: recipient.recipient_type,
+        contact_id: recipient.contact_id,
+        user_id: recipient.user_id,
+        name: recipient.name,
+        email: recipient.email,
+        role: recipient.role,
+        signer_role: recipient.signer_role,
+        sequence: recipient.sequence,
+        required: recipient.required,
+      }))
+    }
+  }
+
+  const signingOrderEnabled =
+    typeof draftDocument.metadata?.draft_signing_order_enabled === "boolean"
+      ? draftDocument.metadata.draft_signing_order_enabled
+      : true
+
+  return {
+    document: {
+      id: draftDocument.id,
+      title: draftDocument.title,
+      document_type: draftDocument.document_type,
+      source_file_id: draftDocument.source_file_id,
+      source_entity_type: draftDocument.source_entity_type ?? null,
+      source_entity_id: draftDocument.source_entity_id ?? null,
+    },
+    file: fileResult.data,
+    fields: fieldsResult,
+    recipients: draftRecipients,
+    signing_order_enabled: signingOrderEnabled,
+  }
+}
+
+export async function getSourceEntityVersionContextAction(input: {
+  source_entity_type: UnifiedSignableEntityType
+  source_entity_id: string
+}) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.member", { supabase, orgId, userId })
+  await assertUnifiedESignEnabled({ supabase, orgId })
+
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id, title, document_type, metadata, created_at")
+    .eq("org_id", orgId)
+    .eq("source_entity_type", input.source_entity_type)
+    .eq("source_entity_id", input.source_entity_id)
+    .order("created_at", { ascending: false })
+    .limit(50)
+
+  if (error) {
+    throw new Error(`Failed to load source document versions: ${error.message}`)
+  }
+
+  const versions = data ?? []
+  const latest = versions[0] ?? null
+  const latestVersion = Number(latest?.metadata?.version_number ?? 0)
+  const nextVersionNumber = Number.isFinite(latestVersion) && latestVersion > 0 ? latestVersion + 1 : versions.length + 1
+
+  return {
+    latest_document_id: latest?.id ?? null,
+    latest_document_type: latest?.document_type ?? null,
+    latest_document_title: latest?.title ?? null,
+    latest_version_number: latestVersion > 0 ? latestVersion : null,
+    next_version_number: nextVersionNumber,
+    existing_versions_count: versions.length,
+  }
+}
+
 export async function getProposalDraftAction(proposalId: string) {
   return getSourceEntityDraftAction({
     source_entity_type: "proposal",
@@ -427,8 +636,8 @@ export async function getProposalDraftAction(proposalId: string) {
 
 export async function saveDocumentDraftEnvelopeAction(input: {
   document_id: string
-  source_entity_type: UnifiedSignableEntityType
-  source_entity_id: string
+  source_entity_type?: UnifiedSignableEntityType
+  source_entity_id?: string
   title: string
   signing_order_enabled?: boolean
   recipients: Array<{
@@ -447,6 +656,10 @@ export async function saveDocumentDraftEnvelopeAction(input: {
   await requirePermission("project.manage", { supabase, orgId, userId })
   await assertUnifiedESignEnabled({ supabase, orgId })
 
+  if ((input.source_entity_type && !input.source_entity_id) || (!input.source_entity_type && input.source_entity_id)) {
+    throw new Error("source_entity_type and source_entity_id must be provided together")
+  }
+
   const { data: document, error: documentError } = await supabase
     .from("documents")
     .select("id, org_id, status, metadata, source_entity_type, source_entity_id")
@@ -461,7 +674,10 @@ export async function saveDocumentDraftEnvelopeAction(input: {
   if (document.status !== "draft") {
     throw new Error("Only draft envelopes can be updated")
   }
+  const hasSourceEntity = !!input.source_entity_type && !!input.source_entity_id
+
   if (
+    hasSourceEntity &&
     document.source_entity_type &&
     document.source_entity_id &&
     (document.source_entity_type !== input.source_entity_type || document.source_entity_id !== input.source_entity_id)
@@ -470,14 +686,22 @@ export async function saveDocumentDraftEnvelopeAction(input: {
   }
 
   const normalizedRecipients = normalizeDraftEnvelopeRecipients(input.recipients ?? [])
-  const metadataEntityKey = getSourceEntityMetadataIdKey(input.source_entity_type)
-  const completionEvent = getSourceEntityCompletionEvent(input.source_entity_type)
+  const metadataEntityKey = hasSourceEntity
+    ? getSourceEntityMetadataIdKey(input.source_entity_type as UnifiedSignableEntityType)
+    : null
+  const completionEvent = hasSourceEntity
+    ? getSourceEntityCompletionEvent(input.source_entity_type as UnifiedSignableEntityType)
+    : null
 
   const metadata = {
     ...(document.metadata ?? {}),
-    [metadataEntityKey]: input.source_entity_id,
-    source_entity_type: input.source_entity_type,
-    source_entity_id: input.source_entity_id,
+    ...(metadataEntityKey && input.source_entity_id ? { [metadataEntityKey]: input.source_entity_id } : {}),
+    ...(hasSourceEntity
+      ? {
+          source_entity_type: input.source_entity_type,
+          source_entity_id: input.source_entity_id,
+        }
+      : {}),
     ...(completionEvent ? { completion_event: completionEvent } : {}),
     unified_esign_phase: UNIFIED_ESIGN_PHASE0_VERSION,
     draft_recipients: normalizedRecipients,
@@ -489,8 +713,12 @@ export async function saveDocumentDraftEnvelopeAction(input: {
     .from("documents")
     .update({
       title,
-      source_entity_type: input.source_entity_type,
-      source_entity_id: input.source_entity_id,
+      ...(hasSourceEntity
+        ? {
+            source_entity_type: input.source_entity_type,
+            source_entity_id: input.source_entity_id,
+          }
+        : {}),
       metadata,
       updated_at: new Date().toISOString(),
     })
@@ -504,10 +732,14 @@ export async function saveDocumentDraftEnvelopeAction(input: {
   const draftEnvelope = await ensureDraftEnvelopeForDocument(
     {
       document_id: input.document_id,
-      source_entity_type: input.source_entity_type,
-      source_entity_id: input.source_entity_id,
+      ...(hasSourceEntity
+        ? {
+            source_entity_type: input.source_entity_type,
+            source_entity_id: input.source_entity_id,
+          }
+        : {}),
       metadata: {
-        [metadataEntityKey]: input.source_entity_id,
+        ...(metadataEntityKey && input.source_entity_id ? { [metadataEntityKey]: input.source_entity_id } : {}),
         ...(completionEvent ? { completion_event: completionEvent } : {}),
         unified_esign_phase: UNIFIED_ESIGN_PHASE0_VERSION,
       },
@@ -1101,6 +1333,7 @@ type SignaturesHubRow = {
   document_title: string
   document_type: string
   document_status: string
+  document_metadata: Record<string, any>
   project_id: string
   project_name: string | null
   source_entity_type: string | null
@@ -1127,6 +1360,7 @@ type SignaturesHubRow = {
   can_void: boolean
   can_resend: boolean
   can_download: boolean
+  can_delete_draft: boolean
   queue_flags: {
     waiting_on_client: boolean
     executed_this_week: boolean
@@ -1141,6 +1375,193 @@ type SignaturesHubSummary = {
   expiring_soon: number
 }
 
+export type SignatureStartTarget = {
+  id: string
+  type: "proposal" | "change_order" | "selection"
+  project_id: string
+  project_name: string | null
+  title: string
+  document_type: "proposal" | "change_order" | "other"
+}
+
+export type SignatureEnvelopeProject = {
+  id: string
+  name: string
+}
+
+export async function listSignatureEnvelopeProjectsAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.member", { supabase, orgId, userId })
+  await assertUnifiedESignEnabled({ supabase, orgId })
+
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id, name")
+    .eq("org_id", orgId)
+    .order("name", { ascending: true })
+    .limit(500)
+
+  if (error) {
+    throw new Error(`Failed to load projects for signatures: ${error.message}`)
+  }
+
+  return (data ?? []) as SignatureEnvelopeProject[]
+}
+
+export async function listSignatureStartTargetsAction(input?: { projectId?: string }) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.member", { supabase, orgId, userId })
+  await assertUnifiedESignEnabled({ supabase, orgId })
+
+  let proposalQuery = supabase
+    .from("proposals")
+    .select("id, project_id, title, status, signature_required")
+    .eq("org_id", orgId)
+    .eq("signature_required", true)
+    .neq("status", "accepted")
+    .not("project_id", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(200)
+
+  let changeOrderQuery = supabase
+    .from("change_orders")
+    .select("id, project_id, title, status")
+    .eq("org_id", orgId)
+    .not("project_id", "is", null)
+    .in("status", ["draft", "pending", "sent", "requested_changes"])
+    .order("updated_at", { ascending: false })
+    .limit(200)
+
+  let selectionQuery = supabase
+    .from("project_selections")
+    .select("id, project_id, status, category_id, selected_option_id")
+    .eq("org_id", orgId)
+    .not("project_id", "is", null)
+    .not("selected_option_id", "is", null)
+    .in("status", ["selected", "confirmed", "ordered"])
+    .order("updated_at", { ascending: false })
+    .limit(200)
+
+  if (input?.projectId) {
+    proposalQuery = proposalQuery.eq("project_id", input.projectId)
+    changeOrderQuery = changeOrderQuery.eq("project_id", input.projectId)
+    selectionQuery = selectionQuery.eq("project_id", input.projectId)
+  }
+
+  const [proposalsResult, changeOrdersResult, selectionsResult] = await Promise.all([
+    proposalQuery,
+    changeOrderQuery,
+    selectionQuery,
+  ])
+
+  if (proposalsResult.error) {
+    throw new Error(`Failed to load proposal signature targets: ${proposalsResult.error.message}`)
+  }
+  if (changeOrdersResult.error) {
+    throw new Error(`Failed to load change order signature targets: ${changeOrdersResult.error.message}`)
+  }
+  if (selectionsResult.error) {
+    throw new Error(`Failed to load selection signature targets: ${selectionsResult.error.message}`)
+  }
+
+  const proposals = proposalsResult.data ?? []
+  const changeOrders = changeOrdersResult.data ?? []
+  const selections = selectionsResult.data ?? []
+
+  const projectIds = Array.from(
+    new Set(
+      [...proposals, ...changeOrders, ...selections]
+        .map((row: any) => row.project_id as string | null)
+        .filter((value): value is string => !!value),
+    ),
+  )
+  const categoryIds = Array.from(
+    new Set(
+      selections
+        .map((row: any) => row.category_id as string | null)
+        .filter((value): value is string => !!value),
+    ),
+  )
+  const optionIds = Array.from(
+    new Set(
+      selections
+        .map((row: any) => row.selected_option_id as string | null)
+        .filter((value): value is string => !!value),
+    ),
+  )
+
+  const [projectsResult, categoriesResult, optionsResult] = await Promise.all([
+    projectIds.length > 0
+      ? supabase.from("projects").select("id, name").eq("org_id", orgId).in("id", projectIds)
+      : Promise.resolve({ data: [], error: null }),
+    categoryIds.length > 0
+      ? supabase.from("selection_categories").select("id, name").eq("org_id", orgId).in("id", categoryIds)
+      : Promise.resolve({ data: [], error: null }),
+    optionIds.length > 0
+      ? supabase.from("selection_options").select("id, name").eq("org_id", orgId).in("id", optionIds)
+      : Promise.resolve({ data: [], error: null }),
+  ])
+
+  if (projectsResult.error) {
+    throw new Error(`Failed to load project names for signature targets: ${projectsResult.error.message}`)
+  }
+  if (categoriesResult.error) {
+    throw new Error(`Failed to load selection categories for signature targets: ${categoriesResult.error.message}`)
+  }
+  if (optionsResult.error) {
+    throw new Error(`Failed to load selection options for signature targets: ${optionsResult.error.message}`)
+  }
+
+  const projectNameById = new Map<string, string>((projectsResult.data ?? []).map((row) => [row.id, row.name]))
+  const categoryNameById = new Map<string, string>((categoriesResult.data ?? []).map((row) => [row.id, row.name]))
+  const optionNameById = new Map<string, string>((optionsResult.data ?? []).map((row) => [row.id, row.name]))
+
+  const targets: SignatureStartTarget[] = [
+    ...proposals.map((proposal: any) => ({
+      id: proposal.id,
+      type: "proposal" as const,
+      project_id: proposal.project_id,
+      project_name: projectNameById.get(proposal.project_id) ?? null,
+      title: proposal.title?.trim() || "Proposal",
+      document_type: "proposal" as const,
+    })),
+    ...changeOrders.map((changeOrder: any) => ({
+      id: changeOrder.id,
+      type: "change_order" as const,
+      project_id: changeOrder.project_id,
+      project_name: projectNameById.get(changeOrder.project_id) ?? null,
+      title: changeOrder.title?.trim() || "Change order",
+      document_type: "change_order" as const,
+    })),
+    ...selections.map((selection: any) => {
+      const categoryName = categoryNameById.get(selection.category_id) ?? "Selection"
+      const optionName = selection.selected_option_id
+        ? optionNameById.get(selection.selected_option_id) ?? null
+        : null
+      const title = optionName ? `${categoryName} - ${optionName}` : categoryName
+
+      return {
+        id: selection.id,
+        type: "selection" as const,
+        project_id: selection.project_id,
+        project_name: projectNameById.get(selection.project_id) ?? null,
+        title,
+        document_type: "other" as const,
+      }
+    }),
+  ]
+
+  targets.sort((a, b) => {
+    const projectCompare = (a.project_name ?? "").localeCompare(b.project_name ?? "")
+    if (projectCompare !== 0) return projectCompare
+    const typeCompare = a.type.localeCompare(b.type)
+    if (typeCompare !== 0) return typeCompare
+    return a.title.localeCompare(b.title)
+  })
+
+  return targets
+}
+
 export async function listSignaturesHubAction(input?: { projectId?: string }) {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requirePermission("org.member", { supabase, orgId, userId })
@@ -1149,48 +1570,57 @@ export async function listSignaturesHubAction(input?: { projectId?: string }) {
   let envelopeQuery = supabase
     .from("envelopes")
     .select(
-      "id, org_id, project_id, document_id, source_entity_type, source_entity_id, status, sent_at, executed_at, expires_at, voided_at, created_at, metadata, documents!inner(id, title, document_type, status, executed_file_id)",
+      "id, org_id, project_id, document_id, source_entity_type, source_entity_id, status, sent_at, executed_at, expires_at, voided_at, created_at, metadata, documents!inner(id, title, document_type, status, executed_file_id, metadata)",
     )
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
     .limit(500)
 
+  let draftDocumentsQuery = supabase
+    .from("documents")
+    .select("id, org_id, project_id, title, document_type, status, source_entity_type, source_entity_id, metadata, created_at, updated_at")
+    .eq("org_id", orgId)
+    .eq("status", "draft")
+    .order("updated_at", { ascending: false })
+    .limit(500)
+
   if (input?.projectId) {
     envelopeQuery = envelopeQuery.eq("project_id", input.projectId)
+    draftDocumentsQuery = draftDocumentsQuery.eq("project_id", input.projectId)
   }
 
-  const { data: envelopeRows, error: envelopeError } = await envelopeQuery
+  const [{ data: envelopeRows, error: envelopeError }, { data: draftDocumentRows, error: draftDocumentsError }] =
+    await Promise.all([envelopeQuery, draftDocumentsQuery])
+
   if (envelopeError) {
     throw new Error(`Failed to load signatures hub: ${envelopeError.message}`)
   }
-
-  const envelopes = envelopeRows ?? []
-  if (envelopes.length === 0) {
-    return {
-      rows: [] as SignaturesHubRow[],
-      summary: {
-        total: 0,
-        waiting_on_client: 0,
-        executed_this_week: 0,
-        expiring_soon: 0,
-      } as SignaturesHubSummary,
-      generated_at: new Date().toISOString(),
-    }
+  if (draftDocumentsError) {
+    throw new Error(`Failed to load draft documents for signatures hub: ${draftDocumentsError.message}`)
   }
 
+  const envelopes = envelopeRows ?? []
+  const draftDocuments = draftDocumentRows ?? []
+
   const envelopeIds = envelopes.map((row: any) => row.id)
-  const projectIds = Array.from(new Set(envelopes.map((row: any) => row.project_id).filter(Boolean)))
+  const projectIds = Array.from(
+    new Set(
+      [...envelopes.map((row: any) => row.project_id), ...draftDocuments.map((row: any) => row.project_id)].filter(Boolean),
+    ),
+  )
 
   const [requestsResult, projectsResult, recipientsResult, envelopeEventsResult] = await Promise.all([
-    supabase
-      .from("document_signing_requests")
-      .select(
-        "id, envelope_id, envelope_recipient_id, sequence, required, status, sent_to_email, viewed_at, signed_at, created_at",
-      )
-      .eq("org_id", orgId)
-      .in("envelope_id", envelopeIds)
-      .order("sequence", { ascending: true })
-      .order("created_at", { ascending: true }),
+    envelopeIds.length > 0
+      ? supabase
+          .from("document_signing_requests")
+          .select(
+            "id, envelope_id, envelope_recipient_id, sequence, required, status, sent_to_email, viewed_at, signed_at, created_at",
+          )
+          .eq("org_id", orgId)
+          .in("envelope_id", envelopeIds)
+          .order("sequence", { ascending: true })
+          .order("created_at", { ascending: true })
+      : Promise.resolve({ data: [], error: null }),
     projectIds.length > 0
       ? supabase
           .from("projects")
@@ -1198,20 +1628,24 @@ export async function listSignaturesHubAction(input?: { projectId?: string }) {
           .eq("org_id", orgId)
           .in("id", projectIds)
       : Promise.resolve({ data: [], error: null }),
-    supabase
-      .from("envelope_recipients")
-      .select("id, envelope_id, role, name, sequence, created_at")
-      .eq("org_id", orgId)
-      .in("envelope_id", envelopeIds)
-      .eq("role", "signer")
-      .order("sequence", { ascending: true })
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("envelope_events")
-      .select("envelope_id, created_at")
-      .eq("org_id", orgId)
-      .in("envelope_id", envelopeIds)
-      .order("created_at", { ascending: false }),
+    envelopeIds.length > 0
+      ? supabase
+          .from("envelope_recipients")
+          .select("id, envelope_id, role, name, sequence, created_at")
+          .eq("org_id", orgId)
+          .in("envelope_id", envelopeIds)
+          .eq("role", "signer")
+          .order("sequence", { ascending: true })
+          .order("created_at", { ascending: true })
+      : Promise.resolve({ data: [], error: null }),
+    envelopeIds.length > 0
+      ? supabase
+          .from("envelope_events")
+          .select("envelope_id, created_at")
+          .eq("org_id", orgId)
+          .in("envelope_id", envelopeIds)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
   ])
 
   if (requestsResult.error) {
@@ -1332,6 +1766,7 @@ export async function listSignaturesHubAction(input?: { projectId?: string }) {
       document_title: document.title ?? "Document",
       document_type: document.document_type ?? "other",
       document_status: document.status ?? envelope.status,
+      document_metadata: (document.metadata ?? {}) as Record<string, any>,
       project_id: envelope.project_id,
       project_name: projectNameById.get(envelope.project_id) ?? null,
       source_entity_type: envelope.source_entity_type ?? null,
@@ -1372,6 +1807,7 @@ export async function listSignaturesHubAction(input?: { projectId?: string }) {
       can_void: envelope.status === "draft" || envelope.status === "sent" || envelope.status === "partially_signed",
       can_resend: envelope.status !== "executed",
       can_download: envelope.status === "executed",
+      can_delete_draft: envelope.status === "draft" && (document.status ?? envelope.status) === "draft",
       queue_flags: {
         waiting_on_client: waitingOnClient,
         executed_this_week: executedThisWeek,
@@ -1379,6 +1815,64 @@ export async function listSignaturesHubAction(input?: { projectId?: string }) {
       },
     }
   })
+
+  const envelopeDocumentIds = new Set(envelopes.map((envelope: any) => envelope.document_id))
+  const draftOnlyRows: SignaturesHubRow[] = draftDocuments
+    .filter((document: any) => !envelopeDocumentIds.has(document.id))
+    .map((document: any) => {
+      const draftRecipients = Array.isArray(document.metadata?.draft_recipients)
+        ? (document.metadata.draft_recipients as Array<{ role?: string; name?: string; email?: string }>)
+        : []
+
+      const draftRecipientNames = draftRecipients
+        .filter((recipient) => recipient.role === "signer")
+        .map((recipient) => recipient.name?.trim() || recipient.email?.trim() || "")
+        .filter((value) => value.length > 0)
+
+      return {
+        envelope_id: `draft-${document.id}`,
+        document_id: document.id,
+        document_title: document.title ?? "Document",
+        document_type: document.document_type ?? "other",
+        document_status: document.status ?? "draft",
+        document_metadata: (document.metadata ?? {}) as Record<string, any>,
+        project_id: document.project_id,
+        project_name: projectNameById.get(document.project_id) ?? null,
+        source_entity_type: document.source_entity_type ?? null,
+        source_entity_id: document.source_entity_id ?? null,
+        envelope_status: "draft",
+        created_at: document.created_at,
+        sent_at: null,
+        executed_at: null,
+        expires_at: null,
+        voided_at: null,
+        signer_summary: {
+          total: 0,
+          signed: 0,
+          viewed: 0,
+          pending: 0,
+        },
+        next_pending_request_id: null,
+        next_pending_sequence: null,
+        next_pending_emails: [],
+        recipient_names: draftRecipientNames,
+        next_pending_names: [],
+        last_event_at: document.updated_at ?? document.created_at ?? null,
+        can_remind: false,
+        can_void: false,
+        can_resend: false,
+        can_download: false,
+        can_delete_draft: true,
+        queue_flags: {
+          waiting_on_client: false,
+          executed_this_week: false,
+          expiring_soon: false,
+        },
+      }
+    })
+
+  rows.push(...draftOnlyRows)
+  rows.sort((a, b) => new Date(b.last_event_at ?? b.created_at).getTime() - new Date(a.last_event_at ?? a.created_at).getTime())
 
   const summary = rows.reduce<SignaturesHubSummary>(
     (acc, row) => {
@@ -1500,6 +1994,57 @@ export async function voidEnvelopeAction(input: { envelopeId: string; reason?: s
   })
 
   return { success: true, idempotent: false }
+}
+
+export async function deleteDraftDocumentAction(input: { documentId: string }) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("project.manage", { supabase, orgId, userId })
+  await assertUnifiedESignEnabled({ supabase, orgId })
+
+  const { data: document, error: documentError } = await supabase
+    .from("documents")
+    .select("id, org_id, status")
+    .eq("org_id", orgId)
+    .eq("id", input.documentId)
+    .maybeSingle()
+
+  if (documentError || !document) {
+    throw new Error(`Document not found: ${documentError?.message ?? "missing"}`)
+  }
+
+  if (document.status !== "draft") {
+    throw new Error("Only draft documents can be deleted")
+  }
+
+  const { data: activeEnvelope, error: activeEnvelopeError } = await supabase
+    .from("envelopes")
+    .select("id, status")
+    .eq("org_id", orgId)
+    .eq("document_id", document.id)
+    .neq("status", "draft")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (activeEnvelopeError) {
+    throw new Error(`Failed to validate draft document envelopes: ${activeEnvelopeError.message}`)
+  }
+
+  if (activeEnvelope?.id) {
+    throw new Error("Cannot delete a draft document with non-draft envelope activity")
+  }
+
+  const { error: deleteError } = await supabase
+    .from("documents")
+    .delete()
+    .eq("org_id", orgId)
+    .eq("id", document.id)
+
+  if (deleteError) {
+    throw new Error(`Failed to delete draft document: ${deleteError.message}`)
+  }
+
+  return { success: true }
 }
 
 export async function resendEnvelopeAction(input: { envelopeId: string }) {
@@ -1825,7 +2370,8 @@ export async function uploadESignDocumentFileAction(projectId: string, formData:
     orgId,
   )
 
-  await createInitialVersion(
+  // Keep upload latency low for e-sign setup; version bookkeeping can complete asynchronously.
+  void createInitialVersion(
     {
       fileId: record.id,
       storagePath,
@@ -1834,7 +2380,124 @@ export async function uploadESignDocumentFileAction(projectId: string, formData:
       sizeBytes: file.size,
     },
     orgId,
+  ).catch((error) => {
+    console.error("Failed to create initial file version for e-sign upload", error)
+  })
+
+  return record
+}
+
+export async function createESignDocumentUploadUrlAction(input: {
+  projectId: string
+  fileName: string
+  fileType: string
+  fileSize: number
+}) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("project.manage", { supabase, orgId, userId })
+
+  if (getFilesStorageProvider() !== "r2") {
+    throw new Error("E-sign documents must be stored in R2. Set FILES_STORAGE=r2.")
+  }
+
+  const safeName = input.fileName.replace(/[^a-zA-Z0-9.-]/g, "_")
+  const uploadId = randomUUID()
+  const storagePath = buildOrgScopedPath(
+    orgId,
+    "projects",
+    input.projectId,
+    "esign",
+    "source",
+    `${Date.now()}_${uploadId}_${safeName}`,
   )
+
+  const { uploadUrl } = await createFilesUploadUrl({
+    supabase,
+    orgId,
+    path: storagePath,
+    contentType: input.fileType || "application/pdf",
+    cacheControl: "private, max-age=31536000",
+    expiresIn: 600,
+  })
+
+  const uploadToken = createHmac("sha256", requireDocumentSigningSecret())
+    .update(
+      JSON.stringify({
+        projectId: input.projectId,
+        storagePath,
+        fileName: input.fileName,
+        fileType: input.fileType || "application/pdf",
+        fileSize: input.fileSize,
+      }),
+    )
+    .digest("hex")
+
+  return {
+    uploadUrl,
+    storagePath,
+    uploadToken,
+  }
+}
+
+export async function completeESignDocumentUploadAction(input: {
+  projectId: string
+  storagePath: string
+  uploadToken: string
+  fileName: string
+  fileType: string
+  fileSize: number
+}) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("project.manage", { supabase, orgId, userId })
+
+  if (getFilesStorageProvider() !== "r2") {
+    throw new Error("E-sign documents must be stored in R2. Set FILES_STORAGE=r2.")
+  }
+
+  const normalizedType = input.fileType || "application/pdf"
+  const expectedToken = createHmac("sha256", requireDocumentSigningSecret())
+    .update(
+      JSON.stringify({
+        projectId: input.projectId,
+        storagePath: input.storagePath,
+        fileName: input.fileName,
+        fileType: normalizedType,
+        fileSize: input.fileSize,
+      }),
+    )
+    .digest("hex")
+
+  if (expectedToken !== input.uploadToken) {
+    throw new Error("Invalid upload token")
+  }
+
+  const record = await createFileRecord(
+    {
+      project_id: input.projectId,
+      file_name: input.fileName,
+      storage_path: input.storagePath,
+      mime_type: normalizedType,
+      size_bytes: input.fileSize,
+      visibility: "private",
+      category: "contracts",
+      folder_path: `/projects/${input.projectId}/esign/source`,
+      source: "upload",
+    },
+    orgId,
+  )
+
+  void createInitialVersion(
+    {
+      fileId: record.id,
+      storagePath: input.storagePath,
+      fileName: input.fileName,
+      mimeType: normalizedType,
+      sizeBytes: input.fileSize,
+    },
+    orgId,
+  ).catch((error) => {
+    console.error("Failed to create initial file version for e-sign upload", error)
+  })
 
   return record
 }

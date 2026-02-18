@@ -61,6 +61,7 @@ export async function sendPortalEntityMessageAction(input: {
 
   // Basic permission gate by entity type
   if (input.entityType === "rfi" && !access.permissions.can_view_rfis) throw new Error("Access denied")
+  if (input.entityType === "rfi" && !access.permissions.can_respond_rfis) throw new Error("Access denied")
   if (input.entityType === "submittal" && !access.permissions.can_view_submittals) throw new Error("Access denied")
 
   return postPortalEntityMessage({

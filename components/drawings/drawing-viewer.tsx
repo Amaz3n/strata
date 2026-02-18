@@ -385,7 +385,7 @@ export function DrawingViewer({
   const [osdViewer, setOsdViewer] = useState<any | null>(null)
 
   const handleOsdReady = useCallback((viewer: any | null) => {
-    setOsdViewer(viewer)
+    setOsdViewer((prev) => (prev === viewer ? prev : viewer))
   }, [])
 
   const handleOsdTransformChange = useCallback(({ matrix, container, zoom }: any) => {

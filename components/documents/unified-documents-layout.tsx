@@ -54,8 +54,10 @@ import {
   listFileTimelineAction,
 } from "@/app/(app)/files/actions"
 import type { FileVersion, FileWithUrls, FileTimelineEvent } from "@/app/(app)/files/actions"
-import { getSheetDownloadUrlAction } from "@/app/(app)/drawings/actions"
+import { createDrawingSetFromUpload, getSheetDownloadUrlAction } from "@/app/(app)/drawings/actions"
 import type { DrawingSheet } from "@/app/(app)/drawings/actions"
+import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
+import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings"
 
 interface FileVersionInfo {
   id: string
@@ -94,6 +96,8 @@ function normalizeFolderPath(path: string): string | null {
   return normalized.replace(/\/$/, "")
 }
 
+const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS)
+
 export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
   return (
     <DocumentsProvider {...props}>
@@ -111,6 +115,7 @@ function UnifiedDocumentsLayoutInner() {
     currentPath,
     setCurrentPath,
     refreshFiles,
+    refreshDrawingSets,
   } = useDocuments()
 
   const [isDraggingOver, setIsDraggingOver] = useState(false)
@@ -118,6 +123,13 @@ function UnifiedDocumentsLayoutInner() {
 
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
+  const drawingSetFileInputRef = useRef<HTMLInputElement>(null)
+  const [drawingSetUploadOpen, setDrawingSetUploadOpen] = useState(false)
+  const [drawingSetFile, setDrawingSetFile] = useState<File | null>(null)
+  const [drawingSetTitle, setDrawingSetTitle] = useState("")
+  const [drawingSetType, setDrawingSetType] = useState("general")
+  const [drawingSetUploading, setDrawingSetUploading] = useState(false)
+  const [drawingSetUploadStage, setDrawingSetUploadStage] = useState<string | null>(null)
 
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null)
@@ -280,6 +292,88 @@ function UnifiedDocumentsLayoutInner() {
     setUploadFiles([])
     setUploadDialogOpen(true)
   }, [])
+
+  const resetDrawingSetUploadDialog = useCallback(() => {
+    setDrawingSetFile(null)
+    setDrawingSetTitle("")
+    setDrawingSetType("general")
+    setDrawingSetUploading(false)
+    setDrawingSetUploadStage(null)
+    if (drawingSetFileInputRef.current) {
+      drawingSetFileInputRef.current.value = ""
+    }
+  }, [])
+
+  const handleOpenDrawingSetUpload = useCallback(() => {
+    resetDrawingSetUploadDialog()
+    setDrawingSetUploadOpen(true)
+  }, [resetDrawingSetUploadDialog])
+
+  const handleDrawingSetFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null
+    if (!file) return
+    setDrawingSetFile(file)
+    setDrawingSetTitle((prev) => {
+      if (prev.trim().length > 0) return prev
+      return file.name.replace(/\.pdf$/i, "")
+    })
+  }, [])
+
+  const handleUploadDrawingSet = useCallback(async () => {
+    if (!drawingSetFile) {
+      toast.error("Select a PDF file to upload")
+      return
+    }
+
+    if (drawingSetFile.type !== "application/pdf") {
+      toast.error("Only PDF files are supported for drawing sets")
+      return
+    }
+
+    const normalizedTitle =
+      drawingSetTitle.trim().length > 0
+        ? drawingSetTitle.trim()
+        : drawingSetFile.name.replace(/\.pdf$/i, "")
+
+    setDrawingSetUploading(true)
+    setDrawingSetUploadStage("Uploading PDF…")
+    try {
+      const { storagePath } = await uploadDrawingFileToStorage(
+        drawingSetFile,
+        projectId
+      )
+
+      setDrawingSetUploadStage("Queueing sheet processing…")
+      await createDrawingSetFromUpload({
+        projectId,
+        title: normalizedTitle,
+        setType: drawingSetType,
+        fileName: drawingSetFile.name,
+        storagePath,
+        fileSize: drawingSetFile.size,
+        mimeType: drawingSetFile.type,
+      })
+
+      await Promise.all([refreshDrawingSets(), refreshFiles()])
+      toast.success("Drawing set uploaded. Processing has started.")
+      setDrawingSetUploadOpen(false)
+      resetDrawingSetUploadDialog()
+    } catch (error) {
+      console.error("Failed to upload drawing set:", error)
+      toast.error(error instanceof Error ? error.message : "Failed to upload drawing set")
+    } finally {
+      setDrawingSetUploading(false)
+      setDrawingSetUploadStage(null)
+    }
+  }, [
+    drawingSetFile,
+    drawingSetTitle,
+    drawingSetType,
+    projectId,
+    refreshDrawingSets,
+    refreshFiles,
+    resetDrawingSetUploadDialog,
+  ])
 
   const handleFileSelectionChange = useCallback((fileId: string, selected: boolean) => {
     setSelectedFileIds((prev) => {
@@ -769,7 +863,12 @@ function UnifiedDocumentsLayoutInner() {
 
   const renderContent = () => {
     if (quickFilter === "drawings") {
-      return <DrawingSetsContent onSheetClick={handleSheetClick} />
+      return (
+        <DrawingSetsContent
+          onSheetClick={handleSheetClick}
+          onUploadDrawingSetClick={handleOpenDrawingSetUpload}
+        />
+      )
     }
 
     if (quickFilter === "all" && !currentPath) {
@@ -827,6 +926,7 @@ function UnifiedDocumentsLayoutInner() {
       <div className="shrink-0">
         <DocumentsHeader
           onUploadClick={handleUploadClick}
+          onUploadDrawingSetClick={handleOpenDrawingSetUpload}
           onCreateFolderClick={() => {
             setNewFolderPath(currentPath || "")
             setCreateFolderDialogOpen(true)
@@ -856,6 +956,113 @@ function UnifiedDocumentsLayoutInner() {
         folderPath={currentPath}
         onUploadComplete={refreshFiles}
       />
+
+      <Dialog
+        open={drawingSetUploadOpen}
+        onOpenChange={(open) => {
+          setDrawingSetUploadOpen(open)
+          if (!open) {
+            resetDrawingSetUploadDialog()
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Upload Drawing Set</DialogTitle>
+            <DialogDescription>
+              Upload a PDF and we&apos;ll split it into sheets automatically.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="drawing-set-title">Title</Label>
+              <Input
+                id="drawing-set-title"
+                value={drawingSetTitle}
+                onChange={(event) => setDrawingSetTitle(event.target.value)}
+                placeholder="2026 Permit Set"
+                disabled={drawingSetUploading}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="drawing-set-type">Type</Label>
+              <select
+                id="drawing-set-type"
+                value={drawingSetType}
+                onChange={(event) => setDrawingSetType(event.target.value)}
+                disabled={drawingSetUploading}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {DRAWING_SET_TYPES.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <input
+              ref={drawingSetFileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              className="hidden"
+              onChange={handleDrawingSetFileChange}
+              disabled={drawingSetUploading}
+            />
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => drawingSetFileInputRef.current?.click()}
+              disabled={drawingSetUploading}
+              className="w-full justify-start"
+            >
+              Choose PDF file
+            </Button>
+
+            {drawingSetFile && (
+              <div className="rounded-md border bg-muted/40 px-3 py-2">
+                <p className="text-sm font-medium truncate">{drawingSetFile.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {(drawingSetFile.size / 1024 / 1024).toFixed(2)} MB
+                </p>
+              </div>
+            )}
+
+            {drawingSetUploadStage && (
+              <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>{drawingSetUploadStage}</span>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDrawingSetUploadOpen(false)}
+              disabled={drawingSetUploading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUploadDrawingSet}
+              disabled={drawingSetUploading || !drawingSetFile}
+            >
+              {drawingSetUploading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                "Upload drawing set"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <FileViewer
         file={viewerFile}

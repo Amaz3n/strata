@@ -1,6 +1,7 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createInvoice } from "@/lib/services/invoices"
+import { requireAuthorization } from "@/lib/services/authorization"
 
 export async function createRetainageRecord({
   project_id,
@@ -19,7 +20,18 @@ export async function createRetainageRecord({
     throw new Error("Retainage amount must be positive")
   }
 
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "retainage.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: project_id,
+  })
+
   const { data, error } = await supabase
     .from("retainage")
     .insert({
@@ -51,8 +63,30 @@ export async function releaseRetainage({
   status?: "released" | "invoiced" | "paid"
   orgId?: string
 }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const now = new Date().toISOString()
+
+  const { data: existing, error: existingError } = await supabase
+    .from("retainage")
+    .select("id, project_id")
+    .eq("id", retainageId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Retainage record not found")
+  }
+
+  await requireAuthorization({
+    permission: "retainage.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "retainage",
+    resourceId: retainageId,
+  })
 
   const { error } = await supabase
     .from("retainage")
@@ -72,7 +106,29 @@ export async function releaseRetainage({
 }
 
 export async function markRetainagePaid(retainageId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: existingError } = await supabase
+    .from("retainage")
+    .select("id, project_id")
+    .eq("id", retainageId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Retainage record not found")
+  }
+
+  await requireAuthorization({
+    permission: "retainage.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "retainage",
+    resourceId: retainageId,
+  })
 
   const { error } = await supabase
     .from("retainage")
@@ -137,6 +193,18 @@ export async function createInvoiceWithRetainage({
   tax_rate?: number
   orgId?: string
 }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "retainage.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: project_id,
+  })
+
   const invoice = await createInvoice({
     input: {
       project_id,
@@ -157,7 +225,7 @@ export async function createInvoiceWithRetainage({
         taxable: line.taxable ?? true,
       })),
     },
-    orgId,
+    orgId: resolvedOrgId,
   })
 
   // Compute retainage from invoice total
@@ -168,7 +236,7 @@ export async function createInvoiceWithRetainage({
       contract_id,
       amount_cents: retainageAmount,
       project_id,
-      orgId,
+      orgId: resolvedOrgId,
     })
   }
 
@@ -185,7 +253,17 @@ export async function releaseRetainageForContract({
   release_invoice_id?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  await requireAuthorization({
+    permission: "retainage.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "contract",
+    resourceId: contract_id,
+  })
 
   const { data: held } = await supabase
     .from("retainage")
@@ -205,7 +283,6 @@ export async function releaseRetainageForContract({
 
   return { released: (held ?? []).length }
 }
-
 
 
 

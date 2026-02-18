@@ -6,9 +6,10 @@ import {
   Layers,
   Loader2,
   AlertCircle,
-  FileText,
+  Upload,
   ChevronRight,
 } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
@@ -21,8 +22,10 @@ import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/actions"
 
 export function DrawingSetsContent({
   onSheetClick,
+  onUploadDrawingSetClick,
 }: {
   onSheetClick?: (sheet: DrawingSheet) => void
+  onUploadDrawingSetClick?: () => void
 }) {
   const { drawingSets, searchQuery } = useDocuments()
 
@@ -46,6 +49,12 @@ export function DrawingSetsContent({
             ? "Try adjusting your search query."
             : "Upload drawing set PDFs to automatically split them into individual sheets."}
         </p>
+        {!searchQuery && onUploadDrawingSetClick && (
+          <Button onClick={onUploadDrawingSetClick} className="mt-4" size="sm">
+            <Upload className="h-4 w-4 mr-2" />
+            Upload drawing set
+          </Button>
+        )}
       </div>
     )
   }

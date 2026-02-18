@@ -3,6 +3,10 @@
     {
       "path": "/api/jobs/process-outbox",
       "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/jobs/rbac-evidence",
+      "schedule": "15 2 * * *"
     }
   ],
   "functions": {
@@ -11,7 +15,9 @@
     },
     "app/api/jobs/process-outbox/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/jobs/rbac-evidence/route.ts": {
+      "maxDuration": 60
     }
   }
 }
-

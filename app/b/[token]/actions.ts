@@ -1,6 +1,7 @@
 "use server"
 
 import { bidPortalPinSchema, bidPortalSubmissionInputSchema } from "@/lib/validation/bid-portal"
+import { portalRfiInputSchema, rfiResponseInputSchema } from "@/lib/validation/rfis"
 import {
   acknowledgeBidAddendum,
   submitBidFromPortal,
@@ -8,6 +9,7 @@ import {
   validateBidPortalToken,
   type BidPortalSubmission,
 } from "@/lib/services/bid-portal"
+import { createPortalRfi, addRfiResponse, listRfiResponses } from "@/lib/services/rfis"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
@@ -192,5 +194,77 @@ export async function uploadBidFileAction({
       success: false,
       error: err instanceof Error ? err.message : "Failed to upload file",
     }
+  }
+}
+
+export async function createBidPortalRfiAction({ token, input }: { token: string; input: unknown }) {
+  const access = await validateBidPortalToken(token)
+  if (!access) return { success: false, error: "Invalid or expired bid link" as const }
+
+  const parsed = portalRfiInputSchema.safeParse(input)
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.errors[0]?.message ?? "Invalid input" as const }
+  }
+
+  try {
+    const created = await createPortalRfi({
+      orgId: access.org_id,
+      projectId: access.project.id,
+      companyId: access.invite.company?.id ?? null,
+      contactId: access.invite.contact?.id ?? null,
+      subject: parsed.data.subject,
+      question: parsed.data.question,
+      priority: parsed.data.priority,
+      dueDate: parsed.data.due_date ?? null,
+    })
+    return { success: true, rfi: created as const }
+  } catch (error) {
+    return { success: false, error: (error as Error)?.message ?? "Failed to create RFI" as const }
+  }
+}
+
+export async function listBidPortalRfiResponsesAction({ token, rfiId }: { token: string; rfiId: string }) {
+  const access = await validateBidPortalToken(token)
+  if (!access) throw new Error("Invalid or expired bid link")
+
+  const supabase = createServiceSupabaseClient()
+  const { data: rfi } = await supabase
+    .from("rfis")
+    .select("id, org_id, project_id, assigned_company_id")
+    .eq("id", rfiId)
+    .eq("org_id", access.org_id)
+    .eq("project_id", access.project.id)
+    .maybeSingle()
+  if (!rfi) throw new Error("RFI not found")
+  if (rfi.assigned_company_id && access.invite.company?.id && rfi.assigned_company_id !== access.invite.company.id) {
+    throw new Error("Access denied")
+  }
+
+  return listRfiResponses({ orgId: access.org_id, rfiId })
+}
+
+export async function addBidPortalRfiResponseAction({ token, input }: { token: string; input: unknown }) {
+  const access = await validateBidPortalToken(token)
+  if (!access) return { success: false, error: "Invalid or expired bid link" as const }
+
+  const parsed = rfiResponseInputSchema.safeParse(input)
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.errors[0]?.message ?? "Invalid input" as const }
+  }
+
+  try {
+    const result = await addRfiResponse({
+      orgId: access.org_id,
+      input: {
+        ...parsed.data,
+        responder_contact_id: access.invite.contact?.id ?? parsed.data.responder_contact_id ?? null,
+        responder_user_id: null,
+        portal_token_id: null,
+        created_via_portal: true,
+      },
+    })
+    return { success: true, result }
+  } catch (error) {
+    return { success: false, error: (error as Error)?.message ?? "Failed to add response" as const }
   }
 }

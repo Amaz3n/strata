@@ -3,11 +3,12 @@
 import { useEffect, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { HelpCircle } from "lucide-react"
-import type { PortalMessage, Rfi } from "@/lib/types"
+import type { Rfi, RfiResponse } from "@/lib/types"
 import {
-  loadPortalEntityMessagesAction,
-  sendPortalEntityMessageAction,
-} from "@/app/p/[token]/messages/actions"
+  addSubPortalRfiResponseAction,
+  createSubPortalRfiAction,
+  listSubPortalRfiResponsesAction,
+} from "@/app/s/[token]/rfis/actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -35,22 +36,21 @@ const statusColors: Record<string, string> = {
 }
 
 export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
+  const [items, setItems] = useState<Rfi[]>(rfis)
   const [selected, setSelected] = useState<Rfi | null>(null)
-  const [messages, setMessages] = useState<PortalMessage[]>([])
+  const [responses, setResponses] = useState<RfiResponse[]>([])
   const [body, setBody] = useState("")
+  const [subject, setSubject] = useState("")
+  const [question, setQuestion] = useState("")
   const [isPending, startTransition] = useTransition()
   const [loadingThread, setLoadingThread] = useState(false)
 
   useEffect(() => {
     if (!selected) return
     setLoadingThread(true)
-    loadPortalEntityMessagesAction({
-      token,
-      entityType: "rfi",
-      entityId: selected.id,
-    })
-      .then((msgs) => setMessages(msgs))
-      .catch((err) => console.error("Failed to load RFI messages", err))
+    listSubPortalRfiResponsesAction(token, selected.id)
+      .then((rows) => setResponses(rows))
+      .catch((err) => console.error("Failed to load RFI responses", err))
       .finally(() => setLoadingThread(false))
   }, [selected, token])
 
@@ -58,14 +58,13 @@ export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
     if (!selected || !body.trim()) return
     startTransition(async () => {
       try {
-        const message = await sendPortalEntityMessageAction({
-          token,
-          entityType: "rfi",
-          entityId: selected.id,
+        await addSubPortalRfiResponseAction(token, {
+          rfi_id: selected.id,
+          response_type: "comment",
           body,
-          senderName: "Sub Portal",
         })
-        setMessages((prev) => [...prev, message])
+        const rows = await listSubPortalRfiResponsesAction(token, selected.id)
+        setResponses(rows)
         setBody("")
       } catch (error) {
         console.error("Failed to send message", error)
@@ -73,22 +72,64 @@ export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
     })
   }
 
-  if (rfis.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <HelpCircle className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-        <p className="text-muted-foreground">No RFIs assigned to you</p>
-        <p className="text-sm text-muted-foreground">
-          Requests for information will appear here when assigned
-        </p>
-      </div>
-    )
+  const handleCreateRfi = () => {
+    if (!subject.trim() || !question.trim()) return
+    startTransition(async () => {
+      try {
+        const created = await createSubPortalRfiAction(token, {
+          subject: subject.trim(),
+          question: question.trim(),
+          priority: "normal",
+        })
+        setItems((prev) => [created, ...prev])
+        setSubject("")
+        setQuestion("")
+      } catch (error) {
+        console.error("Failed to create RFI", error)
+      }
+    })
   }
 
   return (
     <>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Submit New RFI</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Textarea
+            placeholder="Subject"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            rows={1}
+            disabled={isPending}
+          />
+          <Textarea
+            placeholder="Question"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            rows={3}
+            disabled={isPending}
+          />
+          <div className="flex justify-end">
+            <Button onClick={handleCreateRfi} disabled={isPending || !subject.trim() || !question.trim()}>
+              Submit RFI
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {items.length === 0 ? (
+        <div className="text-center py-12">
+          <HelpCircle className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+          <p className="text-muted-foreground">No RFIs assigned to you</p>
+          <p className="text-sm text-muted-foreground">
+            Requests for information will appear here when assigned
+          </p>
+        </div>
+      ) : (
       <div className="space-y-3">
-        {rfis.map((rfi) => (
+        {items.map((rfi) => (
           <Card key={rfi.id}>
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-base">RFI #{rfi.rfi_number}</CardTitle>
@@ -124,6 +165,7 @@ export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
           </Card>
         ))}
       </div>
+      )}
 
       <Dialog
         open={!!selected}
@@ -149,21 +191,21 @@ export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
                   <div className="flex h-full items-center justify-center py-8">
                     <Spinner className="h-4 w-4 text-muted-foreground" />
                   </div>
-                ) : messages.length === 0 ? (
+                ) : responses.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-8">
-                    No messages yet. Start the conversation below.
+                    No responses yet. Start the thread below.
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {messages.map((msg) => (
-                      <div key={msg.id} className="rounded-md border bg-card/50 p-2">
+                    {responses.map((response) => (
+                      <div key={response.id} className="rounded-md border bg-card/50 p-2">
                         <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                          <span>{msg.sender_name ?? "Portal user"}</span>
+                          <span className="capitalize">{response.response_type}</span>
                           <span>
-                            {format(new Date(msg.sent_at), "MMM d, h:mm a")}
+                            {format(new Date(response.created_at), "MMM d, h:mm a")}
                           </span>
                         </div>
-                        <p className="text-sm whitespace-pre-line">{msg.body}</p>
+                        <p className="text-sm whitespace-pre-line">{response.body}</p>
                       </div>
                     ))}
                   </div>

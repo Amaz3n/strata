@@ -836,7 +836,7 @@ export function DrawingsClient({
           projectId,
           subject: input.subject ?? input.title,
           question: input.question ?? input.description ?? "",
-          priority: input.priority,
+          priority: input.priority === "high" ? "high" : input.priority === "low" ? "low" : "normal",
         })
         entityId = created.id
       } else if (input.entityType === "punch_list") {

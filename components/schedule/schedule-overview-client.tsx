@@ -9,6 +9,7 @@ import { ScheduleView } from "./schedule-view"
 import { ScheduleOverviewEmptyState } from "./schedule-empty-state"
 import { GanttChartSkeleton } from "./schedule-skeleton"
 import { STATUS_COLORS } from "./types"
+import type { ScheduleBulkItemUpdate } from "./types"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -37,6 +38,7 @@ interface ScheduleOverviewClientProps {
   allItems: ScheduleItem[]
   allDependencies: ScheduleDependency[]
   onItemUpdate: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
+  onItemsBulkUpdate: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete: (id: string) => Promise<void>
   onDependencyCreate: (from: string, to: string, type?: string) => Promise<ScheduleDependency>
@@ -213,6 +215,7 @@ export function ScheduleOverviewClient({
   allItems,
   allDependencies,
   onItemUpdate,
+  onItemsBulkUpdate,
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
@@ -281,6 +284,7 @@ export function ScheduleOverviewClient({
               items={selectedItems}
               dependencies={selectedDependencies}
               onItemUpdate={onItemUpdate}
+              onItemsBulkUpdate={onItemsBulkUpdate}
               onItemCreate={onItemCreate}
               onItemDelete={onItemDelete}
               onDependencyCreate={onDependencyCreate}

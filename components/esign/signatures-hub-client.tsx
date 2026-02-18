@@ -1,15 +1,17 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import {
+  deleteDraftDocumentAction,
   getEnvelopeExecutedDownloadUrlAction,
   sendDocumentSigningReminderAction,
   voidEnvelopeAction,
 } from "@/app/(app)/documents/actions"
+import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -18,16 +20,16 @@ import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
-import { Ban, Download, Mail, MoreHorizontal, RefreshCcw } from "@/components/icons"
+import { Ban, Download, Mail, MoreHorizontal, RefreshCcw, Trash2 } from "@/components/icons"
 
 type QueueFilter = "all" | "waiting" | "executed" | "expiring"
-
 type SignatureHubRow = {
   envelope_id: string
   document_id: string
   document_title: string
   document_type: string
   document_status: string
+  document_metadata: Record<string, any>
   project_id: string
   project_name: string | null
   source_entity_type: string | null
@@ -54,6 +56,7 @@ type SignatureHubRow = {
   can_void: boolean
   can_resend: boolean
   can_download: boolean
+  can_delete_draft: boolean
   queue_flags: {
     waiting_on_client: boolean
     executed_this_week: boolean
@@ -68,6 +71,11 @@ type SignaturesHubSummary = {
   expiring_soon: number
 }
 
+type SignatureEnvelopeProject = {
+  id: string
+  name: string
+}
+
 interface SignaturesHubClientProps {
   initialData: {
     rows: SignatureHubRow[]
@@ -75,6 +83,7 @@ interface SignaturesHubClientProps {
     generated_at: string
   }
   scope: "org" | "project"
+  projectsForNewEnvelope: SignatureEnvelopeProject[]
 }
 
 const envelopeStatusClassName: Record<string, string> = {
@@ -86,7 +95,7 @@ const envelopeStatusClassName: Record<string, string> = {
   expired: "bg-orange-500/15 text-orange-700 border-orange-500/30",
 }
 
-type RowAction = "download" | "resend" | "void" | "none"
+type RowAction = "download" | "resend" | "void" | "delete_draft" | "continue_draft"
 
 function formatDateTime(value?: string | null) {
   if (!value) return "—"
@@ -118,25 +127,46 @@ function getPendingLabel(row: SignatureHubRow) {
 
 function getAvailableActions(row: SignatureHubRow): RowAction[] {
   const actions: RowAction[] = []
+  if (row.document_status === "draft") actions.push("continue_draft")
   if (row.can_download) actions.push("download")
   if (row.can_remind) actions.push("resend")
   if (row.can_void) actions.push("void")
+  if (row.can_delete_draft) actions.push("delete_draft")
   return actions
 }
 
-function getPrimaryAction(row: SignatureHubRow): RowAction {
-  if (row.can_download) return "download"
-  if (row.can_remind) return "resend"
-  if (row.can_void) return "void"
-  return "none"
+function getVersionLabel(row: SignatureHubRow) {
+  const versionNumber = Number(row.document_metadata?.version_number ?? 0)
+  if (!Number.isFinite(versionNumber) || versionNumber <= 0) return null
+  const isCurrent = row.document_metadata?.is_current_version !== false
+  return isCurrent ? `v${versionNumber}` : `v${versionNumber} (older)`
 }
 
-export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientProps) {
+export function SignaturesHubClient({
+  initialData,
+  scope,
+  projectsForNewEnvelope,
+}: SignaturesHubClientProps) {
   const router = useRouter()
   const rows = initialData.rows
   const [search, setSearch] = useState("")
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all")
   const [pendingActionId, setPendingActionId] = useState<string | null>(null)
+  const [prepareOpen, setPrepareOpen] = useState(false)
+  const [prepareSource, setPrepareSource] = useState<EnvelopeWizardSourceEntity | null>(null)
+  const [prepareDocumentId, setPrepareDocumentId] = useState<string | null>(null)
+  const [newEnvelopeProjectId, setNewEnvelopeProjectId] = useState("")
+
+  useEffect(() => {
+    if (projectsForNewEnvelope.length === 0) {
+      setNewEnvelopeProjectId("")
+      return
+    }
+
+    if (!newEnvelopeProjectId || !projectsForNewEnvelope.some((project) => project.id === newEnvelopeProjectId)) {
+      setNewEnvelopeProjectId(projectsForNewEnvelope[0].id)
+    }
+  }, [newEnvelopeProjectId, projectsForNewEnvelope])
 
   const filteredRows = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -199,6 +229,73 @@ export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientP
     })
   }
 
+  const handleDeleteDraft = async (row: SignatureHubRow) => {
+    const confirmed = window.confirm("Delete this draft document? This cannot be undone.")
+    if (!confirmed) return
+    await withPendingAction(row.envelope_id, async () => {
+      await deleteDraftDocumentAction({ documentId: row.document_id })
+      toast.success("Draft deleted")
+    })
+  }
+
+  const handleStartStandaloneEnvelope = () => {
+    if (!newEnvelopeProjectId) {
+      toast.error("Project context is required before starting a new envelope.")
+      return
+    }
+
+    setPrepareSource({
+      standalone: true,
+      type: "other",
+      id: crypto.randomUUID(),
+      project_id: newEnvelopeProjectId,
+      title: "New envelope",
+      document_type: "other",
+    })
+    setPrepareDocumentId(null)
+    setPrepareOpen(true)
+  }
+
+  const handleContinueDraft = (row: SignatureHubRow) => {
+    const sourceType = row.source_entity_type
+    const isLinkedSource =
+      sourceType === "proposal" ||
+      sourceType === "change_order" ||
+      sourceType === "lien_waiver" ||
+      sourceType === "selection" ||
+      sourceType === "subcontract" ||
+      sourceType === "closeout" ||
+      sourceType === "other"
+
+    setPrepareSource(
+      isLinkedSource && row.source_entity_id
+        ? {
+            type: sourceType,
+            id: row.source_entity_id,
+            project_id: row.project_id,
+            title: row.document_title,
+            document_type: (row.document_type as "proposal" | "contract" | "change_order" | "other") ?? "other",
+          }
+        : {
+            standalone: true,
+            type: "other",
+            id: crypto.randomUUID(),
+            project_id: row.project_id,
+            title: row.document_title,
+            document_type: (row.document_type as "proposal" | "contract" | "change_order" | "other") ?? "other",
+          },
+    )
+    setPrepareDocumentId(row.document_id)
+    setPrepareOpen(true)
+  }
+
+  const prepareSourceLabel = prepareDocumentId ? "Draft" : prepareSource?.standalone ? "Envelope" : "Record"
+  const prepareSheetTitle = prepareDocumentId
+    ? "Continue draft envelope"
+    : prepareSource?.standalone
+    ? "Prepare envelope for signature"
+    : "Prepare for signature"
+
   return (
     <TooltipProvider>
       <div className="space-y-4">
@@ -222,6 +319,26 @@ export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientP
               </SelectContent>
             </Select>
           </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            {scope === "org" ? (
+              <Select value={newEnvelopeProjectId} onValueChange={setNewEnvelopeProjectId} disabled={projectsForNewEnvelope.length === 0}>
+                <SelectTrigger className="w-full sm:w-60">
+                  <SelectValue placeholder="Project for new envelope" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projectsForNewEnvelope.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+
+            <Button onClick={handleStartStandaloneEnvelope} disabled={!newEnvelopeProjectId}>
+              New Envelope
+            </Button>
+          </div>
         </div>
 
         <div className="rounded-lg border overflow-hidden">
@@ -241,29 +358,16 @@ export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientP
               {filteredRows.map((row) => {
                 const isPending = pendingActionId === row.envelope_id
                 const availableActions = getAvailableActions(row)
-                const primaryAction = getPrimaryAction(row)
-                const secondaryActions = availableActions.filter((action) => action !== primaryAction)
-                const hasSecondaryActions = secondaryActions.length > 0
-                const primaryActionLabel =
-                  primaryAction === "download"
-                    ? "Download"
-                    : primaryAction === "resend"
-                      ? "Resend reminder"
-                      : "Void"
-                const primaryActionIcon =
-                  primaryAction === "download" ? (
-                    <Download className="mr-2 h-4 w-4" />
-                  ) : primaryAction === "resend" ? (
-                    <RefreshCcw className="mr-2 h-4 w-4" />
-                  ) : (
-                    <Ban className="mr-2 h-4 w-4" />
-                  )
+                const hasActions = availableActions.length > 0
 
                 return (
                   <TableRow key={row.envelope_id} className="divide-x">
                     <TableCell className="px-4 py-4">
                       <div className="space-y-1">
                         <p className="text-sm font-semibold">{row.document_title}</p>
+                        {getVersionLabel(row) ? (
+                          <p className="text-xs text-muted-foreground">{getVersionLabel(row)}</p>
+                        ) : null}
                         <p className="text-xs text-muted-foreground">{getRecipientSubtitle(row)}</p>
                       </div>
                     </TableCell>
@@ -299,37 +403,7 @@ export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientP
                     </TableCell>
                     <TableCell className="px-3 py-4">
                       <div className="flex items-center justify-end gap-2">
-                        {primaryAction !== "none" ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="inline-flex">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={isPending}
-                                  className="whitespace-nowrap"
-                                  onClick={() => {
-                                    if (primaryAction === "download") {
-                                      void handleDownload(row)
-                                      return
-                                    }
-                                    if (primaryAction === "resend") {
-                                      void handleResendReminder(row)
-                                      return
-                                    }
-                                    void handleVoid(row)
-                                  }}
-                                >
-                                  {primaryActionIcon}
-                                  {primaryActionLabel}
-                                </Button>
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>{primaryActionLabel}</TooltipContent>
-                          </Tooltip>
-                        ) : null}
-
-                        {hasSecondaryActions ? (
+                        {hasActions ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button size="icon" variant="ghost" className="h-8 w-8" disabled={isPending} title="More actions">
@@ -338,27 +412,41 @@ export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientP
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                            {secondaryActions.includes("resend") ? (
-                              <DropdownMenuItem onClick={() => void handleResendReminder(row)}>
-                                <Mail className="mr-2 h-4 w-4" />
-                                Resend reminder
-                              </DropdownMenuItem>
-                            ) : null}
-                              {secondaryActions.includes("download") ? (
+                              {availableActions.includes("resend") ? (
+                                <DropdownMenuItem onClick={() => void handleResendReminder(row)}>
+                                  <Mail className="mr-2 h-4 w-4" />
+                                  Resend reminder
+                                </DropdownMenuItem>
+                              ) : null}
+                              {availableActions.includes("continue_draft") ? (
+                                <DropdownMenuItem onClick={() => handleContinueDraft(row)}>
+                                  <RefreshCcw className="mr-2 h-4 w-4" />
+                                  Continue
+                                </DropdownMenuItem>
+                              ) : null}
+                              {availableActions.includes("download") ? (
                                 <DropdownMenuItem onClick={() => void handleDownload(row)}>
                                   <Download className="mr-2 h-4 w-4" />
                                   Download executed PDF
                                 </DropdownMenuItem>
                               ) : null}
-                              {secondaryActions.includes("void") ? (
+                              {availableActions.includes("void") ? (
                                 <DropdownMenuItem onClick={() => void handleVoid(row)}>
                                   <Ban className="mr-2 h-4 w-4" />
                                   Void envelope
                                 </DropdownMenuItem>
                               ) : null}
+                              {availableActions.includes("delete_draft") ? (
+                                <DropdownMenuItem onClick={() => void handleDeleteDraft(row)}>
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Delete draft
+                                </DropdownMenuItem>
+                              ) : null}
                             </DropdownMenuContent>
                           </DropdownMenu>
-                        ) : null}
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -374,6 +462,24 @@ export function SignaturesHubClient({ initialData, scope }: SignaturesHubClientP
             </TableBody>
           </Table>
         </div>
+
+        <EnvelopeWizard
+          open={prepareOpen}
+          onOpenChange={(nextOpen) => {
+            setPrepareOpen(nextOpen)
+            if (!nextOpen) {
+              setPrepareSource(null)
+              setPrepareDocumentId(null)
+            }
+          }}
+          sourceEntity={prepareSource}
+          resumeDocumentId={prepareDocumentId}
+          sourceLabel={prepareSourceLabel}
+          sheetTitle={prepareSheetTitle}
+          onEnvelopeSent={() => {
+            router.refresh()
+          }}
+        />
       </div>
     </TooltipProvider>
   )

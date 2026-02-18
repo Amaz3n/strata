@@ -262,6 +262,24 @@ async function resolveProposalProjectId(supabase: any, proposal: any) {
   return projectId
 }
 
+async function linkProjectDrawsToContract(input: {
+  supabase: any
+  orgId: string
+  projectId: string
+  contractId: string
+}) {
+  const { error } = await input.supabase
+    .from("draw_schedules")
+    .update({ contract_id: input.contractId })
+    .eq("org_id", input.orgId)
+    .eq("project_id", input.projectId)
+    .is("contract_id", null)
+
+  if (error) {
+    throw new Error(`Failed to link draws to contract: ${error.message}`)
+  }
+}
+
 async function finalizeProposalAcceptance(input: {
   supabase: any
   proposal: any
@@ -384,6 +402,13 @@ async function finalizeProposalAcceptance(input: {
   if (!contract) {
     throw new Error("Contract record missing after proposal acceptance")
   }
+
+  await linkProjectDrawsToContract({
+    supabase,
+    orgId: updatedProposal.org_id,
+    projectId,
+    contractId: contract.id,
+  })
 
   if (input.executedFileId) {
     await attachFileWithServiceRole({

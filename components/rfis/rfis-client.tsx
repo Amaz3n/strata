@@ -18,18 +18,18 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
 
-type StatusKey = "open" | "in_review" | "answered" | "closed" | string
+type StatusKey = "draft" | "open" | "answered" | "closed" | string
 
 const statusLabels: Record<string, string> = {
+  draft: "Draft",
   open: "Open",
-  in_review: "In review",
   answered: "Answered",
   closed: "Closed",
 }
 
 const statusStyles: Record<string, string> = {
+  draft: "bg-zinc-500/15 text-zinc-600 border-zinc-500/30",
   open: "bg-warning/20 text-warning border-warning/40",
-  in_review: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   answered: "bg-success/20 text-success border-success/30",
   closed: "bg-muted text-muted-foreground border-muted",
 }
@@ -147,7 +147,7 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All statuses</SelectItem>
-                {(["open", "in_review", "answered", "closed"] as StatusKey[]).map((status) => (
+                {(["draft", "open", "answered", "closed"] as StatusKey[]).map((status) => (
                   <SelectItem key={status} value={status}>
                     {statusLabels[status]}
                   </SelectItem>
@@ -265,7 +265,7 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
                 </TableCell>
                 <TableCell className="px-4 py-4 text-center">
                   <Badge variant="outline" className="text-[11px] capitalize">
-                    {rfi.priority ?? "medium"}
+                    {rfi.priority ?? "normal"}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-center w-12 px-4 py-4">
@@ -312,8 +312,6 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
     </div>
   )
 }
-
-
 
 
 

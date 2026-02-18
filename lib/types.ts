@@ -7,6 +7,7 @@ export interface Org {
   id: string
   name: string
   slug: string
+  logo_url?: string | null
   address?: Address
   created_at: string
   updated_at: string
@@ -28,8 +29,8 @@ export interface Membership {
   created_at: string
 }
 
-export type OrgRole = "owner" | "admin" | "staff" | "readonly"
-export type ProjectRole = "pm" | "field" | "accounting" | "client" | "sub"
+export type OrgRole = string
+export type ProjectRole = "pm" | "field" | "accounting" | "member"
 
 export interface Address {
   formatted?: string
@@ -98,6 +99,7 @@ export interface Contact {
   full_name: string
   email?: string
   phone?: string
+  address?: Address
   role?: string
   contact_type: ContactType
   primary_company_id?: string
@@ -126,11 +128,19 @@ export interface TeamMember {
   id: string // membership id
   user: User
   role: OrgRole
+  role_label?: string
   status: "active" | "invited" | "suspended"
+  mfa_enabled?: boolean
   project_count?: number
   last_active_at?: string
   invited_by?: User
   created_at: string
+}
+
+export interface OrgRoleOption {
+  key: string
+  label: string
+  description?: string
 }
 
 export interface Project {
@@ -503,12 +513,27 @@ export interface PortalAccessToken {
   permissions: PortalPermissions
   pin_required: boolean
   pin_locked_until?: string | null
+  require_account?: boolean
   expires_at?: string | null
   access_count: number
   max_access_count?: number | null
   last_accessed_at?: string | null
+  paused_at?: string | null
   revoked_at?: string | null
   created_at: string
+}
+
+export interface ExternalPortalAccount {
+  id: string
+  org_id: string
+  email: string
+  full_name?: string | null
+  status: "active" | "paused" | "revoked"
+  last_login_at?: string | null
+  paused_at?: string | null
+  revoked_at?: string | null
+  created_at: string
+  grant_count?: number
 }
 
 export interface PhotoTimelineEntry {
@@ -610,7 +635,7 @@ export interface Invoice {
   token?: string | null
   invoice_number: string
   title: string
-  status: "draft" | "sent" | "partial" | "paid" | "overdue" | "void"
+  status: "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
   qbo_id?: string | null
   qbo_synced_at?: string | null
   qbo_sync_status?: "pending" | "synced" | "error" | "skipped" | null
@@ -949,8 +974,19 @@ export interface Rfi {
   question: string
   status: string
   priority?: string | null
+  assigned_to?: string | null
+  assigned_company_id?: string | null
+  submitted_by?: string | null
+  submitted_by_company_id?: string | null
+  submitted_at?: string | null
   due_date?: string | null
   answered_at?: string | null
+  closed_at?: string | null
+  cost_impact_cents?: number | null
+  schedule_impact_days?: number | null
+  drawing_reference?: string | null
+  spec_reference?: string | null
+  location?: string | null
   attachment_file_id?: string | null
   last_response_at?: string | null
   decision_status?: RfiDecision["decision_status"]
@@ -962,6 +998,21 @@ export interface Rfi {
   decision_portal_token_id?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface RfiResponse {
+  id: string
+  org_id: string
+  rfi_id: string
+  response_type: "answer" | "clarification" | "comment"
+  body: string
+  responder_user_id?: string | null
+  responder_contact_id?: string | null
+  created_at: string
+  file_id?: string | null
+  portal_token_id?: string | null
+  created_via_portal?: boolean | null
+  actor_ip?: string | null
 }
 
 export interface SubmittalDecision {

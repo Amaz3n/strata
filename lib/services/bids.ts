@@ -46,6 +46,15 @@ export interface BidInvite {
   created_by?: string | null
   created_at: string
   updated_at?: string | null
+  access_total?: number
+  active_access_count?: number
+  paused_access_count?: number
+  revoked_access_count?: number
+  require_account_enforced?: boolean
+  linked_account_count?: number
+  linked_active_account_count?: number
+  linked_paused_account_count?: number
+  linked_revoked_account_count?: number
   company?: { id: string; name: string; phone?: string; email?: string }
   contact?: { id: string; full_name: string; email?: string; phone?: string }
 }
@@ -123,6 +132,10 @@ function mapBidInvite(row: any): BidInvite {
     created_by: row.created_by ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
+    access_total: row.access_total ?? undefined,
+    active_access_count: row.active_access_count ?? undefined,
+    paused_access_count: row.paused_access_count ?? undefined,
+    revoked_access_count: row.revoked_access_count ?? undefined,
     company: row.company
       ? {
           id: row.company.id,
@@ -392,7 +405,200 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
     throw new Error(`Failed to list bid invites: ${error.message}`)
   }
 
-  return (data ?? []).map(mapBidInvite)
+  const invites = (data ?? []).map(mapBidInvite)
+  if (invites.length === 0) return invites
+
+  const inviteIds = invites.map((invite) => invite.id)
+  const { data: tokenRows, error: tokenError } = await supabase
+    .from("bid_access_tokens")
+    .select("id, bid_invite_id, paused_at, revoked_at, require_account")
+    .eq("org_id", resolvedOrgId)
+    .in("bid_invite_id", inviteIds)
+
+  if (tokenError) {
+    throw new Error(`Failed to load bid invite access state: ${tokenError.message}`)
+  }
+
+  const countsByInvite = new Map<
+    string,
+    { total: number; active: number; paused: number; revoked: number; requireAccountEnforced: boolean; tokenIds: string[] }
+  >()
+
+  for (const inviteId of inviteIds) {
+    countsByInvite.set(inviteId, {
+      total: 0,
+      active: 0,
+      paused: 0,
+      revoked: 0,
+      requireAccountEnforced: false,
+      tokenIds: [],
+    })
+  }
+
+  for (const row of tokenRows ?? []) {
+    const bucket = countsByInvite.get(row.bid_invite_id)
+    if (!bucket) continue
+    bucket.total += 1
+    bucket.tokenIds.push(row.id as string)
+    if (row.require_account) bucket.requireAccountEnforced = true
+    if (row.revoked_at) {
+      bucket.revoked += 1
+    } else if (row.paused_at) {
+      bucket.paused += 1
+    } else {
+      bucket.active += 1
+    }
+  }
+
+  const allTokenIds = Array.from(new Set((tokenRows ?? []).map((row: any) => row.id as string)))
+  const accountCountsByToken = new Map<string, { total: number; active: number; paused: number; revoked: number }>()
+
+  if (allTokenIds.length > 0) {
+    const { data: grantRows, error: grantError } = await supabase
+      .from("external_portal_account_grants")
+      .select("bid_access_token_id, status")
+      .eq("org_id", resolvedOrgId)
+      .in("bid_access_token_id", allTokenIds)
+
+    if (grantError) {
+      throw new Error(`Failed to load linked bid invite accounts: ${grantError.message}`)
+    }
+
+    for (const tokenId of allTokenIds) {
+      accountCountsByToken.set(tokenId, { total: 0, active: 0, paused: 0, revoked: 0 })
+    }
+    for (const grant of grantRows ?? []) {
+      const tokenId = (grant as any).bid_access_token_id as string | null
+      if (!tokenId) continue
+      const bucket = accountCountsByToken.get(tokenId)
+      if (!bucket) continue
+      bucket.total += 1
+      if ((grant as any).status === "active") bucket.active += 1
+      if ((grant as any).status === "paused") bucket.paused += 1
+      if ((grant as any).status === "revoked") bucket.revoked += 1
+    }
+  }
+
+  return invites.map((invite) => {
+    const counts = countsByInvite.get(invite.id)
+    const tokenIds = counts?.tokenIds ?? []
+    const accountAgg = tokenIds.reduce(
+      (acc, tokenId) => {
+        const count = accountCountsByToken.get(tokenId)
+        if (!count) return acc
+        acc.total += count.total
+        acc.active += count.active
+        acc.paused += count.paused
+        acc.revoked += count.revoked
+        return acc
+      },
+      { total: 0, active: 0, paused: 0, revoked: 0 },
+    )
+    return {
+      ...invite,
+      access_total: counts?.total ?? 0,
+      active_access_count: counts?.active ?? 0,
+      paused_access_count: counts?.paused ?? 0,
+      revoked_access_count: counts?.revoked ?? 0,
+      require_account_enforced: counts?.requireAccountEnforced ?? false,
+      linked_account_count: accountAgg.total,
+      linked_active_account_count: accountAgg.active,
+      linked_paused_account_count: accountAgg.paused,
+      linked_revoked_account_count: accountAgg.revoked,
+    }
+  })
+}
+
+async function updateBidInviteAccessState({
+  inviteId,
+  state,
+  orgId,
+}: {
+  inviteId: string
+  state: "pause" | "resume" | "revoke"
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: invite, error: inviteError } = await supabase
+    .from("bid_invites")
+    .select("id, org_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", inviteId)
+    .maybeSingle()
+
+  if (inviteError || !invite) {
+    throw new Error("Bid invite not found")
+  }
+
+  if (state === "pause") {
+    const { error } = await supabase
+      .from("bid_access_tokens")
+      .update({ paused_at: new Date().toISOString() })
+      .eq("org_id", resolvedOrgId)
+      .eq("bid_invite_id", inviteId)
+      .is("revoked_at", null)
+      .is("paused_at", null)
+    if (error) throw new Error(`Failed to pause bid access: ${error.message}`)
+    return
+  }
+
+  if (state === "resume") {
+    const { error } = await supabase
+      .from("bid_access_tokens")
+      .update({ paused_at: null })
+      .eq("org_id", resolvedOrgId)
+      .eq("bid_invite_id", inviteId)
+      .is("revoked_at", null)
+      .not("paused_at", "is", null)
+    if (error) throw new Error(`Failed to resume bid access: ${error.message}`)
+    return
+  }
+
+  const { error } = await supabase
+    .from("bid_access_tokens")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("org_id", resolvedOrgId)
+    .eq("bid_invite_id", inviteId)
+    .is("revoked_at", null)
+  if (error) throw new Error(`Failed to revoke bid access: ${error.message}`)
+}
+
+export async function pauseBidInviteAccess(inviteId: string, orgId?: string) {
+  await updateBidInviteAccessState({ inviteId, state: "pause", orgId })
+}
+
+export async function resumeBidInviteAccess(inviteId: string, orgId?: string) {
+  await updateBidInviteAccessState({ inviteId, state: "resume", orgId })
+}
+
+export async function revokeBidInviteAccess(inviteId: string, orgId?: string) {
+  await updateBidInviteAccessState({ inviteId, state: "revoke", orgId })
+}
+
+export async function setBidInviteRequireAccount({
+  inviteId,
+  requireAccount,
+  orgId,
+}: {
+  inviteId: string
+  requireAccount: boolean
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const { error } = await supabase
+    .from("bid_access_tokens")
+    .update({ require_account: requireAccount })
+    .eq("org_id", resolvedOrgId)
+    .eq("bid_invite_id", inviteId)
+    .is("revoked_at", null)
+
+  if (error) {
+    throw new Error(`Failed to update bid invite account requirement: ${error.message}`)
+  }
 }
 
 export async function createBidInvite({

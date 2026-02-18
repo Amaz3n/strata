@@ -14,6 +14,7 @@ export const invoiceInputSchema = z.object({
   invoice_number: z.string().min(1, "Invoice number is required"),
   customer_id: z.string().uuid().optional().nullable(),
   customer_name: z.string().optional().nullable(),
+  customer_address: z.string().max(500).optional().nullable(),
   reservation_id: z
     .string()
     .uuid()
@@ -22,7 +23,7 @@ export const invoiceInputSchema = z.object({
     .or(z.literal(""))
     .transform((val) => (val === "" ? undefined : val ?? undefined)),
   title: z.string().min(3, "Title is required"),
-  status: z.enum(["draft", "sent", "partial", "paid", "overdue", "void"]).default("draft"),
+  status: z.enum(["draft", "saved", "sent", "partial", "paid", "overdue", "void"]).default("saved"),
   issue_date: z.string().optional(),
   due_date: z.string().optional(),
   notes: z
@@ -35,6 +36,9 @@ export const invoiceInputSchema = z.object({
   lines: z.array(invoiceLineInputSchema).min(1, "Add at least one line item"),
   sent_to_emails: z.array(z.string().email()).optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),
+  source_type: z.enum(["manual", "draw", "change_order"]).optional(),
+  source_draw_id: z.string().uuid().optional(),
+  source_change_order_id: z.string().uuid().optional(),
 })
 
 export type InvoiceLineInput = z.infer<typeof invoiceLineInputSchema>

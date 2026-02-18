@@ -84,6 +84,95 @@ function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals 
   }
 }
 
+function shouldQueueQboSync(status?: string | null, clientVisible?: boolean | null) {
+  if (clientVisible) return true
+  const normalized = String(status ?? "").toLowerCase()
+  return normalized === "sent" || normalized === "partial" || normalized === "paid" || normalized === "overdue"
+}
+
+async function assertSourceNotAlreadyBilled(params: {
+  supabase: SupabaseClient
+  orgId: string
+  sourceType?: string
+  sourceDrawId?: string | null
+  sourceChangeOrderId?: string | null
+  excludeInvoiceId?: string
+}) {
+  const { supabase, orgId, sourceType, sourceDrawId, sourceChangeOrderId, excludeInvoiceId } = params
+  const { data: rows, error } = await supabase
+    .from("invoices")
+    .select("id, status, metadata")
+    .eq("org_id", orgId)
+
+  if (error) {
+    throw new Error(`Failed to validate invoice source linkage: ${error.message}`)
+  }
+
+  const conflicting = (rows ?? []).find((row: any) => {
+    if (excludeInvoiceId && row.id === excludeInvoiceId) return false
+    if (row.status === "void") return false
+    const metadata = (row.metadata ?? {}) as Record<string, any>
+    if (sourceType === "draw" && sourceDrawId) {
+      return metadata.source_type === "draw" && metadata.source_draw_id === sourceDrawId
+    }
+    if (sourceType === "change_order" && sourceChangeOrderId) {
+      return metadata.source_type === "change_order" && metadata.source_change_order_id === sourceChangeOrderId
+    }
+    return false
+  })
+
+  if (conflicting && sourceType === "draw" && sourceDrawId) {
+    throw new Error("This draw is already linked to another invoice.")
+  }
+
+  if (conflicting && sourceType === "change_order" && sourceChangeOrderId) {
+    throw new Error("This change order is already linked to another invoice.")
+  }
+}
+
+async function syncDrawInvoiceLink(params: {
+  supabase: SupabaseClient
+  orgId: string
+  drawId?: string | null
+  invoiceId: string
+}) {
+  const { supabase, orgId, drawId, invoiceId } = params
+  if (!drawId) return
+
+  const { data: draw, error } = await supabase
+    .from("draw_schedules")
+    .select("id, invoice_id, status")
+    .eq("org_id", orgId)
+    .eq("id", drawId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to validate draw linkage: ${error.message}`)
+  }
+
+  if (!draw) {
+    throw new Error("Selected draw no longer exists.")
+  }
+
+  if (draw.invoice_id && draw.invoice_id !== invoiceId) {
+    throw new Error("Selected draw is already linked to another invoice.")
+  }
+
+  const nextStatus = draw.status === "paid" || draw.status === "partial" ? draw.status : "invoiced"
+  const { error: updateError } = await supabase
+    .from("draw_schedules")
+    .update({
+      invoice_id: invoiceId,
+      status: nextStatus,
+    })
+    .eq("org_id", orgId)
+    .eq("id", drawId)
+
+  if (updateError) {
+    throw new Error(`Failed to link draw to invoice: ${updateError.message}`)
+  }
+}
+
 function mapInvoiceRow(row: InvoiceRow): Invoice {
   const metadata = row.metadata ?? {}
   const lines = (metadata.lines as InvoiceLine[] | undefined) ?? []
@@ -108,7 +197,7 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     token: row.token ?? undefined,
     invoice_number: row.invoice_number,
     title: row.title ?? `Invoice ${row.invoice_number}`,
-    status: (row.status as Invoice["status"]) ?? "draft",
+    status: (row.status as Invoice["status"]) ?? "saved",
     qbo_id: row.qbo_id ?? undefined,
     qbo_synced_at: row.qbo_synced_at ?? undefined,
     qbo_sync_status: (row.qbo_sync_status as Invoice["qbo_sync_status"]) ?? null,
@@ -205,6 +294,17 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
   const totals = calculateTotals(input.lines, input.tax_rate)
   const shouldGenerateToken = input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? randomUUID() : null
+  const sourceType = input.source_type ?? "manual"
+  const sourceDrawId = input.source_draw_id ?? null
+  const sourceChangeOrderId = input.source_change_order_id ?? null
+
+  await assertSourceNotAlreadyBilled({
+    supabase,
+    orgId: resolvedOrgId,
+    sourceType,
+    sourceDrawId,
+    sourceChangeOrderId,
+  })
 
   const payload = {
     org_id: resolvedOrgId,
@@ -212,7 +312,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     token,
     invoice_number: input.invoice_number,
     title: input.title,
-    status: input.status ?? "draft",
+    status: input.status ?? "saved",
     issue_date: input.issue_date ?? null,
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
@@ -229,7 +329,11 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       payment_terms_days: input.payment_terms_days,
       customer_id: input.customer_id,
       customer_name: input.customer_name,
+      customer_address: input.customer_address,
       customer_email: input.sent_to_emails?.[0],
+      source_type: sourceType,
+      source_draw_id: sourceDrawId,
+      source_change_order_id: sourceChangeOrderId,
       // Store org info for invoice display
       org_name: orgData?.name ?? null,
       org_email: orgData?.email ?? null,
@@ -262,7 +366,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       quantity: line.quantity,
       unit: line.unit,
       unit_price_cents: line.unit_cost_cents,
-      // taxable: line.taxable ?? true,
+      metadata: { taxable: line.taxable ?? true },
     })),
   )
 
@@ -272,6 +376,15 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
 
   if (reservationId) {
     await markReservationUsed(reservationId, data.id, resolvedOrgId)
+  }
+
+  if (sourceType === "draw" && sourceDrawId) {
+    await syncDrawInvoiceLink({
+      supabase,
+      orgId: resolvedOrgId,
+      drawId: sourceDrawId,
+      invoiceId: data.id,
+    })
   }
 
   await recordEvent({
@@ -316,7 +429,9 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     })
   }
 
-  await enqueueInvoiceSync(data.id, resolvedOrgId)
+  if (shouldQueueQboSync(payload.status, payload.client_visible)) {
+    await enqueueInvoiceSync(data.id, resolvedOrgId)
+  }
 
   return mapInvoiceRow(data as InvoiceRow)
 }
@@ -333,7 +448,7 @@ export async function updateInvoice({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error: existingError } = await supabase
     .from("invoices")
-    .select("id, org_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata")
+    .select("id, org_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata, qbo_id")
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -351,13 +466,25 @@ export async function updateInvoice({
   const isFirstSend = shouldGenerateToken && !existing.sent_at
   const sentTo =
     input.sent_to_emails && input.sent_to_emails.length > 0 ? input.sent_to_emails : existing.sent_to_emails ?? null
+  const sourceType = input.source_type ?? (existing.metadata as any)?.source_type ?? "manual"
+  const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
+  const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
+
+  await assertSourceNotAlreadyBilled({
+    supabase,
+    orgId: resolvedOrgId,
+    sourceType,
+    sourceDrawId,
+    sourceChangeOrderId,
+    excludeInvoiceId: invoiceId,
+  })
 
   const payload = {
     project_id: input.project_id ?? null,
     token,
     invoice_number: input.invoice_number,
     title: input.title,
-    status: input.status ?? "draft",
+    status: input.status ?? "saved",
     issue_date: input.issue_date ?? null,
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
@@ -374,7 +501,11 @@ export async function updateInvoice({
       updated_by: userId,
       customer_id: input.customer_id ?? (existing.metadata as any)?.customer_id,
       customer_name: input.customer_name ?? (existing.metadata as any)?.customer_name,
+      customer_address: input.customer_address ?? (existing.metadata as any)?.customer_address,
       customer_email: (input.sent_to_emails ?? [])[0] ?? (existing.metadata as any)?.customer_email,
+      source_type: sourceType,
+      source_draw_id: sourceDrawId,
+      source_change_order_id: sourceChangeOrderId,
     },
     sent_at: sentAt,
     sent_to_emails: sentTo,
@@ -405,11 +536,21 @@ export async function updateInvoice({
       quantity: line.quantity,
       unit: line.unit,
       unit_price_cents: line.unit_cost_cents,
+      metadata: { taxable: line.taxable ?? true },
     })),
   )
 
   if (linesError) {
     throw new Error(`Failed to update invoice lines: ${linesError.message}`)
+  }
+
+  if (sourceType === "draw" && sourceDrawId) {
+    await syncDrawInvoiceLink({
+      supabase,
+      orgId: resolvedOrgId,
+      drawId: sourceDrawId,
+      invoiceId,
+    })
   }
 
   await recalcInvoiceBalanceAndStatus({ supabase, orgId: resolvedOrgId, invoiceId })
@@ -448,7 +589,8 @@ export async function updateInvoice({
     after: payload,
   })
 
-  if (payload.client_visible || payload.status === "sent") {
+  const sendTransition = existing.status !== "sent" && payload.status === "sent"
+  if (isFirstSend || sendTransition) {
     await sendInvoiceEmail({
       orgId: resolvedOrgId,
       invoiceId,
@@ -457,7 +599,13 @@ export async function updateInvoice({
     })
   }
 
-  await enqueueInvoiceSync(invoiceId, resolvedOrgId)
+  if (
+    shouldQueueQboSync(payload.status, payload.client_visible) ||
+    shouldQueueQboSync(existing.status, existing.client_visible) ||
+    Boolean(existing.qbo_id)
+  ) {
+    await enqueueInvoiceSync(invoiceId, resolvedOrgId)
+  }
 
   return mapInvoiceRow(data as InvoiceRow)
 }

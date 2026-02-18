@@ -4,12 +4,9 @@ import { Progress } from "@/components/ui/progress"
 import {
   Users,
   Building2,
-  BarChart3,
   Activity,
   TrendingUp,
   TrendingDown,
-  Square,
-  HardHat
 } from "@/components/icons"
 import { Database, Server, HardDrive } from "lucide-react"
 import { getSystemMetrics } from "@/lib/services/admin"
@@ -26,7 +23,7 @@ export async function SystemMetrics() {
               <Users className="h-4 w-4" />
               Daily Active Users
             </CardTitle>
-            <CardDescription>Last 30 days average</CardDescription>
+            <CardDescription>Distinct active members in last 24h</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{metrics.dailyActiveUsers}</div>
@@ -61,15 +58,19 @@ export async function SystemMetrics() {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
               <Database className="h-4 w-4" />
-              Database Usage
+              Subscriptions
             </CardTitle>
-            <CardDescription>Current database load</CardDescription>
+            <CardDescription>Current billing posture</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{metrics.databaseUsage}%</div>
-            <Progress value={metrics.databaseUsage} className="mt-2" />
-            <div className="text-xs text-muted-foreground mt-1">
-              {metrics.databaseSize}GB used
+            <div className="text-2xl font-bold">{metrics.activeSubscriptions}</div>
+            <div className="flex items-center gap-2 mt-1">
+              <Badge variant="outline" className="text-xs">
+                {metrics.trialingSubscriptions} trialing
+              </Badge>
+              <Badge variant={metrics.pastDueSubscriptions > 0 ? "destructive" : "secondary"} className="text-xs">
+                {metrics.pastDueSubscriptions} past due
+              </Badge>
             </div>
           </CardContent>
         </Card>
@@ -78,15 +79,15 @@ export async function SystemMetrics() {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
               <Activity className="h-4 w-4" />
-              API Requests
+              Platform Events
             </CardTitle>
-            <CardDescription>Last 24 hours</CardDescription>
+            <CardDescription>Recorded activity in last 24h</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{metrics.apiRequests.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{metrics.eventsLast24h.toLocaleString()}</div>
             <div className="flex items-center gap-2 mt-1">
-              <Badge variant="outline" className="text-xs">
-                {metrics.avgResponseTime}ms avg
+              <Badge variant={metrics.outboxFailuresLast24h > 0 ? "destructive" : "secondary"} className="text-xs">
+                {metrics.outboxFailuresLast24h} outbox failures
               </Badge>
             </div>
           </CardContent>
@@ -105,19 +106,23 @@ export async function SystemMetrics() {
           <CardContent className="space-y-4">
             <div className="flex justify-between items-center">
               <span className="text-sm">API Status</span>
-              <Badge variant="default">Healthy</Badge>
+              <Badge variant={metrics.outboxFailuresLast24h > 0 ? "secondary" : "default"}>
+                {metrics.outboxFailuresLast24h > 0 ? "Needs Review" : "Healthy"}
+              </Badge>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-sm">Database Status</span>
-              <Badge variant="default">Healthy</Badge>
+              <span className="text-sm">Overdue Invoices</span>
+              <Badge variant={metrics.overdueInvoices > 0 ? "destructive" : "secondary"}>
+                {metrics.overdueInvoices}
+              </Badge>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-sm">Uptime</span>
-              <Badge variant="secondary">{metrics.uptime}</Badge>
+              <span className="text-sm">Paid Payments (30d)</span>
+              <Badge variant="secondary">{metrics.paidPaymentsLast30d}</Badge>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-sm">Error Rate</span>
-              <Badge variant="outline">{metrics.errorRate}%</Badge>
+              <span className="text-sm">New Organizations (month)</span>
+              <Badge variant="outline">{metrics.newOrgsThisMonth}</Badge>
             </div>
           </CardContent>
         </Card>

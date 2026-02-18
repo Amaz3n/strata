@@ -9,9 +9,23 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
 const initialState = {} as { error?: any; message?: any }
+const selectClassName =
+  "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 
-export function ProvisionOrgForm() {
-  const [state, formAction, pending] = useActionState(provisionOrgAction, initialState)
+interface ProvisionOrgFormProps {
+  plans?: Array<{
+    code: string
+    name: string
+    pricingModel: string
+    isActive: boolean
+  }>
+  action?: (prevState: { error?: string; message?: string }, formData: FormData) => Promise<{ error?: string; message?: string }>
+}
+
+export function ProvisionOrgForm({ action, plans = [] }: ProvisionOrgFormProps) {
+  const resolvedAction = action ?? provisionOrgAction
+  const [state, formAction, pending] = useActionState(resolvedAction, initialState)
+  const subscriptionPlans = plans.filter((plan) => plan.isActive && plan.pricingModel === "subscription")
 
   return (
     <form action={formAction} className="space-y-6">
@@ -28,8 +42,11 @@ export function ProvisionOrgForm() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <Label htmlFor="region">Region (optional)</Label>
-          <Input id="region" name="region" placeholder="TX, SoCal, etc." />
+          <Label htmlFor="billingModel">Billing model</Label>
+          <select id="billingModel" name="billingModel" defaultValue="subscription" className={selectClassName}>
+            <option value="subscription">Subscription</option>
+            <option value="license">License</option>
+          </select>
         </div>
         <div className="space-y-2">
           <Label htmlFor="trialDays">Trial days</Label>
@@ -48,28 +65,31 @@ export function ProvisionOrgForm() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <div className="space-y-2">
-          <Label htmlFor="planCode">Plan code</Label>
-          <Input id="planCode" name="planCode" placeholder="local-pro" defaultValue="local-pro" />
+      <details className="rounded-lg border bg-muted/20 px-4 py-3">
+        <summary className="cursor-pointer text-sm font-medium">Advanced billing settings</summary>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="planCode">Plan</Label>
+            <select id="planCode" name="planCode" defaultValue={subscriptionPlans[0]?.code ?? ""} className={selectClassName}>
+              {subscriptionPlans.length === 0 ? (
+                <option value="">No active subscription plans</option>
+              ) : (
+                subscriptionPlans.map((plan) => (
+                  <option key={plan.code} value={plan.code}>
+                    {plan.name} ({plan.code})
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="planCodeHelp">Notes</Label>
+            <p id="planCodeHelp" className="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground">
+              Plan list is sourced from Manage Plans. If billing model is license, plan is ignored.
+            </p>
+          </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="billingModel">Billing model</Label>
-          <select
-            id="billingModel"
-            name="billingModel"
-            defaultValue="subscription"
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <option value="subscription">Subscription</option>
-            <option value="license">License</option>
-          </select>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="supportTier">Support tier</Label>
-          <Input id="supportTier" name="supportTier" placeholder="standard" defaultValue="standard" />
-        </div>
-      </div>
+      </details>
 
       {state.error && (
         <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -91,4 +111,3 @@ export function ProvisionOrgForm() {
     </form>
   )
 }
-

@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, type CommitmentInput, type CommitmentUpdateInput, type CommitmentLineInput, type CommitmentLineUpdateInput } from "@/lib/validation/commitments"
 
 export type CommitmentStatus = "draft" | "approved" | "complete" | "canceled"
@@ -65,7 +65,15 @@ function mapCommitment(row: any): CommitmentSummary {
 
 export async function listCompanyCommitments(companyId: string, orgId?: string): Promise<CommitmentSummary[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "commitment.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "company",
+    resourceId: companyId,
+  })
 
   const { data, error } = await supabase
     .from("commitments")
@@ -124,7 +132,16 @@ export async function listCompanyCommitments(companyId: string, orgId?: string):
 
 export async function listProjectCommitments(projectId: string, orgId?: string): Promise<CommitmentSummary[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "commitment.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: projectId,
+  })
 
   const { data, error } = await supabase
     .from("commitments")
@@ -184,7 +201,16 @@ export async function listProjectCommitments(projectId: string, orgId?: string):
 export async function createCommitment({ input, orgId }: { input: CommitmentInput; orgId?: string }): Promise<CommitmentSummary> {
   const parsed = commitmentInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "commitment.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: parsed.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: parsed.project_id,
+  })
 
   const { data, error } = await supabase
     .from("commitments")
@@ -242,7 +268,6 @@ export async function updateCommitment({
 }): Promise<CommitmentSummary> {
   const parsed = commitmentUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("commitments")
@@ -254,6 +279,17 @@ export async function updateCommitment({
   if (existingError || !existing) {
     throw new Error("Commitment not found")
   }
+
+  await requireAuthorization({
+    permission: "commitment.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "commitment",
+    resourceId: commitmentId,
+  })
 
   const { data, error } = await supabase
     .from("commitments")
@@ -313,7 +349,29 @@ function mapCommitmentLine(row: any): CommitmentLine {
 }
 
 export async function listCommitmentLines(commitmentId: string): Promise<CommitmentLine[]> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+
+  const { data: commitment, error: commitmentError } = await supabase
+    .from("commitments")
+    .select("id, project_id")
+    .eq("id", commitmentId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+
+  if (commitmentError || !commitment) {
+    throw new Error("Commitment not found or access denied")
+  }
+
+  await requireAuthorization({
+    permission: "commitment.read",
+    userId,
+    orgId,
+    projectId: commitment.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "commitment",
+    resourceId: commitmentId,
+  })
 
   const { data, error } = await supabase
     .from("commitment_lines")
@@ -346,6 +404,17 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
   if (commitmentError || !commitment) {
     throw new Error("Commitment not found or access denied")
   }
+
+  await requireAuthorization({
+    permission: "commitment.write",
+    userId,
+    orgId,
+    projectId: commitment.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "commitment",
+    resourceId: commitmentId,
+  })
 
   const validated = commitmentLineInputSchema.parse(input)
 
@@ -409,6 +478,17 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
     throw new Error("Commitment line not found or access denied")
   }
 
+  await requireAuthorization({
+    permission: "commitment.write",
+    userId,
+    orgId,
+    projectId: (existing as any).commitment?.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "commitment_line",
+    resourceId: lineId,
+  })
+
   const { data, error } = await supabase
     .from("commitment_lines")
     .update(validated)
@@ -464,6 +544,17 @@ export async function deleteCommitmentLine(lineId: string): Promise<void> {
   if (existingError || !existing) {
     throw new Error("Commitment line not found or access denied")
   }
+
+  await requireAuthorization({
+    permission: "commitment.write",
+    userId,
+    orgId,
+    projectId: (existing as any).commitment?.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "commitment_line",
+    resourceId: lineId,
+  })
 
   const { error } = await supabase
     .from("commitment_lines")

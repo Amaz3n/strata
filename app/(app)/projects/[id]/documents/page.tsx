@@ -24,7 +24,11 @@ export default async function ProjectDocumentsPage({ params }: ProjectDocumentsP
   return (
     <PageLayout title="Project Signatures">
       <div className="px-6 py-4 h-full">
-        <SignaturesHubClient initialData={data} scope="project" />
+        <SignaturesHubClient
+          initialData={data}
+          scope="project"
+          projectsForNewEnvelope={[{ id: project.id, name: project.name }]}
+        />
       </div>
     </PageLayout>
   )

@@ -251,9 +251,10 @@ export async function getCustomers({
     const { data: subscriptionData } = await supabase
       .from("subscriptions")
       .select(`
+        plan_code,
         status,
         current_period_end,
-        plans!inner (
+        plans (
           name,
           amount_cents,
           currency,
@@ -261,21 +262,20 @@ export async function getCustomers({
         )
       `)
       .eq("org_id", org.id)
-      .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
 
     let subscription = null
     if (subscriptionData) {
       const plan = Array.isArray(subscriptionData.plans) ? subscriptionData.plans[0] : subscriptionData.plans
       subscription = {
         status: subscriptionData.status,
-        planName: plan?.name,
-        amountCents: plan?.amount_cents,
-        currency: plan?.currency,
-        interval: plan?.interval,
-        currentPeriodEnd: subscriptionData.current_period_end,
+        planName: plan?.name ?? subscriptionData.plan_code ?? null,
+        amountCents: plan?.amount_cents ?? null,
+        currency: plan?.currency ?? null,
+        interval: plan?.interval ?? null,
+        currentPeriodEnd: subscriptionData.current_period_end ?? null,
       }
     }
 
@@ -551,12 +551,13 @@ export interface SystemMetrics {
   userGrowth: number
   totalOrganizations: number
   newOrgsThisMonth: number
-  databaseUsage: number
-  databaseSize: number
-  apiRequests: number
-  avgResponseTime: number
-  uptime: string
-  errorRate: number
+  activeSubscriptions: number
+  trialingSubscriptions: number
+  pastDueSubscriptions: number
+  eventsLast24h: number
+  outboxFailuresLast24h: number
+  paidPaymentsLast30d: number
+  overdueInvoices: number
   fileStorageUsed: number
   fileStorageLimit: number
   bandwidthUsed: number
@@ -604,58 +605,173 @@ export interface Plan {
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {
   const supabase = createServiceSupabaseClient()
+  const now = new Date()
+  const dayAgoIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
+  const thirtyDaysAgoIso = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
-  // Get basic counts
-  const { count: totalOrgs } = await supabase.from("orgs").select("*", { count: "exact", head: true })
-  const { count: totalUsers } = await supabase.from("app_users").select("*", { count: "exact", head: true })
-
-  // Get new orgs this month
   const startOfMonth = new Date()
   startOfMonth.setDate(1)
   startOfMonth.setHours(0, 0, 0, 0)
+  const startOfPrevMonth = new Date(startOfMonth)
+  startOfPrevMonth.setMonth(startOfPrevMonth.getMonth() - 1)
 
-  const { count: newOrgsThisMonth } = await supabase
-    .from("orgs")
-    .select("*", { count: "exact", head: true })
-    .gte("created_at", startOfMonth.toISOString())
+  const [
+    { count: totalOrgs },
+    { count: newOrgsThisMonth },
+    { count: usersThisMonth },
+    { count: usersPrevMonth },
+    { count: dauCount },
+    { data: subscriptionsData },
+    { count: eventsLast24h },
+    { count: outboxFailuresLast24h },
+    { count: paidPaymentsLast30d },
+    { count: overdueInvoices },
+    { data: filesData },
+    { data: uploadedFiles30dData },
+  ] = await Promise.all([
+    supabase.from("orgs").select("*", { count: "exact", head: true }),
+    supabase.from("orgs").select("*", { count: "exact", head: true }).gte("created_at", startOfMonth.toISOString()),
+    supabase.from("app_users").select("*", { count: "exact", head: true }).gte("created_at", startOfMonth.toISOString()),
+    supabase
+      .from("app_users")
+      .select("*", { count: "exact", head: true })
+      .gte("created_at", startOfPrevMonth.toISOString())
+      .lt("created_at", startOfMonth.toISOString()),
+    supabase.from("memberships").select("user_id").eq("status", "active").gte("last_active_at", dayAgoIso),
+    supabase.from("subscriptions").select("status"),
+    supabase.from("events").select("*", { count: "exact", head: true }).gte("created_at", dayAgoIso),
+    supabase
+      .from("outbox")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "failed")
+      .gte("updated_at", dayAgoIso),
+    supabase
+      .from("payments")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "paid")
+      .gte("created_at", thirtyDaysAgoIso),
+    supabase
+      .from("invoices")
+      .select("*", { count: "exact", head: true })
+      .neq("status", "paid")
+      .lt("due_date", now.toISOString().slice(0, 10)),
+    supabase.from("files").select("size_bytes").is("archived_at", null),
+    supabase.from("files").select("size_bytes").gte("created_at", thirtyDaysAgoIso),
+  ])
 
-  // Mock data for other metrics (in a real system these would come from monitoring services)
+  const activeUsers = new Set((dauCount ?? []).map((row: any) => row.user_id).filter(Boolean))
+  const activeSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "active").length
+  const trialingSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "trialing").length
+  const pastDueSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "past_due").length
+
+  const fileStorageBytes = (filesData ?? []).reduce((sum: number, row: any) => sum + Number(row.size_bytes ?? 0), 0)
+  const uploadBytes30d = (uploadedFiles30dData ?? []).reduce((sum: number, row: any) => sum + Number(row.size_bytes ?? 0), 0)
+  const userGrowth =
+    !usersPrevMonth || usersPrevMonth === 0
+      ? (usersThisMonth ?? 0) > 0
+        ? 100
+        : 0
+      : Math.round((((usersThisMonth ?? 0) - usersPrevMonth) / usersPrevMonth) * 100)
+
+  const bytesPerGb = 1024 * 1024 * 1024
+  const storageLimitGb = 200
+  const bandwidthLimitGb = 500
+
   return {
-    dailyActiveUsers: Math.floor(totalUsers! * 0.3), // Estimate 30% daily active
-    userGrowth: 12, // Mock growth percentage
+    dailyActiveUsers: activeUsers.size,
+    userGrowth,
     totalOrganizations: totalOrgs || 0,
     newOrgsThisMonth: newOrgsThisMonth || 0,
-    databaseUsage: 65, // Mock percentage
-    databaseSize: 2.4, // Mock GB
-    apiRequests: 125000, // Mock requests
-    avgResponseTime: 145, // Mock ms
-    uptime: "99.9%", // Mock uptime
-    errorRate: 0.1, // Mock error rate
-    fileStorageUsed: 45, // Mock GB
-    fileStorageLimit: 100, // Mock GB limit
-    bandwidthUsed: 120, // Mock GB
-    bandwidthLimit: 500, // Mock GB limit
+    activeSubscriptions,
+    trialingSubscriptions,
+    pastDueSubscriptions,
+    eventsLast24h: eventsLast24h || 0,
+    outboxFailuresLast24h: outboxFailuresLast24h || 0,
+    paidPaymentsLast30d: paidPaymentsLast30d || 0,
+    overdueInvoices: overdueInvoices || 0,
+    fileStorageUsed: Number((fileStorageBytes / bytesPerGb).toFixed(2)),
+    fileStorageLimit: storageLimitGb,
+    bandwidthUsed: Number((uploadBytes30d / bytesPerGb).toFixed(2)),
+    bandwidthLimit: bandwidthLimitGb,
   }
 }
 
 export async function getUsageTrends(): Promise<UsageTrends> {
-  // Mock usage trend data
-  const userGrowth: UsageTrend[] = [
-    { month: "Dec 2024", count: 45, change: 15 },
-    { month: "Jan 2025", count: 52, change: 16 },
-    { month: "Feb 2025", count: 61, change: 17 },
-    { month: "Mar 2025", count: 68, change: 11 },
-    { month: "Apr 2025", count: 74, change: 9 },
-    { month: "May 2025", count: 82, change: 11 },
+  const supabase = createServiceSupabaseClient()
+  const now = new Date()
+  const monthStarts = Array.from({ length: 6 }).map((_, idx) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (5 - idx), 1)
+    return d
+  })
+
+  const userGrowth = await Promise.all(
+    monthStarts.map(async (monthStart) => {
+      const nextMonthStart = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1)
+      const prevMonthStart = new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1)
+
+      const [{ count: currentCount }, { count: prevCount }] = await Promise.all([
+        supabase
+          .from("app_users")
+          .select("*", { count: "exact", head: true })
+          .gte("created_at", monthStart.toISOString())
+          .lt("created_at", nextMonthStart.toISOString()),
+        supabase
+          .from("app_users")
+          .select("*", { count: "exact", head: true })
+          .gte("created_at", prevMonthStart.toISOString())
+          .lt("created_at", monthStart.toISOString()),
+      ])
+
+      const base = prevCount ?? 0
+      const change = base === 0 ? ((currentCount ?? 0) > 0 ? 100 : 0) : Math.round((((currentCount ?? 0) - base) / base) * 100)
+
+      return {
+        month: monthStart.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+        count: currentCount ?? 0,
+        change,
+      }
+    }),
+  )
+
+  const currentWindowStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const previousWindowStart = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000).toISOString()
+  const previousWindowEnd = currentWindowStart
+
+  const featureDefinitions = [
+    { name: "Project Management", entityTypes: ["project", "task", "schedule_item"] },
+    { name: "Documents", entityTypes: ["file", "document", "drawing_set", "drawing_sheet"] },
+    { name: "Financials", entityTypes: ["invoice", "payment", "vendor_bill", "subscription"] },
+    { name: "Collaboration", entityTypes: ["conversation", "message", "daily_log"] },
+    { name: "Operations", entityTypes: ["rfi", "submittal", "change_order", "punch_item"] },
   ]
 
-  const featureUsage: FeatureUsage[] = [
-    { name: "Project Management", usage: 1250, change: 8 },
-    { name: "Document Upload", usage: 890, change: -3 },
-    { name: "Reporting", usage: 650, change: 22 },
-    { name: "Team Collaboration", usage: 580, change: 15 },
-    { name: "Invoice Generation", usage: 420, change: 5 },
-  ]
+  const featureUsage = await Promise.all(
+    featureDefinitions.map(async (feature) => {
+      const [{ count: currentCount }, { count: previousCount }] = await Promise.all([
+        supabase
+          .from("events")
+          .select("*", { count: "exact", head: true })
+          .in("entity_type", feature.entityTypes)
+          .gte("created_at", currentWindowStart),
+        supabase
+          .from("events")
+          .select("*", { count: "exact", head: true })
+          .in("entity_type", feature.entityTypes)
+          .gte("created_at", previousWindowStart)
+          .lt("created_at", previousWindowEnd),
+      ])
+
+      const previous = previousCount ?? 0
+      const change =
+        previous === 0 ? ((currentCount ?? 0) > 0 ? 100 : 0) : Math.round((((currentCount ?? 0) - previous) / previous) * 100)
+
+      return {
+        name: feature.name,
+        usage: currentCount ?? 0,
+        change,
+      }
+    }),
+  )
 
   return {
     userGrowth,

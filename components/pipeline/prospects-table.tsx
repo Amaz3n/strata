@@ -1,8 +1,9 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
+import type { ReactNode } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -52,6 +53,8 @@ interface ProspectsTableProps {
   teamMembers: TeamMember[]
   canCreate?: boolean
   canEdit?: boolean
+  initialStatusFilter?: LeadStatus
+  headerLeft?: ReactNode
 }
 
 type SortField = "name" | "status" | "priority" | "followUp" | "lastTouched" | "created"
@@ -62,9 +65,11 @@ export function ProspectsTable({
   teamMembers,
   canCreate = false,
   canEdit = false,
+  initialStatusFilter,
+  headerLeft,
 }: ProspectsTableProps) {
   const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<LeadStatus | undefined>()
+  const [statusFilter, setStatusFilter] = useState<LeadStatus | undefined>(initialStatusFilter)
   const [priorityFilter, setPriorityFilter] = useState<LeadPriority | undefined>()
   const [ownerFilter, setOwnerFilter] = useState<string | undefined>()
   const [addOpen, setAddOpen] = useState(false)
@@ -86,6 +91,10 @@ export function ProspectsTable({
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
   const { toast } = useToast()
+
+  useEffect(() => {
+    setStatusFilter(initialStatusFilter)
+  }, [initialStatusFilter])
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -214,26 +223,25 @@ export function ProspectsTable({
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <div className="relative w-full md:w-72">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              placeholder="Search prospects..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>{headerLeft}</div>
+        {canCreate && (
+          <Button onClick={() => setAddOpen(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add prospect
+          </Button>
+        )}
+      </div>
 
-        <div className="flex items-center gap-2">
-          {canCreate && (
-            <Button onClick={() => setAddOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add prospect
-            </Button>
-          )}
+      <div className="flex items-center gap-2 w-full md:w-auto">
+        <div className="relative w-full md:w-72">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-9"
+            placeholder="Search prospects..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
       </div>
 

@@ -8,6 +8,7 @@ export const contactInputSchema = z.object({
   full_name: z.string().min(2, "Full name is required"),
   email: z.string().email().optional(),
   phone: z.string().optional(),
+  address: z.string().max(400).optional(),
   role: z.string().optional(),
   contact_type: contactTypeEnum.default("subcontractor"),
   primary_company_id: z.string().uuid().optional(),
@@ -38,7 +39,6 @@ export type ContactInput = z.infer<typeof contactInputSchema>
 export type ContactUpdateInput = z.infer<typeof contactUpdateSchema>
 export type ContactFilters = z.infer<typeof contactFiltersSchema>
 export type ContactCompanyLinkInput = z.infer<typeof contactCompanyLinkSchema>
-
 
 
 

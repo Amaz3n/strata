@@ -29,12 +29,24 @@ interface AccessTokenListProps {
   projectId: string
   tokens: PortalAccessToken[]
   onRevoke: (tokenId: string) => Promise<void> | void
+  onPause?: (tokenId: string) => Promise<void> | void
+  onResume?: (tokenId: string) => Promise<void> | void
+  onSetRequireAccount?: (tokenId: string, requireAccount: boolean) => Promise<void> | void
   isLoading?: boolean
   onSetPin?: (tokenId: string, pin: string) => Promise<void> | void
   onClearPin?: (tokenId: string) => Promise<void> | void
 }
 
-export function AccessTokenList({ tokens, onRevoke, isLoading, onSetPin, onClearPin }: AccessTokenListProps) {
+export function AccessTokenList({
+  tokens,
+  onRevoke,
+  onPause,
+  onResume,
+  onSetRequireAccount,
+  isLoading,
+  onSetPin,
+  onClearPin,
+}: AccessTokenListProps) {
   const fallbackOrigin = process.env.NEXT_PUBLIC_APP_URL || ""
   const [origin, setOrigin] = useState(fallbackOrigin)
 
@@ -100,6 +112,9 @@ export function AccessTokenList({ tokens, onRevoke, isLoading, onSetPin, onClear
           token={token}
           origin={origin}
           onRevoke={onRevoke}
+          onPause={onPause}
+          onResume={onResume}
+          onSetRequireAccount={onSetRequireAccount}
           onSetPin={onSetPin}
           onClearPin={onClearPin}
           isLoading={isLoading}
@@ -115,6 +130,9 @@ function TokenCard({
   origin,
   onCopy,
   onRevoke,
+  onPause,
+  onResume,
+  onSetRequireAccount,
   onSetPin,
   onClearPin,
   isLoading,
@@ -123,6 +141,9 @@ function TokenCard({
   origin: string
   onCopy: () => void
   onRevoke: (tokenId: string) => Promise<void> | void
+  onPause?: (tokenId: string) => Promise<void> | void
+  onResume?: (tokenId: string) => Promise<void> | void
+  onSetRequireAccount?: (tokenId: string, requireAccount: boolean) => Promise<void> | void
   onSetPin?: (tokenId: string, pin: string) => Promise<void> | void
   onClearPin?: (tokenId: string) => Promise<void> | void
   isLoading?: boolean
@@ -132,8 +153,9 @@ function TokenCard({
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   const isRevoked = !!token.revoked_at
+  const isPaused = !!token.paused_at
   const isExpired = token.expires_at && new Date(token.expires_at) < new Date()
-  const isActive = !isRevoked && !isExpired
+  const isActive = !isRevoked && !isPaused && !isExpired
 
   const handleSavePin = async () => {
     if (!onSetPin) return
@@ -177,6 +199,10 @@ function TokenCard({
                 <Badge variant="secondary" className="gap-1 bg-success/10 text-success text-[10px] px-1.5 py-0">
                   Active
                 </Badge>
+              ) : isPaused ? (
+                <Badge variant="secondary" className="gap-1 bg-amber-500/10 text-amber-700 text-[10px] px-1.5 py-0">
+                  Paused
+                </Badge>
               ) : isRevoked ? (
                 <Badge variant="secondary" className="gap-1 bg-destructive/10 text-destructive text-[10px] px-1.5 py-0">
                   Revoked
@@ -207,7 +233,29 @@ function TokenCard({
               <Copy className="h-3 w-3" />
             </Button>
           )}
-          {isActive && (
+          {isActive && onPause && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={isLoading}
+              onClick={() => onPause(token.id)}
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-amber-700"
+            >
+              <Ban className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {isPaused && onResume && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={isLoading}
+              onClick={() => onResume(token.id)}
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-primary"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {!isRevoked && (
             <Button
               size="icon"
               variant="ghost"
@@ -310,6 +358,28 @@ function TokenCard({
                     </Button>
                   </div>
                 )}
+              </div>
+            )}
+
+            {isActive && onSetRequireAccount && (
+              <div className="border bg-background p-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <ShieldCheck className={cn("h-3.5 w-3.5", token.require_account ? "text-primary" : "text-muted-foreground")} />
+                    <span className="text-xs font-medium">
+                      {token.require_account ? "Account required" : "Link-only access"}
+                    </span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={isLoading}
+                    onClick={() => onSetRequireAccount(token.id, !(token.require_account ?? false))}
+                    className="h-6 px-2 text-[11px]"
+                  >
+                    {token.require_account ? "Allow link only" : "Require account"}
+                  </Button>
+                </div>
               </div>
             )}
 

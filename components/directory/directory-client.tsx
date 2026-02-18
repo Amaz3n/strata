@@ -51,6 +51,12 @@ export function DirectoryClient({
     setDetailContactOpen(true)
   }
 
+  const openEditContact = (contact: Contact) => {
+    setSelectedContact(contact)
+    setDetailContactOpen(false)
+    setContactDialogOpen(true)
+  }
+
   const filteredCompanies = useMemo(() => (view === "people" ? [] : companies), [companies, view])
   const filteredContacts = useMemo(
     () => (view === "companies" ? [] : view === "people" ? contacts : standaloneContacts),
@@ -189,7 +195,12 @@ export function DirectoryClient({
         </SheetContent>
       </Sheet>
 
-      <ContactDetailSheet contactId={detailContactId} open={detailContactOpen} onOpenChange={setDetailContactOpen} />
+      <ContactDetailSheet
+        contactId={detailContactId}
+        open={detailContactOpen}
+        onOpenChange={setDetailContactOpen}
+        onEditContact={openEditContact}
+      />
     </div>
   )
 }

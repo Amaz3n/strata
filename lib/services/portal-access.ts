@@ -70,10 +70,12 @@ function mapAccessToken(row: any): PortalAccessToken {
     permissions: mapPermissions(row),
     pin_required: !!row.pin_required,
     pin_locked_until: row.pin_locked_until ?? null,
+    require_account: row.require_account ?? false,
     expires_at: row.expires_at ?? null,
     access_count: row.access_count ?? 0,
     max_access_count: row.max_access_count ?? null,
     last_accessed_at: row.last_accessed_at ?? null,
+    paused_at: row.paused_at ?? null,
     revoked_at: row.revoked_at ?? null,
     created_at: row.created_at,
   }
@@ -144,6 +146,10 @@ export async function validatePortalToken(token: string) {
     return null
   }
 
+  if (data.paused_at) {
+    return null
+  }
+
   return mapAccessToken(data)
 }
 
@@ -159,6 +165,61 @@ export async function revokePortalToken(tokenId: string, orgId?: string) {
 
   if (error) {
     throw new Error(`Failed to revoke portal token: ${error.message}`)
+  }
+}
+
+export async function pausePortalToken(tokenId: string, orgId?: string) {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+  const { error } = await serviceClient
+    .from("portal_access_tokens")
+    .update({ paused_at: new Date().toISOString() })
+    .eq("id", tokenId)
+    .eq("org_id", resolvedOrgId)
+    .is("revoked_at", null)
+
+  if (error) {
+    throw new Error(`Failed to pause portal token: ${error.message}`)
+  }
+}
+
+export async function resumePortalToken(tokenId: string, orgId?: string) {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+  const { error } = await serviceClient
+    .from("portal_access_tokens")
+    .update({ paused_at: null })
+    .eq("id", tokenId)
+    .eq("org_id", resolvedOrgId)
+    .is("revoked_at", null)
+
+  if (error) {
+    throw new Error(`Failed to resume portal token: ${error.message}`)
+  }
+}
+
+export async function setPortalTokenRequireAccount({
+  tokenId,
+  requireAccount,
+  orgId,
+}: {
+  tokenId: string
+  requireAccount: boolean
+  orgId?: string
+}) {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+  const { error } = await serviceClient
+    .from("portal_access_tokens")
+    .update({ require_account: requireAccount })
+    .eq("id", tokenId)
+    .eq("org_id", resolvedOrgId)
+
+  if (error) {
+    throw new Error(`Failed to update portal token account requirement: ${error.message}`)
   }
 }
 
@@ -723,9 +784,9 @@ export async function loadClientPortalData({
       .single(),
     supabase
       .from("project_members")
-      .select("user_id, role, app_users(id, full_name, email, phone, avatar_url)")
+      .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, phone, avatar_url)")
       .eq("project_id", projectId)
-      .in("role", ["pm", "project_manager"])
+      .in("roles.key", ["pm", "project_manager"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
@@ -855,13 +916,14 @@ export async function loadSubPortalData({
       .from("project_members")
       .select(`
         user_id,
-        role,
+        role_id,
+        roles!inner(key),
         users:user_id (
           id, full_name, email, phone, avatar_url
         )
       `)
       .eq("project_id", projectId)
-      .in("role", ["pm", "project_manager"])
+      .in("roles.key", ["pm", "project_manager"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),

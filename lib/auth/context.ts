@@ -109,6 +109,31 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
   }
 }
 
+async function hasActivePlatformMembership(userId: string) {
+  try {
+    const supabase = createServiceSupabaseClient()
+    const nowIso = new Date().toISOString()
+    const { data, error } = await supabase
+      .from("platform_memberships")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+      .limit(1)
+      .maybeSingle()
+
+    if (error) {
+      console.error("Unable to resolve platform membership", error)
+      return false
+    }
+
+    return Boolean(data?.id)
+  } catch (error) {
+    console.error("Unable to resolve platform membership", error)
+    return false
+  }
+}
+
 async function touchMembershipActivity(orgId: string, userId: string, lastActiveAt?: string | null) {
   const now = new Date()
   if (lastActiveAt) {
@@ -154,7 +179,8 @@ export async function requireOrgMembership(
   orgId?: string,
 ): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> {
   const context = await requireAuth()
-  const isPlatformAdmin = isPlatformAdminUser(context.user)
+  const isPlatformAdmin =
+    isPlatformAdminUser(context.user) || (await hasActivePlatformMembership(context.user.id))
 
   // Platform admin: allow bypassing membership, use service client, and pick any org.
   if (isPlatformAdmin) {

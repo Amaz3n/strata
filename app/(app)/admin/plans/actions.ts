@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/auth/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission } from "@/lib/services/permissions"
 
 const createPlanSchema = z.object({
   code: z.string().min(1, "Plan code is required").regex(/^[a-z0-9-]+$/, "Code must contain only lowercase letters, numbers, and hyphens"),
@@ -37,7 +37,7 @@ export async function createPlanAction(prevState: { error?: string; message?: st
   }
 
   const { user } = await requireAuth()
-  await requirePermission("billing.manage", { userId: user.id })
+  await requireAnyPermission(["billing.manage", "platform.billing.manage"], { userId: user.id })
 
   const supabase = createServiceSupabaseClient()
 

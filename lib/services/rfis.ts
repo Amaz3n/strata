@@ -5,16 +5,17 @@ import { recordEvent } from "@/lib/services/events"
 import { sendEmail } from "@/lib/services/mailer"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { attachFile } from "@/lib/services/file-links"
-import type { Rfi } from "@/lib/types"
+import type { Rfi, RfiResponse } from "@/lib/types"
 import type { RfiDecisionInput, RfiInput, RfiResponseInput } from "@/lib/validation/rfis"
+
+const RFI_SELECT =
+  "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, submitted_at, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at"
 
 export async function listRfis(orgId?: string, projectId?: string): Promise<Rfi[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   let query = supabase
     .from("rfis")
-    .select(
-      "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
-    )
+    .select(RFI_SELECT)
     .eq("org_id", resolvedOrgId)
     .order("rfi_number", { ascending: true })
 
@@ -27,26 +28,75 @@ export async function listRfis(orgId?: string, projectId?: string): Promise<Rfi[
   return data ?? []
 }
 
+export async function listRfiResponses({
+  orgId,
+  rfiId,
+}: {
+  orgId: string
+  rfiId: string
+}): Promise<RfiResponse[]> {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("rfi_responses")
+    .select(
+      "id, org_id, rfi_id, response_type, body, responder_user_id, responder_contact_id, created_at, file_id, portal_token_id, created_via_portal, actor_ip",
+    )
+    .eq("org_id", orgId)
+    .eq("rfi_id", rfiId)
+    .order("created_at", { ascending: true })
+
+  if (error) throw new Error(`Failed to load RFI responses: ${error.message}`)
+  return (data ?? []) as RfiResponse[]
+}
+
+async function resolveNextRfiNumber(supabase: any, projectId: string) {
+  const { data: nextFromRpc, error: rpcError } = await supabase.rpc("next_rfi_number", {
+    p_project_id: projectId,
+  })
+
+  if (!rpcError && typeof nextFromRpc === "number" && nextFromRpc > 0) {
+    return nextFromRpc
+  }
+
+  const { data: last } = await supabase
+    .from("rfis")
+    .select("rfi_number")
+    .eq("project_id", projectId)
+    .order("rfi_number", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  return (last?.rfi_number ?? 0) + 1
+}
+
 export async function createRfi({ input, orgId }: { input: RfiInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const nextRfiNumber = input.rfi_number ?? (await resolveNextRfiNumber(supabase, input.project_id))
   const payload = {
     org_id: resolvedOrgId,
     project_id: input.project_id,
-    rfi_number: input.rfi_number,
+    rfi_number: nextRfiNumber,
     subject: input.subject,
     question: input.question,
     status: input.status ?? "open",
-    priority: input.priority ?? "medium",
+    priority: input.priority ?? "normal",
+    submitted_by: userId,
+    submitted_by_company_id: input.submitted_by_company_id ?? null,
+    assigned_to: input.assigned_to ?? null,
+    assigned_company_id: input.assigned_company_id ?? null,
     due_date: input.due_date ?? null,
+    cost_impact_cents: input.cost_impact_cents ?? null,
+    schedule_impact_days: input.schedule_impact_days ?? null,
+    location: input.location ?? null,
+    drawing_reference: input.drawing_reference ?? null,
+    spec_reference: input.spec_reference ?? null,
     attachment_file_id: input.attachment_file_id ?? null,
   }
 
   const { data, error } = await supabase
     .from("rfis")
     .insert(payload)
-    .select(
-      "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
-    )
+    .select(RFI_SELECT)
     .single()
 
   if (error || !data) {
@@ -91,6 +141,57 @@ export async function createRfi({ input, orgId }: { input: RfiInput; orgId?: str
     orgId: resolvedOrgId,
     rfiId: data.id,
     kind: "created",
+  })
+
+  return data as Rfi
+}
+
+export async function createPortalRfi({
+  orgId,
+  projectId,
+  companyId,
+  contactId,
+  subject,
+  question,
+  priority,
+  dueDate,
+}: {
+  orgId: string
+  projectId: string
+  companyId?: string | null
+  contactId?: string | null
+  subject: string
+  question: string
+  priority?: "low" | "normal" | "high" | "urgent"
+  dueDate?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+  const rfiNumber = await resolveNextRfiNumber(supabase, projectId)
+
+  const payload = {
+    org_id: orgId,
+    project_id: projectId,
+    rfi_number: rfiNumber,
+    subject,
+    question,
+    status: "open",
+    priority: priority ?? "normal",
+    due_date: dueDate ?? null,
+    submitted_by_company_id: companyId ?? null,
+    assigned_company_id: companyId ?? null,
+    submitted_by: null,
+    assigned_to: null,
+  }
+
+  const { data, error } = await supabase.from("rfis").insert(payload).select(RFI_SELECT).single()
+  if (error || !data) throw new Error(`Failed to create RFI: ${error?.message}`)
+
+  await recordEvent({
+    orgId,
+    eventType: "rfi_created",
+    entityType: "rfi",
+    entityId: data.id,
+    payload: { rfi_number: data.rfi_number, project_id: data.project_id, via_portal: true, contact_id: contactId ?? null },
   })
 
   return data as Rfi
@@ -328,7 +429,9 @@ async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: s
     return null
   }
   return data
-}async function fetchContactEmail(
+}
+
+async function fetchContactEmail(
   supabase: any,
   contactId: string,
 ): Promise<{ email: string | null; full_name?: string } | null> {

@@ -2,7 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import {
   vendorBillStatusUpdateSchema,
@@ -104,7 +104,15 @@ function mapVendorBill(row: any): VendorBillSummary {
 
 export async function listVendorBillsForCompany(companyId: string, orgId?: string): Promise<VendorBillSummary[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "bill.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "company",
+    resourceId: companyId,
+  })
 
   const { data: commitments, error: commitmentError } = await supabase
     .from("commitments")
@@ -141,7 +149,16 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
 
 export async function listVendorBillsForProject(projectId: string, orgId?: string): Promise<VendorBillSummary[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({
+    permission: "bill.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: projectId,
+  })
 
   const { data, error } = await supabase
     .from("vendor_bills")
@@ -175,7 +192,6 @@ export async function updateVendorBillStatus({
 }): Promise<VendorBillSummary> {
   const parsed = vendorBillStatusUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
@@ -187,6 +203,24 @@ export async function updateVendorBillStatus({
   if (existingError || !existing) {
     throw new Error("Vendor bill not found")
   }
+
+  const requiredPermission =
+    parsed.status === "approved"
+      ? "bill.approve"
+      : parsed.status === "paid" || parsed.status === "partial"
+        ? "payment.release"
+        : "bill.write"
+
+  await requireAuthorization({
+    permission: requiredPermission,
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "vendor_bill",
+    resourceId: billId,
+  })
 
   if (
     (parsed.status === "paid" || parsed.status === "partial") &&

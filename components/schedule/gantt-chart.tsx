@@ -85,10 +85,11 @@ function getItemIcon(type: string) {
 interface SortableTaskRowProps {
   item: ScheduleItem
   isSelected: boolean
+  showCriticalPath: boolean
   onSelect: (item: ScheduleItem) => void
 }
 
-function SortableTaskRow({ item, isSelected, onSelect }: SortableTaskRowProps) {
+function SortableTaskRow({ item, isSelected, showCriticalPath, onSelect }: SortableTaskRowProps) {
   const {
     attributes,
     listeners,
@@ -114,7 +115,7 @@ function SortableTaskRow({ item, isSelected, onSelect }: SortableTaskRowProps) {
       className={cn(
         "gantt-sidebar-row",
         isSelected && "is-selected",
-        item.is_critical_path && "is-critical",
+        item.is_critical_path && showCriticalPath && "is-critical",
         isDragging && "is-dragging"
       )}
       onClick={() => onSelect(item)}
@@ -162,7 +163,7 @@ function SortableTaskRow({ item, isSelected, onSelect }: SortableTaskRowProps) {
             </TooltipContent>
           </Tooltip>
         )}
-        {item.is_critical_path && (
+        {item.is_critical_path && showCriticalPath && (
           <Tooltip>
             <TooltipTrigger>
               <AlertTriangle className="h-3.5 w-3.5 gantt-indicator-icon is-critical" />
@@ -302,6 +303,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     selectedItem,
     setSelectedItem,
     onItemUpdate,
+    onItemsBulkUpdate,
     scrollToTodayTrigger,
   } = useSchedule()
 
@@ -311,7 +313,15 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
   const hasScrolledToToday = useRef(false)
+  const dragMovedRef = useRef(false)
+  const suppressBarClickUntilRef = useRef(0)
+  const pendingUpdateCounterRef = useRef(0)
+  const activeDragPointerIdRef = useRef<number | null>(null)
+  const activeDragCaptureTargetRef = useRef<HTMLElement | null>(null)
+  const dragFrameRef = useRef<number | null>(null)
+  const queuedDragClientXRef = useRef<number | null>(null)
   const [dragState, setDragState] = useState<DragState | null>(null)
+  const [pendingDateUpdates, setPendingDateUpdates] = useState<Record<string, { requestId: number; startDate: Date; endDate: Date }>>({})
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["all", "Unassigned"]))
   const [scrollLeft, setScrollLeft] = useState(0)
   const [dateSelection, setDateSelection] = useState<DateSelection | null>(null)
@@ -346,14 +356,25 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     // Get the new order
     const reorderedItems = arrayMove(sortedItems, oldIndex, newIndex)
     
-    // Update sort_order for affected items (only those that changed)
-    for (let i = 0; i < reorderedItems.length; i++) {
-      const item = reorderedItems[i]
-      if ((item.sort_order ?? 0) !== i) {
-        await onItemUpdate(item.id, { sort_order: i })
-      }
+    // Persist changed sort order in one bulk write to avoid per-row server churn.
+    const updates = reorderedItems
+      .map((item, index) => ({
+        id: item.id,
+        sort_order: index,
+        currentSortOrder: item.sort_order ?? 0,
+      }))
+      .filter((item) => item.currentSortOrder !== item.sort_order)
+      .map(({ id, sort_order }) => ({ id, sort_order }))
+
+    if (updates.length === 0) return
+
+    if (onItemsBulkUpdate) {
+      await onItemsBulkUpdate(updates)
+      return
     }
-  }, [items, onItemUpdate])
+
+    await Promise.all(updates.map((item) => onItemUpdate(item.id, { sort_order: item.sort_order })))
+  }, [items, onItemUpdate, onItemsBulkUpdate])
 
   // Memoized calculations
   const { start: rangeStart, end: rangeEnd } = viewState.dateRange
@@ -378,30 +399,191 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     })
   }, [groupedItems])
 
+  const getEffectiveDates = useCallback((item: ScheduleItem) => {
+    const pending = pendingDateUpdates[item.id]
+    if (pending) return pending
+
+    const startDate = parseDate(item.start_date)
+    if (!startDate) return null
+
+    return {
+      startDate,
+      endDate: parseDate(item.end_date) || startDate,
+    }
+  }, [pendingDateUpdates])
+
   // Calculate item positions
   const getBarPosition = useCallback((item: ScheduleItem) => {
-    const startDate = parseDate(item.start_date)
-    const endDate = parseDate(item.end_date)
-    
-    if (!startDate) return null
-    
-    const effectiveEnd = endDate || startDate
+    const effectiveDates = getEffectiveDates(item)
+    if (!effectiveDates) return null
+
+    const { startDate, endDate } = effectiveDates
     const startOffset = differenceInDays(startDate, rangeStart)
-    const duration = differenceInDays(effectiveEnd, startDate) + 1
+    const duration = differenceInDays(endDate, startDate) + 1
     
     return {
       left: startOffset * columnWidth,
       width: Math.max(duration * columnWidth - 4, columnWidth - 4),
     }
-  }, [rangeStart, columnWidth])
+  }, [getEffectiveDates, rangeStart, columnWidth])
+
+  const commitDraggedDates = useCallback((itemId: string, startDate: Date, endDate: Date) => {
+    const requestId = ++pendingUpdateCounterRef.current
+    setPendingDateUpdates((prev) => ({ ...prev, [itemId]: { requestId, startDate, endDate } }))
+
+    const payload = {
+      id: itemId,
+      start_date: toDateString(startDate),
+      end_date: toDateString(endDate),
+    }
+
+    const persist = onItemsBulkUpdate
+      ? onItemsBulkUpdate([payload])
+      : onItemUpdate(itemId, { start_date: payload.start_date, end_date: payload.end_date }).then((item) => [item])
+
+    void persist.finally(() => {
+      setPendingDateUpdates((prev) => {
+        const pending = prev[itemId]
+        if (!pending || pending.requestId !== requestId) return prev
+        const next = { ...prev }
+        delete next[itemId]
+        return next
+      })
+    })
+  }, [onItemUpdate, onItemsBulkUpdate])
+
+  const deriveDragDates = useCallback((state: DragState, clientX: number) => {
+    const deltaX = clientX - state.startX
+    // Advance only after fully crossing a day boundary to avoid accidental +1 day snaps.
+    const daysDelta =
+      deltaX >= 0
+        ? Math.floor(deltaX / columnWidth)
+        : Math.ceil(deltaX / columnWidth)
+
+    if (daysDelta === 0) {
+      return {
+        startDate: state.startDate,
+        endDate: state.endDate,
+      }
+    }
+
+    let newStart = state.originalStart
+    let newEnd = state.originalEnd
+
+    switch (state.type) {
+      case "move":
+        newStart = dateAddDays(state.originalStart, daysDelta)
+        newEnd = dateAddDays(state.originalEnd, daysDelta)
+        break
+      case "resize-start":
+        newStart = dateAddDays(state.originalStart, daysDelta)
+        if (newStart >= newEnd) {
+          newStart = dateAddDays(newEnd, -1)
+        }
+        break
+      case "resize-end":
+        newEnd = dateAddDays(state.originalEnd, daysDelta)
+        if (newEnd <= newStart) {
+          newEnd = dateAddDays(newStart, 1)
+        }
+        break
+    }
+
+    return {
+      startDate: newStart,
+      endDate: newEnd,
+    }
+  }, [columnWidth])
+
+  const flushQueuedDragUpdate = useCallback(() => {
+    dragFrameRef.current = null
+    const clientX = queuedDragClientXRef.current
+    if (clientX === null) return
+
+    setDragState((prev) => {
+      if (!prev) return prev
+
+      const { startDate: newStart, endDate: newEnd } = deriveDragDates(prev, clientX)
+
+      if (isSameDay(newStart, prev.startDate) && isSameDay(newEnd, prev.endDate)) {
+        return prev
+      }
+
+      dragMovedRef.current = true
+      return { ...prev, startDate: newStart, endDate: newEnd }
+    })
+  }, [deriveDragDates])
+
+  const queueDragUpdate = useCallback((clientX: number) => {
+    queuedDragClientXRef.current = clientX
+    if (dragFrameRef.current !== null) return
+    dragFrameRef.current = requestAnimationFrame(flushQueuedDragUpdate)
+  }, [flushQueuedDragUpdate])
+
+  const finalizeDrag = useCallback(() => {
+    if (dragFrameRef.current !== null) {
+      cancelAnimationFrame(dragFrameRef.current)
+      dragFrameRef.current = null
+    }
+
+    const pointerId = activeDragPointerIdRef.current
+    const captureTarget = activeDragCaptureTargetRef.current
+    if (
+      captureTarget &&
+      pointerId !== null &&
+      typeof captureTarget.hasPointerCapture === "function" &&
+      captureTarget.hasPointerCapture(pointerId)
+    ) {
+      captureTarget.releasePointerCapture(pointerId)
+    }
+    activeDragPointerIdRef.current = null
+    activeDragCaptureTargetRef.current = null
+
+    if (dragState) {
+      const { itemId, originalStart, originalEnd } = dragState
+      let finalStartDate = dragState.startDate
+      let finalEndDate = dragState.endDate
+
+      const queuedClientX = queuedDragClientXRef.current
+      if (queuedClientX !== null) {
+        const next = deriveDragDates(dragState, queuedClientX)
+        finalStartDate = next.startDate
+        finalEndDate = next.endDate
+      }
+
+      if (!isSameDay(finalStartDate, dragState.startDate) || !isSameDay(finalEndDate, dragState.endDate)) {
+        dragMovedRef.current = true
+      }
+
+      if (!isSameDay(finalStartDate, originalStart) || !isSameDay(finalEndDate, originalEnd)) {
+        commitDraggedDates(itemId, finalStartDate, finalEndDate)
+      }
+    }
+
+    queuedDragClientXRef.current = null
+
+    if (dragMovedRef.current) {
+      suppressBarClickUntilRef.current = Date.now() + 250
+    }
+    dragMovedRef.current = false
+    setDragState(null)
+  }, [commitDraggedDates, deriveDragDates, dragState])
 
   // Handle drag start for items
-  const handleDragStart = useCallback((e: React.MouseEvent, item: ScheduleItem, type: "move" | "resize-start" | "resize-end") => {
+  const handleDragStart = useCallback((e: React.PointerEvent<HTMLElement>, item: ScheduleItem, type: "move" | "resize-start" | "resize-end") => {
+    if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
+
+    const target = (e.currentTarget as HTMLElement).closest("[data-bar]") as HTMLElement | null
+    const captureTarget = target ?? (e.currentTarget as HTMLElement)
+    captureTarget.setPointerCapture(e.pointerId)
+    activeDragPointerIdRef.current = e.pointerId
+    activeDragCaptureTargetRef.current = captureTarget
     
     const startDate = parseDate(item.start_date) || new Date()
     const endDate = parseDate(item.end_date) || startDate
+    dragMovedRef.current = false
     
     setDragState({
       itemId: item.id,
@@ -414,64 +596,31 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     })
   }, [])
 
-  // Handle drag move for items
-  useEffect(() => {
+  const handleDragPointerMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
     if (!dragState) return
+    if (activeDragPointerIdRef.current !== e.pointerId) return
+    queueDragUpdate(e.clientX)
+  }, [dragState, queueDragUpdate])
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = e.clientX - dragState.startX
-      const daysDelta = Math.round(deltaX / columnWidth)
-      
-      if (daysDelta === 0) return
+  const handleDragPointerUp = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    if (!dragState) return
+    if (activeDragPointerIdRef.current !== null && activeDragPointerIdRef.current !== e.pointerId) return
+    finalizeDrag()
+  }, [dragState, finalizeDrag])
 
-      let newStart = dragState.originalStart
-      let newEnd = dragState.originalEnd
+  const handleDragPointerCancel = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    if (!dragState) return
+    if (activeDragPointerIdRef.current !== null && activeDragPointerIdRef.current !== e.pointerId) return
+    finalizeDrag()
+  }, [dragState, finalizeDrag])
 
-      switch (dragState.type) {
-        case "move":
-          newStart = dateAddDays(dragState.originalStart, daysDelta)
-          newEnd = dateAddDays(dragState.originalEnd, daysDelta)
-          break
-        case "resize-start":
-          newStart = dateAddDays(dragState.originalStart, daysDelta)
-          if (newStart >= newEnd) {
-            newStart = dateAddDays(newEnd, -1)
-          }
-          break
-        case "resize-end":
-          newEnd = dateAddDays(dragState.originalEnd, daysDelta)
-          if (newEnd <= newStart) {
-            newEnd = dateAddDays(newStart, 1)
-          }
-          break
-      }
-
-      setDragState((prev) => prev ? { ...prev, startDate: newStart, endDate: newEnd } : null)
-    }
-
-    const handleMouseUp = async () => {
-      if (dragState) {
-        const { itemId, startDate, endDate, originalStart, originalEnd } = dragState
-        
-        // Only update if dates changed
-        if (!isSameDay(startDate, originalStart) || !isSameDay(endDate, originalEnd)) {
-          await onItemUpdate(itemId, {
-            start_date: toDateString(startDate),
-            end_date: toDateString(endDate),
-          })
-        }
-      }
-      setDragState(null)
-    }
-
-    document.addEventListener("mousemove", handleMouseMove)
-    document.addEventListener("mouseup", handleMouseUp)
-
+  useEffect(() => {
     return () => {
-      document.removeEventListener("mousemove", handleMouseMove)
-      document.removeEventListener("mouseup", handleMouseUp)
+      if (dragFrameRef.current !== null) {
+        cancelAnimationFrame(dragFrameRef.current)
+      }
     }
-  }, [dragState, columnWidth, onItemUpdate])
+  }, [])
 
   // Get dragged position for item
   const getDraggedPosition = useCallback((item: ScheduleItem) => {
@@ -624,10 +773,10 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
         from: { x: fromX, y: fromY },
         to: { x: toX, y: toY },
         type: dep.dependency_type,
-        isCritical: fromItem.is_critical_path && toItem.is_critical_path,
+        isCritical: viewState.showCriticalPath && fromItem.is_critical_path && toItem.is_critical_path,
       }
     }).filter(Boolean)
-  }, [dependencies, items, itemRowIndices, viewState.showDependencies, getBarPosition])
+  }, [dependencies, items, itemRowIndices, viewState.showDependencies, viewState.showCriticalPath, getBarPosition])
 
   // Calculate total height
   const totalHeight = Math.max(totalRows * GANTT_ROW_HEIGHT, 200)
@@ -687,6 +836,13 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
     const width = (Math.abs(endIdx - startIdx) + 1) * columnWidth
     return { left, width }
   }, [dateSelection, columns, columnWidth])
+
+  const handleBarClick = useCallback((e: React.MouseEvent, item: ScheduleItem) => {
+    e.stopPropagation()
+    if (Date.now() < suppressBarClickUntilRef.current) return
+    setSelectedItem(item)
+    onEditItem?.(item)
+  }, [onEditItem, setSelectedItem])
 
   return (
     <TooltipProvider>
@@ -804,6 +960,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                               key={item.id}
                               item={item}
                               isSelected={selectedItem?.id === item.id}
+                              showCriticalPath={viewState.showCriticalPath}
                               onSelect={setSelectedItem}
                             />
                           ))}
@@ -1021,7 +1178,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                           <div
                             data-bar
                             className={cn(
-                              "absolute cursor-pointer z-10",
+                              "absolute cursor-pointer z-10 touch-none select-none",
                               "transition-all duration-200 ease-out",
                               "hover:scale-125 hover:shadow-lg",
                               isSelected && "ring-2 ring-primary ring-offset-2 scale-125",
@@ -1036,12 +1193,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                               transform: "rotate(45deg)",
                               transformOrigin: "center center",
                             }}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setSelectedItem(item)
-                              onEditItem?.(item)
-                            }}
-                            onMouseDown={(e) => handleDragStart(e, item, "move")}
+                            onClick={(e) => handleBarClick(e, item)}
+                            onPointerDown={(e) => handleDragStart(e, item, "move")}
+                            onPointerMove={handleDragPointerMove}
+                            onPointerUp={handleDragPointerUp}
+                            onPointerCancel={handleDragPointerCancel}
                           />
                         </TooltipTrigger>
                         <TooltipContent>
@@ -1062,10 +1218,10 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                         <div
                           data-bar
                           className={cn(
-                            "gantt-task-bar absolute cursor-pointer group z-10",
+                            "gantt-task-bar absolute cursor-pointer group z-10 touch-none select-none",
                             isSelected && "is-selected",
                             isDragging && "is-dragging",
-                            item.is_critical_path && "is-critical",
+                            item.is_critical_path && viewState.showCriticalPath && "is-critical",
                             isCompleted && "is-completed"
                           )}
                           style={{
@@ -1075,12 +1231,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                             height: GANTT_BAR_HEIGHT,
                             backgroundColor: barColor,
                           }}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setSelectedItem(item)
-                            onEditItem?.(item)
-                          }}
-                          onMouseDown={(e) => handleDragStart(e, item, "move")}
+                          onClick={(e) => handleBarClick(e, item)}
+                          onPointerDown={(e) => handleDragStart(e, item, "move")}
+                          onPointerMove={handleDragPointerMove}
+                          onPointerUp={handleDragPointerUp}
+                          onPointerCancel={handleDragPointerCancel}
                         >
                           {/* Progress section */}
                           <div className="gantt-progress-section">
@@ -1107,11 +1262,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
                           {/* Resize handles */}
                           <div
                             className="gantt-resize-handle gantt-resize-handle-left"
-                            onMouseDown={(e) => handleDragStart(e, item, "resize-start")}
+                            onPointerDown={(e) => handleDragStart(e, item, "resize-start")}
                           />
                           <div
                             className="gantt-resize-handle gantt-resize-handle-right"
-                            onMouseDown={(e) => handleDragStart(e, item, "resize-end")}
+                            onPointerDown={(e) => handleDragStart(e, item, "resize-end")}
                           />
                         </div>
                       </TooltipTrigger>

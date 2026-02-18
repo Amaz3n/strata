@@ -37,6 +37,7 @@ import { toast } from "sonner"
 import {
   createScheduleItemAction,
   updateScheduleItemAction,
+  bulkUpdateScheduleItemsAction,
   deleteScheduleItemAction,
   listDependenciesForProjectsAction,
 } from "./actions"
@@ -480,6 +481,18 @@ export function ScheduleClient({ scheduleItems, projects }: ScheduleClientProps)
     []
   )
 
+  const handleItemsBulkUpdate = useCallback(
+    async (updates: { id: string; start_date?: string; end_date?: string; sort_order?: number; progress?: number; status?: ScheduleItem["status"] }[]) => {
+      const updatedItems = await bulkUpdateScheduleItemsAction({ items: updates })
+      if (updatedItems.length > 0) {
+        const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
+        setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
+      }
+      return updatedItems
+    },
+    []
+  )
+
   const handleItemDelete = useCallback(async (id: string) => {
     await deleteScheduleItemAction(id)
     setItems((prev) => prev.filter((item) => item.id !== id))
@@ -522,6 +535,7 @@ export function ScheduleClient({ scheduleItems, projects }: ScheduleClientProps)
             initialItems={filteredItems}
             initialDependencies={dependencies}
             onItemUpdate={handleItemUpdate}
+            onItemsBulkUpdate={handleItemsBulkUpdate}
             onItemCreate={handleItemCreate}
             onItemDelete={handleItemDelete}
           >

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   DndContext,
@@ -19,7 +19,12 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 
 import {
+  completeESignDocumentUploadAction,
+  createESignDocumentUploadUrlAction,
+  createVersionedSourceDocumentDraftAction,
   createDocumentAction,
+  getDraftDocumentByIdAction,
+  getSourceEntityVersionContextAction,
   getSourceEntityDraftAction,
   listEnvelopeRecipientSuggestionsAction,
   saveDocumentDraftEnvelopeAction,
@@ -100,6 +105,7 @@ const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string>
 }
 
 export type EnvelopeWizardSourceEntity = {
+  standalone?: boolean
   type: UnifiedSignableEntityType
   id: string
   project_id: string | null
@@ -116,6 +122,7 @@ interface EnvelopeWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   sourceEntity: EnvelopeWizardSourceEntity | null
+  resumeDocumentId?: string | null
   sheetTitle?: string
   sheetDescription?: string
   sourceLabel?: string
@@ -156,10 +163,38 @@ function hydrateDraftRecipients(recipients: HydrateRecipientPayload[]): Envelope
   })
 }
 
+function uploadFileToSignedUrl(input: {
+  uploadUrl: string
+  file: File
+  onProgress: (percent: number) => void
+}) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("PUT", input.uploadUrl, true)
+    xhr.setRequestHeader("Content-Type", input.file.type || "application/pdf")
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return
+      const percent = Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100)))
+      input.onProgress(percent)
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        input.onProgress(99)
+        resolve()
+        return
+      }
+      reject(new Error(`Upload failed (${xhr.status})`))
+    }
+    xhr.onerror = () => reject(new Error("Upload failed"))
+    xhr.send(input.file)
+  })
+}
+
 export function EnvelopeWizard({
   open,
   onOpenChange,
   sourceEntity,
+  resumeDocumentId = null,
   sheetTitle = "Prepare for signature",
   sheetDescription = "Set up recipients and upload the PDF before placing fields.",
   sourceLabel = "Signable",
@@ -173,12 +208,21 @@ export function EnvelopeWizard({
   const [uploadingPdf, setUploadingPdf] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadDragActive, setUploadDragActive] = useState(false)
+  const [documentType, setDocumentType] = useState<DocumentType>("other")
+  const [nextVersionNumber, setNextVersionNumber] = useState<number | null>(null)
+  const [latestSourceDocumentType, setLatestSourceDocumentType] = useState<DocumentType | null>(null)
   const [hydratingDraft, setHydratingDraft] = useState(false)
   const [movingToFields, setMovingToFields] = useState(false)
+  const [prewarmingFieldsStep, setPrewarmingFieldsStep] = useState(false)
+  const [fieldsStepReady, setFieldsStepReady] = useState(false)
   const [sendingEnvelope, setSendingEnvelope] = useState(false)
   const [recipientSuggestions, setRecipientSuggestions] = useState<RecipientSuggestion[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const draftHydrationRef = useRef(0)
+  const prepareKeyRef = useRef<string | null>(null)
+  const preparePromiseRef = useRef<Promise<void> | null>(null)
+  const prewarmedPdfUrlRef = useRef<string | null>(null)
+  const directUploadDisabledRef = useRef(false)
 
   const [viewerFields, setViewerFields] = useState<ESignFieldDraft[]>([])
   const [viewerDocument, setViewerDocument] = useState<{ id: string; title: string; document_type: string } | null>(null)
@@ -210,9 +254,26 @@ export function EnvelopeWizard({
       activationConstraint: { distance: 8 },
     }),
   )
-  const sourceEntityId = sourceEntity?.id ?? null
-  const sourceEntityType = sourceEntity?.type ?? null
+  const sourceEntityId = sourceEntity?.standalone ? null : (sourceEntity?.id ?? null)
+  const sourceEntityType = sourceEntity?.standalone ? null : (sourceEntity?.type ?? null)
   const sourceEntityTitle = sourceEntity?.title ?? ""
+  const sourceEntityDocumentType = sourceEntity?.document_type ?? "other"
+  const signerRecipientsWithEmail = useMemo(
+    () => signerRecipients.filter((recipient) => recipient.email.trim().length > 0),
+    [signerRecipients],
+  )
+  const recipientSignature = useMemo(
+    () =>
+      JSON.stringify(
+        recipients.map((recipient) => ({
+          role: recipient.role,
+          name: recipient.name.trim(),
+          email: recipient.email.trim().toLowerCase(),
+          signer_role: recipient.signer_role,
+        })),
+      ),
+    [recipients],
+  )
 
   useEffect(() => {
     if (signerRoleOptions.length === 0) return
@@ -231,32 +292,21 @@ export function EnvelopeWizard({
   }, [signerRoleOptions])
 
   useEffect(() => {
-    if (!uploadingPdf) {
-      setUploadProgress(0)
-      return
-    }
-
-    setUploadProgress((prev) => (prev > 0 ? prev : 8))
-    const timer = window.setInterval(() => {
-      setUploadProgress((prev) => Math.min(92, prev + Math.max(2, Math.random() * 10)))
-    }, 180)
-
-    return () => window.clearInterval(timer)
-  }, [uploadingPdf])
-
-  useEffect(() => {
     if (!open) return
     void import("react-pdf").catch(() => null)
   }, [open])
 
   useEffect(() => {
-    if (!open || !sourceEntityId || !sourceEntityType) return
+    if (!open || !resumeDocumentId) return
 
     const hydrationId = draftHydrationRef.current + 1
     draftHydrationRef.current = hydrationId
 
     setPrepareStep("envelope")
     setDocumentTitle(sourceEntityTitle)
+    setDocumentType(sourceEntityDocumentType)
+    setNextVersionNumber(null)
+    setLatestSourceDocumentType(null)
     setSigningOrderEnabled(true)
     setRecipients([createRecipient("signer")])
     setUploadedPdf(null)
@@ -265,6 +315,12 @@ export function EnvelopeWizard({
     setUploadDragActive(false)
     setHydratingDraft(true)
     setMovingToFields(false)
+    setPrewarmingFieldsStep(false)
+    setFieldsStepReady(false)
+    prepareKeyRef.current = null
+    preparePromiseRef.current = null
+    prewarmedPdfUrlRef.current = null
+    directUploadDisabledRef.current = false
     setSendingEnvelope(false)
     setRecipientSuggestions([])
     setViewerFields([])
@@ -274,10 +330,7 @@ export function EnvelopeWizard({
     void (async () => {
       try {
         const [draft, suggestions] = await Promise.all([
-          getSourceEntityDraftAction({
-            source_entity_type: sourceEntityType,
-            source_entity_id: sourceEntityId,
-          }),
+          getDraftDocumentByIdAction(resumeDocumentId),
           listEnvelopeRecipientSuggestionsAction(),
         ])
 
@@ -301,7 +354,8 @@ export function EnvelopeWizard({
           metadata: field.metadata ?? undefined,
         }))
 
-        setDocumentTitle(draft.document.title || sourceEntityTitle)
+        setDocumentTitle(draft.document.title || sourceEntityTitle || "Document")
+        setDocumentType((draft.document.document_type as DocumentType) ?? sourceEntityDocumentType)
         setUploadedPdf({
           id: draft.file.id,
           fileName: draft.file.file_name,
@@ -334,7 +388,111 @@ export function EnvelopeWizard({
         }
       }
     })()
-  }, [open, sourceEntityId, sourceEntityTitle, sourceEntityType])
+  }, [open, resumeDocumentId, sourceEntityDocumentType, sourceEntityTitle])
+
+  useEffect(() => {
+    if (resumeDocumentId) return
+    if (!open || !sourceEntityId || !sourceEntityType) return
+
+    const hydrationId = draftHydrationRef.current + 1
+    draftHydrationRef.current = hydrationId
+
+    setPrepareStep("envelope")
+    setDocumentTitle(sourceEntityTitle)
+    setDocumentType(sourceEntityDocumentType)
+    setNextVersionNumber(null)
+    setLatestSourceDocumentType(null)
+    setSigningOrderEnabled(true)
+    setRecipients([createRecipient("signer")])
+    setUploadedPdf(null)
+    setUploadingPdf(false)
+    setUploadProgress(0)
+    setUploadDragActive(false)
+    setHydratingDraft(true)
+    setMovingToFields(false)
+    setPrewarmingFieldsStep(false)
+    setFieldsStepReady(false)
+    prepareKeyRef.current = null
+    preparePromiseRef.current = null
+    prewarmedPdfUrlRef.current = null
+    directUploadDisabledRef.current = false
+    setSendingEnvelope(false)
+    setRecipientSuggestions([])
+    setViewerFields([])
+    setViewerDocument(null)
+    setViewerFileUrl(null)
+
+    void (async () => {
+      try {
+        const [draft, suggestions, versionContext] = await Promise.all([
+          getSourceEntityDraftAction({
+            source_entity_type: sourceEntityType,
+            source_entity_id: sourceEntityId,
+          }),
+          listEnvelopeRecipientSuggestionsAction(),
+          getSourceEntityVersionContextAction({
+            source_entity_type: sourceEntityType,
+            source_entity_id: sourceEntityId,
+          }),
+        ])
+
+        if (hydrationId !== draftHydrationRef.current) return
+        setRecipientSuggestions(suggestions ?? [])
+        setNextVersionNumber(versionContext?.next_version_number ?? null)
+        setLatestSourceDocumentType((versionContext?.latest_document_type as DocumentType | null) ?? null)
+
+        if (!draft) return
+
+        const mappedFields = (draft.fields ?? []).map((field: any) => ({
+          id: field.id,
+          page_index: field.page_index,
+          field_type: field.field_type,
+          label: field.label ?? undefined,
+          required: field.required ?? true,
+          signer_role: field.signer_role ?? undefined,
+          x: field.x,
+          y: field.y,
+          w: field.w,
+          h: field.h,
+          sort_order: field.sort_order ?? undefined,
+          metadata: field.metadata ?? undefined,
+        }))
+
+        setDocumentTitle(draft.document.title || sourceEntityTitle)
+        setDocumentType((draft.document.document_type as DocumentType) ?? sourceEntityDocumentType)
+        setUploadedPdf({
+          id: draft.file.id,
+          fileName: draft.file.file_name,
+          url: `/api/files/${draft.file.id}/raw`,
+        })
+        setViewerDocument({
+          id: draft.document.id,
+          title: draft.document.title,
+          document_type: draft.document.document_type,
+        })
+        setViewerFields(mappedFields)
+        setViewerFileUrl(`/api/files/${draft.file.id}/raw`)
+        setSigningOrderEnabled(draft.signing_order_enabled !== false)
+
+        const restoredRecipients = hydrateDraftRecipients(draft.recipients ?? [])
+        if (restoredRecipients.length > 0) {
+          setRecipients(restoredRecipients)
+        }
+
+        if (mappedFields.length > 0) {
+          setPrepareStep("fields")
+        }
+      } catch (error: any) {
+        if (hydrationId !== draftHydrationRef.current) return
+        console.error(error)
+        toast.error("Failed to restore draft", { description: error?.message ?? "Please try again." })
+      } finally {
+        if (hydrationId === draftHydrationRef.current) {
+          setHydratingDraft(false)
+        }
+      }
+    })()
+  }, [open, resumeDocumentId, sourceEntityDocumentType, sourceEntityId, sourceEntityTitle, sourceEntityType])
 
   const handleRecipientDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
@@ -397,6 +555,9 @@ export function EnvelopeWizard({
       draftHydrationRef.current += 1
       setPrepareStep("envelope")
       setDocumentTitle(sourceEntity?.title ?? "")
+      setDocumentType(sourceEntity?.document_type ?? "other")
+      setNextVersionNumber(null)
+      setLatestSourceDocumentType(null)
       setSigningOrderEnabled(true)
       setRecipients([createRecipient("signer")])
       setUploadedPdf(null)
@@ -405,6 +566,12 @@ export function EnvelopeWizard({
       setUploadDragActive(false)
       setHydratingDraft(false)
       setMovingToFields(false)
+      setPrewarmingFieldsStep(false)
+      setFieldsStepReady(false)
+      prepareKeyRef.current = null
+      preparePromiseRef.current = null
+      prewarmedPdfUrlRef.current = null
+      directUploadDisabledRef.current = false
       setSendingEnvelope(false)
       setRecipientSuggestions([])
       setViewerFields([])
@@ -431,10 +598,7 @@ export function EnvelopeWizard({
     setUploadingPdf(true)
     setUploadProgress(8)
 
-    try {
-      const formData = new FormData()
-      formData.append("file", file)
-      const uploaded = await uploadESignDocumentFileAction(sourceEntity.project_id, formData)
+    const applyUploadedFile = (uploaded: { id: string }) => {
       setUploadedPdf({
         id: uploaded.id,
         fileName: file.name,
@@ -444,9 +608,53 @@ export function EnvelopeWizard({
       setViewerDocument(null)
       setViewerFields([])
       setViewerFileUrl(null)
-      toast.success("PDF uploaded")
+      setFieldsStepReady(false)
+      prepareKeyRef.current = null
+      preparePromiseRef.current = null
+      prewarmedPdfUrlRef.current = null
+    }
+
+    const uploadWithServerFallback = async () => {
+      const formData = new FormData()
+      formData.append("file", file)
+      const uploaded = await uploadESignDocumentFileAction(sourceEntity.project_id as string, formData)
+      applyUploadedFile(uploaded)
+    }
+
+    try {
+      if (directUploadDisabledRef.current) {
+        await uploadWithServerFallback()
+      } else {
+        try {
+          const directUpload = await createESignDocumentUploadUrlAction({
+            projectId: sourceEntity.project_id,
+            fileName: file.name,
+            fileType: file.type || "application/pdf",
+            fileSize: file.size,
+          })
+
+          await uploadFileToSignedUrl({
+            uploadUrl: directUpload.uploadUrl,
+            file,
+            onProgress: (percent) => setUploadProgress(percent),
+          })
+
+          const uploaded = await completeESignDocumentUploadAction({
+            projectId: sourceEntity.project_id,
+            storagePath: directUpload.storagePath,
+            uploadToken: directUpload.uploadToken,
+            fileName: file.name,
+            fileType: file.type || "application/pdf",
+            fileSize: file.size,
+          })
+          applyUploadedFile(uploaded)
+        } catch {
+          // Usually R2 CORS/network in browser. Disable direct mode for this session.
+          directUploadDisabledRef.current = true
+          await uploadWithServerFallback()
+        }
+      }
     } catch (error: any) {
-      console.error(error)
       toast.error("Failed to upload PDF", { description: error?.message ?? "Please try again." })
       setUploadedPdf(null)
       setUploadProgress(0)
@@ -455,20 +663,188 @@ export function EnvelopeWizard({
     }
   }
 
-  const saveDraftEnvelope = async (documentId: string, nextTitle: string) => {
-    if (!sourceEntity) {
-      throw new Error("Missing source entity")
-    }
-
+  const saveDraftEnvelope = useCallback(async (documentId: string, nextTitle: string) => {
     await saveDocumentDraftEnvelopeAction({
       document_id: documentId,
-      source_entity_type: sourceEntity.type,
-      source_entity_id: sourceEntity.id,
+      ...(sourceEntity?.standalone
+        ? {}
+        : {
+            source_entity_type: sourceEntity?.type,
+            source_entity_id: sourceEntity?.id,
+          }),
       title: nextTitle,
       signing_order_enabled: signingOrderEnabled,
       recipients: serializeDraftRecipients(recipients),
     })
-  }
+  }, [recipients, signingOrderEnabled, sourceEntity])
+
+  const buildPreparationKey = useCallback(() => {
+    const projectId = sourceEntity?.project_id ?? "none"
+    const sourceKey =
+      sourceEntity && !sourceEntity.standalone ? `${sourceEntity.type}:${sourceEntity.id}` : "standalone"
+    const fileId = uploadedPdf?.id ?? "none"
+    const titleKey = (documentTitle.trim() || uploadedPdf?.fileName?.replace(/\.pdf$/i, "") || "").toLowerCase()
+    return [projectId, sourceKey, fileId, documentType, signingOrderEnabled ? "ordered" : "unordered", titleKey, recipientSignature].join("::")
+  }, [documentTitle, documentType, recipientSignature, signingOrderEnabled, sourceEntity, uploadedPdf])
+
+  const prewarmPdfInBackground = useCallback(async (fileUrl: string) => {
+    if (!fileUrl || prewarmedPdfUrlRef.current === fileUrl) return
+
+    try {
+      await fetch(fileUrl, { credentials: "include" }).catch(() => null)
+      const { pdfjs } = await import("react-pdf")
+      pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+      const task = pdfjs.getDocument({ url: fileUrl, withCredentials: true })
+      const pdf = await task.promise
+      pdf.destroy()
+      prewarmedPdfUrlRef.current = fileUrl
+    } catch {
+      // Best-effort prewarm; ignore and allow normal loading path.
+    }
+  }, [])
+
+  const ensurePreparedForFields = useCallback(async (key: string) => {
+    if (!sourceEntity?.project_id || !uploadedPdf) return false
+
+    if (fieldsStepReady && prepareKeyRef.current === key && viewerDocument && viewerFileUrl === uploadedPdf.url) {
+      return true
+    }
+
+    if (preparePromiseRef.current && prepareKeyRef.current === key) {
+      await preparePromiseRef.current
+      return true
+    }
+
+    const run = async () => {
+      setPrewarmingFieldsStep(true)
+      try {
+        const draftTitle = documentTitle.trim() || uploadedPdf.fileName.replace(/\.pdf$/i, "")
+        const draftRecipients = serializeDraftRecipients(recipients)
+        let activeDocument = viewerDocument
+        const needsNewDocumentForTypeChange = !!activeDocument && activeDocument.document_type !== documentType
+
+        if (!activeDocument || needsNewDocumentForTypeChange) {
+          const linkedSourceMetadata =
+            sourceEntity && !sourceEntity.standalone
+              ? (() => {
+                  const metadataEntityKey = sourceEntityMetadataIdKeyByType[sourceEntity.type]
+                  return {
+                    source_entity_type: sourceEntity.type,
+                    source_entity_id: sourceEntity.id,
+                    metadata: {
+                      [metadataEntityKey]: sourceEntity.id,
+                      source_entity_type: sourceEntity.type,
+                      source_entity_id: sourceEntity.id,
+                    },
+                  }
+                })()
+              : null
+
+          const draftMetadata = {
+            ...(linkedSourceMetadata?.metadata ?? {}),
+            draft_recipients: draftRecipients,
+            draft_signing_order_enabled: signingOrderEnabled,
+          }
+
+          const document = linkedSourceMetadata
+            ? (
+                await createVersionedSourceDocumentDraftAction({
+                  project_id: sourceEntity.project_id,
+                  document_type: documentType,
+                  title: draftTitle,
+                  source_file_id: uploadedPdf.id,
+                  source_entity_type: linkedSourceMetadata.source_entity_type,
+                  source_entity_id: linkedSourceMetadata.source_entity_id,
+                  metadata: draftMetadata,
+                })
+              ).document
+            : await createDocumentAction({
+                project_id: sourceEntity.project_id,
+                document_type: documentType,
+                title: draftTitle,
+                source_file_id: uploadedPdf.id,
+                metadata: draftMetadata,
+              })
+
+          activeDocument = { id: document.id, title: document.title, document_type: document.document_type }
+          setViewerDocument(activeDocument)
+          setViewerFields([])
+          setViewerFileUrl(uploadedPdf.url)
+        } else if (viewerFileUrl !== uploadedPdf.url) {
+          setViewerFileUrl(uploadedPdf.url)
+        }
+
+        if (!activeDocument) {
+          throw new Error("Draft document is unavailable")
+        }
+
+        await saveDraftEnvelope(activeDocument.id, draftTitle)
+        await prewarmPdfInBackground(uploadedPdf.url)
+        setFieldsStepReady(true)
+      } finally {
+        setPrewarmingFieldsStep(false)
+      }
+    }
+
+    prepareKeyRef.current = key
+    preparePromiseRef.current = run()
+    try {
+      await preparePromiseRef.current
+      return true
+    } finally {
+      if (prepareKeyRef.current === key) {
+        preparePromiseRef.current = null
+      }
+    }
+  }, [
+    documentTitle,
+    documentType,
+    fieldsStepReady,
+    recipients,
+    saveDraftEnvelope,
+    signingOrderEnabled,
+    sourceEntity,
+    uploadedPdf,
+    viewerDocument,
+    viewerFileUrl,
+    prewarmPdfInBackground,
+  ])
+
+  useEffect(() => {
+    if (!open || prepareStep !== "envelope") return
+    if (!sourceEntity?.project_id || !uploadedPdf || uploadingPdf || hydratingDraft || movingToFields || sendingEnvelope) {
+      return
+    }
+
+    const key = buildPreparationKey()
+    if (prepareKeyRef.current !== key) {
+      setFieldsStepReady(false)
+    }
+
+    const timer = window.setTimeout(() => {
+      void ensurePreparedForFields(key).catch(() => {
+        // Keep the manual Next path available; errors surface there.
+      })
+    }, 320)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    buildPreparationKey,
+    documentTitle,
+    documentType,
+    hydratingDraft,
+    movingToFields,
+    open,
+    prepareStep,
+    recipientSignature,
+    ensurePreparedForFields,
+    sendingEnvelope,
+    signerRecipientsWithEmail.length,
+    signingOrderEnabled,
+    sourceEntity,
+    uploadedPdf,
+    uploadingPdf,
+  ])
 
   const goToFieldPlacement = async () => {
     if (!sourceEntity?.project_id) {
@@ -480,48 +856,19 @@ export function EnvelopeWizard({
       return
     }
 
-    const signersWithEmail = signerRecipients.filter((recipient) => recipient.email.trim().length > 0)
-    if (signersWithEmail.length === 0) {
+    if (signerRecipientsWithEmail.length === 0) {
       toast.error("Add at least one signer email")
       return
     }
 
     setMovingToFields(true)
     try {
-      const draftTitle = documentTitle.trim() || uploadedPdf.fileName.replace(/\.pdf$/i, "")
-      const draftRecipients = serializeDraftRecipients(recipients)
-      let activeDocument = viewerDocument
-
-      if (!activeDocument) {
-        const metadataEntityKey = sourceEntityMetadataIdKeyByType[sourceEntity.type]
-        const document = await createDocumentAction({
-          project_id: sourceEntity.project_id,
-          document_type: sourceEntity.document_type,
-          title: draftTitle,
-          source_file_id: uploadedPdf.id,
-          source_entity_type: sourceEntity.type,
-          source_entity_id: sourceEntity.id,
-          metadata: {
-            [metadataEntityKey]: sourceEntity.id,
-            source_entity_type: sourceEntity.type,
-            source_entity_id: sourceEntity.id,
-            draft_recipients: draftRecipients,
-            draft_signing_order_enabled: signingOrderEnabled,
-          },
-        })
-
-        const hydratedDocument = { id: document.id, title: document.title, document_type: document.document_type }
-        activeDocument = hydratedDocument
-        setViewerDocument(hydratedDocument)
-        setViewerFields([])
-        setViewerFileUrl(uploadedPdf.url)
+      const key = buildPreparationKey()
+      const prepared = await ensurePreparedForFields(key)
+      if (!prepared) {
+        toast.error("Complete recipients and upload a PDF first")
+        return
       }
-
-      if (!activeDocument) {
-        throw new Error("Draft document is unavailable")
-      }
-
-      await saveDraftEnvelope(activeDocument.id, draftTitle)
       setPrepareStep("fields")
     } catch (error: any) {
       console.error(error)
@@ -678,6 +1025,30 @@ export function EnvelopeWizard({
                 </div>
 
                 <div className="space-y-2">
+                  <Label>Document type</Label>
+                  <Select value={documentType} onValueChange={(value) => setDocumentType(value as DocumentType)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select document type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="proposal">Proposal</SelectItem>
+                      <SelectItem value="contract">Contract</SelectItem>
+                      <SelectItem value="change_order">Change order</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {sourceEntity && !sourceEntity.standalone && latestSourceDocumentType && latestSourceDocumentType !== documentType ? (
+                    <p className="text-xs text-amber-700">
+                      Changing type from {latestSourceDocumentType.replaceAll("_", " ")} to{" "}
+                      {documentType.replaceAll("_", " ")} creates a new version. Older versions remain visible.
+                    </p>
+                  ) : null}
+                  {sourceEntity && !sourceEntity.standalone && nextVersionNumber ? (
+                    <p className="text-xs text-muted-foreground">This draft will be saved as version {nextVersionNumber}.</p>
+                  ) : null}
+                </div>
+
+                <div className="space-y-2">
                   <Label>PDF file</Label>
                   <input
                     ref={fileInputRef}
@@ -718,12 +1089,17 @@ export function EnvelopeWizard({
                     {uploadingPdf && (
                       <div className="mx-auto mt-3 w-full max-w-sm space-y-1.5">
                         <Progress value={uploadProgress} className="h-1.5" />
-                        <p className="text-xs text-muted-foreground">Uploading PDF... {Math.round(uploadProgress)}%</p>
+                        <p className="text-xs text-muted-foreground">
+                          {uploadProgress >= 96 ? "Finalizing upload..." : "Uploading PDF..."}
+                        </p>
                       </div>
                     )}
                     {uploadedPdf && !uploadingPdf && (
                       <p className="mt-2 text-xs text-emerald-600">Uploaded: {uploadedPdf.fileName}</p>
                     )}
+                    {prewarmingFieldsStep ? (
+                      <p className="mt-1 text-xs text-muted-foreground">Preloading next step...</p>
+                    ) : null}
                   </div>
                 </div>
 
@@ -780,10 +1156,35 @@ export function EnvelopeWizard({
 
             <div className="border-t px-6 py-4 flex items-center justify-end">
               <Button type="button" onClick={() => void goToFieldPlacement()} disabled={!canAdvanceToFields || movingToFields}>
-                {hydratingDraft || movingToFields ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                {hydratingDraft ? "Restoring draft..." : movingToFields ? "Opening field placement..." : "Next: Place fields"}
+                {hydratingDraft || movingToFields || prewarmingFieldsStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {hydratingDraft
+                  ? "Restoring draft..."
+                  : movingToFields
+                    ? "Opening field placement..."
+                    : prewarmingFieldsStep
+                      ? "Preloading..."
+                      : fieldsStepReady
+                        ? "Next: Place fields"
+                        : "Next: Place fields"}
               </Button>
             </div>
+
+            {viewerDocument && viewerFileUrl ? (
+              <div className="h-0 overflow-hidden pointer-events-none opacity-0">
+                <ESignDocumentViewer
+                  open
+                  title={viewerDocument.title}
+                  documentType={viewerDocument.document_type}
+                  fileUrl={viewerFileUrl}
+                  fields={viewerFields}
+                  setFields={setViewerFields}
+                  onSave={() => undefined}
+                  signerRoles={signerRoleOptions}
+                  embedded
+                  className="h-0"
+                />
+              </div>
+            ) : null}
           </>
         ) : (
           <div className="flex-1 min-h-0 -mt-px">

@@ -47,6 +47,16 @@ export const revokePortalTokenInputSchema = z.object({
   project_id: z.string().uuid(),
 })
 
+export const pausePortalTokenInputSchema = z.object({
+  token_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+})
+
+export const resumePortalTokenInputSchema = z.object({
+  token_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+})
+
 export const setPortalTokenPinSchema = z.object({
   token_id: z.string().uuid(),
   pin: z
@@ -55,11 +65,20 @@ export const setPortalTokenPinSchema = z.object({
     .regex(/^[0-9]{4,6}$/, "PIN must be 4-6 digits"),
 })
 
+export const setPortalTokenRequireAccountSchema = z.object({
+  token_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  require_account: z.boolean(),
+})
+
 export const removePortalTokenPinSchema = z.object({
   token_id: z.string().uuid(),
 })
 
 export type CreatePortalTokenInput = z.infer<typeof createPortalTokenInputSchema>
 export type RevokePortalTokenInput = z.infer<typeof revokePortalTokenInputSchema>
+export type PausePortalTokenInput = z.infer<typeof pausePortalTokenInputSchema>
+export type ResumePortalTokenInput = z.infer<typeof resumePortalTokenInputSchema>
 export type SetPortalTokenPinInput = z.infer<typeof setPortalTokenPinSchema>
+export type SetPortalTokenRequireAccountInput = z.infer<typeof setPortalTokenRequireAccountSchema>
 export type RemovePortalTokenPinInput = z.infer<typeof removePortalTokenPinSchema>

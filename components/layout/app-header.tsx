@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { CommandSearch } from "@/components/layout/command-search"
+import { GlobalTasksSheet } from "@/components/tasks/global-tasks-sheet"
 import { NotificationBell } from "@/components/notifications/notification-bell"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -90,6 +91,7 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
 
         {/* Right section - Actions */}
         <div className="flex items-center gap-2 px-4 flex-1 justify-end">
+          <GlobalTasksSheet />
           <NotificationBell />
         </div>
       </div>
@@ -110,6 +112,7 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
           <CommandSearch />
+          <GlobalTasksSheet />
           <NotificationBell />
         </div>
       </div>

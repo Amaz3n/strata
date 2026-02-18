@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { format } from "date-fns"
@@ -119,6 +119,40 @@ const itemTypeIcons: Record<string, typeof CheckSquare> = {
   delivery: Truck,
 }
 
+const TRADE_SYNONYMS: Record<string, string> = {
+  electrician: "electrical",
+  electrical_contractor: "electrical",
+  plumber: "plumbing",
+  plumbing_contractor: "plumbing",
+  mechanical: "hvac",
+  drywall_finisher: "drywall",
+  painter: "painting",
+  flooring_installer: "flooring",
+  tile_installer: "tile",
+  landscaper: "landscaping",
+  subcontractor: "other",
+  vendor: "other",
+}
+
+function normalizeTradeCandidate(value?: string) {
+  if (!value) return undefined
+  return value
+    .toLowerCase()
+    .replace(/\(.*?\)/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+}
+
+function inferTradeFromResource(resource: AssignableResource | null | undefined) {
+  if (!resource?.role) return undefined
+  const normalized = normalizeTradeCandidate(resource.role)
+  if (!normalized) return undefined
+  const direct = constructionTrades.find((trade) => trade === normalized)
+  if (direct) return direct
+  return TRADE_SYNONYMS[normalized]
+}
+
 export function ScheduleItemSheet({
   open,
   onOpenChange,
@@ -153,10 +187,12 @@ export function ScheduleItemSheet({
   // Cost code state
   const [costCodes, setCostCodes] = useState<CostCode[]>([])
   const [loadingCostCodes, setLoadingCostCodes] = useState(false)
+  const [expandedSection, setExpandedSection] = useState<string>("")
 
   const isEditing = !!item
   const isMasterScheduleMode = !!projects && projects.length > 0
   const activeProjectId = isEditing ? item.project_id : selectedProjectId
+  const autoTradeRef = useRef<string | undefined>(undefined)
 
   // Update selected project when projectId prop changes
   useEffect(() => {
@@ -176,17 +212,6 @@ export function ScheduleItemSheet({
     }
   }, [open, activeProjectId])
 
-  // Load cost codes when sheet opens
-  useEffect(() => {
-    if (open) {
-      setLoadingCostCodes(true)
-      listCostCodesAction()
-        .then(setCostCodes)
-        .catch(console.error)
-        .finally(() => setLoadingCostCodes(false))
-    }
-  }, [open])
-
   // Group resources by type for display
   const groupedResources = {
     users: assignableResources.filter(r => r.type === "user"),
@@ -195,11 +220,11 @@ export function ScheduleItemSheet({
   }
 
   // Get selected resource info for display
-  const getSelectedResource = (value: string | undefined) => {
+  const getSelectedResource = useCallback((value: string | undefined) => {
     if (!value) return null
     const [type, id] = value.split(":")
     return assignableResources.find((r) => r.id === id && r.type === type)
-  }
+  }, [assignableResources])
 
   // Get initials for avatar
   const getInitials = (name: string) => {
@@ -301,6 +326,47 @@ export function ScheduleItemSheet({
   }, [item, activeProjectId, form, initialDates])
 
   const isInspection = form.watch("item_type") === "inspection"
+  const assignedToValue = form.watch("assigned_to")
+  const watchedTrade = form.watch("trade")
+  const watchedCostCodeId = form.watch("cost_code_id")
+  const watchedBudgetCents = form.watch("budget_cents")
+  const watchedActualCostCents = form.watch("actual_cost_cents")
+  const budgetDataPresent = Boolean(watchedCostCodeId || watchedBudgetCents || watchedActualCostCents)
+
+  // Load cost codes only when budget data is relevant to avoid extra sheet-open latency.
+  useEffect(() => {
+    const shouldLoadCostCodes =
+      open &&
+      (expandedSection === "budget-costs" || budgetDataPresent) &&
+      !loadingCostCodes &&
+      costCodes.length === 0
+
+    if (!shouldLoadCostCodes) return
+
+    setLoadingCostCodes(true)
+    listCostCodesAction()
+      .then(setCostCodes)
+      .catch(console.error)
+      .finally(() => setLoadingCostCodes(false))
+  }, [open, expandedSection, budgetDataPresent, loadingCostCodes, costCodes.length])
+
+  // Keep trade lightweight by inferring it from assignee metadata when possible.
+  useEffect(() => {
+    const selectedAssignee = getSelectedResource(assignedToValue as string | undefined)
+    const inferredTrade = inferTradeFromResource(selectedAssignee)
+    const currentTrade = form.getValues("trade")
+
+    if (inferredTrade && (!currentTrade || currentTrade === autoTradeRef.current)) {
+      form.setValue("trade", inferredTrade, { shouldDirty: true })
+      autoTradeRef.current = inferredTrade
+      return
+    }
+
+    if (!inferredTrade && currentTrade === autoTradeRef.current) {
+      form.setValue("trade", undefined, { shouldDirty: true })
+      autoTradeRef.current = undefined
+    }
+  }, [assignedToValue, form, getSelectedResource])
 
   useEffect(() => {
     if (!open || !isEditing || !item || !isInspection) return
@@ -743,10 +809,11 @@ export function ScheduleItemSheet({
                       />
                     </PopoverContent>
                   </Popover>
+                  <FormDescription>End date is inclusive.</FormDescription>
                 </FormItem>
 
-                {/* Assign To and Trade */}
-                <div className="grid grid-cols-2 gap-4">
+                {/* Assign To */}
+                <div className="space-y-2">
                   <FormField
                     control={form.control}
                     name="assigned_to"
@@ -880,35 +947,14 @@ export function ScheduleItemSheet({
                       )
                     }}
                   />
-
-                  <FormField
-                    control={form.control}
-                    name="trade"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Trade</FormLabel>
-                        <Select
-                          onValueChange={(value) => field.onChange(value === "__none__" ? undefined : value)}
-                          value={field.value || "__none__"}
-                        >
-                          <FormControl>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select trade" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="__none__">None</SelectItem>
-                            {constructionTrades.map((trade) => (
-                              <SelectItem key={trade} value={trade}>
-                                <span className="capitalize">{trade.replace(/_/g, " ")}</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {watchedTrade && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant="secondary" className="capitalize">
+                        {watchedTrade.replace(/_/g, " ")}
+                      </Badge>
+                      <span>Trade inferred from assignee (editable in Advanced Options)</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Progress - Only show when editing */}
@@ -939,7 +985,13 @@ export function ScheduleItemSheet({
 
 
                 {/* Advanced Options */}
-                <Accordion type="single" collapsible className="w-full">
+                <Accordion
+                  type="single"
+                  collapsible
+                  value={expandedSection}
+                  onValueChange={setExpandedSection}
+                  className="w-full"
+                >
                   <AccordionItem value="advanced">
                     <AccordionTrigger className="text-sm">
                       Advanced Options
@@ -955,6 +1007,37 @@ export function ScheduleItemSheet({
                             <FormControl>
                               <Input placeholder="e.g., Building A, Floor 2" {...field} value={field.value || ""} />
                             </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {/* Trade (optional override) */}
+                      <FormField
+                        control={form.control}
+                        name="trade"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Trade (Optional)</FormLabel>
+                            <Select
+                              onValueChange={(value) => field.onChange(value === "__none__" ? undefined : value)}
+                              value={field.value || "__none__"}
+                            >
+                              <FormControl>
+                                <SelectTrigger className="w-full">
+                                  <SelectValue placeholder="Select trade" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="__none__">None</SelectItem>
+                                {constructionTrades.map((trade) => (
+                                  <SelectItem key={trade} value={trade}>
+                                    <span className="capitalize">{trade.replace(/_/g, " ")}</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <FormDescription>Auto-filled from assignee when possible.</FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -1134,11 +1217,11 @@ export function ScheduleItemSheet({
                     <AccordionTrigger className="text-sm">
                       <div className="flex items-center gap-2">
                         <DollarSign className="h-4 w-4" />
-                        Budget & Costs
-                        {form.watch("budget_cents") && (
+                        Budget & Costs (Optional)
+                        {watchedBudgetCents && (
                           <Badge variant="secondary" className="ml-1 font-mono text-[10px]">
                             {formatAmount({
-                              amount: (form.watch("budget_cents") ?? 0) / 100,
+                              amount: (watchedBudgetCents ?? 0) / 100,
                               currency: "USD",
                               minimumFractionDigits: 0,
                             })}
@@ -1252,16 +1335,16 @@ export function ScheduleItemSheet({
 
                       {/* Variance Display - Only show when both budget and actual are set */}
                       {isEditing &&
-                        form.watch("budget_cents") &&
-                        form.watch("actual_cost_cents") && (
+                        watchedBudgetCents &&
+                        watchedActualCostCents && (
                           <div className="rounded-lg border p-3 bg-muted/30">
                             <div className="flex items-center justify-between">
                               <span className="text-sm font-medium">Variance</span>
                               <span
                                 className={cn(
                                   "font-semibold",
-                                  (form.watch("budget_cents") ?? 0) -
-                                    (form.watch("actual_cost_cents") ?? 0) <
+                                  (watchedBudgetCents ?? 0) -
+                                    (watchedActualCostCents ?? 0) <
                                     0
                                     ? "text-red-600 dark:text-red-400"
                                     : "text-emerald-600 dark:text-emerald-400"
@@ -1269,8 +1352,8 @@ export function ScheduleItemSheet({
                               >
                                 {formatAmount({
                                   amount:
-                                    ((form.watch("budget_cents") ?? 0) -
-                                      (form.watch("actual_cost_cents") ?? 0)) /
+                                    ((watchedBudgetCents ?? 0) -
+                                      (watchedActualCostCents ?? 0)) /
                                     100,
                                   currency: "USD",
                                   minimumFractionDigits: 0,
@@ -1279,8 +1362,8 @@ export function ScheduleItemSheet({
                               </span>
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
-                              {(form.watch("budget_cents") ?? 0) -
-                                (form.watch("actual_cost_cents") ?? 0) <
+                              {(watchedBudgetCents ?? 0) -
+                                (watchedActualCostCents ?? 0) <
                               0
                                 ? "Over budget"
                                 : "Under budget"}

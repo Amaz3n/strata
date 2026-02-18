@@ -20,7 +20,7 @@ import type {
 import type { ScheduleItemInput } from "@/lib/validation/schedule"
 import type { TaskInput } from "@/lib/validation/tasks"
 import type { DailyLogEntryInput, DailyLogInput } from "@/lib/validation/daily-logs"
-import { scheduleItemInputSchema } from "@/lib/validation/schedule"
+import { scheduleItemInputSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
 import { taskInputSchema } from "@/lib/validation/tasks"
 import { dailyLogInputSchema } from "@/lib/validation/daily-logs"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
@@ -39,10 +39,16 @@ import {
   ensureOrgScopedPath,
   uploadFilesObject,
 } from "@/lib/storage/files-storage"
-import { listTemplates as listScheduleTemplates, applyTemplate as applyScheduleTemplate } from "@/lib/services/schedule"
+import {
+  listTemplates as listScheduleTemplates,
+  applyTemplate as applyScheduleTemplate,
+  bulkUpdateScheduleItems,
+} from "@/lib/services/schedule"
 import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule } from "@/lib/services/draws"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
+import { AuthorizationError } from "@/lib/services/authorization"
+import { sendEmail } from "@/lib/services/mailer"
 import { z } from "zod"
 
 export interface ProjectStats {
@@ -114,6 +120,13 @@ export interface ProjectActivity {
   payload: Record<string, any>
   created_at: string
   actor_name?: string
+}
+
+const EXTERNAL_PROJECT_ROLE_KEYS = new Set(["client", "project_client", "portal_client", "sub", "portal_sub"])
+
+function isInternalProjectRoleKey(key: string | null | undefined) {
+  if (!key) return false
+  return !EXTERNAL_PROJECT_ROLE_KEYS.has(key)
 }
 
 function mapProject(row: any): Project {
@@ -398,16 +411,102 @@ export async function createClientContactAndAssignAction(projectId: string, inpu
   return contact
 }
 
+export async function sendClientPortalInviteAction(input: {
+  projectId: string
+  portalTokenId: string
+  contactId?: string
+}) {
+  const { supabase, orgId } = await requireOrgContext()
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: tokenRow, error: tokenError } = await serviceClient
+    .from("portal_access_tokens")
+    .select("id, project_id, org_id, portal_type, token, contact_id, revoked_at")
+    .eq("org_id", orgId)
+    .eq("project_id", input.projectId)
+    .eq("id", input.portalTokenId)
+    .eq("portal_type", "client")
+    .maybeSingle()
+
+  if (tokenError || !tokenRow) {
+    throw new Error("Client portal token not found")
+  }
+
+  if (tokenRow.revoked_at) {
+    throw new Error("Client portal token is revoked")
+  }
+
+  const contactId = input.contactId ?? tokenRow.contact_id ?? null
+  if (!contactId) {
+    throw new Error("Select a client contact with an email before sending an invite")
+  }
+
+  const [{ data: contactRow, error: contactError }, { data: projectRow }, { data: orgRow }] = await Promise.all([
+    supabase
+      .from("contacts")
+      .select("id, full_name, email")
+      .eq("org_id", orgId)
+      .eq("id", contactId)
+      .maybeSingle(),
+    supabase
+      .from("projects")
+      .select("id, name")
+      .eq("org_id", orgId)
+      .eq("id", input.projectId)
+      .maybeSingle(),
+    supabase
+      .from("orgs")
+      .select("id, name")
+      .eq("id", orgId)
+      .maybeSingle(),
+  ])
+
+  if (contactError || !contactRow) {
+    throw new Error("Client contact not found")
+  }
+
+  if (!contactRow.email) {
+    throw new Error("Selected client contact does not have an email")
+  }
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
+  const portalUrl = appUrl ? `${appUrl}/p/${tokenRow.token}` : `/p/${tokenRow.token}`
+  const projectName = projectRow?.name ?? "your project"
+  const orgName = orgRow?.name ?? "Arc"
+  const recipientName = contactRow.full_name?.trim() || "there"
+
+  await sendEmail({
+    to: [contactRow.email],
+    subject: `Your project portal is ready: ${projectName}`,
+    html: `
+      <p>Hi ${recipientName},</p>
+      <p>Your builder shared your project portal for <strong>${projectName}</strong>.</p>
+      <p><a href="${portalUrl}">Open your portal</a></p>
+      <p>If the button does not work, copy this link into your browser:</p>
+      <p>${portalUrl}</p>
+      <p>Sent from ${orgName} via Arc.</p>
+    `,
+  })
+
+  return {
+    success: true,
+    portal_url: portalUrl,
+    sent_to: contactRow.email,
+  }
+}
+
 export async function setProjectManagerAction(projectId: string, projectUserId: string) {
   const { supabase, orgId, userId } = await requireOrgContext()
 
-  const { data: roles, error: rolesError } = await supabase
+  const { data: roleRows, error: rolesError } = await supabase
     .from("roles")
     .select("id, key")
     .eq("scope", "project")
     .order("label", { ascending: true })
 
-  if (rolesError || !roles?.length) {
+  const roles = (roleRows ?? []).filter((role) => isInternalProjectRoleKey(role.key))
+
+  if (rolesError || !roles.length) {
     throw new Error("Project roles are not configured")
   }
 
@@ -427,10 +526,10 @@ export async function setProjectManagerAction(projectId: string, projectUserId: 
 
   await supabase
     .from("project_members")
-    .update({ role_id: fallbackRole.id, role: fallbackRole.key })
+    .update({ role_id: fallbackRole.id })
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .or(`role.eq.${pmRole.key},role_id.eq.${pmRole.id}`)
+    .eq("role_id", pmRole.id)
     .neq("user_id", projectUserId)
 
   const { error: upsertError } = await supabase
@@ -441,7 +540,6 @@ export async function setProjectManagerAction(projectId: string, projectUserId: 
         project_id: projectId,
         user_id: projectUserId,
         role_id: pmRole.id,
-        role: pmRole.key,
         status: "active",
       },
       { onConflict: "project_id,user_id" },
@@ -501,9 +599,43 @@ const drawUpsertSchema = z.object({
   due_trigger_label: z.string().nullable().optional(),
 })
 
+async function getLatestActiveProjectContractForDraws({
+  supabase,
+  orgId,
+  projectId,
+}: {
+  supabase: any
+  orgId: string
+  projectId: string
+}) {
+  const { data, error } = await supabase
+    .from("contracts")
+    .select("id, total_cents, status, signed_at")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load project contract: ${error.message}`)
+  }
+
+  return data
+}
+
 export async function createProjectDrawAction(projectId: string, input: unknown): Promise<DrawSchedule> {
   const parsed = drawUpsertSchema.parse(input)
   const { supabase, orgId } = await requireOrgContext()
+  const activeContract = await getLatestActiveProjectContractForDraws({ supabase, orgId, projectId })
+
+  if (parsed.amount_cents <= 0) {
+    throw new Error("Draw amount must be greater than $0.")
+  }
+  if (parsed.percent_of_contract != null && !activeContract?.id) {
+    throw new Error("A contract is required before creating percent-based draws.")
+  }
 
   let drawNumber = parsed.draw_number
   if (!drawNumber) {
@@ -548,6 +680,7 @@ export async function createProjectDrawAction(projectId: string, input: unknown)
       due_trigger: parsed.due_trigger,
       due_date: parsed.due_trigger === "date" ? (parsed.due_date ?? null) : null,
       milestone_id: parsed.due_trigger === "milestone" ? (parsed.milestone_id ?? null) : null,
+      contract_id: activeContract?.id ?? null,
       status: "pending",
       metadata,
     })
@@ -565,10 +698,18 @@ export async function createProjectDrawAction(projectId: string, input: unknown)
 export async function updateProjectDrawAction(projectId: string, drawId: string, input: unknown): Promise<DrawSchedule> {
   const parsed = drawUpsertSchema.parse(input)
   const { supabase, orgId } = await requireOrgContext()
+  const activeContract = await getLatestActiveProjectContractForDraws({ supabase, orgId, projectId })
+
+  if (parsed.amount_cents <= 0) {
+    throw new Error("Draw amount must be greater than $0.")
+  }
+  if (parsed.percent_of_contract != null && !activeContract?.id) {
+    throw new Error("A contract is required before creating percent-based draws.")
+  }
 
   const { data: existing, error: existingError } = await supabase
     .from("draw_schedules")
-    .select("id, status, invoice_id, metadata")
+    .select("id, status, invoice_id, contract_id, metadata")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("id", drawId)
@@ -612,6 +753,7 @@ export async function updateProjectDrawAction(projectId: string, drawId: string,
     due_trigger: parsed.due_trigger,
     due_date: parsed.due_trigger === "date" ? (parsed.due_date ?? null) : null,
     milestone_id: parsed.due_trigger === "milestone" ? (parsed.milestone_id ?? null) : null,
+    contract_id: existing.contract_id ?? activeContract?.id ?? null,
     metadata: nextMetadata,
   }
   if (parsed.draw_number) updates.draw_number = parsed.draw_number
@@ -765,6 +907,9 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
   } catch (err) {
     if (next.reservation_id) {
       await releaseInvoiceNumberReservation(next.reservation_id, orgId)
+    }
+    if (err instanceof AuthorizationError) {
+      throw new Error(`AUTH_FORBIDDEN:${err.reasonCode}`)
     }
     throw err
   }
@@ -1438,7 +1583,9 @@ export async function getProjectTeamAction(projectId: string): Promise<ProjectTe
     return []
   }
 
-  return (data ?? []).map(row => ({
+  return (data ?? [])
+    .filter((row) => isInternalProjectRoleKey((row.roles as any)?.key))
+    .map(row => ({
     id: row.id,
     user_id: row.user_id,
     full_name: (row.app_users as any)?.full_name ?? "Unknown",
@@ -1465,7 +1612,9 @@ export async function getProjectRolesAction(): Promise<ProjectRoleOption[]> {
     return []
   }
 
-  return (data ?? []).map(role => ({
+  return (data ?? [])
+    .filter(role => isInternalProjectRoleKey(role.key))
+    .map(role => ({
     id: role.id,
     key: role.key,
     label: role.label,
@@ -1525,7 +1674,9 @@ export async function getProjectTeamDirectoryAction(
     console.error("Failed to load org members:", orgMemberError.message)
   }
 
-  const roles: ProjectRoleOption[] = (resolvedRoleRows ?? []).map(role => ({
+  const roles: ProjectRoleOption[] = (resolvedRoleRows ?? [])
+    .filter(role => isInternalProjectRoleKey(role.key))
+    .map(role => ({
     id: role.id,
     key: role.key,
     label: role.label,
@@ -1535,7 +1686,9 @@ export async function getProjectTeamDirectoryAction(
   const rolesById = new Map(roles.map(role => [role.id, role]))
 
   const memberMap = new Map(
-    (projectMemberRows ?? []).map(row => [
+    (projectMemberRows ?? [])
+      .filter((row) => isInternalProjectRoleKey((row.roles as any)?.key))
+      .map(row => [
       row.user_id,
       {
         id: row.id as string,
@@ -1620,20 +1773,22 @@ export async function addProjectMembersAction(
     return []
   }
 
-  const { data: roleRow } = await supabase
+  const { data: roleRow, error: roleError } = await supabase
     .from("roles")
-    .select("key")
+    .select("id, key")
+    .eq("scope", "project")
     .eq("id", payload.roleId)
     .maybeSingle()
 
-  const roleKey = roleRow?.key as string | undefined
+  if (roleError || !roleRow || !isInternalProjectRoleKey(roleRow.key)) {
+    throw new Error("Select a valid internal project role")
+  }
 
   const rows = payload.userIds.map(userIdValue => ({
     org_id: orgId,
     project_id: projectId,
     user_id: userIdValue,
     role_id: payload.roleId,
-    role: roleKey ?? null,
     status: "active",
   }))
 
@@ -1711,17 +1866,20 @@ export async function updateProjectMemberRoleAction(
     throw new Error("Project member not found")
   }
 
-  const { data: roleRow } = await supabase
+  const { data: roleRow, error: roleError } = await supabase
     .from("roles")
-    .select("key")
+    .select("id, key")
+    .eq("scope", "project")
     .eq("id", roleId)
     .maybeSingle()
 
-  const roleKey = roleRow?.key as string | undefined
+  if (roleError || !roleRow || !isInternalProjectRoleKey(roleRow.key)) {
+    throw new Error("Select a valid internal project role")
+  }
 
   const { data, error } = await supabase
     .from("project_members")
-    .update({ role_id: roleId, role: roleKey ?? null, status: "active" })
+    .update({ role_id: roleId, status: "active" })
     .eq("org_id", orgId)
     .eq("id", memberId)
     .select(`
@@ -2098,6 +2256,37 @@ export async function updateProjectScheduleItemAction(
     color: data.color ?? undefined,
     sort_order: data.sort_order ?? 0,
   }
+}
+
+export async function bulkUpdateProjectScheduleItemsAction(
+  projectId: string,
+  input: unknown
+): Promise<ScheduleItem[]> {
+  const parsed = scheduleBulkUpdateSchema.parse(input)
+  if (parsed.items.length === 0) return []
+
+  const { supabase, orgId } = await requireOrgContext()
+  const requestedIds = parsed.items.map((item) => item.id)
+
+  const { data: scopedItems, error } = await supabase
+    .from("schedule_items")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .in("id", requestedIds)
+
+  if (error) {
+    throw new Error(`Failed to validate schedule items: ${error.message}`)
+  }
+
+  const scopedIdSet = new Set((scopedItems ?? []).map((item) => item.id))
+  if (scopedIdSet.size !== requestedIds.length) {
+    throw new Error("One or more schedule items are not part of this project")
+  }
+
+  const updated = await bulkUpdateScheduleItems({ items: parsed.items }, orgId)
+  revalidatePath(`/projects/${projectId}`)
+  return updated
 }
 
 export async function deleteProjectScheduleItemAction(projectId: string, itemId: string): Promise<void> {

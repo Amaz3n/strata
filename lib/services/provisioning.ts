@@ -11,8 +11,6 @@ export interface ProvisionOrgInput {
   planCode?: string | null
   primaryEmail: string
   primaryName?: string | null
-  supportTier?: string | null
-  region?: string | null
   trialDays?: number | null
   createdBy: string
 }
@@ -66,16 +64,7 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
     throw new Error(orgError?.message ?? "Failed to create organization.")
   }
 
-  if (input.region) {
-    await supabase
-      .from("org_settings")
-      .upsert({
-        org_id: org.id,
-        region: input.region,
-      })
-  }
-
-  const roleId = await resolveRoleId(supabase, "owner")
+  const roleId = await resolveRoleId(supabase, "org_owner")
 
   const { data: invited, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(input.primaryEmail, {
     data: {
@@ -117,14 +106,6 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
     if (subscriptionError) {
       throw new Error(subscriptionError.message)
     }
-  }
-
-  if (input.supportTier) {
-    await supabase.from("support_contracts").insert({
-      org_id: org.id,
-      status: "active",
-      details: { tier: input.supportTier },
-    })
   }
 
   await recordEvent({

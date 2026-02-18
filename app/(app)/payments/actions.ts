@@ -13,33 +13,53 @@ import {
   generatePayLinkInputSchema,
   recordPaymentInputSchema,
 } from "@/lib/validation/payments"
+import { AuthorizationError } from "@/lib/services/authorization"
+
+function rethrowTypedAuthError(error: unknown): never {
+  if (error instanceof AuthorizationError) {
+    throw new Error(`AUTH_FORBIDDEN:${error.reasonCode}`)
+  }
+  throw error
+}
 
 export async function generatePayLinkAction(input: unknown) {
-  const parsed = generatePayLinkInputSchema.parse(input)
-  const result = await generatePayLink(parsed)
-  revalidatePath("/invoices")
-  return result
+  try {
+    const parsed = generatePayLinkInputSchema.parse(input)
+    const result = await generatePayLink(parsed)
+    revalidatePath("/invoices")
+    return result
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function createPaymentIntentAction(input: unknown) {
-  const parsed = createPaymentIntentInputSchema.parse(input)
-  const intent = await createPaymentIntent(parsed)
-  return intent
+  try {
+    const parsed = createPaymentIntentInputSchema.parse(input)
+    const intent = await createPaymentIntent(parsed)
+    return intent
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function recordPaymentAction(input: unknown) {
-  const parsed = recordPaymentInputSchema.parse(input)
-  const payment = await recordPayment(parsed)
-  if (parsed.invoice_id) {
-    revalidatePath(`/invoices/${parsed.invoice_id}`)
+  try {
+    const parsed = recordPaymentInputSchema.parse(input)
+    const payment = await recordPayment(parsed)
+    if (parsed.invoice_id) {
+      revalidatePath(`/invoices/${parsed.invoice_id}`)
+    }
+    return payment
+  } catch (error) {
+    rethrowTypedAuthError(error)
   }
-  return payment
 }
 
 export async function listPaymentsForInvoiceAction(invoiceId: string) {
-  return listPaymentsForInvoice(invoiceId)
+  try {
+    return await listPaymentsForInvoice(invoiceId)
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
-
-
-
-

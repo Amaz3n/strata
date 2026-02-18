@@ -4,6 +4,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { decryptToken, detectInvoiceNumberPattern, encryptToken, refreshAccessToken } from "@/lib/integrations/accounting/qbo-auth"
 import { recordEvent } from "@/lib/services/events"
+import { logQBO } from "@/lib/services/qbo-logger"
 
 export type QBOConnectionStatus = "active" | "expired" | "disconnected" | "error"
 
@@ -26,6 +27,7 @@ export interface QBOConnection {
   status: QBOConnectionStatus
   connected_at: string
   last_sync_at?: string
+  last_error?: string | null
   token_expires_at?: string
   settings: QBOConnectionSettings
 }
@@ -35,7 +37,7 @@ export async function getQBOConnection(orgId?: string): Promise<QBOConnection | 
 
   const { data, error } = await supabase
     .from("qbo_connections")
-    .select("id, org_id, realm_id, company_name, status, connected_at, last_sync_at, token_expires_at, settings")
+    .select("id, org_id, realm_id, company_name, status, connected_at, last_sync_at, last_error, token_expires_at, settings")
     .eq("org_id", resolvedOrgId)
     .eq("status", "active")
     .maybeSingle()
@@ -72,11 +74,13 @@ export async function getQBOAccessToken(
           refresh_token: encryptToken(newTokens.refresh_token),
           token_expires_at: new Date(Date.now() + newTokens.expires_in * 1000).toISOString(),
           status: "active",
+          last_error: null,
         })
         .eq("id", connection.id)
 
       return { token: newTokens.access_token, realmId: connection.realm_id }
     } catch (err) {
+      logQBO("warn", "token_refresh_failed", { orgId, connectionId: connection.id, error: String(err) })
       await supabase
         .from("qbo_connections")
         .update({ status: "expired", last_error: "Token refresh failed" })
@@ -135,6 +139,111 @@ export async function updateQBOSettings(settings: Partial<QBOConnectionSettings>
     .eq("status", "active")
 
   if (error) throw new Error(`Failed to update QBO settings: ${error.message}`)
+}
+
+export async function refreshQBOTokenNow(orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const service = createServiceSupabaseClient()
+
+  const { data: connection, error } = await supabase
+    .from("qbo_connections")
+    .select("id, realm_id, refresh_token")
+    .eq("org_id", resolvedOrgId)
+    .eq("status", "active")
+    .maybeSingle()
+
+  if (error || !connection) {
+    throw new Error("No active QBO connection")
+  }
+
+  try {
+    const newTokens = await refreshAccessToken(decryptToken(connection.refresh_token))
+    const { error: updateError } = await service
+      .from("qbo_connections")
+      .update({
+        access_token: encryptToken(newTokens.access_token),
+        refresh_token: encryptToken(newTokens.refresh_token),
+        token_expires_at: new Date(Date.now() + newTokens.expires_in * 1000).toISOString(),
+        status: "active",
+        last_error: null,
+      })
+      .eq("id", connection.id)
+
+    if (updateError) {
+      throw new Error(updateError.message)
+    }
+
+    logQBO("info", "token_refresh_manual_success", { orgId: resolvedOrgId, connectionId: connection.id })
+    return { success: true, token_expires_in_seconds: newTokens.expires_in }
+  } catch (error: any) {
+    await service
+      .from("qbo_connections")
+      .update({ status: "expired", last_error: "Manual token refresh failed" })
+      .eq("id", connection.id)
+    logQBO("error", "token_refresh_manual_failed", {
+      orgId: resolvedOrgId,
+      connectionId: connection.id,
+      error: error?.message ?? String(error),
+    })
+    throw new Error(error?.message ?? "Manual token refresh failed")
+  }
+}
+
+export async function getQBODiagnostics(orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const [connectionResult, pendingOutboxResult, failedOutboxResult, failedInvoicesResult] = await Promise.all([
+    supabase
+      .from("qbo_connections")
+      .select("id, status, token_expires_at, last_sync_at, last_error, company_name")
+      .eq("org_id", resolvedOrgId)
+      .eq("status", "active")
+      .maybeSingle(),
+    supabase
+      .from("outbox")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+      .in("status", ["pending", "processing"]),
+    supabase
+      .from("outbox")
+      .select("id, job_type, last_error, updated_at", { count: "exact" })
+      .eq("org_id", resolvedOrgId)
+      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+      .eq("status", "failed")
+      .order("updated_at", { ascending: false })
+      .limit(5),
+    supabase
+      .from("invoices")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .eq("qbo_sync_status", "error"),
+  ])
+
+  return {
+    connection: connectionResult.data
+      ? {
+          id: connectionResult.data.id,
+          status: connectionResult.data.status,
+          company_name: connectionResult.data.company_name,
+          token_expires_at: connectionResult.data.token_expires_at,
+          last_sync_at: connectionResult.data.last_sync_at,
+          last_error: connectionResult.data.last_error,
+        }
+      : null,
+    outbox: {
+      pending_or_processing: pendingOutboxResult.count ?? 0,
+      failed: failedOutboxResult.count ?? 0,
+      recent_failures: (failedOutboxResult.data ?? []).map((row) => ({
+        job_type: row.job_type,
+        last_error: row.last_error,
+        updated_at: row.updated_at,
+      })),
+    },
+    invoices: {
+      failed_sync_count: failedInvoicesResult.count ?? 0,
+    },
+  }
 }
 
 export async function upsertQBOConnection(input: {

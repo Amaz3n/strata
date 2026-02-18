@@ -73,6 +73,13 @@ import {
   createBidAddendumAction,
   bulkCreateBidInvitesAction,
   generateBidInviteLinkAction,
+  pauseBidInviteAccessAction,
+  resumeBidInviteAccessAction,
+  revokeBidInviteAccessAction,
+  setBidInviteRequireAccountAction,
+  pauseBidInviteAccountGrantsAction,
+  resumeBidInviteAccountGrantsAction,
+  revokeBidInviteAccountGrantsAction,
   listBidInvitesAction,
   awardBidSubmissionAction,
   updateBidPackageAction,
@@ -81,8 +88,9 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { CalendarDays } from "@/components/icons"
 import {
+  Ban,
   Building2,
-  Clock,
+  CheckCircle2,
   Copy,
   Download,
   Edit,
@@ -91,7 +99,6 @@ import {
   Loader2,
   Mail,
   MoreHorizontal,
-  MoreVertical,
   FolderOpen,
   Plus,
   Search,
@@ -106,6 +113,25 @@ const statusOptions: BidPackageStatus[] = ["draft", "sent", "open", "closed", "a
 
 function normalizeTrade(value?: string | null): string {
   return value?.trim().toLowerCase() ?? ""
+}
+
+function splitTradeTokens(value?: string | null): string[] {
+  const normalized = normalizeTrade(value)
+  if (!normalized) return []
+  return normalized
+    .split(/[,/&+|;]|(?:\band\b)|(?:\bor\b)/g)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function matchesTradeFilter(value: string | null | undefined, tradeFilter: string): boolean {
+  const normalizedValue = normalizeTrade(value)
+  if (!normalizedValue) return false
+  if (normalizedValue === tradeFilter) return true
+  if (normalizedValue.includes(tradeFilter) || tradeFilter.includes(normalizedValue)) return true
+
+  const tokens = splitTradeTokens(value)
+  return tokens.some((token) => token === tradeFilter || token.includes(tradeFilter) || tradeFilter.includes(token))
 }
 
 type BidPackageAttachment = AttachedFile & { folder_path?: string | null }
@@ -262,6 +288,17 @@ function getVendorStatusInfo(invite: BidInvite, submission?: BidSubmission | nul
   }
 }
 
+function getInviteAccessSummary(invite: BidInvite): { label: string; color: string } {
+  const active = invite.active_access_count ?? 0
+  const paused = invite.paused_access_count ?? 0
+  const total = invite.access_total ?? 0
+
+  if (active > 0) return { label: `${active} active link${active === 1 ? "" : "s"}`, color: "text-emerald-600" }
+  if (paused > 0) return { label: `${paused} paused link${paused === 1 ? "" : "s"}`, color: "text-amber-600" }
+  if (total > 0) return { label: "Links revoked", color: "text-rose-600" }
+  return { label: "No link generated", color: "text-muted-foreground" }
+}
+
 interface BidPackageDetailClientProps {
   projectId: string
   bidPackage: BidPackage
@@ -353,6 +390,16 @@ export function BidPackageDetailClientNew({
     [projectVendors]
   )
 
+  const vendorScopeByCompanyId = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const vendor of projectVendors) {
+      if (!vendor.company_id || !vendor.scope) continue
+      const previous = map.get(vendor.company_id)
+      map.set(vendor.company_id, previous ? `${previous} ${vendor.scope}` : vendor.scope)
+    }
+    return map
+  }, [projectVendors])
+
   const invitedCompanyIds = useMemo(
     () => new Set(inviteList.map((inv) => inv.company_id)),
     [inviteList]
@@ -361,8 +408,8 @@ export function BidPackageDetailClientNew({
   const submissionByInviteId = useMemo(() => {
     const map = new Map<string, BidSubmission>()
     for (const sub of submissionList) {
-      if (sub.is_current && sub.invite_id) {
-        map.set(sub.invite_id, sub)
+      if (sub.is_current && sub.bid_invite_id) {
+        map.set(sub.bid_invite_id, sub)
       }
     }
     return map
@@ -390,8 +437,12 @@ export function BidPackageDetailClientNew({
     const searchLower = companySearch.toLowerCase().trim()
     return companies
       .filter((company) => {
-        if (tradeFilter !== "all" && normalizeTrade(company.trade) !== tradeFilter) {
-          return false
+        if (tradeFilter !== "all") {
+          const companyMatches = matchesTradeFilter(company.trade, tradeFilter)
+          const scopeMatches = matchesTradeFilter(vendorScopeByCompanyId.get(company.id), tradeFilter)
+          if (!companyMatches && !scopeMatches) {
+            return false
+          }
         }
         if (searchLower && !company.name.toLowerCase().includes(searchLower)) {
           return false
@@ -405,7 +456,7 @@ export function BidPackageDetailClientNew({
         if (!aIsVendor && bIsVendor) return 1
         return a.name.localeCompare(b.name)
       })
-  }, [companies, companySearch, tradeFilter, vendorCompanyIds])
+  }, [companies, companySearch, tradeFilter, vendorCompanyIds, vendorScopeByCompanyId])
 
   const getCompanyContactInfo = useCallback(
     (companyId: string) => {
@@ -416,7 +467,7 @@ export function BidPackageDetailClientNew({
   )
 
   const dueDate = current.due_at ? new Date(current.due_at) : null
-  const isOverdue = dueDate && isPast(dueDate) && !["awarded", "closed", "cancelled"].includes(current.status)
+  const isOverdue = Boolean(dueDate && isPast(dueDate) && !["awarded", "closed", "cancelled"].includes(current.status))
   const attachedFileIds = useMemo(
     () => new Set(packageAttachments.map((attachment) => attachment.id)),
     [packageAttachments]
@@ -876,6 +927,83 @@ export function BidPackageDetailClientNew({
     }
   }
 
+  const handlePauseInviteAccess = async (invite: BidInvite) => {
+    try {
+      await pauseBidInviteAccessAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Invite access paused")
+    } catch (error: any) {
+      toast.error("Failed to pause invite access", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleResumeInviteAccess = async (invite: BidInvite) => {
+    try {
+      await resumeBidInviteAccessAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Invite access resumed")
+    } catch (error: any) {
+      toast.error("Failed to resume invite access", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleRevokeInviteAccess = async (invite: BidInvite) => {
+    try {
+      await revokeBidInviteAccessAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Invite access revoked")
+    } catch (error: any) {
+      toast.error("Failed to revoke invite access", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleSetInviteRequireAccount = async (invite: BidInvite, requireAccount: boolean) => {
+    try {
+      await setBidInviteRequireAccountAction(projectId, bidPackage.id, invite.id, requireAccount)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success(requireAccount ? "Account required enabled" : "Link-only access enabled")
+    } catch (error: any) {
+      toast.error("Failed to update access mode", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handlePauseInviteAccounts = async (invite: BidInvite) => {
+    try {
+      await pauseBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Linked accounts paused")
+    } catch (error: any) {
+      toast.error("Failed to pause linked accounts", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleResumeInviteAccounts = async (invite: BidInvite) => {
+    try {
+      await resumeBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Linked accounts resumed")
+    } catch (error: any) {
+      toast.error("Failed to resume linked accounts", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleRevokeInviteAccounts = async (invite: BidInvite) => {
+    try {
+      await revokeBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Linked accounts revoked")
+    } catch (error: any) {
+      toast.error("Failed to revoke linked accounts", { description: error?.message ?? "Please try again." })
+    }
+  }
+
   const handleAddendum = () => {
     startAddingAddendum(async () => {
       try {
@@ -979,6 +1107,7 @@ export function BidPackageDetailClientNew({
     detailSubmission?.exclusions || detailSubmission?.clarifications || detailSubmission?.notes
   )
 
+  const dueRelativeLabel = dueDate ? `due ${formatDistanceToNow(dueDate, { addSuffix: true })}` : "no due date set"
   const hasOverviewContent = current.title || current.scope || current.instructions || current.trade || dueDate
   const hasDocumentTreeContent = attachmentsTree.children.length > 0 || attachmentsTree.files.length > 0
 
@@ -1037,7 +1166,7 @@ export function BidPackageDetailClientNew({
 
   return (
     <TooltipProvider>
-      <div className="flex flex-col gap-6">
+      <div className="flex min-h-0 flex-1 flex-col gap-5">
         {/* Edit Sheet */}
         <Sheet open={editSheetOpen} onOpenChange={setEditSheetOpen}>
           <SheetContent
@@ -1430,61 +1559,83 @@ export function BidPackageDetailClientNew({
 
         {/* Package Overview Card */}
         {hasOverviewContent && (
-          <Card className="overflow-hidden">
-            <CardContent className="p-0">
-              <div className="grid gap-0 md:grid-cols-[minmax(0,1.8fr)_minmax(0,1fr)_minmax(0,1fr)_64px]">
-                <div className="space-y-1 border-b px-5 py-4 md:border-b-0 md:border-r">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Bid Package
-                  </p>
-                  <h2 className="text-lg font-semibold leading-tight">{current.title}</h2>
-                </div>
-                <div className="space-y-1 border-b px-5 py-4 md:border-b-0 md:border-r">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Trade
-                  </p>
-                  <p className="text-sm font-medium">{current.trade || "—"}</p>
-                </div>
-                <div className="space-y-1 border-b px-5 py-4 md:border-b-0 md:border-r">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Due
-                  </p>
-                  <p className={cn("text-sm font-medium", isOverdue && "text-rose-600")}>
-                    {dueDate ? format(dueDate, "MMM d, yyyy 'at' h:mm a") : "—"}
-                  </p>
-                </div>
-                <div className="flex items-center justify-end border-b px-3 py-2 md:border-b-0 md:px-4">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                        <MoreVertical className="h-4 w-4" />
+          <Card className="relative overflow-hidden border bg-card shadow-sm">
+            <div className="pointer-events-none absolute inset-0 opacity-[0.08] [background-image:linear-gradient(rgba(120,120,120,0.45)_1px,transparent_1px),linear-gradient(90deg,rgba(120,120,120,0.45)_1px,transparent_1px)] [background-size:20px_20px]" />
+            <CardContent className="relative p-0">
+              <div className="border-y bg-muted/30">
+                <div className="px-4 py-4 sm:px-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1.5">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                        Bid Package
+                        <span className="mx-1.5 text-muted-foreground/70">·</span>
+                        <span className="normal-case tracking-normal text-muted-foreground">{dueRelativeLabel}</span>
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-xl font-semibold leading-tight tracking-tight sm:text-2xl">{current.title}</h2>
+                        {current.status === "awarded" && (
+                          <Badge
+                            variant="outline"
+                            className="rounded-full border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300"
+                          >
+                            Awarded
+                          </Badge>
+                        )}
+                        {isOverdue && current.status !== "awarded" && (
+                          <Badge
+                            variant="outline"
+                            className="rounded-full border-rose-300 bg-rose-100 px-2.5 py-0.5 text-xs font-semibold text-rose-700"
+                          >
+                            Overdue
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-foreground/90">
+                        <span className="inline-flex items-center rounded-full border border-border bg-background/80 px-2.5 py-1">
+                          <Building2 className="mr-1.5 h-3.5 w-3.5" />
+                          {current.trade || "Unassigned trade"}
+                        </span>
+                        <span className="inline-flex items-center rounded-full border border-border bg-background/80 px-2.5 py-1">
+                          <CalendarDays className="mr-1.5 h-3.5 w-3.5" />
+                          {dueDate ? format(dueDate, "EEE, MMM d · h:mm a") : "No due date"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => setEditSheetOpen(true)}
+                      >
+                        <Edit className="mr-1.5 h-3.5 w-3.5" />
+                        Edit
                       </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => setEditSheetOpen(true)}>
-                        <Edit className="mr-2 h-4 w-4" />
-                        Edit package
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setAddendumDialogOpen(true)}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Issue addendum
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => setAddendumDialogOpen(true)}
+                      >
+                        <Plus className="mr-1.5 h-3.5 w-3.5" />
+                        Addendum
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </div>
               {(current.scope || current.instructions) && (
-                <div className="grid gap-0 border-t bg-muted/20 md:grid-cols-2">
+                <div className="grid gap-3 bg-muted/20 p-3 sm:p-4 md:grid-cols-2">
                     {current.scope && (
-                      <div className={cn("px-5 py-4", current.instructions && "md:border-r")}>
-                        <p className="text-xs font-medium text-muted-foreground mb-1.5">Scope of Work</p>
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{current.scope}</p>
+                      <div className="rounded-xl border bg-background/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Scope of Work</p>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">{current.scope}</p>
                       </div>
                     )}
                     {current.instructions && (
-                      <div className="px-5 py-4">
-                        <p className="text-xs font-medium text-muted-foreground mb-1.5">Bid Instructions</p>
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{current.instructions}</p>
+                      <div className="rounded-xl border bg-background/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bid Instructions</p>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">{current.instructions}</p>
                       </div>
                     )}
                 </div>
@@ -1544,9 +1695,9 @@ export function BidPackageDetailClientNew({
         )}
 
         {/* Main Content: Vendors + Documents side by side */}
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,4fr)_minmax(0,1.4fr)]">
+        <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,4fr)_minmax(0,1.4fr)]">
           {/* Vendors Table */}
-          <Card className="flex h-[700px] flex-col overflow-hidden">
+          <Card className="flex min-h-[420px] flex-col overflow-hidden lg:h-full">
             <CardHeader className="flex flex-row items-center justify-between border-b pb-4">
               <div>
                 <CardTitle className="text-base">Vendors</CardTitle>
@@ -1739,6 +1890,7 @@ export function BidPackageDetailClientNew({
                       {inviteList.map((invite) => {
                         const submission = submissionByInviteId.get(invite.id)
                         const statusInfo = getVendorStatusInfo(invite, submission)
+                        const accessInfo = getInviteAccessSummary(invite)
                         const isAwarded = submission?.is_current && current.status === "awarded"
 
                         return (
@@ -1754,6 +1906,12 @@ export function BidPackageDetailClientNew({
                                 <div className="min-w-0">
                                   <p className="text-sm font-medium truncate">{invite.company?.name ?? "Unknown"}</p>
                                   <p className="text-xs text-muted-foreground truncate">{invite.contact?.full_name ?? invite.invite_email ?? ""}</p>
+                                  <p className={cn("text-[11px] truncate", accessInfo.color)}>{accessInfo.label}</p>
+                                  {(invite.linked_account_count ?? 0) > 0 && (
+                                    <p className="text-[11px] text-muted-foreground truncate">
+                                      {invite.linked_active_account_count ?? 0} active account{(invite.linked_active_account_count ?? 0) === 1 ? "" : "s"}
+                                    </p>
+                                  )}
                                 </div>
                               </div>
                             </TableCell>
@@ -1789,6 +1947,52 @@ export function BidPackageDetailClientNew({
                                     {submission && <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}><Eye className="mr-2 h-4 w-4" />View submission</DropdownMenuItem>}
                                     <DropdownMenuItem onClick={() => handleGenerateLink(invite)}><Copy className="mr-2 h-4 w-4" />Copy link</DropdownMenuItem>
                                     {(invite.invite_email || invite.contact?.email) && <DropdownMenuItem><Mail className="mr-2 h-4 w-4" />Resend</DropdownMenuItem>}
+                                    <DropdownMenuSeparator />
+                                    {(invite.active_access_count ?? 0) > 0 && (
+                                      <DropdownMenuItem onClick={() => handlePauseInviteAccess(invite)}>
+                                        <Ban className="mr-2 h-4 w-4" />Pause access
+                                      </DropdownMenuItem>
+                                    )}
+                                    {(invite.paused_access_count ?? 0) > 0 && (
+                                      <DropdownMenuItem onClick={() => handleResumeInviteAccess(invite)}>
+                                        <CheckCircle2 className="mr-2 h-4 w-4" />Resume access
+                                      </DropdownMenuItem>
+                                    )}
+                                    {(invite.access_total ?? 0) > 0 && (
+                                      <DropdownMenuItem
+                                        className="text-destructive focus:text-destructive"
+                                        onClick={() => handleRevokeInviteAccess(invite)}
+                                      >
+                                        <Trash2 className="mr-2 h-4 w-4" />Revoke all links
+                                      </DropdownMenuItem>
+                                    )}
+                                    {(invite.access_total ?? 0) > 0 && (
+                                      <DropdownMenuItem
+                                        onClick={() => handleSetInviteRequireAccount(invite, !(invite.require_account_enforced ?? false))}
+                                      >
+                                        <Settings className="mr-2 h-4 w-4" />
+                                        {invite.require_account_enforced ? "Allow link-only access" : "Require account access"}
+                                      </DropdownMenuItem>
+                                    )}
+                                    {(invite.linked_account_count ?? 0) > 0 && <DropdownMenuSeparator />}
+                                    {(invite.linked_active_account_count ?? 0) > 0 && (
+                                      <DropdownMenuItem onClick={() => handlePauseInviteAccounts(invite)}>
+                                        <Ban className="mr-2 h-4 w-4" />Pause linked accounts
+                                      </DropdownMenuItem>
+                                    )}
+                                    {(invite.linked_paused_account_count ?? 0) > 0 && (
+                                      <DropdownMenuItem onClick={() => handleResumeInviteAccounts(invite)}>
+                                        <CheckCircle2 className="mr-2 h-4 w-4" />Resume linked accounts
+                                      </DropdownMenuItem>
+                                    )}
+                                    {(invite.linked_account_count ?? 0) > 0 && (
+                                      <DropdownMenuItem
+                                        className="text-destructive focus:text-destructive"
+                                        onClick={() => handleRevokeInviteAccounts(invite)}
+                                      >
+                                        <Trash2 className="mr-2 h-4 w-4" />Revoke linked accounts
+                                      </DropdownMenuItem>
+                                    )}
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               </div>
@@ -1805,7 +2009,7 @@ export function BidPackageDetailClientNew({
 
           {/* Documents Sidebar */}
           <div
-            className="flex flex-col"
+            className="flex flex-col lg:min-h-0"
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
@@ -1819,7 +2023,7 @@ export function BidPackageDetailClientNew({
               onChange={handleFileInputChange}
               accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.dwg,.dxf,.txt,.csv,.zip"
             />
-            <Card className="flex h-[700px] flex-col overflow-hidden">
+            <Card className="flex min-h-[420px] flex-col overflow-hidden lg:h-full">
               <CardHeader className="flex flex-row items-center justify-between border-b pb-4">
                 <div>
                   <CardTitle className="text-base">Documents</CardTitle>

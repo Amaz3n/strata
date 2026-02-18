@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { MoreHorizontal, Users, Calendar } from "@/components/icons"
+import { ChevronDown, Users, Calendar } from "@/components/icons"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
 import { CustomerSheet } from "./customer-sheet"
@@ -22,11 +23,11 @@ interface Customer {
   createdAt: string
   subscription?: {
     status: string
-    planName: string
-    amountCents: number
-    currency: string
-    interval: string
-    currentPeriodEnd: string
+    planName: string | null
+    amountCents: number | null
+    currency: string | null
+    interval: string | null
+    currentPeriodEnd: string | null
   } | null
 }
 
@@ -40,6 +41,9 @@ interface CustomersClientProps {
   plan: string
   page: number
   onProvision: (formData: FormData) => Promise<any>
+  onExtendTrial: (formData: FormData) => Promise<void>
+  onEnterContext: (formData: FormData) => Promise<void>
+  onSetStatus: (formData: FormData) => Promise<void>
 }
 
 export function CustomersClient({
@@ -52,6 +56,9 @@ export function CustomersClient({
   plan,
   page,
   onProvision,
+  onExtendTrial,
+  onEnterContext,
+  onSetStatus,
 }: CustomersClientProps) {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -93,7 +100,7 @@ export function CustomersClient({
               <TableHead className="px-4 py-4 text-center">Amount</TableHead>
               <TableHead className="px-4 py-4 text-center">Members</TableHead>
               <TableHead className="px-4 py-4 text-center">Created</TableHead>
-              <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+              <TableHead className="px-4 py-4">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -153,8 +160,12 @@ export function CustomersClient({
                   <TableCell className="px-4 py-4 text-center">
                     {customer.subscription ? (
                       <div className="text-sm font-medium">
-                        ${(customer.subscription.amountCents / 100).toFixed(0)}
-                        <span className="text-muted-foreground">/{customer.subscription.interval}</span>
+                        {customer.subscription.amountCents
+                          ? `$${(customer.subscription.amountCents / 100).toFixed(0)}`
+                          : "-"}
+                        {customer.subscription.interval ? (
+                          <span className="text-muted-foreground">/{customer.subscription.interval}</span>
+                        ) : null}
                       </div>
                     ) : (
                       <span className="text-sm text-muted-foreground">-</span>
@@ -171,18 +182,67 @@ export function CustomersClient({
                       {formatDistanceToNow(new Date(customer.createdAt), { addSuffix: true })}
                     </div>
                   </TableCell>
-                  <TableCell className="text-center w-12 px-4 py-4">
-                    <div className="flex justify-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => handleViewCustomer(customer)}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                        <span className="sr-only">View customer details</span>
-                      </Button>
-                    </div>
+                  <TableCell className="px-4 py-4">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="gap-1.5">
+                          Actions
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-52">
+                        <form action={onEnterContext}>
+                          <input type="hidden" name="orgId" value={customer.id} />
+                          <input type="hidden" name="reason" value="Platform operator switched org context from customers page." />
+                          <DropdownMenuItem asChild>
+                            <button type="submit" className="w-full text-left">Enter Context</button>
+                          </DropdownMenuItem>
+                        </form>
+                        <form action={onExtendTrial}>
+                          <input type="hidden" name="orgId" value={customer.id} />
+                          <input type="hidden" name="trialDays" value="7" />
+                          <DropdownMenuItem asChild>
+                            <button type="submit" className="w-full text-left">Extend Trial +7 Days</button>
+                          </DropdownMenuItem>
+                        </form>
+                        <form action={onExtendTrial}>
+                          <input type="hidden" name="orgId" value={customer.id} />
+                          <input type="hidden" name="trialDays" value="14" />
+                          <DropdownMenuItem asChild>
+                            <button type="submit" className="w-full text-left">Extend Trial +14 Days</button>
+                          </DropdownMenuItem>
+                        </form>
+                        <form action={onExtendTrial}>
+                          <input type="hidden" name="orgId" value={customer.id} />
+                          <input type="hidden" name="trialDays" value="30" />
+                          <DropdownMenuItem asChild>
+                            <button type="submit" className="w-full text-left">Extend Trial +30 Days</button>
+                          </DropdownMenuItem>
+                        </form>
+                        {(customer.status ?? "").toLowerCase() === "archived" ? (
+                          <form action={onSetStatus}>
+                            <input type="hidden" name="orgId" value={customer.id} />
+                            <input type="hidden" name="status" value="active" />
+                            <input type="hidden" name="reason" value="Unarchived from customers page." />
+                            <DropdownMenuItem asChild>
+                              <button type="submit" className="w-full text-left">Unarchive Organization</button>
+                            </DropdownMenuItem>
+                          </form>
+                        ) : (
+                          <form action={onSetStatus}>
+                            <input type="hidden" name="orgId" value={customer.id} />
+                            <input type="hidden" name="status" value="archived" />
+                            <input type="hidden" name="reason" value="Archived from customers page." />
+                            <DropdownMenuItem asChild>
+                              <button type="submit" className="w-full text-left">Archive Organization</button>
+                            </DropdownMenuItem>
+                          </form>
+                        )}
+                        <DropdownMenuItem onClick={() => handleViewCustomer(customer)}>
+                          View Details
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))

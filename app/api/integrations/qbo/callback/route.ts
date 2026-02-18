@@ -4,6 +4,7 @@ import { cookies } from "next/headers"
 import { exchangeCodeForTokens, fetchQBOCompanyInfo } from "@/lib/integrations/accounting/qbo-auth"
 import { upsertQBOConnection } from "@/lib/services/qbo-connection"
 import { requireOrgMembership } from "@/lib/auth/context"
+import { logQBO } from "@/lib/services/qbo-logger"
 
 export async function GET(request: NextRequest) {
   // Force Node runtime to ensure cookies API supports get/set.
@@ -39,17 +40,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_state_mismatch", request.url))
   }
 
-  const [orgId] = state.split(":")
-
-  let connectedBy: string | undefined
-  try {
-    const { user } = await requireOrgMembership(orgId)
-    connectedBy = user.id
-  } catch (err) {
-    console.error("Unable to resolve connected user", err)
+  const [orgId, nonce] = state.split(":")
+  if (!orgId || !nonce) {
+    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_state_mismatch", request.url))
   }
 
   try {
+    const { user } = await requireOrgMembership(orgId)
+    const connectedBy = user.id
+
     const tokens = await exchangeCodeForTokens(code, realmId)
     const companyInfo = await fetchQBOCompanyInfo(tokens.access_token, realmId)
 
@@ -62,6 +61,7 @@ export async function GET(request: NextRequest) {
       connectedBy,
       companyName: (companyInfo as any)?.CompanyName ?? (companyInfo as any)?.LegalName ?? null,
     })
+    logQBO("info", "oauth_callback_connected", { orgId, realmId, connectedBy })
 
     const response = NextResponse.redirect(new URL("/settings?tab=integrations&success=qbo_connected", request.url))
     response.cookies.set({
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
 
     return response
   } catch (err) {
-    console.error("QBO OAuth callback error:", err)
+    logQBO("error", "oauth_callback_failed", { orgId, realmId, error: String(err) })
     return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_failed", request.url))
   }
 }

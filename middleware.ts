@@ -3,7 +3,7 @@ import { createServerClient } from "@supabase/ssr"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
 const PUBLIC_ROUTES = ["/proposal", "/i/", "/p/", "/s/", "/b/", "/d/"]
-const PUBLIC_API_ROUTES = ["/api/jobs/process-outbox"]
+const PUBLIC_API_ROUTES = ["/api/jobs/process-outbox", "/api/jobs/rbac-evidence"]
 
 export async function middleware(request: NextRequest) {
   const requestHeaders = new Headers(request.headers)
@@ -40,8 +40,6 @@ export async function middleware(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname
   const isAuthRoute = pathname.startsWith("/auth")
-  const isResetRoute = pathname.startsWith("/auth/reset")
-  const isUnauthorizedRoute = pathname.startsWith("/unauthorized")
   const isPublicRoute = PUBLIC_ROUTES.some(route => pathname.startsWith(route))
   const isPublicApiRoute = PUBLIC_API_ROUTES.some(route => pathname.startsWith(route))
 
@@ -52,17 +50,13 @@ export async function middleware(request: NextRequest) {
   }
 
   if (user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {
-    const { count, error: membershipError } = await supabase
-      .from("memberships")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("status", "active")
-
-    if (!membershipError && (count ?? 0) === 0) {
-      await supabase.auth.signOut()
-      const redirectUrl = new URL("/auth/signin", request.url)
-      redirectUrl.searchParams.set("reason", "inactive-account")
-      return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
+    const { data: assuranceData, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (!assuranceError) {
+      const requiresMfa = assuranceData?.nextLevel === "aal2" && assuranceData?.currentLevel !== "aal2"
+      if (requiresMfa) {
+        const redirectUrl = new URL("/auth/mfa", request.url)
+        return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
+      }
     }
   }
 

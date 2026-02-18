@@ -2,7 +2,14 @@
 
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from "react"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
-import type { ScheduleContextValue, ScheduleViewState, ScheduleViewType, GanttZoomLevel, GroupByOption } from "./types"
+import type {
+  ScheduleContextValue,
+  ScheduleViewState,
+  ScheduleViewType,
+  GanttZoomLevel,
+  GroupByOption,
+  ScheduleBulkItemUpdate,
+} from "./types"
 import { addDays } from "./types"
 import { useIsMobile } from "@/hooks/use-mobile"
 
@@ -40,6 +47,7 @@ interface ScheduleProviderProps {
   initialAssignments?: ScheduleAssignment[]
   initialBaselines?: ScheduleBaseline[]
   onItemUpdate?: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
+  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
   onDependencyCreate?: (from: string, to: string, type?: string) => Promise<ScheduleDependency>
@@ -53,6 +61,7 @@ export function ScheduleProvider({
   initialAssignments = [],
   initialBaselines = [],
   onItemUpdate,
+  onItemsBulkUpdate,
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
@@ -80,8 +89,8 @@ export function ScheduleProvider({
     setScrollToTodayTrigger((prev) => prev + 1)
   }, [])
 
-  // Update items when initialItems change
-  useMemo(() => {
+  // Keep local items aligned with parent-provided items (e.g. filter/project changes).
+  useEffect(() => {
     setItems(initialItems)
   }, [initialItems])
 
@@ -135,6 +144,61 @@ export function ScheduleProvider({
       setIsLoading(false)
     }
   }, [items, onItemUpdate])
+
+  // Handle bulk item updates
+  const handleItemsBulkUpdate = useCallback(async (updates: ScheduleBulkItemUpdate[]) => {
+    if (updates.length === 0) return []
+
+    const originalItems = items
+    const updatesById = new Map(updates.map((update) => [update.id, update]))
+
+    // Optimistic update
+    setItems((prev) =>
+      prev.map((item) => {
+        const update = updatesById.get(item.id)
+        return update ? { ...item, ...update } : item
+      })
+    )
+
+    setIsLoading(true)
+    setError(null)
+    try {
+      if (onItemsBulkUpdate) {
+        const updatedItems = await onItemsBulkUpdate(updates)
+        if (updatedItems.length > 0) {
+          const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
+          setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
+        }
+        return updatedItems
+      }
+
+      if (!onItemUpdate) {
+        return updates
+          .map((update) => {
+            const item = originalItems.find((original) => original.id === update.id)
+            return item ? { ...item, ...update } : null
+          })
+          .filter((item): item is ScheduleItem => item !== null)
+      }
+
+      const updatedItems = await Promise.all(
+        updates.map((update) => {
+          const { id, ...rest } = update
+          return onItemUpdate(id, rest)
+        })
+      )
+
+      const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
+      setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
+      return updatedItems
+    } catch (err) {
+      setItems(originalItems)
+      setError(err instanceof Error ? err.message : "Failed to update items")
+      throw err
+    } finally {
+      setIsLoading(false)
+    }
+  }, [items, onItemsBulkUpdate, onItemUpdate])
 
   // Handle item create
   const handleItemCreate = useCallback(async (item: Partial<ScheduleItem>) => {
@@ -219,6 +283,7 @@ export function ScheduleProvider({
     selectedItem,
     setSelectedItem,
     onItemUpdate: handleItemUpdate,
+    onItemsBulkUpdate: handleItemsBulkUpdate,
     onItemCreate: handleItemCreate,
     onItemDelete: handleItemDelete,
     onDependencyCreate: handleDependencyCreate,
@@ -238,6 +303,7 @@ export function ScheduleProvider({
     selectedItem,
     setSelectedItem,
     handleItemUpdate,
+    handleItemsBulkUpdate,
     handleItemCreate,
     handleItemDelete,
     handleDependencyCreate,

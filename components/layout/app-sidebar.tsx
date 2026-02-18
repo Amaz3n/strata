@@ -1,8 +1,8 @@
 "use client"
 
-import * as React from "react"
 import { usePathname } from "next/navigation"
 import {
+  Home,
   LayoutDashboard,
   FileText,
   MessageSquare,
@@ -15,9 +15,9 @@ import {
   Camera,
   FolderOpen,
   Building2,
-  Settings,
   Contact,
 } from "@/components/icons"
+import type { LucideIcon } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
 import { OrgSwitcher } from "./org-switcher"
@@ -35,6 +35,21 @@ import type { User } from "@/lib/types"
 interface AppSidebarProps {
   user?: User | null
   pipelineBadgeCount?: number
+  canAccessPlatform?: boolean
+}
+
+type SidebarNavItem = {
+  title: string
+  url: string
+  icon?: LucideIcon
+  isActive?: boolean
+  badge?: number
+  disabled?: boolean
+}
+
+type SidebarNavGroup = {
+  label?: string
+  items: SidebarNavItem[]
 }
 
 function getProjectIdFromPath(pathname: string): string | null {
@@ -67,188 +82,187 @@ function getProjectSection(pathname: string): string {
   return "overview"
 }
 
-function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number) {
-  return [
+function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, canAccessPlatform?: boolean): SidebarNavGroup[] {
+  const workspaceItems: SidebarNavItem[] = [
     {
-      label: "Workspace",
-      items: [
-        {
-          title: "Opportunities",
-          url: "/pipeline",
-          icon: Contact,
-          isActive: pathname === "/pipeline",
-          badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
-        },
-        {
-          title: "Prospects",
-          url: "/prospects",
-          icon: Contact,
-          isActive: pathname.startsWith("/prospects"),
-        },
-        {
-          title: "Projects",
-          url: "/projects",
-          icon: FolderOpen,
-          isActive: pathname.startsWith("/projects"),
-        },
-        {
-          title: "Estimates",
-          url: "/estimates",
-          icon: Receipt,
-          isActive: pathname.startsWith("/estimates"),
-        },
-        {
-          title: "Proposals",
-          url: "/proposals",
-          icon: FileText,
-          isActive: pathname.startsWith("/proposals"),
-        },
-        {
-          title: "Signatures",
-          url: "/documents",
-          icon: ClipboardCheck,
-          isActive: pathname.startsWith("/documents"),
-        },
-        {
-          title: "Directory",
-          url: "/directory",
-          icon: Building2,
-          isActive: pathname.startsWith("/directory"),
-        },
-        {
-          title: "Settings",
-          url: "/settings",
-          icon: Settings,
-          isActive: pathname.startsWith("/settings"),
-        },
-      ],
+      title: "Home",
+      url: "/",
+      icon: Home,
+      isActive: pathname === "/",
+    },
+    {
+      title: "Projects",
+      url: "/projects",
+      icon: FolderOpen,
+      isActive: pathname === "/projects",
+    },
+    {
+      title: "Pipeline",
+      url: "/pipeline",
+      icon: Contact,
+      isActive: pathname === "/pipeline",
+      badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
+    },
+    {
+      title: "Messages",
+      url: "/messages",
+      icon: MessageSquare,
+      isActive: pathname.startsWith("/messages"),
+    },
+    {
+      title: "Directory",
+      url: "/directory",
+      icon: Building2,
+      isActive: pathname.startsWith("/directory"),
     },
   ]
+
+  if (canAccessPlatform) {
+    workspaceItems.push({
+      title: "Platform",
+      url: "/platform",
+      icon: HardHat,
+      isActive: pathname.startsWith("/platform"),
+    })
+  }
+
+  return [{ label: "Workspace", items: workspaceItems }]
 }
 
-function buildProjectNavigation(projectId: string, section: string) {
-  const base = `/projects/${projectId}`
+function buildProjectNavigation(projectId: string | null, section: string): SidebarNavGroup[] {
+  const hasProject = Boolean(projectId)
+  const base = hasProject ? `/projects/${projectId}` : "/projects"
   const financialSections = ["financials", "budget", "commitments", "payables", "invoices", "reports"]
+
+  const scopedUrl = (suffix = "") => {
+    if (!hasProject) return "/projects"
+    return `${base}${suffix}`
+  }
+
   return [
     {
+      label: "Current Project",
       items: [
         {
           title: "Overview",
-          url: base,
+          url: scopedUrl(),
           icon: LayoutDashboard,
-          isActive: section === "overview",
-        },
-        {
-          title: "Schedule",
-          url: `${base}/schedule`,
-          icon: CalendarDays,
-          isActive: section === "schedule",
-        },
-        {
-          title: "Tasks",
-          url: `${base}/tasks`,
-          icon: CheckSquare,
-          isActive: section === "tasks",
+          isActive: hasProject && section === "overview",
+          disabled: !hasProject,
         },
         {
           title: "Documents",
-          url: `${base}/files`,
+          url: scopedUrl("/files"),
           icon: FileText,
-          isActive: section === "documents",
+          isActive: hasProject && section === "documents",
+          disabled: !hasProject,
         },
         {
-          title: "Signatures",
-          url: `${base}/documents`,
-          icon: ClipboardCheck,
-          isActive: section === "signatures",
-        },
-        {
-          title: "Bids",
-          url: `${base}/bids`,
-          icon: ClipboardList,
-          isActive: section === "bids",
-        },
-        {
-          title: "Messages",
-          url: `${base}/messages`,
-          icon: MessageSquare,
-          isActive: section === "messages",
+          title: "Schedule",
+          url: scopedUrl("/schedule"),
+          icon: CalendarDays,
+          isActive: hasProject && section === "schedule",
+          disabled: !hasProject,
         },
         {
           title: "RFIs",
-          url: `${base}/rfis`,
+          url: scopedUrl("/rfis"),
           icon: MessageSquare,
-          isActive: section === "rfis",
+          isActive: hasProject && section === "rfis",
+          disabled: !hasProject,
         },
         {
           title: "Submittals",
-          url: `${base}/submittals`,
+          url: scopedUrl("/submittals"),
           icon: ClipboardCheck,
-          isActive: section === "submittals",
+          isActive: hasProject && section === "submittals",
+          disabled: !hasProject,
         },
         {
           title: "Decisions",
-          url: `${base}/decisions`,
+          url: scopedUrl("/decisions"),
           icon: CheckSquare,
-          isActive: section === "decisions",
+          isActive: hasProject && section === "decisions",
+          disabled: !hasProject,
         },
         {
           title: "Daily Logs",
-          url: `${base}/daily-logs`,
+          url: scopedUrl("/daily-logs"),
           icon: Camera,
-          isActive: section === "daily-logs",
+          isActive: hasProject && section === "daily-logs",
+          disabled: !hasProject,
         },
         {
           title: "Punch",
-          url: `${base}/punch`,
+          url: scopedUrl("/punch"),
           icon: ClipboardList,
-          isActive: section === "punch",
+          isActive: hasProject && section === "punch",
+          disabled: !hasProject,
         },
         {
           title: "Financials",
-          url: `${base}/financials`,
+          url: scopedUrl("/financials"),
           icon: Receipt,
-          isActive: financialSections.includes(section),
-        },
-        {
-          title: "Proposals",
-          url: `${base}/proposals`,
-          icon: FileText,
-          isActive: section === "proposals",
+          isActive: hasProject && financialSections.includes(section),
+          disabled: !hasProject,
         },
         {
           title: "Change Orders",
-          url: `${base}/change-orders`,
+          url: scopedUrl("/change-orders"),
           icon: ClipboardList,
-          isActive: section === "change-orders",
+          isActive: hasProject && section === "change-orders",
+          disabled: !hasProject,
+        },
+        {
+          title: "Signatures",
+          url: scopedUrl("/documents"),
+          icon: ClipboardCheck,
+          isActive: hasProject && section === "signatures",
+          disabled: !hasProject,
+        },
+        {
+          title: "Bids",
+          url: scopedUrl("/bids"),
+          icon: ClipboardList,
+          isActive: hasProject && section === "bids",
+          disabled: !hasProject,
+        },
+        {
+          title: "Proposals",
+          url: scopedUrl("/proposals"),
+          icon: FileText,
+          isActive: hasProject && section === "proposals",
+          disabled: !hasProject,
         },
         {
           title: "Closeout",
-          url: `${base}/closeout`,
+          url: scopedUrl("/closeout"),
           icon: CheckSquare,
-          isActive: section === "closeout",
+          isActive: hasProject && section === "closeout",
+          disabled: !hasProject,
         },
         {
           title: "Warranty",
-          url: `${base}/warranty`,
+          url: scopedUrl("/warranty"),
           icon: ClipboardCheck,
-          isActive: section === "warranty",
+          isActive: hasProject && section === "warranty",
+          disabled: !hasProject,
         },
       ],
     },
   ]
 }
 
-export function AppSidebar({ user, pipelineBadgeCount }: AppSidebarProps) {
+export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform }: AppSidebarProps) {
   const pathname = usePathname()
   const projectId = getProjectIdFromPath(pathname)
   const section = getProjectSection(pathname)
 
-  const navMain = (projectId ? buildProjectNavigation(projectId, section) : buildGlobalNavigation(pathname, pipelineBadgeCount)).map((group) => ({
+  const navMain = [...buildGlobalNavigation(pathname, pipelineBadgeCount, canAccessPlatform), ...buildProjectNavigation(projectId, section)].map((group) => ({
     ...group,
     items: group.items.map((item) => ({
       ...item,
-      isActive: item.isActive || pathname === item.url,
+      isActive: !item.disabled && (item.isActive || pathname === item.url),
     })),
   }))
 
@@ -263,14 +277,10 @@ export function AppSidebar({ user, pipelineBadgeCount }: AppSidebarProps) {
       <SidebarHeader className="h-14 flex items-center justify-center p-2">
         <OrgSwitcher org={orgData} />
       </SidebarHeader>
-      {projectId && (
-        <>
-          <SidebarSeparator className="mx-0" />
-          <div className="px-2 py-2">
-            <SidebarProjectSwitcher projectId={projectId} />
-          </div>
-        </>
-      )}
+      <SidebarSeparator className="mx-0" />
+      <div className="px-2 py-2">
+        <SidebarProjectSwitcher projectId={projectId ?? undefined} />
+      </div>
       <SidebarContent>
         <NavMain items={navMain} />
       </SidebarContent>

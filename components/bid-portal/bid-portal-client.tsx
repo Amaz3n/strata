@@ -230,7 +230,7 @@ export function BidPortalClient({ token, access, data, pinRequired = false }: Bi
             {access.org.name}
           </div>
           <div className="space-y-2">
-            <h1 className="text-3xl md:text-4xl font-semibold font-serif">{access.bidPackage.title}</h1>
+            <h1 className="text-3xl md:text-4xl font-semibold">{access.bidPackage.title}</h1>
             <p className="text-sm text-white/70">Project • {access.project.name}</p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">

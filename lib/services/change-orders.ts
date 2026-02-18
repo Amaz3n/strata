@@ -7,6 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
+import { requireAuthorization } from "@/lib/services/authorization"
 
 type ChangeOrderRow = {
   id: string
@@ -142,7 +143,16 @@ export async function listChangeOrders({
   orgId?: string
   projectId?: string
 } = {}): Promise<ChangeOrder[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "change_order.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: projectId ? "project" : "org",
+    resourceId: projectId ?? resolvedOrgId,
+  })
 
   let query = supabase
     .from("change_orders")
@@ -166,6 +176,16 @@ export async function listChangeOrders({
 
 export async function createChangeOrder({ input, orgId }: { input: ChangeOrderInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: input.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: input.project_id,
+  })
 
   const normalizedLines = normalizeLines(input.lines)
   const totals = calculateTotals(input.lines, input.tax_rate, input.markup_percent)
@@ -247,6 +267,15 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
 
 export async function publishChangeOrder(changeOrderId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
 
   const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
   if (!existing) {
@@ -434,6 +463,15 @@ export async function approveChangeOrder({
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "change_order.approve",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
 
   const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
   if (!existing) {

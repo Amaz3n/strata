@@ -16,6 +16,7 @@ export interface OrgAccessState {
   status: OrgAccessStatus
   locked: boolean
   reason?: string
+  orgName?: string | null
   trialEndsAt?: string | null
   periodEndsAt?: string | null
 }
@@ -30,22 +31,22 @@ function addDays(date: Date, days: number) {
 
 export async function getOrgAccessStateForOrg(orgId: string, isPlatformAdmin = false): Promise<OrgAccessState> {
   if (isPlatformAdmin) {
-    return { status: "active", locked: false }
+    return { status: "active", locked: false, orgName: null }
   }
 
   const supabase = createServiceSupabaseClient()
-  const { data: org } = await supabase.from("orgs").select("id, status, billing_model").eq("id", orgId).maybeSingle()
+  const { data: org } = await supabase.from("orgs").select("id, name, status, billing_model").eq("id", orgId).maybeSingle()
 
   if (!org) {
-    return { status: "unknown", locked: true, reason: "Org not found." }
+    return { status: "unknown", locked: true, reason: "Org not found.", orgName: null }
   }
 
-  if (org.status && ["suspended", "inactive"].includes(org.status)) {
-    return { status: "locked", locked: true, reason: `Org is ${org.status}.` }
+  if (org.status && ["suspended", "inactive", "archived"].includes(org.status)) {
+    return { status: "locked", locked: true, reason: `Org is ${org.status}.`, orgName: (org as any).name ?? null }
   }
 
   if (org.billing_model === "license") {
-    return { status: "license", locked: false }
+    return { status: "license", locked: false, orgName: (org as any).name ?? null }
   }
 
   const { data: subscription } = await supabase
@@ -57,7 +58,7 @@ export async function getOrgAccessStateForOrg(orgId: string, isPlatformAdmin = f
     .maybeSingle()
 
   if (!subscription) {
-    return { status: "no_subscription", locked: true, reason: "No subscription found." }
+    return { status: "no_subscription", locked: true, reason: "No subscription found.", orgName: (org as any).name ?? null }
   }
 
   const trialEndsAt = subscription.trial_ends_at
@@ -66,37 +67,49 @@ export async function getOrgAccessStateForOrg(orgId: string, isPlatformAdmin = f
 
   switch (subscription.status) {
     case "active":
-      return { status: "active", locked: false, periodEndsAt }
+      return { status: "active", locked: false, periodEndsAt, orgName: (org as any).name ?? null }
     case "trialing": {
       if (trialEndsAt && new Date(trialEndsAt) > now) {
-        return { status: "trialing", locked: false, trialEndsAt }
+        return { status: "trialing", locked: false, trialEndsAt, orgName: (org as any).name ?? null }
       }
-      return { status: "locked", locked: true, reason: "Trial expired.", trialEndsAt }
+      return { status: "locked", locked: true, reason: "Trial expired.", trialEndsAt, orgName: (org as any).name ?? null }
     }
     case "past_due": {
       if (periodEndsAt) {
         const graceEnd = addDays(new Date(periodEndsAt), GRACE_DAYS_PAST_DUE)
         if (graceEnd > now) {
-          return { status: "past_due", locked: false, periodEndsAt }
+          return { status: "past_due", locked: false, periodEndsAt, orgName: (org as any).name ?? null }
         }
       }
-      return { status: "locked", locked: true, reason: "Payment past due." }
+      return { status: "locked", locked: true, reason: "Payment past due.", orgName: (org as any).name ?? null }
     }
     case "canceled": {
       if (periodEndsAt && new Date(periodEndsAt) > now) {
-        return { status: "canceled", locked: false, periodEndsAt }
+        return { status: "canceled", locked: false, periodEndsAt, orgName: (org as any).name ?? null }
       }
-      return { status: "locked", locked: true, reason: "Subscription canceled." }
+      return { status: "locked", locked: true, reason: "Subscription canceled.", orgName: (org as any).name ?? null }
     }
     default:
-      return { status: "unknown", locked: true, reason: "Unknown subscription status." }
+      return { status: "unknown", locked: true, reason: "Unknown subscription status.", orgName: (org as any).name ?? null }
   }
 }
 
 export async function getOrgAccessState(): Promise<OrgAccessState> {
-  const { user, orgId, membership } = await requireOrgMembership()
-  if (membership.role_key === "owner") {
-    return { status: "active", locked: false }
+  const { user, orgId } = await requireOrgMembership()
+  if (isPlatformAdminUser(user)) {
+    return { status: "active", locked: false, orgName: null }
   }
-  return getOrgAccessStateForOrg(orgId, isPlatformAdminUser(user))
+
+  // Platform operators with explicit platform roles can bypass org lock state.
+  const serviceSupabase = createServiceSupabaseClient()
+  const { data: platformMembership } = await serviceSupabase
+    .from("platform_memberships")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .limit(1)
+    .maybeSingle()
+
+  return getOrgAccessStateForOrg(orgId, Boolean(platformMembership?.id))
 }

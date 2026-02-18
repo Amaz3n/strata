@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation"
 
 import { validatePortalToken, loadSubPortalData, recordPortalAccess } from "@/lib/services/portal-access"
+import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { SubPortalClient } from "./sub-portal-client"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 import type { ComplianceDocumentType } from "@/lib/types"
@@ -19,6 +21,24 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
 
   if (!access) {
     notFound()
+  }
+
+  if (access.require_account) {
+    const hasAccountAccess = await hasExternalPortalGrantForToken({
+      orgId: access.org_id,
+      tokenId: access.id,
+      tokenType: "portal",
+    })
+    if (!hasAccountAccess) {
+      return (
+        <PortalAccountGate
+          token={token}
+          tokenType="portal"
+          orgName="the builder"
+          projectName="this project"
+        />
+      )
+    }
   }
 
   // Check if this token is properly configured for sub portal
@@ -86,4 +106,3 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
     />
   )
 }
-

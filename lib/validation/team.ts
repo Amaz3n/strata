@@ -2,15 +2,19 @@ import { z } from "zod"
 
 import type { OrgRole } from "@/lib/types"
 
-export const orgRoleEnum = z.enum(["owner", "admin", "staff", "readonly"]) satisfies z.ZodType<OrgRole>
+export const orgRoleKeySchema = z
+  .string()
+  .trim()
+  .min(1, "Role is required")
+  .regex(/^[a-z_]+$/, "Invalid role key") satisfies z.ZodType<OrgRole>
 
 export const inviteMemberSchema = z.object({
   email: z.string().email("A valid email is required"),
-  role: orgRoleEnum.default("staff"),
+  role: orgRoleKeySchema.default("org_project_lead"),
 })
 
 export const updateMemberRoleSchema = z.object({
-  role: orgRoleEnum,
+  role: orgRoleKeySchema,
 })
 
 export const updateMemberProfileSchema = z.object({
@@ -42,8 +46,6 @@ export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>
 export type UpdateMemberProfileInput = z.infer<typeof updateMemberProfileSchema>
 export type MemberStatusInput = z.infer<typeof memberStatusSchema>
 export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>
-
-
 
 
 

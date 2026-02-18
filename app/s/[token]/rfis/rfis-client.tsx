@@ -3,8 +3,12 @@
 import { useEffect, useState, useTransition } from "react"
 import { format } from "date-fns"
 
-import type { PortalMessage, Rfi } from "@/lib/types"
-import { loadPortalEntityMessagesAction, sendPortalEntityMessageAction } from "@/app/p/[token]/messages/actions"
+import type { Rfi, RfiResponse } from "@/lib/types"
+import {
+  addSubPortalRfiResponseAction,
+  createSubPortalRfiAction,
+  listSubPortalRfiResponsesAction,
+} from "@/app/s/[token]/rfis/actions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,18 +24,21 @@ interface RfisPortalClientProps {
 }
 
 export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
+  const [items, setItems] = useState<Rfi[]>(rfis)
   const [selected, setSelected] = useState<Rfi | null>(null)
-  const [messages, setMessages] = useState<PortalMessage[]>([])
+  const [responses, setResponses] = useState<RfiResponse[]>([])
   const [body, setBody] = useState("")
+  const [subject, setSubject] = useState("")
+  const [question, setQuestion] = useState("")
   const [isPending, startTransition] = useTransition()
   const [loadingThread, setLoadingThread] = useState(false)
 
   useEffect(() => {
     if (!selected) return
     setLoadingThread(true)
-    loadPortalEntityMessagesAction({ token, entityType: "rfi", entityId: selected.id })
-      .then((msgs) => setMessages(msgs))
-      .catch((err) => console.error("Failed to load RFI messages", err))
+    listSubPortalRfiResponsesAction(token, selected.id)
+      .then((rows) => setResponses(rows))
+      .catch((err) => console.error("Failed to load RFI responses", err))
       .finally(() => setLoadingThread(false))
   }, [selected, token])
 
@@ -39,17 +46,34 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
     if (!selected || !body.trim()) return
     startTransition(async () => {
       try {
-        const message = await sendPortalEntityMessageAction({
-          token,
-          entityType: "rfi",
-          entityId: selected.id,
+        await addSubPortalRfiResponseAction(token, {
+          rfi_id: selected.id,
+          response_type: "comment",
           body,
-          senderName: "Portal user",
         })
-        setMessages((prev) => [...prev, message])
+        const rows = await listSubPortalRfiResponsesAction(token, selected.id)
+        setResponses(rows)
         setBody("")
       } catch (error) {
         console.error("Failed to send message", error)
+      }
+    })
+  }
+
+  const handleCreateRfi = () => {
+    if (!subject.trim() || !question.trim()) return
+    startTransition(async () => {
+      try {
+        const created = await createSubPortalRfiAction(token, {
+          subject: subject.trim(),
+          question: question.trim(),
+          priority: "normal",
+        })
+        setItems((prev) => [created, ...prev])
+        setSubject("")
+        setQuestion("")
+      } catch (error) {
+        console.error("Failed to create RFI", error)
       }
     })
   }
@@ -63,14 +87,29 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
           <p className="text-sm text-muted-foreground">Review RFIs assigned to this project.</p>
         </header>
 
-        {rfis.length === 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Submit New RFI</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Textarea placeholder="Subject" rows={1} value={subject} onChange={(e) => setSubject(e.target.value)} />
+            <Textarea placeholder="Question" rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
+            <div className="flex justify-end">
+              <Button onClick={handleCreateRfi} disabled={isPending || !subject.trim() || !question.trim()}>
+                Submit RFI
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {items.length === 0 && (
           <Card>
             <CardContent className="p-6 text-center text-muted-foreground">No RFIs yet.</CardContent>
           </Card>
         )}
 
         <div className="space-y-3">
-          {rfis.map((rfi) => (
+          {items.map((rfi) => (
             <Card key={rfi.id}>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">RFI #{rfi.rfi_number}</CardTitle>
@@ -89,7 +128,7 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
                   )}
                 </div>
                 <Button variant="outline" size="sm" onClick={() => setSelected(rfi)}>
-                  View messages
+                  View responses
                 </Button>
               </CardContent>
             </Card>
@@ -116,17 +155,17 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
                   <div className="flex h-full items-center justify-center">
                     <Spinner className="h-4 w-4 text-muted-foreground" />
                   </div>
-                ) : messages.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No messages yet.</p>
+                ) : responses.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No responses yet.</p>
                 ) : (
                   <div className="space-y-3">
-                    {messages.map((msg) => (
-                      <div key={msg.id} className="rounded-md border bg-card/50 p-2">
+                    {responses.map((response) => (
+                      <div key={response.id} className="rounded-md border bg-card/50 p-2">
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{msg.sender_name ?? "Portal user"}</span>
-                          <span>{format(new Date(msg.sent_at), "MMM d, h:mm a")}</span>
+                          <span className="capitalize">{response.response_type}</span>
+                          <span>{format(new Date(response.created_at), "MMM d, h:mm a")}</span>
                         </div>
-                        <p className="text-sm whitespace-pre-line">{msg.body}</p>
+                        <p className="text-sm whitespace-pre-line">{response.body}</p>
                       </div>
                     ))}
                   </div>
@@ -143,7 +182,7 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
               <div className="flex justify-end">
                 <Button onClick={handleSend} disabled={isPending || loadingThread || !body.trim()}>
                   {isPending ? <Spinner className="mr-2 h-4 w-4" /> : null}
-                  Send
+                  Send response
                 </Button>
               </div>
             </div>
@@ -153,4 +192,3 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
     </div>
   )
 }
-

@@ -1,4 +1,5 @@
 import { getQBOAccessToken } from "@/lib/services/qbo-connection"
+import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo-query"
 
 const BASE_URL =
   process.env.NODE_ENV === "production"
@@ -8,6 +9,12 @@ const BASE_URL =
 interface QueryInvoiceResponse {
   QueryResponse: {
     Invoice?: Array<{ DocNumber?: string }>
+  }
+}
+
+interface QueryAccountResponse {
+  QueryResponse: {
+    Account?: Array<{ Id?: string; Name?: string }>
   }
 }
 
@@ -74,6 +81,10 @@ export class QBOClient {
     return response.json()
   }
 
+  private toQboStringLiteral(value: string): string {
+    return escapeQboQueryLiteral(value)
+  }
+
   async getLastInvoiceNumber(): Promise<string> {
     const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 1`
     const result = await this.request<QueryInvoiceResponse>("GET", `query?query=${encodeURIComponent(query)}`)
@@ -81,13 +92,13 @@ export class QBOClient {
   }
 
   async checkDocNumberExists(docNumber: string): Promise<boolean> {
-    const query = `SELECT Id FROM Invoice WHERE DocNumber = '${docNumber.replace(/'/g, "\\'")}'`
+    const query = `SELECT Id FROM Invoice WHERE DocNumber = '${this.toQboStringLiteral(docNumber)}'`
     const result = await this.request<QueryInvoiceResponse>("GET", `query?query=${encodeURIComponent(query)}`)
     return (result.QueryResponse.Invoice?.length ?? 0) > 0
   }
 
   async findCustomerByName(displayName: string): Promise<QBOCustomer | null> {
-    const query = `SELECT * FROM Customer WHERE DisplayName = '${displayName.replace(/'/g, "\\'")}'`
+    const query = `SELECT * FROM Customer WHERE DisplayName = '${this.toQboStringLiteral(displayName)}'`
     const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
       "GET",
       `query?query=${encodeURIComponent(query)}`,
@@ -106,7 +117,13 @@ export class QBOClient {
     return this.createCustomer({ DisplayName: displayName })
   }
 
-  async getDefaultServiceItem(): Promise<{ value: string; name: string }> {
+  private async getDefaultIncomeAccountId(): Promise<string | null> {
+    const query = `SELECT Id, Name FROM Account WHERE AccountType = 'Income' AND Active = true MAXRESULTS 1`
+    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    return result.QueryResponse.Account?.[0]?.Id ?? null
+  }
+
+  async getDefaultServiceItem(defaultIncomeAccountId?: string): Promise<{ value: string; name: string }> {
     const query = `SELECT * FROM Item WHERE Type = 'Service' MAXRESULTS 1`
     const result = await this.request<{ QueryResponse: { Item?: any[] } }>(
       "GET",
@@ -120,10 +137,15 @@ export class QBOClient {
       }
     }
 
+    const incomeAccountId = defaultIncomeAccountId ?? (await this.getDefaultIncomeAccountId())
+    if (!incomeAccountId) {
+      throw new Error("Unable to create QBO service item: no active Income account found")
+    }
+
     const newItem = await this.request<{ Item: any }>("POST", "item", {
       Name: "Construction Services",
       Type: "Service",
-      IncomeAccountRef: { value: "1" },
+      IncomeAccountRef: { value: incomeAccountId },
     })
 
     return { value: newItem.Item.Id, name: newItem.Item.Name }

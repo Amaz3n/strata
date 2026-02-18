@@ -16,7 +16,7 @@ type UploadUrlResponse = {
 export async function uploadDrawingFileToStorage(
   file: File,
   projectId: string,
-  orgId: string
+  orgId?: string
 ): Promise<{ storagePath: string }> {
   const response = await fetch("/api/drawings/upload-url", {
     method: "POST",

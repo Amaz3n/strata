@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
-import { requirePermissionGuard } from "@/lib/auth/guards"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { FeatureFlagsTable } from "@/components/admin/feature-flags-table"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
 
 export default async function FeaturesPage() {
-  await requirePermissionGuard("features.manage")
+  await requireAnyPermissionGuard(["features.manage", "platform.feature_flags.manage"])
 
   return (
     <PageLayout

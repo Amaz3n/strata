@@ -4,8 +4,10 @@ import { revalidatePath } from "next/cache"
 
 import {
   inviteTeamMember,
+  listAssignableOrgRoles,
   listTeamMembers,
   reactivateMember,
+  resetMemberMfa,
   removeMember,
   resendInvite,
   suspendMember,
@@ -13,63 +15,118 @@ import {
   updateMemberRole,
 } from "@/lib/services/team"
 import { inviteMemberSchema, updateMemberProfileSchema, updateMemberRoleSchema } from "@/lib/validation/team"
+import { AuthorizationError } from "@/lib/services/authorization"
+
+function rethrowTypedAuthError(error: unknown): never {
+  if (error instanceof AuthorizationError) {
+    throw new Error(`AUTH_FORBIDDEN:${error.reasonCode}`)
+  }
+  throw error
+}
 
 export async function listTeamMembersAction() {
-  return listTeamMembers()
+  try {
+    return await listTeamMembers()
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function listAssignableOrgRolesAction() {
+  try {
+    return await listAssignableOrgRoles()
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function inviteTeamMemberAction(input: unknown) {
-  const parsed = inviteMemberSchema.parse(input)
-  const member = await inviteTeamMember({ input: parsed })
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return member
+  try {
+    const parsed = inviteMemberSchema.parse(input)
+    const member = await inviteTeamMember({ input: parsed })
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return member
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function updateMemberRoleAction(membershipId: string, input: unknown) {
-  const parsed = updateMemberRoleSchema.parse(input)
-  const member = await updateMemberRole({ membershipId, role: parsed.role })
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return member
+  try {
+    const parsed = updateMemberRoleSchema.parse(input)
+    const member = await updateMemberRole({ membershipId, role: parsed.role })
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return member
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function updateMemberProfileAction(userId: string, input: unknown) {
-  const parsed = updateMemberProfileSchema.parse(input)
-  const user = await updateMemberProfile({ userId, fullName: parsed.full_name })
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return user
+  try {
+    const parsed = updateMemberProfileSchema.parse(input)
+    const user = await updateMemberProfile({ userId, fullName: parsed.full_name })
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return user
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function suspendMemberAction(membershipId: string) {
-  await suspendMember(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return true
+  try {
+    await suspendMember(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return true
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function reactivateMemberAction(membershipId: string) {
-  await reactivateMember(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return true
+  try {
+    await reactivateMember(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return true
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function removeMemberAction(membershipId: string) {
-  await removeMember(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return true
+  try {
+    await removeMember(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return true
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
 export async function resendInviteAction(membershipId: string) {
-  await resendInvite(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return true
+  try {
+    await resendInvite(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return true
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
 }
 
-
-
-
+export async function resetMemberMfaAction(membershipId: string) {
+  try {
+    const result = await resetMemberMfa(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return result
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}

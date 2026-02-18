@@ -9,6 +9,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3"
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 export type FilesStorageProvider = "r2"
 
@@ -166,6 +167,36 @@ export async function uploadFilesObject(params: {
   )
 
   return { storagePath }
+}
+
+export async function createFilesUploadUrl(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  contentType: string
+  cacheControl?: string
+  expiresIn?: number
+}): Promise<{ storagePath: string; uploadUrl: string; provider: FilesStorageProvider }> {
+  const { supabase: _supabase, orgId, contentType } = params
+  const provider = getFilesStorageProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  if (provider !== "r2") {
+    throw new Error("R2 uploads are required. Set FILES_STORAGE=r2.")
+  }
+
+  const client = getR2Client()
+  const command = new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(storagePath),
+    ContentType: contentType,
+    CacheControl: params.cacheControl ?? "private, max-age=3600",
+  })
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: params.expiresIn ?? 600,
+  })
+
+  return { storagePath, uploadUrl, provider }
 }
 
 export async function deleteFilesObjects(params: {

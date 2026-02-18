@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,14 +19,18 @@ import {
 import type { TeamMember } from "@/lib/types"
 import { MemberRoleBadge } from "@/components/team/member-role-badge"
 import { EditMemberDialog } from "@/components/team/edit-member-dialog"
+import { InviteMemberDialog } from "@/components/team/invite-member-dialog"
 import {
   reactivateMemberAction,
+  resetMemberMfaAction,
   removeMemberAction,
   resendInviteAction,
   suspendMemberAction,
 } from "@/app/(app)/team/actions"
-import { MoreHorizontal, Users } from "@/components/icons"
+import { Lock, MoreHorizontal, UserPlus, Users } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import type { OrgRoleOption } from "@/lib/types"
 
 const statusColors: Record<string, string> = {
   active: "bg-success/20 text-success border-success/30",
@@ -54,6 +58,7 @@ interface TeamTableProps {
   members: TeamMember[]
   canManageMembers?: boolean
   canEditRoles?: boolean
+  roleOptions?: OrgRoleOption[]
   showProjectCounts?: boolean
   onMemberChange?: () => void
 }
@@ -62,6 +67,7 @@ export function TeamTable({
   members,
   canManageMembers = false,
   canEditRoles = false,
+  roleOptions = [],
   showProjectCounts = true,
   onMemberChange,
 }: TeamTableProps) {
@@ -146,6 +152,26 @@ export function TeamTable({
     })
   }
 
+  const resetMfa = (membershipId: string) => {
+    if (!canManageMembers) {
+      toast({ title: "Permission required", description: "You need member management access to reset MFA." })
+      return
+    }
+
+    const confirmed = window.confirm("Reset this member's MFA? They will need to set up authenticator access again.")
+    if (!confirmed) return
+
+    startTransition(async () => {
+      try {
+        const result = await resetMemberMfaAction(membershipId)
+        toast({ title: result?.reset ? "MFA reset" : "No MFA to reset" })
+        refreshData()
+      } catch (error) {
+        toast({ title: "Unable to reset MFA", description: (error as Error).message })
+      }
+    })
+  }
+
   const activeMembers = useMemo(
     () => members.filter((member) => member.status !== "suspended"),
     [members],
@@ -155,7 +181,7 @@ export function TeamTable({
     [members],
   )
   const visibleMembers = view === "archived" ? archivedMembers : activeMembers
-  const colSpan = 4 + (showProjectCounts ? 1 : 0) + (canManageMembers || canEditRoles ? 1 : 0)
+  const colSpan = 5 + (showProjectCounts ? 1 : 0) + (canManageMembers || canEditRoles ? 1 : 0)
 
   const emptyTitle = view === "archived"
     ? "No archived members"
@@ -169,134 +195,189 @@ export function TeamTable({
       : "Invite your first team member to get started."
 
   return (
-    <div className="rounded-lg border px-6 py-3">
-      <div className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-sm font-semibold">Team members</p>
-          <p className="text-xs text-muted-foreground">Review teammates, access levels, and activity.</p>
-        </div>
-        <ToggleGroup
-          type="single"
-          value={view}
-          onValueChange={(next) => next && setView(next as "active" | "archived")}
-          variant="outline"
-          size="sm"
-        >
-          <ToggleGroupItem value="active">Active ({activeMembers.length})</ToggleGroupItem>
-          <ToggleGroupItem value="archived">Archived ({archivedMembers.length})</ToggleGroupItem>
-        </ToggleGroup>
+    <div className="space-y-3">
+      <div className="flex items-center justify-end gap-2">
+        <Select value={view} onValueChange={(next) => setView(next as "active" | "archived")}>
+          <SelectTrigger className="h-9 w-[180px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="active">Active ({activeMembers.length})</SelectItem>
+            <SelectItem value="archived">Archived ({archivedMembers.length})</SelectItem>
+          </SelectContent>
+        </Select>
+        <InviteMemberDialog
+          canInvite={canManageMembers}
+          roleOptions={roleOptions}
+          onSuccess={refreshData}
+          trigger={
+            <Button
+              size="icon"
+              variant="default"
+              disabled={!canManageMembers}
+              className="h-9 w-9"
+            >
+              <UserPlus className="h-4 w-4" />
+              <span className="sr-only">Invite member</span>
+            </Button>
+          }
+        />
       </div>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[280px]">Member</TableHead>
-            <TableHead>Role</TableHead>
-            <TableHead>Status</TableHead>
-            {showProjectCounts && <TableHead className="text-center">Projects</TableHead>}
-            <TableHead>Last active</TableHead>
-            {(canManageMembers || canEditRoles) && <TableHead className="w-[120px] text-right">Actions</TableHead>}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {visibleMembers.map((member) => (
-            <TableRow key={member.id}>
-              <TableCell>
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-9 w-9">
-                    <AvatarImage src={member.user.avatar_url || undefined} alt={member.user.full_name || ""} />
-                    <AvatarFallback className="text-xs font-medium">
-                      {getInitials(member.user.full_name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex flex-col min-w-0">
-                    <span className="font-semibold truncate">{member.user.full_name || "Unknown"}</span>
-                    <span className="text-xs text-muted-foreground truncate">{member.user.email}</span>
+      <div className="rounded-lg border px-6 py-3">
+        <TooltipProvider delayDuration={200}>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[280px]">Member</TableHead>
+                <TableHead className="text-center">Role</TableHead>
+                <TableHead className="text-center">Status</TableHead>
+                <TableHead className="text-center">
+                  <div className="inline-flex items-center justify-center gap-1">
+                    MFA
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button type="button" className="inline-flex h-4 w-4 items-center justify-center text-muted-foreground">
+                          <Lock className="h-3.5 w-3.5" />
+                          <span className="sr-only">MFA column details</span>
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Green lock means MFA is enabled. Red lock means it is not enabled.
+                      </TooltipContent>
+                    </Tooltip>
                   </div>
-                </div>
-              </TableCell>
-              <TableCell>
-                <MemberRoleBadge role={member.role} />
-              </TableCell>
-              <TableCell>
-                <Badge variant="outline" className={statusColors[member.status] || ""}>
-                  {statusLabels[member.status] || member.status}
-                </Badge>
-              </TableCell>
-              {showProjectCounts && (
-                <TableCell className="text-center text-muted-foreground">
-                  {member.project_count ?? 0}
+                </TableHead>
+                {showProjectCounts && <TableHead className="text-center">Projects</TableHead>}
+                <TableHead className="text-center">Last active</TableHead>
+                {(canManageMembers || canEditRoles) && <TableHead className="w-[120px] text-right">Actions</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visibleMembers.map((member) => (
+                <TableRow key={member.id}>
+                <TableCell>
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-9 w-9">
+                      <AvatarImage src={member.user.avatar_url || undefined} alt={member.user.full_name || ""} />
+                      <AvatarFallback className="text-xs font-medium">
+                        {getInitials(member.user.full_name)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-semibold truncate">{member.user.full_name || "Unknown"}</span>
+                      <span className="text-xs text-muted-foreground truncate">{member.user.email}</span>
+                    </div>
+                  </div>
                 </TableCell>
-              )}
-              <TableCell className="text-sm text-muted-foreground">
-                {member.last_active_at ? new Date(member.last_active_at).toLocaleDateString() : "—"}
-              </TableCell>
-              {(canManageMembers || canEditRoles) && (
-                <TableCell className="text-right">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
-                        <MoreHorizontal className="h-4 w-4" />
-                        <span className="sr-only">Actions</span>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                      <EditMemberDialog
-                        member={member}
-                        canManageMembers={canManageMembers}
-                        canEditRoles={canEditRoles}
-                        onSuccess={refreshData}
-                        trigger={
-                          <DropdownMenuItem disabled={!canManageMembers && !canEditRoles}>
-                            Edit member
+                <TableCell className="text-center">
+                  <div className="flex justify-center">
+                    <MemberRoleBadge role={member.role} label={member.role_label} />
+                  </div>
+                </TableCell>
+                <TableCell className="text-center">
+                  <div className="flex justify-center">
+                    <Badge variant="outline" className={statusColors[member.status] || ""}>
+                      {statusLabels[member.status] || member.status}
+                    </Badge>
+                  </div>
+                </TableCell>
+                <TableCell className="text-center">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex items-center justify-center">
+                        <Lock className={member.mfa_enabled ? "h-4 w-4 text-emerald-600" : "h-4 w-4 text-red-500"} />
+                        <span className="sr-only">{member.mfa_enabled ? "MFA enabled" : "MFA disabled"}</span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {member.mfa_enabled ? "MFA is enabled for this user." : "MFA is not enabled for this user."}
+                    </TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                {showProjectCounts && (
+                  <TableCell className="text-center text-muted-foreground">
+                    {member.project_count ?? 0}
+                  </TableCell>
+                )}
+                <TableCell className="text-center text-sm text-muted-foreground">
+                  {member.last_active_at ? new Date(member.last_active_at).toLocaleDateString() : "—"}
+                </TableCell>
+                {(canManageMembers || canEditRoles) && (
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">Actions</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        <EditMemberDialog
+                          member={member}
+                          canManageMembers={canManageMembers}
+                          canEditRoles={canEditRoles}
+                          roleOptions={roleOptions}
+                          onSuccess={refreshData}
+                          trigger={
+                            <DropdownMenuItem disabled={!canManageMembers && !canEditRoles}>
+                              Edit member
+                            </DropdownMenuItem>
+                          }
+                        />
+                        <DropdownMenuSeparator />
+                        {member.status === "suspended" ? (
+                          <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => reactivate(member.id)}>
+                            Restore member
                           </DropdownMenuItem>
-                        }
-                      />
-                      <DropdownMenuSeparator />
-                      {member.status === "suspended" ? (
-                        <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => reactivate(member.id)}>
-                          Restore member
+                        ) : member.status === "invited" ? (
+                          <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => resend(member.id)}>
+                            Resend invite
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => suspend(member.id)}>
+                            Archive member
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem
+                          disabled={isPending || !canManageMembers || member.status === "invited"}
+                          onClick={() => resetMfa(member.id)}
+                        >
+                          Reset MFA
                         </DropdownMenuItem>
-                      ) : member.status === "invited" ? (
-                        <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => resend(member.id)}>
-                          Resend invite
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          disabled={isPending || !canManageMembers}
+                          onClick={() => remove(member.id)}
+                        >
+                          Remove
                         </DropdownMenuItem>
-                      ) : (
-                        <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => suspend(member.id)}>
-                          Archive member
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-destructive"
-                        disabled={isPending || !canManageMembers}
-                        onClick={() => remove(member.id)}
-                      >
-                        Remove
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                )}
+              </TableRow>
+            ))}
+              {visibleMembers.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={colSpan} className="text-center py-12 text-muted-foreground">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                        <Users className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <p className="font-medium">{emptyTitle}</p>
+                        <p className="text-sm">{emptyDescription}</p>
+                      </div>
+                    </div>
+                  </TableCell>
+                </TableRow>
               )}
-            </TableRow>
-          ))}
-          {visibleMembers.length === 0 && (
-            <TableRow>
-              <TableCell colSpan={colSpan} className="text-center py-12 text-muted-foreground">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                    <Users className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <p className="font-medium">{emptyTitle}</p>
-                    <p className="text-sm">{emptyDescription}</p>
-                  </div>
-                </div>
-              </TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
+            </TableBody>
+          </Table>
+        </TooltipProvider>
+      </div>
     </div>
   )
 }

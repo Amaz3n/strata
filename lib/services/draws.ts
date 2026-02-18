@@ -5,9 +5,21 @@ import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
 import { renderDrawSummaryPdf } from "@/lib/pdfs/draw-summary"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
+import { requireAuthorization } from "@/lib/services/authorization"
 
 export async function listDueDraws(projectId?: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "draw.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: projectId ? "project" : "org",
+    resourceId: projectId ?? resolvedOrgId,
+  })
+
   const today = new Date().toISOString().split("T")[0]
 
   let query = supabase
@@ -47,7 +59,7 @@ export async function invoiceDrawSchedule({
   orgId?: string
   create_draw_summary?: boolean
 }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data: draw, error: drawError } = await supabase
     .from("draw_schedules")
@@ -60,8 +72,78 @@ export async function invoiceDrawSchedule({
     throw new Error("Draw not found")
   }
 
+  let drawContractId: string | null = draw.contract_id ?? null
+  let contract: any = null
+
+  if (drawContractId) {
+    const { data: linkedContract, error: linkedContractError } = await supabase
+      .from("contracts")
+      .select("id, status, signed_at, total_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", drawContractId)
+      .maybeSingle()
+
+    if (linkedContractError) {
+      throw new Error(`Failed to load draw contract: ${linkedContractError.message}`)
+    }
+    contract = linkedContract
+  } else {
+    const { data: activeContract, error: activeContractError } = await supabase
+      .from("contracts")
+      .select("id, status, signed_at, total_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", draw.project_id)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (activeContractError) {
+      throw new Error(`Failed to load project contract: ${activeContractError.message}`)
+    }
+
+    contract = activeContract
+    drawContractId = activeContract?.id ?? null
+  }
+
+  if (!contract?.id || contract.status !== "active" || !contract.signed_at) {
+    throw new Error("A signed active contract is required before invoicing a draw.")
+  }
+
+  if (!draw.contract_id && drawContractId) {
+    const { error: bindError } = await supabase
+      .from("draw_schedules")
+      .update({ contract_id: drawContractId })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", draw.id)
+
+    if (bindError) {
+      throw new Error(`Failed to bind draw to contract: ${bindError.message}`)
+    }
+  }
+
+  await requireAuthorization({
+    permission: "draw.approve",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: draw.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "draw_schedule",
+    resourceId: drawId,
+  })
+
   if (draw.invoice_id) {
     throw new Error("Draw already invoiced")
+  }
+
+  const drawAmountCents =
+    typeof draw.percent_of_contract === "number"
+      ? Math.round(((contract.total_cents ?? 0) * Number(draw.percent_of_contract)) / 100)
+      : (draw.amount_cents ?? 0)
+
+  if (!Number.isFinite(drawAmountCents) || drawAmountCents <= 0) {
+    throw new Error("Draw amount must be greater than $0 before invoicing.")
   }
 
   const invoice = await createInvoice({
@@ -81,7 +163,7 @@ export async function invoiceDrawSchedule({
           description: draw.title,
           quantity: 1,
           unit: "draw",
-          unit_cost: (draw.amount_cents ?? 0) / 100,
+          unit_cost: drawAmountCents / 100,
           taxable: false,
         },
       ],
@@ -121,11 +203,37 @@ export async function invoiceDrawSchedule({
     }
   }
 
-  return { draw: { ...draw, status: "invoiced", invoice_id: invoice.id }, invoice, draw_summary_file_id: drawSummaryFileId }
+  return {
+    draw: { ...draw, status: "invoiced", invoice_id: invoice.id, contract_id: drawContractId, amount_cents: drawAmountCents },
+    invoice,
+    draw_summary_file_id: drawSummaryFileId,
+  }
 }
 
 export async function markDrawPaid(drawId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: draw, error: drawError } = await supabase
+    .from("draw_schedules")
+    .select("id, project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", drawId)
+    .maybeSingle()
+
+  if (drawError || !draw) {
+    throw new Error("Draw not found")
+  }
+
+  await requireAuthorization({
+    permission: "payment.release",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: draw.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "draw_schedule",
+    resourceId: drawId,
+  })
 
   const { error } = await supabase
     .from("draw_schedules")
@@ -269,8 +377,6 @@ async function generateAndAttachDrawSummary({
 
   return record.id
 }
-
-
 
 
 

@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import sharp from "sharp"
 
 import {
   createInvoice,
@@ -10,11 +11,127 @@ import {
   listInvoices,
   updateInvoice,
 } from "@/lib/services/invoices"
-import { enqueueInvoiceSync, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
+import { forceSyncInvoiceToQBO, retryFailedQBOSyncJobs, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
+import { listChangeOrders } from "@/lib/services/change-orders"
+import { renderInvoicePdf } from "@/lib/pdfs/invoice"
+import { uploadFilesObject, buildFilesPublicUrl } from "@/lib/storage/files-storage"
+import { createFileRecord } from "@/lib/services/files"
+import { createInitialVersion } from "@/lib/services/file-versions"
+import { attachFile } from "@/lib/services/file-links"
+
+function resolveOrgLogoPath(logoUrl?: string | null) {
+  if (!logoUrl) return null
+
+  try {
+    const parsed = new URL(logoUrl)
+    const marker = "/storage/v1/object/public/org-logos/"
+    const markerIndex = parsed.pathname.indexOf(marker)
+    if (markerIndex === -1) return null
+    return decodeURIComponent(parsed.pathname.slice(markerIndex + marker.length))
+  } catch {
+    return null
+  }
+}
+
+function largestOpaqueComponentBounds(raw: Buffer, width: number, height: number, channels: number) {
+  const visited = new Uint8Array(width * height)
+  let best: { area: number; minX: number; minY: number; maxX: number; maxY: number } | null = null
+  const alphaOffset = channels - 1
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = y * width + x
+      if (visited[idx]) continue
+      visited[idx] = 1
+      const pixelIndex = idx * channels + alphaOffset
+      if ((raw[pixelIndex] ?? 0) <= 1) continue
+
+      let area = 0
+      let minX = x
+      let maxX = x
+      let minY = y
+      let maxY = y
+
+      const queue = [idx]
+      let queueHead = 0
+      while (queueHead < queue.length) {
+        const current = queue[queueHead++]
+        const cx = current % width
+        const cy = Math.floor(current / width)
+        area += 1
+
+        if (cx < minX) minX = cx
+        if (cx > maxX) maxX = cx
+        if (cy < minY) minY = cy
+        if (cy > maxY) maxY = cy
+
+        const neighbors = [
+          current - 1,
+          current + 1,
+          current - width,
+          current + width,
+        ]
+        for (const neighbor of neighbors) {
+          if (neighbor < 0 || neighbor >= width * height) continue
+          const nx = neighbor % width
+          const ny = Math.floor(neighbor / width)
+          if (Math.abs(nx - cx) + Math.abs(ny - cy) !== 1) continue
+          if (visited[neighbor]) continue
+          visited[neighbor] = 1
+          const neighborAlpha = raw[neighbor * channels + alphaOffset] ?? 0
+          if (neighborAlpha <= 1) continue
+          queue.push(neighbor)
+        }
+      }
+
+      if (!best || area > best.area) {
+        best = { area, minX, minY, maxX, maxY }
+      }
+    }
+  }
+
+  return best
+}
+
+async function normalizeLogoForPdf(logoUrl: string | null | undefined, supabase: ReturnType<typeof createServiceSupabaseClient>) {
+  if (!logoUrl) return undefined
+
+  const logoPath = resolveOrgLogoPath(logoUrl)
+  if (!logoPath) return logoUrl
+
+  try {
+    const { data: logoBlob, error } = await supabase.storage.from("org-logos").download(logoPath)
+    if (error || !logoBlob) return logoUrl
+
+    const logoBuffer = Buffer.from(await logoBlob.arrayBuffer())
+    const resizedBuffer = await sharp(logoBuffer)
+      .ensureAlpha()
+      .resize({ width: 700, height: 240, fit: "inside", withoutEnlargement: true })
+      .png()
+      .toBuffer()
+
+    const { data: rawData, info } = await sharp(resizedBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+    const bounds = largestOpaqueComponentBounds(rawData, info.width, info.height, info.channels)
+
+    if (!bounds || bounds.area < 24) {
+      return `data:image/png;base64,${resizedBuffer.toString("base64")}`
+    }
+
+    const horizontalPadding = 20
+    const left = Math.max(0, bounds.minX - horizontalPadding)
+    const width = Math.min(info.width - left, bounds.maxX - bounds.minX + 1 + horizontalPadding * 2)
+
+    // Keep full height to avoid trimming top/bottom logo edges from anti-aliased pixels.
+    const cropped = await sharp(resizedBuffer).extract({ left, top: 0, width, height: info.height }).png().toBuffer()
+    return `data:image/png;base64,${cropped.toString("base64")}`
+  } catch {
+    return logoUrl
+  }
+}
 
 export async function listInvoicesAction(projectId?: string) {
   return listInvoices({ projectId })
@@ -78,9 +195,19 @@ export async function getInvoiceDetailAction(invoiceId: string) {
 export async function manualResyncInvoiceAction(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
   const { orgId } = await requireOrgContext()
-  await enqueueInvoiceSync(invoiceId, orgId)
+  const result = await forceSyncInvoiceToQBO(invoiceId, orgId)
+  if (!result.success) {
+    throw new Error(result.error ?? "Unable to sync invoice")
+  }
   revalidatePath("/invoices")
   return { success: true }
+}
+
+export async function retryFailedInvoiceSyncsAction() {
+  const { orgId } = await requireOrgContext()
+  const result = await retryFailedQBOSyncJobs(orgId)
+  revalidatePath("/invoices")
+  return result
 }
 
 export async function syncPendingInvoicesNowAction(limit = 15) {
@@ -150,4 +277,228 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
   })
 
   return { success: true }
+}
+
+export async function getInvoiceComposerContextAction(projectId: string) {
+  if (!projectId) {
+    return {
+      draws: [],
+      changeOrders: [],
+      settings: {
+        defaultPaymentTermsDays: 15,
+        defaultInvoiceNote: "",
+      },
+    }
+  }
+
+  const { supabase, orgId } = await requireOrgContext()
+
+  const { data: drawRows, error: drawError } = await supabase
+    .from("draw_schedules")
+    .select("id, project_id, draw_number, title, description, amount_cents, due_date, status")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .in("status", ["pending", "partial"])
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .order("draw_number", { ascending: true })
+
+  if (drawError) {
+    throw new Error(`Failed to load draw schedule context: ${drawError.message}`)
+  }
+
+  const changeOrders = await listChangeOrders({ orgId, projectId })
+    .then((rows) =>
+      rows.filter((co) => {
+        const status = String(co.status ?? "").toLowerCase()
+        return status === "approved" || status === "pending"
+      }),
+    )
+    .catch(() => [])
+
+  const { data: orgSettingsRow } = await supabase
+    .from("org_settings")
+    .select("settings")
+    .eq("org_id", orgId)
+    .maybeSingle()
+  const settings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
+
+  return {
+    draws: (drawRows ?? []).map((draw) => ({
+      id: draw.id as string,
+      project_id: draw.project_id as string,
+      draw_number: Number(draw.draw_number ?? 0),
+      title: String(draw.title ?? ""),
+      description: draw.description ? String(draw.description) : null,
+      amount_cents: Number(draw.amount_cents ?? 0),
+      due_date: draw.due_date ? String(draw.due_date) : null,
+      status: String(draw.status ?? "pending"),
+    })),
+    changeOrders,
+    settings: {
+      defaultPaymentTermsDays: Number(settings.invoice_default_payment_terms_days ?? 15),
+      defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
+    },
+  }
+}
+
+export async function generateInvoicePdfAction(invoiceId: string) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+
+  const { supabase, orgId } = await requireOrgContext()
+
+  const invoice = await getInvoiceWithLines(invoiceId, orgId)
+  if (!invoice) {
+    throw new Error("Invoice not found")
+  }
+
+  const { data: project } = invoice.project_id
+    ? await supabase
+        .from("projects")
+        .select("name")
+        .eq("org_id", orgId)
+        .eq("id", invoice.project_id)
+        .maybeSingle()
+    : { data: null as any }
+
+  const { data: org } = await supabase
+    .from("orgs")
+    .select("name, billing_email, address, logo_url")
+    .eq("id", orgId)
+    .maybeSingle()
+
+  const metadata = (invoice.metadata ?? {}) as Record<string, any>
+  const { data: orgSettingsRow } = await supabase
+    .from("org_settings")
+    .select("settings")
+    .eq("org_id", orgId)
+    .maybeSingle()
+  const orgSettings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
+  const lines = (invoice.lines ?? []).map((line) => {
+    const qty = Number(line.quantity ?? 0)
+    const unitCost = Number(line.unit_cost_cents ?? 0)
+    return {
+      description: line.description,
+      quantity: Number.isFinite(qty) ? qty : 0,
+      unit: line.unit ?? "ea",
+      unitCostCents: Number.isFinite(unitCost) ? unitCost : 0,
+      lineTotalCents: Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(unitCost) ? unitCost : 0)),
+    }
+  })
+
+  const fromLines = [
+    org?.name ?? "Arc Builder",
+    typeof org?.address === "string"
+      ? org.address
+      : org?.address?.formatted ??
+        [org?.address?.street1, org?.address?.street2, [org?.address?.city, org?.address?.state].filter(Boolean).join(", "), org?.address?.postal_code]
+          .filter(Boolean)
+          .join(" "),
+  ]
+    .map((line) => (typeof line === "string" ? line.trim() : ""))
+    .filter((line) => line.length > 0)
+
+  const customerAddress =
+    typeof metadata.customer_address === "string"
+      ? metadata.customer_address
+      : metadata.customer_address?.formatted ??
+        [
+          metadata.customer_address?.street1,
+          metadata.customer_address?.street2,
+          [metadata.customer_address?.city, metadata.customer_address?.state, metadata.customer_address?.postal_code]
+            .filter(Boolean)
+            .join(" "),
+          metadata.customer_address?.country,
+        ]
+          .filter(Boolean)
+          .join("\n")
+
+  const billToLines = [
+    invoice.customer_name ?? metadata.customer_name ?? "Client",
+    customerAddress ?? "",
+  ]
+    .map((line) => String(line ?? "").trim())
+    .filter((line) => line.length > 0)
+
+  const normalizedLogo = await normalizeLogoForPdf((org?.logo_url as string | null) ?? null, supabase)
+  const token = await ensureInvoiceToken(invoice.id, orgId)
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
+
+  const pdfBuffer = await renderInvoicePdf({
+    invoiceNumber: invoice.invoice_number,
+    title: invoice.title ?? undefined,
+    logoUrl: normalizedLogo,
+    issueDate: invoice.issue_date ?? undefined,
+    dueDate: invoice.due_date ?? undefined,
+    fromLines,
+    billToLines,
+    projectName: project?.name ?? undefined,
+    notes:
+      (typeof invoice.notes === "string" && invoice.notes.trim().length > 0
+        ? invoice.notes
+        : String(orgSettings.invoice_default_payment_details ?? orgSettings.invoice_default_note ?? "").trim()) || undefined,
+    payUrl: `${appUrl}/i/${token}`,
+    subtotalCents: invoice.subtotal_cents ?? invoice.totals?.subtotal_cents ?? 0,
+    taxCents: invoice.tax_cents ?? invoice.totals?.tax_cents ?? 0,
+    totalCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
+    taxRate: invoice.totals?.tax_rate ?? (metadata.tax_rate as number | undefined),
+    lines,
+  })
+
+  const safeInvoiceNumber = String(invoice.invoice_number).replace(/[^a-zA-Z0-9._-]/g, "_")
+  const fileName = `invoice-${safeInvoiceNumber}.pdf`
+  const timestamp = Date.now()
+  const storagePath = invoice.project_id
+    ? `${orgId}/${invoice.project_id}/invoices/${timestamp}_${fileName}`
+    : `${orgId}/general/invoices/${timestamp}_${fileName}`
+
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: storagePath,
+    bytes: pdfBuffer,
+    contentType: "application/pdf",
+    upsert: false,
+  })
+
+  const fileRecord = await createFileRecord({
+    project_id: invoice.project_id ?? undefined,
+    file_name: fileName,
+    storage_path: storagePath,
+    mime_type: "application/pdf",
+    size_bytes: pdfBuffer.length,
+    visibility: "private",
+    category: "financials",
+    folder_path: "Financials/Invoices",
+    description: `Invoice PDF for ${invoice.invoice_number}`,
+    source: "generated",
+    share_with_clients: true,
+    share_with_subs: false,
+  })
+
+  await createInitialVersion({
+    fileId: fileRecord.id,
+    storagePath,
+    fileName,
+    mimeType: "application/pdf",
+    sizeBytes: pdfBuffer.length,
+  })
+
+  await attachFile({
+    file_id: fileRecord.id,
+    entity_type: "invoice",
+    entity_id: invoice.id,
+    project_id: invoice.project_id ?? undefined,
+    link_role: "invoice_pdf",
+  })
+
+  revalidatePath("/invoices")
+  if (invoice.project_id) {
+    revalidatePath(`/projects/${invoice.project_id}/financials`)
+  }
+
+  return {
+    fileId: fileRecord.id,
+    fileName,
+    downloadUrl: buildFilesPublicUrl(storagePath) ?? null,
+  }
 }

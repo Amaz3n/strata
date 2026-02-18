@@ -9,6 +9,7 @@ import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/s
 export interface AuthState {
   error?: string
   message?: string
+  mfaRequired?: boolean
 }
 
 const signInSchema = z.object({
@@ -69,6 +70,16 @@ export async function signInAction(prevState: AuthState, formData: FormData): Pr
     }
 
     await setOrgCookie(membershipState.activeOrgId)
+
+    const { data: aalData, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aalError) {
+      console.error("Failed to load MFA assurance level", aalError)
+    }
+
+    const requiresMfa = aalData?.nextLevel === "aal2" && aalData?.currentLevel !== "aal2"
+    if (requiresMfa) {
+      return { mfaRequired: true }
+    }
   }
 
   redirect("/")
@@ -268,12 +279,19 @@ async function resolveMembershipState(supabase: Awaited<ReturnType<typeof create
 }
 
 async function fetchOwnerRoleId(serviceClient: ReturnType<typeof createServiceSupabaseClient>) {
-  const { data, error } = await serviceClient.from("roles").select("id").eq("key", "owner").limit(1).maybeSingle()
-  if (error) {
-    console.error("Unable to load owner role", error)
-    return null
+  const roleKeys = ["org_owner"]
+
+  for (const roleKey of roleKeys) {
+    const { data, error } = await serviceClient.from("roles").select("id").eq("key", roleKey).limit(1).maybeSingle()
+    if (!error && data?.id) {
+      return data.id
+    }
+    if (error) {
+      console.error(`Unable to load ${roleKey} role`, error)
+    }
   }
-  return data?.id ?? null
+
+  return null
 }
 
 async function createOrgWithMembership(params: {

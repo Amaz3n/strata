@@ -6,20 +6,41 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { BidPackage } from "@/lib/services/bids"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Plus } from "@/components/icons"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { CalendarDays, Plus } from "@/components/icons"
 import { createBidPackageAction } from "@/app/(app)/projects/[id]/bids/actions"
 import { BidStatusBadge } from "@/components/bids/bid-status-badge"
 
 interface BidPackagesClientProps {
   projectId: string
   packages: BidPackage[]
+}
+
+function combineDateAndTime(date: Date, time: string): Date {
+  const [hoursRaw, minutesRaw] = time.split(":")
+  const hours = Number.parseInt(hoursRaw ?? "", 10)
+  const minutes = Number.parseInt(minutesRaw ?? "", 10)
+
+  const next = new Date(date)
+  next.setHours(Number.isFinite(hours) ? hours : 17, Number.isFinite(minutes) ? minutes : 0, 0, 0)
+  return next
 }
 
 export function BidPackagesClient({ projectId, packages }: BidPackagesClientProps) {
@@ -30,7 +51,8 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
 
   const [title, setTitle] = useState("")
   const [trade, setTrade] = useState("")
-  const [dueAt, setDueAt] = useState("")
+  const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
+  const [dueTime, setDueTime] = useState("17:00")
   const [scope, setScope] = useState("")
   const [instructions, setInstructions] = useState("")
 
@@ -45,7 +67,8 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
   const resetForm = () => {
     setTitle("")
     setTrade("")
-    setDueAt("")
+    setDueDate(undefined)
+    setDueTime("17:00")
     setScope("")
     setInstructions("")
   }
@@ -62,7 +85,7 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
           trade: trade.trim() || null,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
-          due_at: dueAt ? new Date(dueAt).toISOString() : null,
+          due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
         }
         const created = await createBidPackageAction(projectId, payload)
         setItems((prev) => [created, ...prev])
@@ -77,13 +100,24 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
 
   return (
     <div className="space-y-4">
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>New bid package</DialogTitle>
-            <DialogDescription>Create an invite-to-bid package for this project.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
+      <Sheet
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open)
+          if (!open) resetForm()
+        }}
+      >
+        <SheetContent
+          side="right"
+          mobileFullscreen
+          className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
+          style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
+        >
+          <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
+            <SheetTitle>New bid package</SheetTitle>
+            <SheetDescription>Create an invite-to-bid package for this project.</SheetDescription>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
             <div className="space-y-2">
               <Label>Title</Label>
               <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Electrical - Rough & Trim" />
@@ -92,9 +126,29 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
               <Label>Trade</Label>
               <Input value={trade} onChange={(e) => setTrade(e.target.value)} placeholder="Electrical" />
             </div>
-            <div className="space-y-2">
-              <Label>Due date</Label>
-              <Input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Due date</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={cn("w-full justify-start text-left font-normal", !dueDate && "text-muted-foreground")}
+                    >
+                      <CalendarDays className="mr-2 h-4 w-4" />
+                      {dueDate ? format(dueDate, "LLL dd, y") : "Pick a date"}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar mode="single" selected={dueDate} onSelect={setDueDate} initialFocus />
+                  </PopoverContent>
+                </Popover>
+              </div>
+              <div className="space-y-2">
+                <Label>Due time</Label>
+                <Input type="time" value={dueTime} onChange={(e) => setDueTime(e.target.value)} />
+              </div>
             </div>
             <div className="space-y-2">
               <Label>Scope</Label>
@@ -104,17 +158,21 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
               <Label>Instructions</Label>
               <Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Bid instructions" />
             </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setCreateOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleCreate} disabled={isCreating}>
+          </div>
+          <SheetFooter className="border-t bg-background/80 px-6 py-4">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <SheetClose asChild>
+                <Button variant="outline" className="w-full sm:flex-1">
+                  Cancel
+                </Button>
+              </SheetClose>
+              <Button onClick={handleCreate} disabled={isCreating} className="w-full sm:flex-1">
                 {isCreating ? "Creating..." : "Create package"}
               </Button>
             </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-1 items-center gap-2">
@@ -127,7 +185,7 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          New package
+          New bid package
         </Button>
       </div>
 

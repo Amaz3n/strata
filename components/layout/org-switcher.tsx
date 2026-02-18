@@ -4,7 +4,7 @@ import * as React from "react"
 import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ChevronsUpDown, FolderOpen, Loader2, Plus, Users } from "@/components/icons"
+import { ChevronsUpDown, Loader2, Plus } from "@/components/icons"
 
 import {
   DropdownMenu,
@@ -12,7 +12,6 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -24,6 +23,8 @@ import {
 import { switchOrgAction, type OrgMembershipSummary } from "@/app/actions/orgs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useHydrated } from "@/hooks/use-hydrated"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { cn } from "@/lib/utils"
 
 export function OrgSwitcher({
   org,
@@ -41,6 +42,7 @@ export function OrgSwitcher({
   const [isPending, startTransition] = useTransition()
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [canCreateOrganization, setCanCreateOrganization] = useState(false)
   const hydrated = useHydrated()
 
   useEffect(() => {
@@ -53,8 +55,13 @@ export function OrgSwitcher({
         }
         const payload = await response.json()
         const memberships = (payload?.orgs ?? []) as OrgMembershipSummary[]
+        const canCreate =
+          typeof payload?.canCreateOrganization === "boolean"
+            ? payload.canCreateOrganization
+            : false
 
         setOrgs(memberships)
+        setCanCreateOrganization(canCreate)
 
         const cookieOrg =
           typeof document !== "undefined"
@@ -73,6 +80,7 @@ export function OrgSwitcher({
         setLoadError(error instanceof Error ? error.message : "Unknown error")
         setOrgs([])
         setActiveOrgId(null)
+        setCanCreateOrganization(false)
       } finally {
         setIsLoading(false)
       }
@@ -83,7 +91,25 @@ export function OrgSwitcher({
 
   const activeOrg = orgs.find((o) => o.org_id === activeOrgId)
 
+  const renderOrgMark = (logoUrl: string | null | undefined, label: string, large = false) => (
+    <Avatar
+      className={cn(
+        "rounded-none border border-sidebar-border/70 bg-sidebar-primary/15",
+        large ? "size-8" : "size-6",
+      )}
+    >
+      {logoUrl ? <AvatarImage src={logoUrl} alt={`${label} logo`} className="object-cover" /> : null}
+      <AvatarFallback className="bg-sidebar-primary text-sidebar-primary-foreground rounded-none">
+        <org.logo className="size-3" />
+      </AvatarFallback>
+    </Avatar>
+  )
+
   const handleSelect = (targetOrgId: string) => {
+    if (!targetOrgId || targetOrgId === activeOrgId || isPending) {
+      return
+    }
+
     startTransition(async () => {
       await switchOrgAction(targetOrgId)
       setActiveOrgId(targetOrgId)
@@ -95,9 +121,7 @@ export function OrgSwitcher({
     if (isLoading) {
       return (
         <>
-          <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-6 items-center justify-center rounded-lg">
-            <org.logo className="size-3" />
-          </div>
+          {renderOrgMark(null, org.name)}
           {state !== "collapsed" && (
             <Skeleton className="h-4 w-28" />
           )}
@@ -108,12 +132,10 @@ export function OrgSwitcher({
     if (!activeOrg) {
       return (
         <>
-          <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-6 items-center justify-center rounded-lg">
-            <org.logo className="size-3" />
-          </div>
+          {renderOrgMark(null, "No organization")}
           {state !== "collapsed" && (
             <>
-              <span className="truncate font-medium text-sm">No organization</span>
+              <span className="min-w-0 flex-1 truncate whitespace-nowrap font-medium text-sm">No organization</span>
               <ChevronsUpDown className="ml-auto size-4" />
             </>
           )}
@@ -123,12 +145,10 @@ export function OrgSwitcher({
 
     return (
       <>
-        <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-6 items-center justify-center rounded-lg">
-          <org.logo className="size-3" />
-        </div>
+        {renderOrgMark(activeOrg.logo_url, activeOrg.org_name)}
         {state !== "collapsed" && (
           <>
-            <span className="truncate font-medium text-sm">{activeOrg.org_name}</span>
+            <span className="min-w-0 flex-1 truncate whitespace-nowrap font-medium text-sm">{activeOrg.org_name}</span>
             {isPending ? <Loader2 className="ml-auto size-4 animate-spin" /> : <ChevronsUpDown className="ml-auto size-4" />}
           </>
         )}
@@ -140,7 +160,7 @@ export function OrgSwitcher({
     return (
       <SidebarMenu className="w-full">
         <SidebarMenuItem className="w-full">
-          <SidebarMenuButton className="h-10">
+          <SidebarMenuButton className="h-10 group-data-[collapsible=icon]:justify-center">
             {renderCurrent()}
           </SidebarMenuButton>
         </SidebarMenuItem>
@@ -154,22 +174,22 @@ export function OrgSwitcher({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
-              className="h-10 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+              className="h-10 min-w-0 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
             >
               {renderCurrent()}
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
-            className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
+            className="w-max min-w-[max(19rem,var(--radix-dropdown-menu-trigger-width))] max-w-[calc(100vw-1.5rem)] rounded-none border-border/80 bg-popover/95 p-2 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-popover/85"
             align="start"
             side={isMobile ? "bottom" : "right"}
             sideOffset={4}
           >
-            <DropdownMenuLabel className="text-muted-foreground text-xs">
-              Organizations
+            <DropdownMenuLabel className="px-2 pb-2 text-[11px] tracking-wide text-muted-foreground uppercase">
+              Switch organization
             </DropdownMenuLabel>
             {loadError && (
-              <div className="text-destructive px-2 py-3 text-xs whitespace-pre-wrap">
+              <div className="px-2 py-3 text-xs whitespace-pre-wrap text-destructive">
                 {loadError}
               </div>
             )}
@@ -180,48 +200,39 @@ export function OrgSwitcher({
             {orgs.map((item) => (
               <DropdownMenuItem
                 key={item.org_id}
-                className="gap-2 p-2"
+                className={cn(
+                  "group min-w-0 gap-3 rounded-none px-2.5 py-2.5",
+                  item.org_id === activeOrgId && "border border-primary/30 bg-primary/5",
+                )}
                 onSelect={() => handleSelect(item.org_id)}
               >
-                <div className="flex size-6 items-center justify-center rounded-md border">
-                  <org.logo className="size-3.5 shrink-0" />
+                {renderOrgMark(item.logo_url, item.org_name, true)}
+                <div className="flex-1">
+                  <div className="whitespace-nowrap text-sm font-medium">
+                    {item.org_name}
+                  </div>
+                  <div className="text-muted-foreground whitespace-nowrap text-xs capitalize">
+                    {item.role_key ?? "member"}
+                  </div>
                 </div>
-                <div className="flex flex-col">
-                  <span>{item.org_name}</span>
-                  <span className="text-muted-foreground text-xs">{item.role_key ?? "member"}</span>
-                </div>
-                {item.org_id === activeOrgId && <DropdownMenuShortcut>Current</DropdownMenuShortcut>}
               </DropdownMenuItem>
             ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-muted-foreground text-xs">
-              Organization
-            </DropdownMenuLabel>
-            <DropdownMenuItem className="gap-2 p-2" asChild>
-              <Link href="/projects" className="flex items-center gap-2">
-                <div className="flex size-6 items-center justify-center rounded-md border bg-transparent">
-                  <FolderOpen className="size-4" />
-                </div>
-                <div className="font-medium">All Projects</div>
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem className="gap-2 p-2" asChild>
-              <Link href="/directory" className="flex items-center gap-2">
-                <div className="flex size-6 items-center justify-center rounded-md border bg-transparent">
-                  <Users className="size-4" />
-                </div>
-                <div className="font-medium">Directory</div>
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className="gap-2 p-2" asChild>
-              <Link href="/admin/provision" className="flex items-center gap-2">
-                <div className="flex size-6 items-center justify-center rounded-md border bg-transparent">
-                  <Plus className="size-4" />
-                </div>
-                <div className="text-muted-foreground font-medium">Create Organization</div>
-              </Link>
-            </DropdownMenuItem>
+            {canCreateOrganization && (
+              <>
+                <DropdownMenuSeparator className="my-2" />
+                <DropdownMenuItem className="gap-3 rounded-none px-2.5 py-2.5" asChild>
+                  <Link href="/admin/provision" className="flex items-center gap-3">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-none border border-border/70 bg-background/70">
+                      <Plus className="size-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">Create Organization</div>
+                      <div className="text-muted-foreground text-xs">Owner access only</div>
+                    </div>
+                  </Link>
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>

@@ -669,6 +669,78 @@ export async function listProjectConversations(params: {
   }))
 }
 
+export interface OrgConversationInboxItem extends ConversationWithCompany {
+  project_name?: string | null
+  project_status?: string | null
+  last_message_body?: string | null
+  last_message_sender_name?: string | null
+}
+
+/**
+ * Global conversations inbox across all accessible projects.
+ * Optionally filters by a single project.
+ */
+export async function listOrgConversationsForInbox(params?: {
+  projectId?: string
+  orgId?: string
+}): Promise<OrgConversationInboxItem[]> {
+  const { supabase, orgId } = await requireOrgContext(params?.orgId)
+
+  let query = supabase
+    .from("conversations")
+    .select(`
+      id, org_id, project_id, subject, channel, created_by, created_at,
+      audience_company_id, last_message_at,
+      companies:audience_company_id(id, name),
+      projects:project_id(id, name, status)
+    `)
+    .eq("org_id", orgId)
+    .in("channel", ["client", "sub", "internal"])
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+
+  if (params?.projectId) {
+    query = query.eq("project_id", params.projectId)
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    throw new Error(`Failed to load org conversations: ${error.message}`)
+  }
+
+  const conversationIds = (data ?? []).map((row) => row.id)
+  if (conversationIds.length === 0) return []
+
+  const { data: lastMessages } = await supabase
+    .from("messages")
+    .select(`
+      conversation_id, body, payload,
+      app_users:sender_id(full_name)
+    `)
+    .eq("org_id", orgId)
+    .in("conversation_id", conversationIds)
+    .order("sent_at", { ascending: false })
+
+  const lastMessageMap = new Map<string, { body?: string | null; sender_name?: string | null }>()
+  for (const msg of lastMessages ?? []) {
+    if (!lastMessageMap.has(msg.conversation_id)) {
+      const senderName = (msg.app_users as { full_name?: string } | null)?.full_name ?? msg.payload?.sender_name ?? null
+      lastMessageMap.set(msg.conversation_id, {
+        body: msg.body ?? null,
+        sender_name: senderName,
+      })
+    }
+  }
+
+  return (data ?? []).map((row: any) => ({
+    ...mapConversationWithCompany(row),
+    project_name: row.projects?.name ?? null,
+    project_status: row.projects?.status ?? null,
+    last_message_body: lastMessageMap.get(row.id)?.body ?? null,
+    last_message_sender_name: lastMessageMap.get(row.id)?.sender_name ?? null,
+  }))
+}
+
 /**
  * Get unread counts for multiple conversations at once
  */

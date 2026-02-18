@@ -1,14 +1,25 @@
 import { z } from "zod"
 
+export const rfiStatusSchema = z.enum(["draft", "open", "answered", "closed"])
+export const rfiPrioritySchema = z.enum(["low", "normal", "high", "urgent"])
+
 export const rfiInputSchema = z.object({
   project_id: z.string().uuid("Project is required"),
-  rfi_number: z.coerce.number().positive("RFI number is required"),
+  rfi_number: z.coerce.number().positive().optional(),
   subject: z.string().min(3, "Subject is required"),
   question: z.string().min(5, "Question is required"),
-  status: z.enum(["draft", "open", "in_review", "answered", "closed"]).default("open"),
-  priority: z.enum(["low", "medium", "high", "urgent"]).default("medium"),
+  status: rfiStatusSchema.default("open"),
+  priority: rfiPrioritySchema.default("normal"),
   due_date: z.string().optional().nullable(),
   attachment_file_id: z.string().uuid().optional().nullable(),
+  assigned_to: z.string().uuid().optional().nullable(),
+  assigned_company_id: z.string().uuid().optional().nullable(),
+  submitted_by_company_id: z.string().uuid().optional().nullable(),
+  location: z.string().optional().nullable(),
+  drawing_reference: z.string().optional().nullable(),
+  spec_reference: z.string().optional().nullable(),
+  cost_impact_cents: z.coerce.number().int().optional().nullable(),
+  schedule_impact_days: z.coerce.number().int().optional().nullable(),
 })
 
 export type RfiInput = z.infer<typeof rfiInputSchema>
@@ -38,3 +49,12 @@ export const rfiDecisionSchema = z.object({
 })
 
 export type RfiDecisionInput = z.infer<typeof rfiDecisionSchema>
+
+export const portalRfiInputSchema = z.object({
+  subject: z.string().min(3, "Subject is required"),
+  question: z.string().min(5, "Question is required"),
+  priority: rfiPrioritySchema.default("normal"),
+  due_date: z.string().optional().nullable(),
+})
+
+export type PortalRfiInput = z.infer<typeof portalRfiInputSchema>

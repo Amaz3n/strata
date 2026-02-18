@@ -1,9 +1,16 @@
 'use client'
 
-import { useState, useTransition } from "react"
+import { useCallback, useEffect, useState, useTransition } from "react"
 import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw } from "lucide-react"
 
-import { connectQBOAction, disconnectQBOAction, updateQBOSettingsAction } from "@/app/(app)/settings/integrations/actions"
+import {
+  connectQBOAction,
+  disconnectQBOAction,
+  getQBODiagnosticsAction,
+  refreshQBOTokenAction,
+  retryFailedQBOJobsAction,
+  updateQBOSettingsAction,
+} from "@/app/(app)/settings/integrations/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,6 +26,15 @@ export function QBOConnectionCard({ connection }: Props) {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isDisconnecting, startDisconnect] = useTransition()
   const [isUpdatingSettings, startUpdate] = useTransition()
+  const [isRefreshingToken, startTokenRefresh] = useTransition()
+  const [isRetryingFailed, startRetryFailed] = useTransition()
+  const [diagnostics, setDiagnostics] = useState<{
+    outbox?: { pending_or_processing?: number; failed?: number; recent_failures?: Array<{ job_type: string; last_error: string | null; updated_at: string | null }> }
+    invoices?: { failed_sync_count?: number }
+    connection?: { last_error?: string | null } | null
+  } | null>(null)
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null)
+  const [loadingDiagnostics, setLoadingDiagnostics] = useState(false)
   const [settings, setSettings] = useState(() => ({
     auto_sync: connection?.settings?.auto_sync ?? true,
     sync_payments: connection?.settings?.sync_payments ?? true,
@@ -70,6 +86,25 @@ export function QBOConnectionCard({ connection }: Props) {
     })
   }
 
+  const loadDiagnostics = useCallback(async () => {
+    if (!connection) return
+    setLoadingDiagnostics(true)
+    setDiagnosticsError(null)
+    try {
+      const data = await getQBODiagnosticsAction()
+      setDiagnostics(data as any)
+    } catch (error) {
+      setDiagnosticsError(error instanceof Error ? error.message : "Failed to load diagnostics")
+    } finally {
+      setLoadingDiagnostics(false)
+    }
+  }, [connection])
+
+  useEffect(() => {
+    if (!connection) return
+    void loadDiagnostics()
+  }, [connection, loadDiagnostics])
+
   const handleSettingChange = (key: keyof typeof settings, value: boolean) => {
     setSettings((prev) => ({ ...prev, [key]: value }))
     startUpdate(async () => {
@@ -77,6 +112,29 @@ export function QBOConnectionCard({ connection }: Props) {
         await updateQBOSettingsAction({ [key]: value })
       } catch (err) {
         console.error("Failed to update QBO setting", err)
+      }
+    })
+  }
+
+  const handleRefreshToken = () => {
+    startTokenRefresh(async () => {
+      try {
+        await refreshQBOTokenAction()
+        await loadDiagnostics()
+        window.location.reload()
+      } catch (error) {
+        setDiagnosticsError(error instanceof Error ? error.message : "Failed to refresh token")
+      }
+    })
+  }
+
+  const handleRetryFailed = () => {
+    startRetryFailed(async () => {
+      try {
+        await retryFailedQBOJobsAction()
+        await loadDiagnostics()
+      } catch (error) {
+        setDiagnosticsError(error instanceof Error ? error.message : "Failed to retry failed sync jobs")
       }
     })
   }
@@ -160,6 +218,55 @@ export function QBOConnectionCard({ connection }: Props) {
               </div>
             )}
 
+            {(connection.last_error || diagnostics?.connection?.last_error || diagnosticsError) && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive space-y-1">
+                <div className="font-medium">Connection issue detected</div>
+                <div>{diagnosticsError ?? diagnostics?.connection?.last_error ?? connection.last_error}</div>
+              </div>
+            )}
+
+            {connection && (
+              <div className="rounded-md border p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Sync diagnostics</p>
+                  <Button variant="ghost" size="sm" onClick={loadDiagnostics} disabled={loadingDiagnostics}>
+                    {loadingDiagnostics ? "Refreshing..." : "Refresh"}
+                  </Button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div className="rounded bg-muted/50 p-2">
+                    <div className="text-muted-foreground">Queue pending</div>
+                    <div className="text-sm font-semibold">{diagnostics?.outbox?.pending_or_processing ?? 0}</div>
+                  </div>
+                  <div className="rounded bg-muted/50 p-2">
+                    <div className="text-muted-foreground">Queue failed</div>
+                    <div className="text-sm font-semibold">{diagnostics?.outbox?.failed ?? 0}</div>
+                  </div>
+                  <div className="rounded bg-muted/50 p-2">
+                    <div className="text-muted-foreground">Invoices failed</div>
+                    <div className="text-sm font-semibold">{diagnostics?.invoices?.failed_sync_count ?? 0}</div>
+                  </div>
+                </div>
+                {diagnostics?.outbox?.recent_failures?.length ? (
+                  <div className="space-y-1">
+                    {diagnostics.outbox.recent_failures.slice(0, 2).map((failure, idx) => (
+                      <div key={`${failure.job_type}-${idx}`} className="text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">{failure.job_type}</span>: {failure.last_error ?? "Unknown error"}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={handleRefreshToken} disabled={isRefreshingToken}>
+                    {isRefreshingToken ? "Refreshing token..." : "Refresh token"}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleRetryFailed} disabled={isRetryingFailed}>
+                    {isRetryingFailed ? "Retrying..." : "Retry failed syncs"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="border-t pt-4 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -202,16 +309,21 @@ export function QBOConnectionCard({ connection }: Props) {
             </div>
 
             <div className="border-t pt-4 flex justify-between items-center">
-              <Button variant="ghost" size="sm" onClick={handleDisconnect} disabled={isDisconnecting}>
-                {isDisconnecting ? (
-                  <>
-                    <RefreshCw className="w-3 h-3 mr-2 animate-spin" />
-                    Disconnecting...
-                  </>
-                ) : (
-                  "Disconnect"
-                )}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={handleDisconnect} disabled={isDisconnecting}>
+                  {isDisconnecting ? (
+                    <>
+                      <RefreshCw className="w-3 h-3 mr-2 animate-spin" />
+                      Disconnecting...
+                    </>
+                  ) : (
+                    "Disconnect"
+                  )}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleConnect} disabled={isConnecting}>
+                  {isConnecting ? "Reconnecting..." : "Reconnect"}
+                </Button>
+              </div>
               <Button variant="outline" size="sm" asChild>
                 <a href="https://qbo.intuit.com/app/homepage" target="_blank" rel="noopener noreferrer">
                   Open QuickBooks <ExternalLink className="w-3 h-3 ml-1" />

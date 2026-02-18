@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
+import type { ScheduleBulkItemUpdate } from "./types"
 import { ScheduleProvider } from "./schedule-context"
 import { ScheduleToolbar } from "./schedule-toolbar"
 import { ScheduleItemSheet } from "./schedule-item-sheet"
@@ -75,6 +76,7 @@ interface ScheduleViewProps {
   assignments?: ScheduleAssignment[]
   baselines?: ScheduleBaseline[]
   onItemUpdate?: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
+  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
   onDependencyCreate?: (from: string, to: string, type?: string) => Promise<ScheduleDependency>
@@ -89,6 +91,7 @@ export function ScheduleView({
   assignments = [],
   baselines = [],
   onItemUpdate,
+  onItemsBulkUpdate,
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
@@ -101,6 +104,7 @@ export function ScheduleView({
       initialAssignments={assignments}
       initialBaselines={baselines}
       onItemUpdate={onItemUpdate}
+      onItemsBulkUpdate={onItemsBulkUpdate}
       onItemCreate={onItemCreate}
       onItemDelete={onItemDelete}
       onDependencyCreate={onDependencyCreate}
@@ -110,4 +114,3 @@ export function ScheduleView({
     </ScheduleProvider>
   )
 }
-

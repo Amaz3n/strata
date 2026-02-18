@@ -1,12 +1,12 @@
 import { PageLayout } from "@/components/layout/page-layout"
-import { requirePermissionGuard } from "@/lib/auth/guards"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { PlansClient } from "@/components/admin/plans-client"
 import { getPlans } from "@/lib/services/admin"
 
 export const dynamic = 'force-dynamic'
 
 export default async function PlansPage() {
-  await requirePermissionGuard("billing.manage")
+  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
 
   const plans = await getPlans()
 

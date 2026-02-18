@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react"
 import Image from "next/image"
+import { Document as PdfDocument, Page as PdfPage, pdfjs } from "react-pdf"
 import { cn } from "@/lib/utils"
 import {
   X,
@@ -59,7 +60,12 @@ export function FileViewer({
   const [isLoading, setIsLoading] = useState(true)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null)
+  const [pdfPageCount, setPdfPageCount] = useState(0)
+  const [activePdfPage, setActivePdfPage] = useState(1)
+  const [pdfLoadFailed, setPdfLoadFailed] = useState(false)
+  const [pdfViewportWidth, setPdfViewportWidth] = useState(0)
   const containerRef = useRef<HTMLDivElement>(null)
+  const pdfViewportRef = useRef<HTMLDivElement>(null)
 
   const hasFileList = files.length > 0
   const derivedIndexFromFile =
@@ -72,6 +78,16 @@ export function FileViewer({
     ? Math.min(Math.max(activeIndex, 0), files.length - 1)
     : 0
   const currentFile = hasFileList ? files[clampedIndex] : file
+  const currentFileIsPdf = currentFile ? isPdfFile(currentFile.mime_type) : false
+  const currentPdfUrl = currentFile ? `/api/files/${currentFile.id}/raw` : null
+
+  useEffect(() => {
+    if (!open || !currentFileIsPdf) return
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/build/pdf.worker.min.mjs",
+      import.meta.url
+    ).toString()
+  }, [open, currentFileIsPdf])
 
   // Reset state when file changes
   useEffect(() => {
@@ -79,7 +95,31 @@ export function FileViewer({
     setRotation(0)
     setIsLoading(true)
     setImageDimensions(null)
+    setPdfPageCount(0)
+    setActivePdfPage(1)
+    setPdfLoadFailed(false)
   }, [file?.id])
+
+  useEffect(() => {
+    if (!open || !currentFileIsPdf) return
+    const viewport = pdfViewportRef.current
+    if (!viewport) return
+
+    const updateWidth = () => {
+      setPdfViewportWidth(viewport.clientWidth)
+    }
+    updateWidth()
+
+    const observer = new ResizeObserver(() => updateWidth())
+    observer.observe(viewport)
+    return () => observer.disconnect()
+  }, [open, currentFileIsPdf, showVersions])
+
+  useEffect(() => {
+    if (!currentFileIsPdf || pdfPageCount <= 0) return
+    setIsLoading(true)
+  }, [activePdfPage, currentFileIsPdf, pdfPageCount])
+
   const hasMultiple = files.length > 1
   const canPrev = hasMultiple && clampedIndex > 0
   const canNext = hasMultiple && clampedIndex < files.length - 1
@@ -127,6 +167,22 @@ export function FileViewer({
       setImageDimensions(null)
     }
   }, [canNext, parentControlsSelection, onFileChange, files, clampedIndex])
+
+  const handleSelectFile = useCallback((index: number) => {
+    const selectedFile = files[index]
+    if (!selectedFile) return
+
+    if (parentControlsSelection && onFileChange) {
+      onFileChange(selectedFile)
+    } else {
+      setCurrentIndex(index)
+    }
+
+    setIsLoading(true)
+    setZoom(1)
+    setRotation(0)
+    setImageDimensions(null)
+  }, [files, parentControlsSelection, onFileChange])
 
   // Handle image load to get dimensions
   const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -192,6 +248,11 @@ export function FileViewer({
 
   const isImage = isImageFile(currentFile.mime_type)
   const isPdf = isPdfFile(currentFile.mime_type)
+  const activePdfPageClamped = Math.min(Math.max(activePdfPage, 1), Math.max(pdfPageCount, 1))
+  const pdfPageWidth = pdfViewportWidth > 0
+    ? Math.max(280, Math.min(1200, pdfViewportWidth - 48))
+    : 900
+  const showPdfThumbnails = isPdf && !pdfLoadFailed && Boolean(currentPdfUrl) && pdfPageCount > 1
 
   // Calculate optimal dialog size based on image aspect ratio
   const getDialogStyle = () => {
@@ -419,15 +480,45 @@ export function FileViewer({
             )}
 
             {isPdf && currentFile.download_url && (
-              <iframe
-                src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
-                className={cn(
-                  "w-full h-full bg-white",
-                  isLoading && "opacity-0"
+              <div ref={pdfViewportRef} className="h-full w-full overflow-auto bg-zinc-950/40">
+                {!pdfLoadFailed && currentPdfUrl ? (
+                  <PdfDocument
+                    key={currentFile.id}
+                    file={currentPdfUrl}
+                    onLoadSuccess={(info: { numPages: number }) => {
+                      setPdfPageCount(info.numPages)
+                      setActivePdfPage((prev) => Math.min(Math.max(prev, 1), Math.max(info.numPages, 1)))
+                      setPdfLoadFailed(false)
+                    }}
+                    onLoadError={(error: unknown) => {
+                      console.error("Failed to load PDF", error)
+                      setPdfLoadFailed(true)
+                      setIsLoading(false)
+                    }}
+                  >
+                    <div className="flex min-h-full items-start justify-center p-4">
+                      <PdfPage
+                        pageNumber={activePdfPageClamped}
+                        width={pdfPageWidth}
+                        renderTextLayer={false}
+                        renderAnnotationLayer={false}
+                        onRenderSuccess={() => setIsLoading(false)}
+                        className={cn("rounded-md shadow-2xl", isLoading && "opacity-0")}
+                      />
+                    </div>
+                  </PdfDocument>
+                ) : (
+                  <iframe
+                    src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
+                    className={cn(
+                      "w-full h-full bg-white",
+                      isLoading && "opacity-0"
+                    )}
+                    onLoad={() => setIsLoading(false)}
+                    title={currentFile.file_name}
+                  />
                 )}
-                onLoad={() => setIsLoading(false)}
-                title={currentFile.file_name}
-              />
+              </div>
             )}
 
             {!isImage && !isPdf && (
@@ -472,43 +563,91 @@ export function FileViewer({
           )}
         </div>
 
-        {/* Thumbnail strip for multiple files */}
-        {hasMultiple && (
-          <div className="bg-black/80 border-t border-white/10 p-3 shrink-0">
-            <div className="flex items-center justify-center gap-2 overflow-x-auto">
-              {files.map((f, index) => (
-                <button
-                  key={f.id}
-                  onClick={() => {
-                    setCurrentIndex(index)
-                    setIsLoading(true)
-                    setZoom(1)
-                    setRotation(0)
-                    setImageDimensions(null)
-                  }}
-                  className={cn(
-                    "relative h-12 w-12 shrink-0 rounded overflow-hidden border-2 transition-all",
-                    index === currentIndex
-                      ? "border-primary ring-2 ring-primary/50"
-                      : "border-transparent opacity-60 hover:opacity-100"
-                  )}
-                >
-                  {isImageFile(f.mime_type) && f.thumbnail_url ? (
-                    <Image
-                      src={f.thumbnail_url}
-                      alt={f.file_name}
-                      fill
-                      className="object-cover"
-                      unoptimized
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center h-full bg-muted text-lg">
-                      <FileText className="h-5 w-5 text-muted-foreground" />
+        {(showPdfThumbnails || hasMultiple) && (
+          <div className="bg-black/80 border-t border-white/10 p-3 shrink-0 space-y-3">
+            {showPdfThumbnails && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] uppercase tracking-wide text-white/50">Pages</p>
+                {currentPdfUrl ? (
+                  <PdfDocument
+                    key={`${currentFile.id}-thumbs`}
+                    file={currentPdfUrl}
+                    loading={null}
+                    noData={null}
+                    error={null}
+                  >
+                    <div className="flex items-start gap-2 overflow-x-auto pb-1">
+                      {Array.from({ length: pdfPageCount }).map((_, pageIndex) => {
+                        const pageNumber = pageIndex + 1
+                        return (
+                          <button
+                            key={`pdf-page-${pageNumber}`}
+                            onClick={() => setActivePdfPage(pageNumber)}
+                            className={cn(
+                              "group shrink-0 rounded-md border border-white/15 bg-black/40 p-1 transition-all",
+                              pageNumber === activePdfPageClamped
+                                ? "border-primary ring-2 ring-primary/50"
+                                : "hover:border-white/30"
+                            )}
+                          >
+                            <div className="overflow-hidden rounded bg-white shadow-sm">
+                              <PdfPage
+                                pageNumber={pageNumber}
+                                width={68}
+                                renderTextLayer={false}
+                                renderAnnotationLayer={false}
+                              />
+                            </div>
+                            <p
+                              className={cn(
+                                "mt-1 text-center text-[10px] font-medium",
+                                pageNumber === activePdfPageClamped ? "text-white" : "text-white/60 group-hover:text-white/90"
+                              )}
+                            >
+                              {pageNumber}
+                            </p>
+                          </button>
+                        )
+                      })}
                     </div>
-                  )}
-                </button>
-              ))}
-            </div>
+                  </PdfDocument>
+                ) : null}
+              </div>
+            )}
+
+            {hasMultiple && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] uppercase tracking-wide text-white/50">Files</p>
+                <div className="flex items-center justify-center gap-2 overflow-x-auto">
+                  {files.map((f, index) => (
+                    <button
+                      key={f.id}
+                      onClick={() => handleSelectFile(index)}
+                      className={cn(
+                        "relative h-12 w-12 shrink-0 rounded overflow-hidden border-2 transition-all",
+                        index === clampedIndex
+                          ? "border-primary ring-2 ring-primary/50"
+                          : "border-transparent opacity-60 hover:opacity-100"
+                      )}
+                    >
+                      {isImageFile(f.mime_type) && f.thumbnail_url ? (
+                        <Image
+                          src={f.thumbnail_url}
+                          alt={f.file_name}
+                          fill
+                          className="object-cover"
+                          unoptimized
+                        />
+                      ) : (
+                        <div className="flex items-center justify-center h-full bg-muted text-lg">
+                          <FileText className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

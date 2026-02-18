@@ -4,11 +4,13 @@ import { listTeamMembers } from "@/lib/services/team"
 import { InviteMemberDialog } from "@/components/team/invite-member-dialog"
 import { TeamTable } from "@/components/team/team-table"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { listAssignableOrgRoles } from "@/lib/services/team"
 
 export default async function TeamPage() {
-  const [members, permissionResult] = await Promise.all([
+  const [members, permissionResult, roleOptions] = await Promise.all([
     listTeamMembers(),
     getCurrentUserPermissions(),
+    listAssignableOrgRoles().catch(() => []),
   ])
 
   const canManageMembers = permissionResult.permissions.includes("members.manage")
@@ -22,11 +24,10 @@ export default async function TeamPage() {
             <h1 className="text-2xl font-semibold">Team</h1>
             <p className="text-muted-foreground mt-1">Manage internal teammates, roles, and invite workflow.</p>
           </div>
-          <InviteMemberDialog canInvite={canManageMembers} />
+          <InviteMemberDialog canInvite={canManageMembers} roleOptions={roleOptions} />
         </div>
-        <TeamTable members={members} canManageMembers={canManageMembers} canEditRoles={canEditRoles} />
+        <TeamTable members={members} canManageMembers={canManageMembers} canEditRoles={canEditRoles} roleOptions={roleOptions} />
       </div>
     </PageLayout>
   )
 }
-

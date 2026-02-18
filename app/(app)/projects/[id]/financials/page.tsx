@@ -80,15 +80,12 @@ export default async function ProjectFinancialsPage({ params, searchParams }: Pr
 
 function formatAddress(address?: Address) {
   if (!address) return undefined
-  const parts = [
-    address.formatted,
-    [address.street1, address.street2].filter(Boolean).join(" "),
-    [address.city, address.state].filter(Boolean).join(", "),
-    address.postal_code,
-    address.country,
-  ]
-    .map((part) => part?.trim())
-    .filter((part) => !!part && part.length > 0)
+  const structured = [
+    [address.street1, address.street2].filter(Boolean).join(" ").trim(),
+    [address.city, address.state, address.postal_code].filter(Boolean).join(" ").trim(),
+    (address.country ?? "").trim(),
+  ].filter(Boolean)
 
-  return parts.join("\n")
+  if (structured.length > 0) return structured.join("\n")
+  return address.formatted?.trim() || undefined
 }

@@ -6,13 +6,13 @@ import { zodResolver } from "@hookform/resolvers/zod"
 
 import type { Project } from "@/lib/types"
 import { rfiInputSchema, type RfiInput } from "@/lib/validation/rfis"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -26,8 +26,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { Badge } from "@/components/ui/badge"
-import { Calendar, Plus, Building2, FileText } from "@/components/icons"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar as CalendarPicker } from "@/components/ui/calendar"
+import { format } from "date-fns"
+import { Calendar, Building2, FileText } from "@/components/icons"
 
 interface RfiFormProps {
   open: boolean
@@ -40,17 +42,23 @@ interface RfiFormProps {
 
 export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubmit, isSubmitting }: RfiFormProps) {
   const [statusValue, setStatusValue] = useState("open")
+  const isProjectScoped = projects.length === 1
+  const scopedProject = isProjectScoped ? projects[0] : null
 
   const form = useForm<RfiInput>({
     resolver: zodResolver(rfiInputSchema),
     defaultValues: {
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      rfi_number: 0,
       subject: "",
       question: "",
       status: "open",
-      priority: "medium",
+      priority: "normal",
       due_date: "",
+      location: "",
+      drawing_reference: "",
+      spec_reference: "",
+      cost_impact_cents: undefined,
+      schedule_impact_days: undefined,
     },
   })
 
@@ -58,12 +66,16 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     await onSubmit(values)
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      rfi_number: 0,
       subject: "",
       question: "",
       status: "open",
-      priority: "medium",
+      priority: "normal",
       due_date: "",
+      location: "",
+      drawing_reference: "",
+      spec_reference: "",
+      cost_impact_cents: undefined,
+      schedule_impact_days: undefined,
     })
   })
 
@@ -88,55 +100,43 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
         <Form {...form}>
           <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="project_id"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Project</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select a project" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {projects.map((project) => (
-                            <SelectItem key={project.id} value={project.id}>
-                              <div className="flex items-center gap-2">
-                                <Building2 className="h-4 w-4 text-muted-foreground" />
-                                <span>{project.name}</span>
-                              </div>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+              {!isProjectScoped && (
+                <div className="grid gap-4 md:grid-cols-1">
+                  <FormField
+                    control={form.control}
+                    name="project_id"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Project</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a project" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {projects.map((project) => (
+                              <SelectItem key={project.id} value={project.id}>
+                                <div className="flex items-center gap-2">
+                                  <Building2 className="h-4 w-4 text-muted-foreground" />
+                                  <span>{project.name}</span>
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              )}
 
-                <FormField
-                  control={form.control}
-                  name="rfi_number"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>RFI #</FormLabel>
-                      <FormControl>
-                        <Input 
-                          type="number" 
-                          placeholder="1" 
-                          {...field} 
-                          value={field.value || ""}
-                          onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value, 10) : 0)} 
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
+              {isProjectScoped && scopedProject && (
+                <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                  <span className="font-medium text-foreground">Project:</span> {scopedProject.name}
+                </div>
+              )}
 
               <FormField
                 control={form.control}
@@ -186,13 +186,12 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
+                          <SelectItem value="draft">Draft</SelectItem>
                           <SelectItem value="open">Open</SelectItem>
-                          <SelectItem value="in_review">In review</SelectItem>
                           <SelectItem value="answered">Answered</SelectItem>
                           <SelectItem value="closed">Closed</SelectItem>
                         </SelectContent>
                       </Select>
-                      <FormDescription>Current state of this RFI.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -212,8 +211,9 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                         </FormControl>
                         <SelectContent>
                           <SelectItem value="low">Low</SelectItem>
-                          <SelectItem value="medium">Medium</SelectItem>
+                          <SelectItem value="normal">Normal</SelectItem>
                           <SelectItem value="high">High</SelectItem>
+                          <SelectItem value="urgent">Urgent</SelectItem>
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -227,8 +227,110 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Due date</FormLabel>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <FormControl>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
+                            >
+                              <Calendar className="mr-2 h-4 w-4" />
+                              {field.value ? format(new Date(field.value), "PPP") : "Pick a date"}
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <CalendarPicker
+                            mode="single"
+                            selected={field.value ? new Date(field.value) : undefined}
+                            onSelect={(date) => field.onChange(date ? format(date, "yyyy-MM-dd") : "")}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="location"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Location</FormLabel>
                       <FormControl>
-                        <Input type="date" value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value)} />
+                        <Input placeholder="Kitchen, level 2..." {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="drawing_reference"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Drawing Ref</FormLabel>
+                      <FormControl>
+                        <Input placeholder="A-201, detail 4..." {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="spec_reference"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Spec Ref</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Section 09 29 00..." {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="cost_impact_cents"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Cost Impact ($)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          placeholder="0"
+                          value={field.value ? Math.round(field.value / 100) : ""}
+                          onChange={(e) => {
+                            const dollars = Number(e.target.value || 0)
+                            field.onChange(Number.isFinite(dollars) ? dollars * 100 : undefined)
+                          }}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="schedule_impact_days"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Schedule Impact (days)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          placeholder="0"
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value ? Number(e.target.value) : undefined)}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -236,25 +338,14 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                 />
               </div>
 
-              <div className="rounded-lg border bg-muted/40 p-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">Status: {statusValue}</Badge>
-                  <Badge variant="outline">Priority: {form.watch("priority")}</Badge>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Calendar className="h-4 w-4" />
-                  {form.watch("due_date") ? `Due ${form.watch("due_date")}` : "No due date"}
-                </div>
-              </div>
             </div>
 
-            <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-col gap-3">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">USD not needed</Badge>
-                <Badge variant="outline">Tracks priority + due date</Badge>
-              </div>
-              <Button type="submit" className="w-full" disabled={isSubmitting}>
-                Save RFI
+            <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-row gap-2">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-1" disabled={isSubmitting}>
+                Save
               </Button>
             </SheetFooter>
           </form>
@@ -263,10 +354,6 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     </Sheet>
   )
 }
-
-
-
-
 
 
 

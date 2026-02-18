@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import type { ReactNode } from "react"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -53,6 +54,7 @@ interface PipelineDashboardProps {
   teamMembers: TeamMember[]
   canCreate?: boolean
   canEdit?: boolean
+  headerLeft?: ReactNode
 }
 
 const PIPELINE_STAGES = [
@@ -72,6 +74,7 @@ export function PipelineDashboard({
   teamMembers,
   canCreate = false,
   canEdit = false,
+  headerLeft,
 }: PipelineDashboardProps) {
   const [detailId, setDetailId] = useState<string | undefined>()
   const [detailOpen, setDetailOpen] = useState(false)
@@ -99,16 +102,19 @@ export function PipelineDashboard({
   return (
     <div className="space-y-6">
       {/* Header with quick capture */}
-      <div className="flex justify-end">
-        {canCreate && (
-          <div className="flex items-center gap-2">
-            <QuickCaptureInput teamMembers={teamMembers} />
-            <Button variant="outline" onClick={() => setAddOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Full form
-            </Button>
-          </div>
-        )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>{headerLeft}</div>
+        <div>
+          {canCreate && (
+            <div className="flex items-center gap-2">
+              <QuickCaptureInput teamMembers={teamMembers} />
+              <Button variant="outline" onClick={() => setAddOpen(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Full form
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3 lg:auto-rows-fr">
@@ -160,7 +166,7 @@ export function PipelineDashboard({
                 return (
                   <div key={stage.key} className="flex-1 flex items-center">
                     <Link
-                      href={`/prospects?status=${stage.key}`}
+                      href={`/pipeline?view=prospects&status=${stage.key}`}
                       className={cn(
                         "group relative flex-1 p-4 rounded-xl border transition-all",
                         "hover:shadow-md hover:scale-[1.02] active:scale-[0.98]",
@@ -198,7 +204,7 @@ export function PipelineDashboard({
             {/* Outcomes: Won & Lost */}
             <div className="flex gap-3 mt-4 pt-4 border-t">
               <Link
-                href="/prospects?status=won"
+                href="/pipeline?view=prospects&status=won"
                 className="flex-1 group flex items-center gap-3 p-3 rounded-lg bg-green-500/10 dark:bg-green-500/20 border border-green-500/20 hover:border-green-500/40 hover:shadow-sm transition-all"
               >
                 <div className="h-10 w-10 rounded-lg bg-green-500 flex items-center justify-center shrink-0">
@@ -214,7 +220,7 @@ export function PipelineDashboard({
               </Link>
 
               <Link
-                href="/prospects?status=lost"
+                href="/pipeline?view=prospects&status=lost"
                 className="flex-1 group flex items-center gap-3 p-3 rounded-lg bg-red-500/5 dark:bg-red-500/10 border border-red-500/15 hover:border-red-500/30 hover:shadow-sm transition-all"
               >
                 <div className="h-10 w-10 rounded-lg bg-red-500 flex items-center justify-center shrink-0">
@@ -366,7 +372,7 @@ export function PipelineDashboard({
                 Follow-ups Due
               </CardTitle>
               <Button variant="ghost" size="sm" asChild className="text-xs">
-                <Link href="/prospects?filter=followup">
+                <Link href="/pipeline?view=prospects">
                   View all
                   <ChevronRight className="h-3 w-3 ml-1" />
                 </Link>
@@ -423,7 +429,7 @@ export function PipelineDashboard({
                 New Inquiries
               </CardTitle>
               <Button variant="ghost" size="sm" asChild className="text-xs h-7 px-2">
-                <Link href="/prospects?status=new">
+                <Link href="/pipeline?view=prospects&status=new">
                   View all
                   <ChevronRight className="h-3 w-3 ml-1" />
                 </Link>

@@ -3,11 +3,9 @@
 import { useState, useTransition } from "react"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
-  Bell,
   ChevronsUpDown,
-  CreditCard,
-  Link2,
   LogOut,
+  Mail,
   Settings,
 } from "@/components/icons"
 import {
@@ -64,9 +62,9 @@ export function NavUser({
             size="lg"
             className="group-data-[collapsible=icon]:justify-center"
           >
-            <Avatar className="h-6 w-6 rounded-lg">
+            <Avatar className="h-6 w-6 rounded-none">
               <AvatarImage src={user?.avatar_url} alt={user?.full_name ?? "User"} />
-              <AvatarFallback className="rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-xs">
+              <AvatarFallback className="rounded-none bg-sidebar-primary text-sidebar-primary-foreground text-xs">
                 {initials}
               </AvatarFallback>
             </Avatar>
@@ -90,9 +88,9 @@ export function NavUser({
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
             >
-              <Avatar className="h-6 w-6 rounded-lg">
+              <Avatar className="h-6 w-6 rounded-none">
                 <AvatarImage src={user?.avatar_url} alt={user?.full_name ?? "User"} />
-                <AvatarFallback className="rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-xs">
+                <AvatarFallback className="rounded-none bg-sidebar-primary text-sidebar-primary-foreground text-xs">
                   {initials}
                 </AvatarFallback>
               </Avatar>
@@ -107,27 +105,28 @@ export function NavUser({
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
-            className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
+            className="w-max min-w-[max(16rem,var(--radix-dropdown-menu-trigger-width))] max-w-[calc(100vw-1.5rem)] rounded-none border-border/80 bg-popover/95 p-2 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-popover/85"
             side={isMobile ? "bottom" : "right"}
             align="end"
             sideOffset={4}
           >
-            <DropdownMenuLabel className="p-0 font-normal">
-              <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <Avatar className="h-8 w-8 rounded-lg">
+            <DropdownMenuLabel className="px-2 pb-2 pt-1 text-left font-normal">
+              <div className="flex items-center gap-3 text-sm">
+                <Avatar className="h-8 w-8 rounded-none border border-sidebar-border/70">
                   <AvatarImage src={user?.avatar_url} alt={user?.full_name ?? "User"} />
-                  <AvatarFallback className="rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                  <AvatarFallback className="rounded-none bg-sidebar-primary text-sidebar-primary-foreground">
                     {initials}
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-medium">{user?.full_name ?? "Signed In"}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{user?.email ?? ""}</span>
                 </div>
               </div>
             </DropdownMenuLabel>
-            <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem
+                className="rounded-none px-2.5 py-2.5"
                 onSelect={(event) => {
                   event.preventDefault()
                   openSettings("profile")
@@ -136,41 +135,16 @@ export function NavUser({
                 <Settings />
                 Settings
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={(event) => {
-                  event.preventDefault()
-                  openSettings("integrations")
-                }}
-              >
-                <Link2 />
-                Integrations
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    openSettings("billing")
-                  }}
-                >
-                  <CreditCard />
-                  Billing
-                </button>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={(event) => {
-                  event.preventDefault()
-                  openSettings("notifications")
-                }}
-              >
-                <Bell />
-                Notifications
+              <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
+                <a href="mailto:support@arcnaples.com">
+                  <Mail />
+                  Contact Support
+                </a>
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              className="text-destructive"
+              className="rounded-none px-2.5 py-2.5 text-destructive"
               onSelect={(event) => {
                 event.preventDefault()
                 startSignOut(async () => {

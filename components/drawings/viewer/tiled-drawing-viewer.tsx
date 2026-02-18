@@ -74,6 +74,8 @@ export function TiledDrawingViewer({
   const viewerRef = useRef<any | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const imageSizeRef = useRef<{ width: number; height: number } | null>(null)
+  const onReadyRef = useRef<TiledDrawingViewerProps["onReady"]>(onReady)
+  const onTransformChangeRef = useRef<TiledDrawingViewerProps["onTransformChange"]>(onTransformChange)
 
   const imageSize = useMemo(() => {
     const w = tileManifest?.Image?.Size?.Width ?? 1
@@ -84,6 +86,14 @@ export function TiledDrawingViewer({
   useEffect(() => {
     imageSizeRef.current = imageSize
   }, [imageSize])
+
+  useEffect(() => {
+    onReadyRef.current = onReady
+  }, [onReady])
+
+  useEffect(() => {
+    onTransformChangeRef.current = onTransformChange
+  }, [onTransformChange])
 
   const buildTileSource = useCallback(
     (baseUrl: string) => ({
@@ -134,7 +144,7 @@ export function TiledDrawingViewer({
       })
 
       viewerRef.current = viewer
-      onReady?.(viewer)
+      onReadyRef.current?.(viewer)
 
       const emitTransform = () => {
         const el = containerRef.current
@@ -162,7 +172,7 @@ export function TiledDrawingViewer({
         })
 
         const zoom = viewer.viewport.getZoom(true)
-        onTransformChange?.({ matrix, container, zoom })
+        onTransformChangeRef.current?.({ matrix, container, zoom })
       }
 
       viewer.addHandler("open", emitTransform)
@@ -182,9 +192,9 @@ export function TiledDrawingViewer({
       resizeObserverRef.current = null
       viewer?.destroy?.()
       viewerRef.current = null
-      onReady?.(null)
+      onReadyRef.current?.(null)
     }
-  }, [buildTileSource, onReady, onTransformChange, tileBaseUrl])
+  }, [buildTileSource, tileBaseUrl])
 
   useEffect(() => {
     if (!viewerRef.current) return

@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation"
 
 import { validatePortalToken, loadClientPortalData, recordPortalAccess } from "@/lib/services/portal-access"
+import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { PortalPublicClient } from "./portal-client"
 
 interface PortalPageProps {
@@ -15,6 +17,24 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
 
   if (!access) {
     notFound()
+  }
+
+  if (access.require_account) {
+    const hasAccountAccess = await hasExternalPortalGrantForToken({
+      orgId: access.org_id,
+      tokenId: access.id,
+      tokenType: "portal",
+    })
+    if (!hasAccountAccess) {
+      return (
+        <PortalAccountGate
+          token={token}
+          tokenType="portal"
+          orgName="the builder"
+          projectName="this project"
+        />
+      )
+    }
   }
 
   const data = await loadClientPortalData({

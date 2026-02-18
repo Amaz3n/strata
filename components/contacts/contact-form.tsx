@@ -42,6 +42,7 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
     full_name: contact?.full_name ?? "",
     email: contact?.email ?? "",
     phone: contact?.phone ?? "",
+    address: contact?.address?.formatted ?? "",
     role: contact?.role ?? "",
     contact_type: contact?.contact_type ?? "subcontractor",
     primary_company_id: contact?.primary_company_id ?? "none",
@@ -62,6 +63,7 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
       ...formState,
       email: formState.email || undefined,
       phone: formState.phone || undefined,
+      address: formState.address || undefined,
       role: formState.role || undefined,
       primary_company_id: formState.primary_company_id === "none" ? undefined : formState.primary_company_id,
       preferred_contact_method: formState.preferred_contact_method === "none" ? undefined : formState.preferred_contact_method,
@@ -125,6 +127,16 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
           <Label>Role</Label>
           <Input value={formState.role} onChange={(e) => setField("role", e.target.value)} placeholder="Project Manager" />
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Billing address</Label>
+        <Textarea
+          value={formState.address}
+          onChange={(e) => setField("address", e.target.value)}
+          placeholder={"123 Main St\nNaples, FL 34102"}
+          rows={3}
+        />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -203,6 +215,5 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
     </form>
   )
 }
-
 
 

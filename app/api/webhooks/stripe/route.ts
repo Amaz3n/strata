@@ -4,6 +4,17 @@ import { constructWebhookEvent, mapStripeEventToDomain } from "@/lib/integration
 import { recordPayment } from "@/lib/services/payments"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { upsertSubscriptionFromStripe } from "@/lib/services/subscriptions"
+import { authorize } from "@/lib/services/authorization"
+
+function resolveActorUserId(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined
+  }
+
+  const candidate = metadata as Record<string, unknown>
+  const value = candidate.actor_user_id ?? candidate.actorUserId ?? candidate.user_id ?? candidate.userId
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
 
 export async function POST(request: NextRequest) {
   const payload = await request.text()
@@ -39,6 +50,32 @@ export async function POST(request: NextRequest) {
     }
 
     if (domainEvent.type === "payment_succeeded") {
+      const actorUserId = resolveActorUserId(domainEvent.metadata)
+      if (actorUserId && domainEvent.org_id) {
+        const decision = await authorize({
+          permission: "payment.release",
+          userId: actorUserId,
+          orgId: domainEvent.org_id,
+          supabase,
+          logDecision: true,
+          resourceType: "invoice",
+          resourceId: domainEvent.invoice_id,
+          requestId: event.id,
+          policyVersion: "phase3-webhook-v1",
+        })
+
+        if (!decision.allowed) {
+          console.warn("Stripe webhook skipped payment side-effect due to authorization denial", {
+            eventId: event.id,
+            actorUserId,
+            orgId: domainEvent.org_id,
+            invoiceId: domainEvent.invoice_id,
+            reasonCode: decision.reasonCode,
+          })
+          return NextResponse.json({ received: true, skipped: true })
+        }
+      }
+
       const { data: existing } = await supabase
         .from("payments")
         .select("id")

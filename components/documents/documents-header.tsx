@@ -16,6 +16,7 @@ import {
   Download,
   Plus,
   Upload,
+  Layers,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -50,6 +51,7 @@ const CATEGORY_LABELS: Record<Exclude<QuickFilter, "all" | "drawings">, string> 
 
 interface DocumentsHeaderProps {
   onUploadClick: () => void
+  onUploadDrawingSetClick: () => void
   onCreateFolderClick: () => void
   onManageFolderAccessClick: () => void
   selectedCount: number
@@ -65,6 +67,7 @@ interface DocumentsHeaderProps {
 
 export function DocumentsHeader({
   onUploadClick,
+  onUploadDrawingSetClick,
   onCreateFolderClick,
   onManageFolderAccessClick,
   selectedCount,
@@ -233,6 +236,10 @@ export function DocumentsHeader({
             <DropdownMenuItem onClick={onUploadClick} disabled={isUploading}>
               <Upload className="h-4 w-4 mr-2" />
               {isUploading ? "Uploading..." : "Upload files"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onUploadDrawingSetClick} disabled={isUploading}>
+              <Layers className="h-4 w-4 mr-2" />
+              Upload drawing set
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={onCreateFolderClick}
