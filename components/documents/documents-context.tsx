@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { listFilesAction, getFileCountsAction, listFoldersAction } from "@/app/(app)/files/actions"
 import { listDrawingSetsAction, listDrawingSheetsWithUrlsAction } from "@/app/(app)/drawings/actions"
 import type { FileWithUrls } from "@/app/(app)/files/actions"
@@ -34,6 +35,7 @@ interface DocumentsProviderProps {
   initialFolders: string[]
   initialSets: DrawingSet[]
   initialPath?: string
+  initialSetId?: string
 }
 
 const EXPANDED_FOLDERS_KEY = "documents-expanded-folders"
@@ -51,6 +53,15 @@ function docsDebugLog(...args: unknown[]) {
   }
 }
 
+function normalizeDocsPath(value?: string | null): string {
+  if (!value) return ""
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  const normalized = withLeadingSlash.replace(/\/+/g, "/").replace(/\/$/, "")
+  return normalized === "/" ? "" : normalized
+}
+
 export function DocumentsProvider({
   children,
   project,
@@ -59,7 +70,17 @@ export function DocumentsProvider({
   initialFolders,
   initialSets,
   initialPath = "",
+  initialSetId,
 }: DocumentsProviderProps) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const basePath = useMemo(() => {
+    const match = pathname.match(/^(\/projects\/[^/]+\/files)/)
+    return match?.[1] ?? pathname
+  }, [pathname])
+  const initialNormalizedPath = useMemo(() => normalizeDocsPath(initialPath), [initialPath])
+
   // Data state
   const [files, setFiles] = useState<FileWithUrls[]>(initialFiles)
   const [drawingSets, setDrawingSets] = useState<DrawingSet[]>(initialSets)
@@ -67,10 +88,18 @@ export function DocumentsProvider({
   const [counts, setCounts] = useState<Record<string, number>>(initialCounts)
   const [sheetsBySetId, setSheetsBySetId] = useState<Record<string, DrawingSheet[]>>({})
 
-  // Filter state - local only (no URL sync for now)
-  const [currentPath, setCurrentPath] = useState<string>(initialPath)
+  // Filter state
+  const [currentPath, setCurrentPathState] = useState<string>(initialNormalizedPath)
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all")
   const [searchQuery, setSearchQuery] = useState<string>("")
+  const [selectedDrawingSetId, setSelectedDrawingSetId] = useState<string | null>(initialSetId ?? null)
+  const [selectedDrawingSetTitle, setSelectedDrawingSetTitle] = useState<string | null>(() => {
+    if (initialSetId) {
+      const set = initialSets.find((s) => s.id === initialSetId)
+      return set?.title ?? null
+    }
+    return null
+  })
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (typeof window === "undefined") return "list"
     return (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || "list"
@@ -91,6 +120,68 @@ export function DocumentsProvider({
   const [isLoading, setIsLoading] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const loadingSheetsSetIdsRef = useRef<Set<string>>(new Set())
+  const syncedUrlStateRef = useRef(`${initialSetId ?? ""}|${initialNormalizedPath}`)
+
+  const setSelectedDrawingSet = useCallback((id: string | null, title?: string | null) => {
+    setSelectedDrawingSetId(id)
+    setSelectedDrawingSetTitle(title ?? null)
+  }, [])
+
+  const pushDocsState = useCallback(
+    (nextPath: string | null, nextSetId: string | null) => {
+      const params = new URLSearchParams(searchParams.toString())
+      params.delete("path")
+      params.delete("set")
+      if (nextPath) {
+        params.set("path", normalizeDocsPath(nextPath))
+      }
+      if (nextSetId) {
+        params.set("set", nextSetId)
+      }
+      const nextQuery = params.toString()
+      const nextUrl = nextQuery ? `${basePath}?${nextQuery}` : basePath
+      const currentQuery = searchParams.toString()
+      const currentUrl = currentQuery ? `${basePath}?${currentQuery}` : basePath
+      if (nextUrl !== currentUrl) {
+        router.push(nextUrl)
+      }
+    },
+    [basePath, router, searchParams]
+  )
+
+  const navigateToRoot = useCallback(() => {
+    pushDocsState(null, null)
+    setCurrentPathState("")
+    setSelectedDrawingSet(null, null)
+    setQuickFilter("all")
+  }, [pushDocsState, setSelectedDrawingSet])
+
+  const navigateToFolder = useCallback((path: string) => {
+    const normalizedPath = normalizeDocsPath(path)
+    pushDocsState(normalizedPath || null, null)
+    setCurrentPathState(normalizedPath)
+    setSelectedDrawingSet(null, null)
+    setQuickFilter("all")
+  }, [pushDocsState, setSelectedDrawingSet])
+
+  const navigateToDrawingSet = useCallback((id: string, title: string) => {
+    pushDocsState(null, id)
+    setSelectedDrawingSet(id, title)
+    setCurrentPathState("")
+    setQuickFilter("drawings")
+  }, [pushDocsState, setSelectedDrawingSet])
+
+  const setCurrentPath = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeDocsPath(path)
+      if (!normalizedPath) {
+        navigateToRoot()
+        return
+      }
+      navigateToFolder(normalizedPath)
+    },
+    [navigateToFolder, navigateToRoot]
+  )
 
   // Folder expansion
   const toggleFolderExpanded = useCallback(
@@ -202,6 +293,39 @@ export function DocumentsProvider({
   // Files/folders are fetched server-side for initial load, and refreshed explicitly
   // after mutations (upload/move/rename/delete) to avoid action polling loops.
 
+  const urlPath = useMemo(() => normalizeDocsPath(searchParams.get("path")), [searchParams])
+  const urlSetId = searchParams.get("set")
+  const urlStateKey = `${urlSetId ?? ""}|${urlPath}`
+
+  useEffect(() => {
+    if (syncedUrlStateRef.current === urlStateKey) return
+    syncedUrlStateRef.current = urlStateKey
+
+    if (urlSetId) {
+      const set = drawingSets.find((row) => row.id === urlSetId)
+      setSelectedDrawingSet(urlSetId, set?.title ?? null)
+      setCurrentPathState("")
+      setQuickFilter("drawings")
+      return
+    }
+
+    setSelectedDrawingSet(null, null)
+    setCurrentPathState(urlPath)
+    setQuickFilter((prev) => (prev === "drawings" || Boolean(urlPath) ? "all" : prev))
+  }, [drawingSets, setSelectedDrawingSet, urlPath, urlSetId, urlStateKey])
+
+  useEffect(() => {
+    if (!selectedDrawingSetId) return
+    const set = drawingSets.find((row) => row.id === selectedDrawingSetId)
+    if (!set || set.title === selectedDrawingSetTitle) return
+    setSelectedDrawingSetTitle(set.title)
+  }, [drawingSets, selectedDrawingSetId, selectedDrawingSetTitle])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    localStorage.setItem(VIEW_MODE_KEY, viewMode)
+  }, [viewMode])
+
   // Auto-expand parent folders when navigating to a path
   useEffect(() => {
     if (!currentPath) return
@@ -235,6 +359,7 @@ export function DocumentsProvider({
       quickFilter,
       currentPath,
       searchQuery,
+      selectedDrawingSetId,
       files: files.length,
       folders: folders.length,
       drawingSets: drawingSets.length,
@@ -245,12 +370,20 @@ export function DocumentsProvider({
     quickFilter,
     currentPath,
     searchQuery,
+    selectedDrawingSetId,
     files.length,
     folders.length,
     drawingSets.length,
     isLoading,
     isUploading,
   ])
+
+  // When quickFilter changes away from drawings, clear drawing-set context.
+  useEffect(() => {
+    if (quickFilter === "drawings") return
+    if (!selectedDrawingSetId && !selectedDrawingSetTitle) return
+    setSelectedDrawingSet(null, null)
+  }, [quickFilter, selectedDrawingSetId, selectedDrawingSetTitle, setSelectedDrawingSet])
 
   const contextValue: DocumentsContextValue = useMemo(
     () => ({
@@ -268,6 +401,10 @@ export function DocumentsProvider({
       setQuickFilter,
       setSearchQuery,
       setViewMode,
+      setSelectedDrawingSet,
+      navigateToRoot,
+      navigateToFolder,
+      navigateToDrawingSet,
       refreshFiles,
       refreshDrawingSets,
       isLoading,
@@ -278,6 +415,8 @@ export function DocumentsProvider({
       toggleDrawingSetExpanded,
       sheetsBySetId,
       loadSheetsForSet,
+      selectedDrawingSetId,
+      selectedDrawingSetTitle,
     }),
     [
       files,
@@ -299,9 +438,15 @@ export function DocumentsProvider({
       setQuickFilter,
       setSearchQuery,
       setViewMode,
+      setSelectedDrawingSet,
+      navigateToRoot,
+      navigateToFolder,
+      navigateToDrawingSet,
       toggleFolderExpanded,
       toggleDrawingSetExpanded,
       loadSheetsForSet,
+      selectedDrawingSetId,
+      selectedDrawingSetTitle,
       project.id,
       project.name,
     ]

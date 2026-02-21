@@ -141,6 +141,7 @@ export async function createRfi({ input, orgId }: { input: RfiInput; orgId?: str
     orgId: resolvedOrgId,
     rfiId: data.id,
     kind: "created",
+    notifyContactId: input.notify_contact_id ?? null,
   })
 
   return data as Rfi
@@ -331,6 +332,7 @@ async function sendRfiEmail({
   message,
   decisionStatus,
   decisionNote,
+  notifyContactId,
 }: {
   orgId: string
   rfiId: string
@@ -338,6 +340,7 @@ async function sendRfiEmail({
   message?: string
   decisionStatus?: string
   decisionNote?: string
+  notifyContactId?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
   const { data: rfi, error } = await supabase
@@ -345,7 +348,7 @@ async function sendRfiEmail({
     .select(
       `
       id, org_id, project_id, rfi_number, subject, question, status, priority,
-      assigned_to, submitted_by, project:projects(name, client_id)
+      assigned_to, assigned_company_id, submitted_by, project:projects(name, client_id)
     `,
     )
     .eq("id", rfiId)
@@ -357,23 +360,71 @@ async function sendRfiEmail({
     return
   }
 
-  const recipients: (string | null)[] = []
+  const recipients: Array<{ email: string; portalLink?: string | null; audience: "internal" | "client" | "sub" }> = []
 
   const project = Array.isArray(rfi.project) ? rfi.project[0] : rfi.project
 
   if (rfi.assigned_to) {
     const userEmail = await fetchUserEmail(supabase, rfi.assigned_to)
-    if (userEmail) recipients.push(userEmail.email)
+    if (userEmail?.email) recipients.push({ email: userEmail.email, audience: "internal", portalLink: null })
   }
 
   if (project?.client_id) {
     const contactEmail = await fetchContactEmail(supabase, project.client_id)
-    if (contactEmail) recipients.push(contactEmail.email)
+    if (contactEmail?.email) {
+      const link = await ensurePortalLink({
+        supabase,
+        orgId,
+        projectId: rfi.project_id,
+        portalType: "client",
+        contactId: project.client_id,
+        companyId: null,
+        createdBy: rfi.submitted_by ?? null,
+      })
+      recipients.push({ email: contactEmail.email, audience: "client", portalLink: link })
+    }
+  }
+
+  if (notifyContactId) {
+    const notifyContact = await fetchContact(supabase, notifyContactId)
+    if (notifyContact?.email) {
+      const portalType: "client" | "sub" = notifyContact.primary_company_id ? "sub" : "client"
+      const link = await ensurePortalLink({
+        supabase,
+        orgId,
+        projectId: rfi.project_id,
+        portalType,
+        contactId: notifyContact.id,
+        companyId: notifyContact.primary_company_id ?? null,
+        createdBy: rfi.submitted_by ?? null,
+      })
+      recipients.push({ email: notifyContact.email, audience: portalType === "sub" ? "sub" : "client", portalLink: link })
+    }
+  }
+
+  if (rfi.assigned_company_id) {
+    const companyContacts = await fetchCompanyContacts(supabase, orgId, rfi.assigned_company_id)
+    if (companyContacts.length > 0) {
+      const link = await ensurePortalLink({
+        supabase,
+        orgId,
+        projectId: rfi.project_id,
+        portalType: "sub",
+        contactId: null,
+        companyId: rfi.assigned_company_id,
+        createdBy: rfi.submitted_by ?? null,
+      })
+      for (const contact of companyContacts) {
+        if (contact.email) {
+          recipients.push({ email: contact.email, audience: "sub", portalLink: link })
+        }
+      }
+    }
   }
 
   if (rfi.submitted_by) {
     const submitterEmail = await fetchUserEmail(supabase, rfi.submitted_by)
-    if (submitterEmail) recipients.push(submitterEmail.email)
+    if (submitterEmail?.email) recipients.push({ email: submitterEmail.email, audience: "internal", portalLink: null })
   }
 
   if (recipients.length === 0) {
@@ -395,31 +446,119 @@ async function sendRfiEmail({
     }
   })()
 
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
-      <h2 style="margin-bottom: 4px;">${projectName}</h2>
-      <p style="margin: 0 0 12px 0; color: #555;">RFI #${rfi.rfi_number}</p>
-      <p style="margin: 0 0 12px 0;"><strong>${rfi.subject}</strong></p>
-      ${
-        kind === "response"
-          ? `<p style="white-space:pre-wrap;">${message ?? "A new response was posted."}</p>`
-          : kind === "decision"
-            ? `<p style="margin: 0 0 8px 0;">Decision: <strong>${decisionStatus ?? "Updated"}</strong></p>${
-                decisionNote ? `<p style="white-space:pre-wrap;">${decisionNote}</p>` : ""
-              }`
-            : `<p style="white-space:pre-wrap;">${rfi.question}</p>`
-      }
-      <div style="margin-top: 16px;">
-        <a href="${APP_URL}/rfis" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Open in Arc</a>
-      </div>
-    </div>
-  `
+  const deduped = new Map<string, { audience: "internal" | "client" | "sub"; portalLink?: string | null }>()
+  for (const recipient of recipients) {
+    if (!deduped.has(recipient.email)) {
+      deduped.set(recipient.email, { audience: recipient.audience, portalLink: recipient.portalLink })
+    }
+  }
 
-  await sendEmail({
-    to: recipients,
-    subject,
-    html,
-  })
+  for (const [to, meta] of deduped.entries()) {
+    const actionHref =
+      meta.audience === "internal" || !meta.portalLink ? `${APP_URL}/rfis?highlight=${rfi.id}` : meta.portalLink
+    const actionLabel = meta.audience === "internal" ? "Open in Arc" : "Respond in Portal"
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+        <h2 style="margin-bottom: 4px;">${projectName}</h2>
+        <p style="margin: 0 0 12px 0; color: #555;">RFI #${rfi.rfi_number}</p>
+        <p style="margin: 0 0 12px 0;"><strong>${rfi.subject}</strong></p>
+        ${
+          kind === "response"
+            ? `<p style="white-space:pre-wrap;">${message ?? "A new response was posted."}</p>`
+            : kind === "decision"
+              ? `<p style="margin: 0 0 8px 0;">Decision: <strong>${decisionStatus ?? "Updated"}</strong></p>${
+                  decisionNote ? `<p style="white-space:pre-wrap;">${decisionNote}</p>` : ""
+                }`
+              : `<p style="white-space:pre-wrap;">${rfi.question}</p>`
+        }
+        <div style="margin-top: 16px;">
+          <a href="${actionHref}" style="background: #111827; color: #fff; padding: 10px 16px; border-radius: 6px; text-decoration: none;">${actionLabel}</a>
+        </div>
+      </div>
+    `
+
+    await sendEmail({
+      to: [to],
+      subject,
+      html,
+    })
+  }
+}
+
+async function ensurePortalLink({
+  supabase,
+  orgId,
+  projectId,
+  portalType,
+  contactId,
+  companyId,
+  createdBy,
+}: {
+  supabase: any
+  orgId: string
+  projectId: string
+  portalType: "client" | "sub"
+  contactId?: string | null
+  companyId?: string | null
+  createdBy?: string | null
+}) {
+  let query = supabase
+    .from("portal_access_tokens")
+    .select("token")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("portal_type", portalType)
+    .is("revoked_at", null)
+    .is("paused_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+
+  query = contactId ? query.eq("contact_id", contactId) : query.is("contact_id", null)
+  query = companyId ? query.eq("company_id", companyId) : query.is("company_id", null)
+
+  const { data: existing } = await query.maybeSingle()
+  if (existing?.token) return `${APP_URL}/${portalType === "client" ? "p" : "s"}/${existing.token}`
+
+  const payload = {
+    org_id: orgId,
+    project_id: projectId,
+    portal_type: portalType,
+    contact_id: contactId ?? null,
+    company_id: companyId ?? null,
+    created_by: createdBy ?? null,
+    can_view_rfis: true,
+    can_respond_rfis: true,
+  }
+
+  const { data: created, error } = await supabase.from("portal_access_tokens").insert(payload).select("token").single()
+  if (error || !created?.token) {
+    console.warn("Failed to create portal token for RFI email", error)
+    return `${APP_URL}/rfis?project=${projectId}`
+  }
+
+  return `${APP_URL}/${portalType === "client" ? "p" : "s"}/${created.token}`
+}
+
+async function fetchCompanyContacts(
+  supabase: any,
+  orgId: string,
+  companyId: string,
+): Promise<Array<{ id: string; email: string | null }>> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id, email")
+    .eq("org_id", orgId)
+    .eq("primary_company_id", companyId)
+    .is("metadata->>archived_at", null)
+    .not("email", "is", null)
+    .limit(5)
+
+  if (error) {
+    console.warn("Failed to fetch company contacts for RFI email", error)
+    return []
+  }
+  return (data ?? []) as Array<{ id: string; email: string | null }>
 }
 
 async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: string | null; full_name?: string } | null> {
@@ -438,6 +577,22 @@ async function fetchContactEmail(
   const { data, error } = await supabase.from("contacts").select("email, full_name").eq("id", contactId).maybeSingle()
   if (error) {
     console.warn("Failed to fetch contact email", error)
+    return null
+  }
+  return data
+}
+
+async function fetchContact(
+  supabase: any,
+  contactId: string,
+): Promise<{ id: string; email: string | null; primary_company_id: string | null } | null> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id, email, primary_company_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (error) {
+    console.warn("Failed to fetch contact", error)
     return null
   }
   return data

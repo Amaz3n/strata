@@ -408,7 +408,7 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
                     item.is_critical_path ? styles.nameRowCritical : {},
                   ]}
                 >
-                  {/* @ts-ignore */}
+                  {/* @ts-expect-error - react-pdf Text component has numberOfLines prop */}
                   <Text style={[styles.nameText, styles.nameTextTruncate]} numberOfLines={1}>
                     {item.name}
                   </Text>

@@ -5,10 +5,6 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { getChangeOrderForPortal } from "@/lib/services/change-orders"
 
-interface RouteParams {
-  params: { token: string; id: string }
-}
-
 function requireDocumentSigningSecret() {
   const secret = process.env.DOCUMENT_SIGNING_SECRET
   if (!secret) {
@@ -45,8 +41,8 @@ function buildSigningUrl(rawToken: string, request: Request) {
   return `${url.origin}/d/${rawToken}`
 }
 
-export async function GET(request: Request, { params }: RouteParams) {
-  const { token, id } = params
+export async function GET(request: Request, { params }: { params: Promise<{ token: string; id: string }> }) {
+  const { token, id } = await params
   const fallbackUrl = new URL(`/p/${token}/change-orders/${id}`, request.url)
 
   try {

@@ -1,10 +1,64 @@
 import { getQBOAccessToken } from "@/lib/services/qbo-connection"
+import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo-config"
 import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo-query"
 
-const BASE_URL =
-  process.env.NODE_ENV === "production"
-    ? "https://quickbooks.api.intuit.com/v3/company"
-    : "https://sandbox-quickbooks.api.intuit.com/v3/company"
+interface QBOFaultError {
+  Message?: string
+  Detail?: string
+  code?: string
+}
+
+interface QBOFaultPayload {
+  Fault?: {
+    type?: string
+    Error?: QBOFaultError[]
+  }
+}
+
+function getFaultErrors(payload: unknown): QBOFaultError[] {
+  const maybeErrors = (payload as QBOFaultPayload | null | undefined)?.Fault?.Error
+  if (!Array.isArray(maybeErrors)) return []
+  return maybeErrors.filter((item) => item && typeof item === "object")
+}
+
+function getQBOFaultSummary(payload: unknown): string | null {
+  const summaries = getFaultErrors(payload)
+    .map((fault) => {
+      const message = fault.Message?.trim()
+      const detail = fault.Detail?.trim()
+      const code = fault.code?.trim()
+      const text =
+        detail && message && detail !== message
+          ? `${message}: ${detail}`
+          : (detail ?? message ?? "")
+      if (!text && !code) return ""
+      return [code ? `code ${code}` : "", text].filter(Boolean).join(" - ")
+    })
+    .filter(Boolean)
+
+  return summaries.length > 0 ? summaries.join(" | ") : null
+}
+
+function getQBOAuthHint(status: number, payload: unknown): string | null {
+  if (status !== 401 && status !== 403) return null
+
+  const normalized = JSON.stringify(payload ?? {}).toLowerCase()
+  const looksLikeEnvMismatch =
+    normalized.includes("applicationauthorizationfailed") ||
+    normalized.includes("application authentication failed") ||
+    normalized.includes("authenticationfailed") ||
+    normalized.includes('"code":"003100"')
+
+  if (looksLikeEnvMismatch) {
+    return `Check QBO app environment (${qboEnvironmentLabel}) and QBO_SANDBOX setting.`
+  }
+
+  if (status === 403) {
+    return "Verify QuickBooks company/app permissions for creating invoices."
+  }
+
+  return null
+}
 
 interface QueryInvoiceResponse {
   QueryResponse: {
@@ -14,7 +68,7 @@ interface QueryInvoiceResponse {
 
 interface QueryAccountResponse {
   QueryResponse: {
-    Account?: Array<{ Id?: string; Name?: string }>
+    Account?: Array<{ Id?: string; Name?: string; FullyQualifiedName?: string }>
   }
 }
 
@@ -46,6 +100,17 @@ interface QBOInvoice {
   PrivateNote?: string
 }
 
+interface QBOItem {
+  Id?: string
+  Name?: string
+}
+
+export interface QBOIncomeAccount {
+  id: string
+  name: string
+  fullyQualifiedName?: string
+}
+
 export class QBOClient {
   private token: string
   private realmId: string
@@ -62,7 +127,7 @@ export class QBOClient {
   }
 
   private async request<T>(method: "GET" | "POST", endpoint: string, body?: any): Promise<T> {
-    const url = `${BASE_URL}/${this.realmId}/${endpoint}`
+    const url = `${qboCompanyBaseUrl}/${this.realmId}/${endpoint}`
     const response = await fetch(url, {
       method,
       headers: {
@@ -124,6 +189,32 @@ export class QBOClient {
   }
 
   async getDefaultServiceItem(defaultIncomeAccountId?: string): Promise<{ value: string; name: string }> {
+    if (defaultIncomeAccountId) {
+      const itemName = `Arc Services ${defaultIncomeAccountId}`
+      const existingForAccount = await this.findServiceItemByName(itemName)
+      if (existingForAccount?.Id && existingForAccount?.Name) {
+        return { value: existingForAccount.Id, name: existingForAccount.Name }
+      }
+
+      try {
+        const createdForAccount = await this.request<{ Item: QBOItem }>("POST", "item", {
+          Name: itemName,
+          Type: "Service",
+          IncomeAccountRef: { value: defaultIncomeAccountId },
+        })
+
+        if (createdForAccount.Item?.Id && createdForAccount.Item?.Name) {
+          return { value: createdForAccount.Item.Id, name: createdForAccount.Item.Name }
+        }
+      } catch (error) {
+        const duplicate = await this.findServiceItemByName(itemName)
+        if (duplicate?.Id && duplicate?.Name) {
+          return { value: duplicate.Id, name: duplicate.Name }
+        }
+        throw error
+      }
+    }
+
     const query = `SELECT * FROM Item WHERE Type = 'Service' MAXRESULTS 1`
     const result = await this.request<{ QueryResponse: { Item?: any[] } }>(
       "GET",
@@ -151,6 +242,75 @@ export class QBOClient {
     return { value: newItem.Item.Id, name: newItem.Item.Name }
   }
 
+  private async findServiceItemByName(name: string): Promise<QBOItem | null> {
+    const query = `SELECT Id, Name FROM Item WHERE Type = 'Service' AND Name = '${this.toQboStringLiteral(name)}' MAXRESULTS 1`
+    const result = await this.request<{ QueryResponse: { Item?: QBOItem[] } }>(
+      "GET",
+      `query?query=${encodeURIComponent(query)}`,
+    )
+    return result.QueryResponse.Item?.[0] ?? null
+  }
+
+  async listIncomeAccounts(): Promise<QBOIncomeAccount[]> {
+    const query = `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Income' AND Active = true ORDERBY Name MAXRESULTS 1000`
+    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    return (result.QueryResponse.Account ?? [])
+      .filter((account) => Boolean(account.Id && account.Name))
+      .map((account) => ({
+        id: String(account.Id),
+        name: String(account.Name),
+        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
+      }))
+  }
+
+  private async findIncomeAccountByName(name: string): Promise<QBOIncomeAccount | null> {
+    const query = `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Income' AND Name = '${this.toQboStringLiteral(name)}' MAXRESULTS 1`
+    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    const match = result.QueryResponse.Account?.[0]
+    if (!match?.Id || !match?.Name) return null
+    return {
+      id: String(match.Id),
+      name: String(match.Name),
+      fullyQualifiedName: match.FullyQualifiedName ? String(match.FullyQualifiedName) : undefined,
+    }
+  }
+
+  async createIncomeAccount(name: string): Promise<QBOIncomeAccount> {
+    const normalized = name.trim()
+    if (!normalized) {
+      throw new Error("Account name is required")
+    }
+
+    const existing = await this.findIncomeAccountByName(normalized)
+    if (existing) return existing
+
+    try {
+      const created = await this.request<{ Account?: { Id?: string; Name?: string; FullyQualifiedName?: string } }>(
+        "POST",
+        "account",
+        {
+          Name: normalized,
+          AccountType: "Income",
+          AccountSubType: "SalesOfProductIncome",
+        },
+      )
+
+      if (!created.Account?.Id || !created.Account?.Name) {
+        throw new Error("QuickBooks did not return the new income account.")
+      }
+
+      return {
+        id: String(created.Account.Id),
+        name: String(created.Account.Name),
+        fullyQualifiedName: created.Account.FullyQualifiedName ? String(created.Account.FullyQualifiedName) : undefined,
+      }
+    } catch (error) {
+      const foundAfterError = await this.findIncomeAccountByName(normalized).catch(() => null)
+      if (foundAfterError) return foundAfterError
+      throw error
+    }
+  }
+
   async createInvoice(invoice: Omit<QBOInvoice, "Id" | "SyncToken">): Promise<QBOInvoice> {
     const result = await this.request<{ Invoice: QBOInvoice }>("POST", "invoice", invoice)
     return result.Invoice
@@ -173,11 +333,21 @@ export class QBOClient {
 export class QBOError extends Error {
   status: number
   qboError: any
+  faultType: string | null
+  faultCode: string | null
+  faultDetail: string | null
 
   constructor(status: number, error: any) {
-    super(`QBO API Error ${status}`)
+    const summary = getQBOFaultSummary(error)
+    const hint = getQBOAuthHint(status, error)
+    const detail = [summary, hint].filter(Boolean).join(" | ")
+    super(detail ? `QBO API Error ${status}: ${detail}` : `QBO API Error ${status}`)
     this.status = status
     this.qboError = error
+    this.faultType = error?.Fault?.type ?? null
+    const firstFault = getFaultErrors(error)[0]
+    this.faultCode = firstFault?.code ?? null
+    this.faultDetail = firstFault?.Detail ?? firstFault?.Message ?? null
   }
 
   get isRateLimit() {
@@ -185,6 +355,14 @@ export class QBOError extends Error {
   }
 
   get isAuthError() {
-    return this.status === 401
+    return (
+      this.status === 401 ||
+      this.faultType?.toLowerCase() === "authentication" ||
+      this.faultCode === "003100"
+    )
+  }
+
+  get isPermissionError() {
+    return this.status === 403 && !this.isAuthError
   }
 }

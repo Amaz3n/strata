@@ -50,7 +50,7 @@ export function PdfFieldViewer({
 }: PdfFieldViewerProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
-  const overlayRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const overlayRefs = useRef<Record<string, HTMLElement | null>>({})
   const [pageWidth, setPageWidth] = useState(1100)
 
   useEffect(() => {
@@ -138,12 +138,14 @@ export function PdfFieldViewer({
         }}
         className="relative mx-auto w-fit overflow-hidden rounded-md border bg-background shadow-sm"
       >
-        <PDFComponents.Page
-          pageNumber={pageIndex + 1}
-          width={pageWidth}
-          renderTextLayer={false}
-          renderAnnotationLayer={false}
-        />
+        {PDFComponents && (
+          <PDFComponents.Page
+            pageNumber={pageIndex + 1}
+            width={pageWidth}
+            renderTextLayer={false}
+            renderAnnotationLayer={false}
+          />
+        )}
 
         <div className="absolute inset-0">
           {pageFields.map((field) => {

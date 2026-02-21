@@ -217,7 +217,7 @@ export async function createBidPortalRfiAction({ token, input }: { token: string
       priority: parsed.data.priority,
       dueDate: parsed.data.due_date ?? null,
     })
-    return { success: true, rfi: created as const }
+    return { success: true, rfi: created }
   } catch (error) {
     return { success: false, error: (error as Error)?.message ?? "Failed to create RFI" as const }
   }

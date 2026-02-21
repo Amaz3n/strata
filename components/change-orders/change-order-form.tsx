@@ -45,6 +45,14 @@ interface ChangeOrderFormProps {
   isSubmitting?: boolean
 }
 
+interface PlainNumberInputProps {
+  value?: number
+  onValueChange: (value: number | undefined) => void
+  onBlur?: () => void
+  placeholder?: string
+  min?: number
+}
+
 const defaultLine = {
   cost_code_id: undefined,
   description: "",
@@ -60,14 +68,96 @@ function formatMoney(value: number) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
+function PlainNumberInput({
+  value,
+  onValueChange,
+  onBlur,
+  placeholder,
+  min = 0,
+}: PlainNumberInputProps) {
+  const [textValue, setTextValue] = useState(value == null ? "" : String(value))
+  const [isEditing, setIsEditing] = useState(false)
+
+  useEffect(() => {
+    if (!isEditing) {
+      setTextValue(value == null ? "" : String(value))
+    }
+  }, [isEditing, value])
+
+  return (
+    <Input
+      type="text"
+      inputMode="decimal"
+      value={textValue}
+      className="text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      placeholder={placeholder}
+      onFocus={() => {
+        setIsEditing(true)
+        if ((value ?? 0) === 0) {
+          setTextValue("")
+        }
+      }}
+      onChange={(e) => {
+        const nextValue = e.target.value.replace(",", ".")
+        if (!/^\d*\.?\d{0,2}$/.test(nextValue)) return
+
+        setTextValue(nextValue)
+        if (nextValue === "") {
+          onValueChange(undefined)
+          return
+        }
+        if (nextValue.endsWith(".")) return
+
+        const parsedValue = Number(nextValue)
+        if (Number.isFinite(parsedValue)) {
+          onValueChange(Math.max(min, parsedValue))
+        }
+      }}
+      onBlur={() => {
+        setIsEditing(false)
+        const rawValue = textValue.trim()
+        if (rawValue === "" || rawValue === ".") {
+          setTextValue("0")
+          onValueChange(0)
+          onBlur?.()
+          return
+        }
+
+        const parsedValue = Number(rawValue)
+        if (!Number.isFinite(parsedValue)) {
+          setTextValue("0")
+          onValueChange(0)
+          onBlur?.()
+          return
+        }
+
+        const normalizedValue = Math.max(min, parsedValue)
+        const normalizedText = Number.isInteger(normalizedValue)
+          ? String(normalizedValue)
+          : String(Number(normalizedValue.toFixed(2)))
+
+        setTextValue(normalizedText)
+        onValueChange(normalizedValue)
+        onBlur?.()
+      }}
+    />
+  )
+}
+
 function calculatePreviewTotals(values: ChangeOrderFormValues) {
   const subtotal = values.lines.reduce((sum, line) => {
-    return sum + line.quantity * line.unit_cost + (line.allowance ?? 0)
+    const quantity = Number(line.quantity ?? 0)
+    const unitCost = Number(line.unit_cost ?? 0)
+    const allowance = Number(line.allowance ?? 0)
+    return sum + quantity * unitCost + allowance
   }, 0)
 
-  const allowanceTotal = values.lines.reduce((sum, line) => sum + (line.allowance ?? 0), 0)
+  const allowanceTotal = values.lines.reduce((sum, line) => sum + Number(line.allowance ?? 0), 0)
   const taxableBase = values.lines.reduce((sum, line) => {
-    const lineTotal = line.quantity * line.unit_cost + (line.allowance ?? 0)
+    const quantity = Number(line.quantity ?? 0)
+    const unitCost = Number(line.unit_cost ?? 0)
+    const allowance = Number(line.allowance ?? 0)
+    const lineTotal = quantity * unitCost + allowance
     return line.taxable === false ? sum : sum + lineTotal
   }, 0)
 
@@ -393,12 +483,10 @@ export function ChangeOrderForm({
                             <FormItem className="space-y-2 min-w-0">
                               <FormLabel className="text-xs font-medium text-muted-foreground">Unit cost</FormLabel>
                               <FormControl>
-                                <Input
-                                  type="number"
-                                  step={0.01}
-                                  min={0}
+                                <PlainNumberInput
                                   value={field.value}
-                                  onChange={(e) => field.onChange(Number(e.target.value) || 0)}
+                                  onValueChange={field.onChange}
+                                  onBlur={field.onBlur}
                                   placeholder="0.00"
                                 />
                               </FormControl>

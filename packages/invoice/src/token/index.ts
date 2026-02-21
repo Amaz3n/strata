@@ -1,4 +1,4 @@
-// @ts-ignore
+// @ts-expect-error - jose library types not fully compatible
 import * as jose from "jose";
 
 export async function verify(token: string) {

@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef } from "react"
+import { Fragment, useRef } from "react"
 import { cn } from "@/lib/utils"
 import {
   Search,
@@ -92,6 +92,9 @@ export function DocumentsHeader({
     isUploading,
     counts,
     drawingSets,
+    selectedDrawingSetId,
+    selectedDrawingSetTitle,
+    setSelectedDrawingSet,
   } = useDocuments()
 
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -159,6 +162,9 @@ export function DocumentsHeader({
             setQuickFilter(nextValue)
             if (nextValue === "drawings") {
               setCurrentPath("")
+            }
+            if (nextValue !== "drawings") {
+              setSelectedDrawingSet(null, null)
             }
           }}
           className="h-8 w-[160px] rounded-md border border-input bg-background px-2 text-sm"
@@ -264,74 +270,129 @@ export function DocumentsHeader({
         )}
       </div>
 
-      {/* Row 2: Breadcrumbs (only when inside a folder and not on drawings filter) */}
-      {currentPath && quickFilter !== "drawings" && (
+      {/* Row 2: Breadcrumbs */}
+      {(quickFilter === "drawings" || currentPath) && (
         <div className="flex items-center gap-3 min-h-[32px]">
-          <Breadcrumb className="shrink-0">
-            <BreadcrumbList className="flex-nowrap gap-1">
-              <BreadcrumbItem>
-                <BreadcrumbLink
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault()
-                    handleBreadcrumbClick(-1)
-                  }}
-                  onDragOver={(event) => {
-                    if (!isDraggingFiles) return
-                    event.preventDefault()
-                  }}
-                  onDrop={(event) => {
-                    if (!isDraggingFiles) return
-                    event.preventDefault()
-                    onDropToRoot()
-                  }}
-                  className={cn(
-                    "flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-colors",
-                    isDraggingFiles && "hover:bg-muted"
-                  )}
-                >
-                  <FolderClosed className="h-3.5 w-3.5" />
-                  All files
-                </BreadcrumbLink>
-              </BreadcrumbItem>
-              {pathSegments.map((segment, index) => (
-                <BreadcrumbItem key={segment + index}>
-                  <BreadcrumbSeparator>
-                    <ChevronRight className="h-3 w-3" />
-                  </BreadcrumbSeparator>
-                  {index === pathSegments.length - 1 ? (
-                    <BreadcrumbPage className="text-xs truncate max-w-[160px]">
-                      {segment}
-                    </BreadcrumbPage>
-                  ) : (
+          {quickFilter === "drawings" ? (
+            <Breadcrumb className="shrink-0">
+              <BreadcrumbList className="flex-nowrap gap-1">
+                <BreadcrumbItem>
+                  <BreadcrumbLink
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      setQuickFilter("all")
+                      setCurrentPath("")
+                      setSelectedDrawingSet(null, null)
+                    }}
+                    className="flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-colors hover:bg-muted"
+                  >
+                    <FolderClosed className="h-3.5 w-3.5" />
+                    All files
+                  </BreadcrumbLink>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator>
+                  <ChevronRight className="h-3 w-3" />
+                </BreadcrumbSeparator>
+                <BreadcrumbItem>
+                  {selectedDrawingSetId && selectedDrawingSetTitle ? (
                     <BreadcrumbLink
                       href="#"
                       onClick={(e) => {
                         e.preventDefault()
-                        handleBreadcrumbClick(index)
+                        setSelectedDrawingSet(null, null)
                       }}
-                      onDragOver={(event) => {
-                        if (!isDraggingFiles) return
-                        event.preventDefault()
-                      }}
-                      onDrop={(event) => {
-                        if (!isDraggingFiles) return
-                        event.preventDefault()
-                        const targetPath = "/" + pathSegments.slice(0, index + 1).join("/")
-                        onDropToFolderPath(targetPath)
-                      }}
-                      className={cn(
-                        "text-xs truncate max-w-[160px] rounded px-1 py-0.5 transition-colors",
-                        isDraggingFiles && "hover:bg-muted"
-                      )}
+                      className="text-xs rounded px-1 py-0.5 transition-colors hover:bg-muted"
                     >
-                      {segment}
+                      Drawings
                     </BreadcrumbLink>
+                  ) : (
+                    <BreadcrumbPage className="text-xs">Drawings</BreadcrumbPage>
                   )}
                 </BreadcrumbItem>
-              ))}
-            </BreadcrumbList>
-          </Breadcrumb>
+                {selectedDrawingSetId && selectedDrawingSetTitle && (
+                  <Fragment>
+                    <BreadcrumbSeparator>
+                      <ChevronRight className="h-3 w-3" />
+                    </BreadcrumbSeparator>
+                    <BreadcrumbItem>
+                    <BreadcrumbPage className="text-xs truncate max-w-[220px]">
+                      {selectedDrawingSetTitle}
+                    </BreadcrumbPage>
+                    </BreadcrumbItem>
+                  </Fragment>
+                )}
+              </BreadcrumbList>
+            </Breadcrumb>
+          ) : (
+            <Breadcrumb className="shrink-0">
+              <BreadcrumbList className="flex-nowrap gap-1">
+                <BreadcrumbItem>
+                  <BreadcrumbLink
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      handleBreadcrumbClick(-1)
+                    }}
+                    onDragOver={(event) => {
+                      if (!isDraggingFiles) return
+                      event.preventDefault()
+                    }}
+                    onDrop={(event) => {
+                      if (!isDraggingFiles) return
+                      event.preventDefault()
+                      onDropToRoot()
+                    }}
+                    className={cn(
+                      "flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-colors",
+                      isDraggingFiles && "hover:bg-muted"
+                    )}
+                  >
+                    <FolderClosed className="h-3.5 w-3.5" />
+                    All files
+                  </BreadcrumbLink>
+                </BreadcrumbItem>
+                {pathSegments.map((segment, index) => (
+                  <Fragment key={segment + index}>
+                    <BreadcrumbSeparator>
+                      <ChevronRight className="h-3 w-3" />
+                    </BreadcrumbSeparator>
+                    <BreadcrumbItem>
+                      {index === pathSegments.length - 1 ? (
+                        <BreadcrumbPage className="text-xs truncate max-w-[160px]">
+                          {segment}
+                        </BreadcrumbPage>
+                      ) : (
+                        <BreadcrumbLink
+                          href="#"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            handleBreadcrumbClick(index)
+                          }}
+                          onDragOver={(event) => {
+                            if (!isDraggingFiles) return
+                            event.preventDefault()
+                          }}
+                          onDrop={(event) => {
+                            if (!isDraggingFiles) return
+                            event.preventDefault()
+                            const targetPath = "/" + pathSegments.slice(0, index + 1).join("/")
+                            onDropToFolderPath(targetPath)
+                          }}
+                          className={cn(
+                            "text-xs truncate max-w-[160px] rounded px-1 py-0.5 transition-colors",
+                            isDraggingFiles && "hover:bg-muted"
+                          )}
+                        >
+                          {segment}
+                        </BreadcrumbLink>
+                      )}
+                    </BreadcrumbItem>
+                  </Fragment>
+                ))}
+              </BreadcrumbList>
+            </Breadcrumb>
+          )}
         </div>
       )}
     </div>

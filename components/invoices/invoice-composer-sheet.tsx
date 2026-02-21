@@ -1,16 +1,22 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
-import { CalendarIcon, ChevronDown, Download, Plus, Send, Trash2 } from "lucide-react"
+import { CalendarIcon, Check, ChevronDown, Download, Plus, Send, Trash2 } from "lucide-react"
+import { NumberFlowLite, partitionParts } from "number-flow"
 
 import type { ChangeOrder, Contact, CostCode, Invoice, Project } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
-import { getInvoiceComposerContextAction, generateInvoicePdfAction } from "@/app/(app)/invoices/actions"
+import {
+  createQBOIncomeAccountAction,
+  generateInvoicePdfAction,
+  getInvoiceComposerContextAction,
+} from "@/app/(app)/invoices/actions"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -18,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
 type Props = {
@@ -48,6 +55,8 @@ type ComposerLine = {
   unit_cost: string
   taxable: boolean
   cost_code_id: string | null
+  qbo_income_account_id: string | null
+  qbo_income_account_name: string | null
 }
 
 type DrawOption = {
@@ -61,9 +70,27 @@ type DrawOption = {
   status: string
 }
 
+type QBOIncomeAccountOption = {
+  id: string
+  name: string
+  fullyQualifiedName?: string
+}
+
 type ComposerSettings = {
   defaultPaymentTermsDays: number
   defaultInvoiceNote: string
+}
+
+const NUMBER_FLOW_TAG = "number-flow"
+let isNumberFlowDefined = false
+
+function ensureNumberFlowDefined() {
+  if (isNumberFlowDefined) return
+  if (typeof window === "undefined" || typeof customElements === "undefined") return
+  if (!customElements.get(NUMBER_FLOW_TAG)) {
+    NumberFlowLite.define()
+  }
+  isNumberFlowDefined = true
 }
 
 function formatMoney(dollars: number) {
@@ -91,6 +118,8 @@ function toLineState(invoice?: Invoice | null): ComposerLine[] {
         unit_cost: "",
         taxable: true,
         cost_code_id: null,
+        qbo_income_account_id: null,
+        qbo_income_account_name: null,
       },
     ]
   }
@@ -103,6 +132,14 @@ function toLineState(invoice?: Invoice | null): ComposerLine[] {
     unit_cost: String(((line.unit_cost_cents ?? 0) / 100).toFixed(2)),
     taxable: line.taxable !== false,
     cost_code_id: line.cost_code_id ?? null,
+    qbo_income_account_id:
+      (line.qbo_income_account_id as string | null | undefined) ??
+      ((line.metadata as Record<string, any> | undefined)?.qbo_income_account_id as string | null | undefined) ??
+      null,
+    qbo_income_account_name:
+      (line.qbo_income_account_name as string | null | undefined) ??
+      ((line.metadata as Record<string, any> | undefined)?.qbo_income_account_name as string | null | undefined) ??
+      null,
   }))
 }
 
@@ -161,6 +198,170 @@ function DatePicker({ value, onChange, label }: { value: string; onChange: (v: s
   )
 }
 
+function AnimatedCurrency({ cents, className }: { cents: number; className?: string }) {
+  const flowRef = useRef<NumberFlowLite | null>(null)
+  const formatter = useMemo(
+    () =>
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+      }),
+    [],
+  )
+
+  useEffect(() => {
+    ensureNumberFlowDefined()
+  }, [])
+
+  useEffect(() => {
+    if (!flowRef.current) return
+    flowRef.current.parts = partitionParts(cents / 100, formatter)
+  }, [cents, formatter])
+
+  return createElement("number-flow", {
+    ref: (el: unknown) => {
+      flowRef.current = el as NumberFlowLite | null
+    },
+    className,
+  })
+}
+
+function formatQboAccountLabel(account?: QBOIncomeAccountOption | null) {
+  if (!account) return ""
+  return account.fullyQualifiedName ?? account.name
+}
+
+interface QboLineAccountPickerProps {
+  valueId: string | null
+  valueLabel: string | null
+  accounts: QBOIncomeAccountOption[]
+  defaultAccountId: string | null
+  onSelect: (account: { id: string | null; name: string | null }) => void
+  onCreateAccount: (name: string) => Promise<QBOIncomeAccountOption>
+}
+
+function QboLineAccountPicker({
+  valueId,
+  valueLabel,
+  accounts,
+  defaultAccountId,
+  onSelect,
+  onCreateAccount,
+}: QboLineAccountPickerProps) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [creating, setCreating] = useState(false)
+
+  const selectedAccount = valueId ? accounts.find((account) => account.id === valueId) ?? null : null
+  const defaultAccount = defaultAccountId ? accounts.find((account) => account.id === defaultAccountId) ?? null : null
+  const displayLabel = selectedAccount
+    ? formatQboAccountLabel(selectedAccount)
+    : valueId
+      ? (valueLabel ?? valueId)
+      : defaultAccount
+        ? `Default: ${formatQboAccountLabel(defaultAccount)}`
+        : "Default"
+  const normalizedQuery = query.trim()
+  const hasExactMatch = accounts.some((account) => {
+    const lowerQuery = normalizedQuery.toLowerCase()
+    return (
+      account.name.toLowerCase() === lowerQuery ||
+      (account.fullyQualifiedName ?? "").toLowerCase() === lowerQuery
+    )
+  })
+  const showCreate = normalizedQuery.length > 0 && !hasExactMatch
+
+  const selectDefault = () => {
+    onSelect({ id: null, name: null })
+    setOpen(false)
+    setQuery("")
+  }
+
+  const selectAccount = (account: QBOIncomeAccountOption) => {
+    onSelect({ id: account.id, name: formatQboAccountLabel(account) })
+    setOpen(false)
+    setQuery("")
+  }
+
+  const handleCreate = async () => {
+    if (!showCreate || creating) return
+    setCreating(true)
+    try {
+      const created = await onCreateAccount(normalizedQuery)
+      selectAccount(created)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-6 w-[132px] items-center rounded px-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          title={displayLabel}
+        >
+          <span className="truncate">{displayLabel}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[300px] overflow-hidden p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search QBO account..." value={query} onValueChange={setQuery} />
+          <CommandList className="max-h-64 overscroll-contain" onWheelCapture={(event) => event.stopPropagation()}>
+            <CommandEmpty>No matching accounts.</CommandEmpty>
+            <CommandGroup heading="Accounts">
+              <CommandItem value="__default__" onSelect={selectDefault}>
+                Use default account
+                <Check className={cn("ml-auto h-3.5 w-3.5", !valueId ? "opacity-100" : "opacity-0")} />
+              </CommandItem>
+              {accounts.map((account) => {
+                const label = formatQboAccountLabel(account)
+                return (
+                  <CommandItem key={account.id} value={`${label} ${account.id}`} onSelect={() => selectAccount(account)}>
+                    <span className="truncate">{label}</span>
+                    <Check className={cn("ml-auto h-3.5 w-3.5", valueId === account.id ? "opacity-100" : "opacity-0")} />
+                  </CommandItem>
+                )
+              })}
+              {valueId && !selectedAccount && (
+                <CommandItem
+                  value={`saved-${valueId}`}
+                  onSelect={() => {
+                    onSelect({ id: valueId, name: valueLabel ?? valueId })
+                    setOpen(false)
+                    setQuery("")
+                  }}
+                >
+                  <span className="truncate">Saved account ({valueLabel ?? valueId})</span>
+                  <Check className="ml-auto h-3.5 w-3.5 opacity-100" />
+                </CommandItem>
+              )}
+            </CommandGroup>
+            {showCreate && (
+              <>
+                <CommandSeparator />
+                <CommandGroup heading="Create">
+                  <CommandItem value={`create-${normalizedQuery}`} onSelect={handleCreate} disabled={creating}>
+                    {creating ? (
+                      <>
+                        <Spinner className="mr-2 h-3.5 w-3.5" />
+                        Creating...
+                      </>
+                    ) : (
+                      `Create "${normalizedQuery}"`
+                    )}
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function InvoiceComposerSheet({
   open,
   onOpenChange,
@@ -182,6 +383,9 @@ export function InvoiceComposerSheet({
   const [sourceChangeOrderId, setSourceChangeOrderId] = useState<string>("none")
   const [drawOptions, setDrawOptions] = useState<DrawOption[]>([])
   const [changeOrderOptions, setChangeOrderOptions] = useState<ChangeOrder[]>([])
+  const [qboConnected, setQboConnected] = useState(false)
+  const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
+  const [qboDefaultIncomeAccountId, setQboDefaultIncomeAccountId] = useState<string | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
 
   const [invoiceNumber, setInvoiceNumber] = useState(invoice?.invoice_number ?? "")
@@ -294,6 +498,8 @@ export function InvoiceComposerSheet({
         unit_cost: "",
         taxable: true,
         cost_code_id: null,
+        qbo_income_account_id: null,
+        qbo_income_account_name: null,
       },
     ])
   }, [composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays])
@@ -315,6 +521,8 @@ export function InvoiceComposerSheet({
         unit_cost: ((draw.amount_cents ?? 0) / 100).toFixed(2),
         taxable: false,
         cost_code_id: null,
+        qbo_income_account_id: null,
+        qbo_income_account_name: null,
       },
     ])
   }
@@ -338,6 +546,8 @@ export function InvoiceComposerSheet({
           unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
           taxable: line.taxable !== false,
           cost_code_id: line.cost_code_id ?? null,
+          qbo_income_account_id: line.qbo_income_account_id ?? null,
+          qbo_income_account_name: line.qbo_income_account_name ?? null,
         })),
       )
     } else {
@@ -350,6 +560,8 @@ export function InvoiceComposerSheet({
           unit_cost: (((changeOrder.total_cents ?? 0) / 100) || 0).toFixed(2),
           taxable: true,
           cost_code_id: null,
+          qbo_income_account_id: null,
+          qbo_income_account_name: null,
         },
       ])
     }
@@ -389,15 +601,20 @@ export function InvoiceComposerSheet({
   }, [selectedContact])
 
   useEffect(() => {
-    if (!open || !projectId) return
+    if (!open) return
     let cancelled = false
 
     setContextLoading(true)
-    getInvoiceComposerContextAction(projectId)
+    getInvoiceComposerContextAction(projectId ?? null)
       .then((result) => {
         if (cancelled) return
         setDrawOptions(result.draws ?? [])
         setChangeOrderOptions(result.changeOrders ?? [])
+        setQboConnected(Boolean(result.qboConnected))
+        setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
+        const defaultIncomeAccountId =
+          typeof result.qboDefaultIncomeAccountId === "string" ? result.qboDefaultIncomeAccountId : null
+        setQboDefaultIncomeAccountId(defaultIncomeAccountId)
         const defaults = {
           defaultPaymentTermsDays: Number(result.settings?.defaultPaymentTermsDays ?? 15),
           defaultInvoiceNote: String(result.settings?.defaultInvoiceNote ?? ""),
@@ -415,6 +632,9 @@ export function InvoiceComposerSheet({
         if (cancelled) return
         setDrawOptions([])
         setChangeOrderOptions([])
+        setQboConnected(false)
+        setQboIncomeAccounts([])
+        setQboDefaultIncomeAccountId(null)
         setComposerSettings({ defaultPaymentTermsDays: 15, defaultInvoiceNote: "" })
         toast.error("Unable to load billing sources", { description: error?.message ?? "Try again." })
       })
@@ -454,6 +674,8 @@ export function InvoiceComposerSheet({
         unit_cost: "",
         taxable: true,
         cost_code_id: null,
+        qbo_income_account_id: null,
+        qbo_income_account_name: null,
       },
     ])
   }
@@ -472,6 +694,28 @@ export function InvoiceComposerSheet({
     }
   }
 
+  const handleCreateQboIncomeAccount = useCallback(
+    async (name: string): Promise<QBOIncomeAccountOption> => {
+      const created = await createQBOIncomeAccountAction(name)
+      const normalized: QBOIncomeAccountOption = {
+        id: created.id,
+        name: created.name,
+        fullyQualifiedName: created.fullyQualifiedName,
+      }
+      setQboIncomeAccounts((prev) => {
+        const next = [...prev]
+        const existingIndex = next.findIndex((account) => account.id === normalized.id)
+        if (existingIndex >= 0) {
+          next[existingIndex] = normalized
+          return next
+        }
+        return [...next, normalized].sort((a, b) => formatQboAccountLabel(a).localeCompare(formatQboAccountLabel(b)))
+      })
+      return normalized
+    },
+    [],
+  )
+
   const submit = async (
     sendToClient: boolean,
     actionMode: "save" | "send" | "save_and_download" = sendToClient ? "send" : "save",
@@ -489,14 +733,23 @@ export function InvoiceComposerSheet({
       return
     }
 
-    const parsedLines = lines.map((line) => ({
-      cost_code_id: line.cost_code_id || undefined,
-      description: line.description.trim(),
-      quantity: Number(line.quantity),
-      unit: line.unit.trim() || "ea",
-      unit_cost: Number(line.unit_cost),
-      taxable: line.taxable,
-    }))
+    const parsedLines = lines.map((line) => {
+      const selectedLineAccount = qboIncomeAccounts.find((account) => account.id === line.qbo_income_account_id)
+      return {
+        cost_code_id: line.cost_code_id || undefined,
+        description: line.description.trim(),
+        quantity: Number(line.quantity),
+        unit: line.unit.trim() || "ea",
+        unit_cost: Number(line.unit_cost),
+        taxable: line.taxable,
+        qbo_income_account_id: line.qbo_income_account_id || undefined,
+        qbo_income_account_name:
+          selectedLineAccount?.fullyQualifiedName ??
+          selectedLineAccount?.name ??
+          line.qbo_income_account_name ??
+          undefined,
+      }
+    })
 
     const hasInvalidLine = parsedLines.some(
       (line) =>
@@ -541,6 +794,8 @@ export function InvoiceComposerSheet({
       source_type: source,
       source_draw_id: source === "draw" && sourceDrawId !== "none" ? sourceDrawId : undefined,
       source_change_order_id: source === "change_order" && sourceChangeOrderId !== "none" ? sourceChangeOrderId : undefined,
+      qbo_income_account_id: null,
+      qbo_income_account_name: null,
     }
 
     setSubmittingMode(actionMode)
@@ -763,6 +1018,7 @@ export function InvoiceComposerSheet({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-muted/50 text-muted-foreground text-xs">
+                    <th className="px-2 py-2 text-left font-medium w-[140px]">Account</th>
                     <th className="px-3 py-2 text-left font-medium">Description</th>
                     <th className="px-2 py-2 text-left font-medium w-16">Qty</th>
                     <th className="px-2 py-2 text-left font-medium w-16">Unit</th>
@@ -774,6 +1030,35 @@ export function InvoiceComposerSheet({
                 <tbody>
                   {lines.map((line) => (
                     <tr key={line.id} className="group border-t border-border/40">
+                      <td className="px-1 py-1.5 align-top">
+                        <div className="px-1">
+                          <QboLineAccountPicker
+                            valueId={line.qbo_income_account_id}
+                            valueLabel={line.qbo_income_account_name}
+                            accounts={qboIncomeAccounts}
+                            defaultAccountId={qboDefaultIncomeAccountId}
+                            onSelect={({ id, name }) =>
+                              setLines((prev) =>
+                                prev.map((current) =>
+                                  current.id === line.id
+                                    ? { ...current, qbo_income_account_id: id, qbo_income_account_name: name }
+                                    : current,
+                                ),
+                              )
+                            }
+                            onCreateAccount={async (name) => {
+                              try {
+                                return await handleCreateQboIncomeAccount(name)
+                              } catch (error: any) {
+                                toast.error("Could not create QBO account", {
+                                  description: error?.message ?? "Please try again.",
+                                })
+                                throw error
+                              }
+                            }}
+                          />
+                        </div>
+                      </td>
                       <td className="px-1 py-1.5">
                         <GhostInput
                           value={line.description}
@@ -918,7 +1203,7 @@ export function InvoiceComposerSheet({
                 </div>
                 <div className="flex items-center justify-between border-t pt-2 mt-2 text-base font-semibold">
                   <span>Total</span>
-                  <span className="tabular-nums">{formatMoney(lineTotals.total / 100)}</span>
+                  <AnimatedCurrency cents={lineTotals.total} className="tabular-nums" />
                 </div>
               </div>
             </div>

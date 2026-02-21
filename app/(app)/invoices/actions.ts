@@ -22,6 +22,7 @@ import { uploadFilesObject, buildFilesPublicUrl } from "@/lib/storage/files-stor
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
+import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 
 function resolveOrgLogoPath(logoUrl?: string | null) {
   if (!logoUrl) return null
@@ -142,6 +143,24 @@ export async function createInvoiceAction(input: unknown) {
   const invoice = await createInvoice({ input: parsed })
   revalidatePath("/invoices")
   return invoice
+}
+
+export async function createQBOIncomeAccountAction(name: string) {
+  const normalized = String(name ?? "").trim()
+  if (normalized.length < 2) {
+    throw new Error("Account name must be at least 2 characters")
+  }
+  if (normalized.length > 100) {
+    throw new Error("Account name must be 100 characters or fewer")
+  }
+
+  const { orgId } = await requireOrgContext()
+  const client = await QBOClient.forOrg(orgId)
+  if (!client) {
+    throw new Error("No active QuickBooks connection")
+  }
+
+  return client.createIncomeAccount(normalized)
 }
 
 export async function updateInvoiceAction(invoiceId: string, input: unknown) {
@@ -279,41 +298,47 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
   return { success: true }
 }
 
-export async function getInvoiceComposerContextAction(projectId: string) {
-  if (!projectId) {
-    return {
-      draws: [],
-      changeOrders: [],
-      settings: {
-        defaultPaymentTermsDays: 15,
-        defaultInvoiceNote: "",
-      },
+export async function getInvoiceComposerContextAction(projectId?: string | null) {
+  const { supabase, orgId } = await requireOrgContext()
+
+  let drawRows: Array<{
+    id: string
+    project_id: string
+    draw_number: number
+    title: string
+    description: string | null
+    amount_cents: number
+    due_date: string | null
+    status: string
+  }> = []
+
+  if (projectId) {
+    const { data, error: drawError } = await supabase
+      .from("draw_schedules")
+      .select("id, project_id, draw_number, title, description, amount_cents, due_date, status")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .in("status", ["pending", "partial"])
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("draw_number", { ascending: true })
+
+    if (drawError) {
+      console.warn("Failed to load draw schedule context", drawError)
+    } else {
+      drawRows = (data ?? []) as typeof drawRows
     }
   }
 
-  const { supabase, orgId } = await requireOrgContext()
-
-  const { data: drawRows, error: drawError } = await supabase
-    .from("draw_schedules")
-    .select("id, project_id, draw_number, title, description, amount_cents, due_date, status")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .in("status", ["pending", "partial"])
-    .order("due_date", { ascending: true, nullsFirst: false })
-    .order("draw_number", { ascending: true })
-
-  if (drawError) {
-    throw new Error(`Failed to load draw schedule context: ${drawError.message}`)
-  }
-
-  const changeOrders = await listChangeOrders({ orgId, projectId })
-    .then((rows) =>
-      rows.filter((co) => {
-        const status = String(co.status ?? "").toLowerCase()
-        return status === "approved" || status === "pending"
-      }),
-    )
-    .catch(() => [])
+  const changeOrders = projectId
+    ? await listChangeOrders({ orgId, projectId })
+        .then((rows) =>
+          rows.filter((co) => {
+            const status = String(co.status ?? "").toLowerCase()
+            return status === "approved" || status === "pending"
+          }),
+        )
+        .catch(() => [])
+    : []
 
   const { data: orgSettingsRow } = await supabase
     .from("org_settings")
@@ -322,8 +347,33 @@ export async function getInvoiceComposerContextAction(projectId: string) {
     .maybeSingle()
   const settings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
 
+  const { data: qboConnection } = await supabase
+    .from("qbo_connections")
+    .select("status, settings")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .maybeSingle()
+
+  const qboConnected = Boolean(qboConnection)
+  const qboDefaultIncomeAccountId =
+    typeof (qboConnection?.settings as any)?.default_income_account_id === "string"
+      ? (qboConnection?.settings as any).default_income_account_id
+      : null
+
+  let qboIncomeAccounts: Array<{ id: string; name: string; fullyQualifiedName?: string }> = []
+  if (qboConnected) {
+    try {
+      const qboClient = await QBOClient.forOrg(orgId)
+      if (qboClient) {
+        qboIncomeAccounts = await qboClient.listIncomeAccounts()
+      }
+    } catch (error) {
+      console.warn("Unable to load QBO income accounts for invoice composer", error)
+    }
+  }
+
   return {
-    draws: (drawRows ?? []).map((draw) => ({
+    draws: drawRows.map((draw) => ({
       id: draw.id as string,
       project_id: draw.project_id as string,
       draw_number: Number(draw.draw_number ?? 0),
@@ -334,6 +384,9 @@ export async function getInvoiceComposerContextAction(projectId: string) {
       status: String(draw.status ?? "pending"),
     })),
     changeOrders,
+    qboConnected,
+    qboIncomeAccounts,
+    qboDefaultIncomeAccountId,
     settings: {
       defaultPaymentTermsDays: Number(settings.invoice_default_payment_terms_days ?? 15),
       defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),

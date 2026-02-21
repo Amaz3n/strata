@@ -2,7 +2,6 @@
 
 import { useState, useCallback, useEffect, useRef } from "react"
 import Image from "next/image"
-import { Document as PdfDocument, Page as PdfPage, pdfjs } from "react-pdf"
 import { cn } from "@/lib/utils"
 import {
   X,
@@ -64,6 +63,11 @@ export function FileViewer({
   const [activePdfPage, setActivePdfPage] = useState(1)
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false)
   const [pdfViewportWidth, setPdfViewportWidth] = useState(0)
+  const [pdfComponents, setPdfComponents] = useState<{
+    Document: any
+    Page: any
+    pdfjs: any
+  } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const pdfViewportRef = useRef<HTMLDivElement>(null)
 
@@ -83,10 +87,27 @@ export function FileViewer({
 
   useEffect(() => {
     if (!open || !currentFileIsPdf) return
-    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-      "pdfjs-dist/build/pdf.worker.min.mjs",
-      import.meta.url
-    ).toString()
+    let cancelled = false
+
+    const loadPdfComponents = async () => {
+      try {
+        const { Document, Page, pdfjs } = await import("react-pdf")
+        if (cancelled) return
+        pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+        setPdfComponents({ Document, Page, pdfjs })
+      } catch (error) {
+        console.error("Failed to load PDF components", error)
+        if (!cancelled) {
+          setPdfLoadFailed(true)
+          setIsLoading(false)
+        }
+      }
+    }
+
+    void loadPdfComponents()
+    return () => {
+      cancelled = true
+    }
   }, [open, currentFileIsPdf])
 
   // Reset state when file changes
@@ -252,7 +273,10 @@ export function FileViewer({
   const pdfPageWidth = pdfViewportWidth > 0
     ? Math.max(280, Math.min(1200, pdfViewportWidth - 48))
     : 900
-  const showPdfThumbnails = isPdf && !pdfLoadFailed && Boolean(currentPdfUrl) && pdfPageCount > 1
+  const PdfDocument = pdfComponents?.Document
+  const PdfPage = pdfComponents?.Page
+  const showPdfThumbnails =
+    isPdf && !pdfLoadFailed && Boolean(currentPdfUrl) && Boolean(PdfDocument && PdfPage) && pdfPageCount > 1
 
   // Calculate optimal dialog size based on image aspect ratio
   const getDialogStyle = () => {
@@ -481,7 +505,7 @@ export function FileViewer({
 
             {isPdf && currentFile.download_url && (
               <div ref={pdfViewportRef} className="h-full w-full overflow-auto bg-zinc-950/40">
-                {!pdfLoadFailed && currentPdfUrl ? (
+                {!pdfLoadFailed && currentPdfUrl && PdfDocument && PdfPage ? (
                   <PdfDocument
                     key={currentFile.id}
                     file={currentPdfUrl}
@@ -507,6 +531,8 @@ export function FileViewer({
                       />
                     </div>
                   </PdfDocument>
+                ) : !pdfLoadFailed && currentPdfUrl ? (
+                  <div className="h-full w-full" />
                 ) : (
                   <iframe
                     src={`${currentFile.download_url}#toolbar=0&navpanes=0`}

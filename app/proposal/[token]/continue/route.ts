@@ -3,10 +3,6 @@ import { NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
-interface RouteParams {
-  params: { token: string }
-}
-
 function requireProposalSecret() {
   const secret = process.env.PROPOSAL_SECRET
   if (!secret) {
@@ -51,9 +47,9 @@ function buildSigningUrl(rawToken: string, request: Request) {
   return `${url.origin}/d/${rawToken}`
 }
 
-export async function GET(request: Request, { params }: RouteParams) {
+export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
   try {
-    const { token } = params
+    const { token } = await params
     const proposalTokenHash = createHmac("sha256", requireProposalSecret()).update(token).digest("hex")
 
     const supabase = createServiceSupabaseClient()
@@ -128,7 +124,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     return NextResponse.redirect(buildSigningUrl(rawSigningToken, request))
   } catch (error) {
     console.error("Failed to continue proposal signing", error)
-    const { token } = params
+    const { token } = await params
     return NextResponse.redirect(new URL(`/proposal/${token}`, request.url))
   }
 }

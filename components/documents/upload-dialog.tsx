@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import {
@@ -73,6 +73,7 @@ export function UploadDialog({
   onUploadComplete,
 }: UploadDialogProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const seededInitialFilesRef = useRef("")
   const [queue, setQueue] = useState<UploadQueueItem[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [category, setCategory] = useState<FileCategory | "auto">("auto")
@@ -88,22 +89,29 @@ export function UploadDialog({
     setQueue((prev) => [...prev, ...newItems])
   }, [])
 
-  // Add initial files when dialog opens
+  useEffect(() => {
+    if (!open || initialFiles.length === 0) return
+    const signature = initialFiles
+      .map((file) => `${file.name}:${file.size}:${file.lastModified}`)
+      .join("|")
+    if (!signature || seededInitialFilesRef.current === signature) return
+    seededInitialFilesRef.current = signature
+    setQueue([])
+    setTargetFolder(folderPath ?? "")
+    addFiles(initialFiles)
+  }, [open, initialFiles, folderPath, addFiles])
+
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
-      if (nextOpen && initialFiles.length > 0) {
-        setQueue([])
-        setTargetFolder(folderPath ?? "")
-        addFiles(initialFiles)
-      }
       if (!nextOpen) {
         setQueue([])
         setCategory("auto")
         setTargetFolder("")
+        seededInitialFilesRef.current = ""
       }
       onOpenChange(nextOpen)
     },
-    [initialFiles, folderPath, addFiles, onOpenChange]
+    [onOpenChange]
   )
 
   // Handle file input change

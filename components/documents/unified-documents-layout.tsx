@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
+import { Loader2, PanelLeft } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FileDropOverlay } from "@/components/files/file-drop-overlay"
 import { FileViewer } from "@/components/files/file-viewer"
@@ -29,10 +29,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { DocumentsProvider, useDocuments } from "./documents-context"
-import { DocumentsHeader } from "./documents-header"
+import { DocumentsExplorer } from "./documents-explorer"
+import { DocumentsToolbar } from "./documents-toolbar"
 import { DocumentsContent } from "./documents-content"
-import { DrawingSetsContent, DrawingSetsSection } from "./drawing-sets-content"
+import { SheetsContent } from "./sheets-content"
 import { FileTimelineSheet } from "./file-timeline-sheet"
 import { UploadDialog } from "./upload-dialog"
 import type { UnifiedDocumentsLayoutProps } from "./types"
@@ -49,8 +52,6 @@ import {
   createFolderAction,
   bulkMoveFilesAction,
   bulkDeleteFilesAction,
-  getFolderPermissionsAction,
-  updateFolderPermissionsAction,
   listFileTimelineAction,
 } from "@/app/(app)/files/actions"
 import type { FileVersion, FileWithUrls, FileTimelineEvent } from "@/app/(app)/files/actions"
@@ -58,6 +59,10 @@ import { createDrawingSetFromUpload, getSheetDownloadUrlAction } from "@/app/(ap
 import type { DrawingSheet } from "@/app/(app)/drawings/actions"
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
 import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings"
+
+function dispatchNavRefresh() {
+  window.dispatchEvent(new CustomEvent("docs-nav-refresh"))
+}
 
 interface FileVersionInfo {
   id: string
@@ -100,7 +105,15 @@ const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS)
 
 export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
   return (
-    <DocumentsProvider {...props}>
+    <DocumentsProvider
+      project={props.project}
+      initialFiles={props.initialFiles}
+      initialCounts={props.initialCounts}
+      initialFolders={props.initialFolders}
+      initialSets={props.initialSets}
+      initialPath={props.initialPath}
+      initialSetId={props.initialSetId}
+    >
       <UnifiedDocumentsLayoutInner />
     </DocumentsProvider>
   )
@@ -111,7 +124,7 @@ function UnifiedDocumentsLayoutInner() {
     projectId,
     files,
     folders,
-    quickFilter,
+    selectedDrawingSetId,
     currentPath,
     setCurrentPath,
     refreshFiles,
@@ -145,16 +158,16 @@ function UnifiedDocumentsLayoutInner() {
   const [newFolderPath, setNewFolderPath] = useState("")
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
 
-  const [folderAccessDialogOpen, setFolderAccessDialogOpen] = useState(false)
-  const [folderShareWithClients, setFolderShareWithClients] = useState(false)
-  const [folderShareWithSubs, setFolderShareWithSubs] = useState(false)
-  const [applyFolderAccessToExisting, setApplyFolderAccessToExisting] = useState(false)
-  const [isSavingFolderAccess, setIsSavingFolderAccess] = useState(false)
-
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [renameFile, setRenameFile] = useState<FileWithUrls | null>(null)
   const [renameValue, setRenameValue] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
+
+  const [shareDialogOpen, setShareDialogOpen] = useState(false)
+  const [shareFile, setShareFile] = useState<FileWithUrls | null>(null)
+  const [shareWithClients, setShareWithClients] = useState(false)
+  const [shareWithSubs, setShareWithSubs] = useState(false)
+  const [isSavingShare, setIsSavingShare] = useState(false)
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false)
   const [moveTargetFolder, setMoveTargetFolder] = useState("")
@@ -169,6 +182,7 @@ function UnifiedDocumentsLayoutInner() {
   const [timelineFile, setTimelineFile] = useState<FileWithUrls | null>(null)
   const [timelineEvents, setTimelineEvents] = useState<FileTimelineEvent[]>([])
   const [timelineLoading, setTimelineLoading] = useState(false)
+  const [mobileExplorerOpen, setMobileExplorerOpen] = useState(false)
 
   const [drawingViewerOpen, setDrawingViewerOpen] = useState(false)
   const [drawingViewerSheet, setDrawingViewerSheet] = useState<DrawingSheet | null>(null)
@@ -177,7 +191,7 @@ function UnifiedDocumentsLayoutInner() {
 
   useEffect(() => {
     setSelectedFileIds(new Set())
-  }, [quickFilter, currentPath])
+  }, [currentPath, selectedDrawingSetId])
 
   useEffect(() => {
     if (!viewerOpen) {
@@ -355,6 +369,7 @@ function UnifiedDocumentsLayoutInner() {
       })
 
       await Promise.all([refreshDrawingSets(), refreshFiles()])
+      dispatchNavRefresh()
       toast.success("Drawing set uploaded. Processing has started.")
       setDrawingSetUploadOpen(false)
       resetDrawingSetUploadDialog()
@@ -408,6 +423,18 @@ function UnifiedDocumentsLayoutInner() {
       setRenameFile(file)
       setRenameValue(file.file_name)
       setRenameDialogOpen(true)
+    },
+    [files]
+  )
+
+  const openShareDialog = useCallback(
+    (fileId: string) => {
+      const file = files.find((item) => item.id === fileId)
+      if (!file) return
+      setShareFile(file)
+      setShareWithClients(Boolean(file.share_with_clients))
+      setShareWithSubs(Boolean(file.share_with_subs))
+      setShareDialogOpen(true)
     },
     [files]
   )
@@ -480,6 +507,7 @@ function UnifiedDocumentsLayoutInner() {
         )
         setSelectedFileIds(new Set())
         await refreshFiles()
+        dispatchNavRefresh()
       } catch (error) {
         console.error("Failed to move files:", error)
         toast.error("Failed to move files")
@@ -571,6 +599,7 @@ function UnifiedDocumentsLayoutInner() {
       setCreateFolderDialogOpen(false)
       setNewFolderPath("")
       await refreshFiles()
+      dispatchNavRefresh()
     } catch (error) {
       console.error("Failed to create folder:", error)
       toast.error(error instanceof Error ? error.message : "Failed to create folder")
@@ -578,55 +607,6 @@ function UnifiedDocumentsLayoutInner() {
       setIsCreatingFolder(false)
     }
   }, [newFolderPath, projectId, refreshFiles])
-
-  const openFolderAccessDialog = useCallback(async () => {
-    if (!currentPath) return
-    setFolderAccessDialogOpen(true)
-    try {
-      const permissions = await getFolderPermissionsAction(projectId, currentPath)
-      setFolderShareWithClients(permissions.share_with_clients)
-      setFolderShareWithSubs(permissions.share_with_subs)
-      setApplyFolderAccessToExisting(false)
-    } catch (error) {
-      console.error("Failed to load folder permissions:", error)
-      toast.error("Failed to load folder access settings")
-    }
-  }, [projectId, currentPath])
-
-  const saveFolderAccess = useCallback(async () => {
-    if (!currentPath) return
-    setIsSavingFolderAccess(true)
-    try {
-      const result = await updateFolderPermissionsAction(
-        projectId,
-        currentPath,
-        {
-          share_with_clients: folderShareWithClients,
-          share_with_subs: folderShareWithSubs,
-        },
-        applyFolderAccessToExisting
-      )
-      const suffix =
-        applyFolderAccessToExisting && result.affectedFiles > 0
-          ? ` (${result.affectedFiles} files updated)`
-          : ""
-      toast.success(`Folder access saved${suffix}`)
-      setFolderAccessDialogOpen(false)
-      await refreshFiles()
-    } catch (error) {
-      console.error("Failed to save folder access:", error)
-      toast.error(error instanceof Error ? error.message : "Failed to save folder access")
-    } finally {
-      setIsSavingFolderAccess(false)
-    }
-  }, [
-    projectId,
-    currentPath,
-    folderShareWithClients,
-    folderShareWithSubs,
-    applyFolderAccessToExisting,
-    refreshFiles,
-  ])
 
   const handleRenameConfirm = useCallback(async () => {
     if (!renameFile) return
@@ -650,6 +630,26 @@ function UnifiedDocumentsLayoutInner() {
       setIsRenaming(false)
     }
   }, [renameFile, renameValue, refreshFiles])
+
+  const handleShareConfirm = useCallback(async () => {
+    if (!shareFile) return
+    setIsSavingShare(true)
+    try {
+      await updateFileAction(shareFile.id, {
+        share_with_clients: shareWithClients,
+        share_with_subs: shareWithSubs,
+      })
+      toast.success("Sharing updated")
+      setShareDialogOpen(false)
+      setShareFile(null)
+      await refreshFiles()
+    } catch (error) {
+      console.error("Failed to update sharing:", error)
+      toast.error("Failed to update sharing")
+    } finally {
+      setIsSavingShare(false)
+    }
+  }, [refreshFiles, shareFile, shareWithClients, shareWithSubs])
 
   const handleMoveConfirm = useCallback(async () => {
     if (moveFileIds.length === 0) return
@@ -676,6 +676,7 @@ function UnifiedDocumentsLayoutInner() {
       setDeleteFileIds([])
       setSelectedFileIds(new Set())
       await refreshFiles()
+      dispatchNavRefresh()
     } catch (error) {
       console.error("Failed to delete files:", error)
       toast.error("Failed to delete files")
@@ -862,38 +863,17 @@ function UnifiedDocumentsLayoutInner() {
   }, [files, viewerFile])
 
   const renderContent = () => {
-    if (quickFilter === "drawings") {
+    // If a drawing set is selected (via sidebar), show sheets
+    if (selectedDrawingSetId) {
       return (
-        <DrawingSetsContent
+        <SheetsContent
           onSheetClick={handleSheetClick}
           onUploadDrawingSetClick={handleOpenDrawingSetUpload}
         />
       )
     }
 
-    if (quickFilter === "all" && !currentPath) {
-      return (
-        <>
-          <DrawingSetsSection onSheetClick={handleSheetClick} />
-          <DocumentsContent
-            onFileClick={handleFileClick}
-            onFolderClick={handleFolderClick}
-            onUploadClick={handleUploadClick}
-            onDropOnFolder={handleDropOnFolder}
-            selectedFileIds={selectedFileIds}
-            onFileSelectionChange={handleFileSelectionChange}
-            onSelectAllVisibleFiles={handleSelectAllVisibleFiles}
-            onRenameFile={openRenameDialog}
-            onMoveFile={(fileId) => openMoveDialog(fileId)}
-            onDeleteFile={(fileId) => openDeleteDialog(fileId)}
-            onViewActivity={openTimeline}
-            onFileDragStart={handleFileDragStart}
-            onFileDragEnd={handleFileDragEnd}
-          />
-        </>
-      )
-    }
-
+    // Otherwise show files/folders
     return (
       <DocumentsContent
         onFileClick={handleFileClick}
@@ -907,6 +887,7 @@ function UnifiedDocumentsLayoutInner() {
         onMoveFile={(fileId) => openMoveDialog(fileId)}
         onDeleteFile={(fileId) => openDeleteDialog(fileId)}
         onViewActivity={openTimeline}
+        onShareFile={openShareDialog}
         onFileDragStart={handleFileDragStart}
         onFileDragEnd={handleFileDragEnd}
       />
@@ -915,23 +896,22 @@ function UnifiedDocumentsLayoutInner() {
 
   return (
     <div
-      className="h-full flex flex-col relative"
+      className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border/70 bg-background shadow-sm"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      <FileDropOverlay isVisible={isDraggingOver} />
+      <FileDropOverlay isVisible={isDraggingOver} className="rounded-none" />
 
-      <div className="shrink-0">
-        <DocumentsHeader
+      <div className="relative z-20 shrink-0 border-b border-border/60 bg-background/80 px-4 pb-3 pt-3 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <DocumentsToolbar
           onUploadClick={handleUploadClick}
           onUploadDrawingSetClick={handleOpenDrawingSetUpload}
           onCreateFolderClick={() => {
             setNewFolderPath(currentPath || "")
             setCreateFolderDialogOpen(true)
           }}
-          onManageFolderAccessClick={openFolderAccessDialog}
           selectedCount={selectedFileIds.size}
           onDownloadSelected={handleDownloadSelected}
           onMoveSelected={() => openMoveDialog()}
@@ -944,9 +924,52 @@ function UnifiedDocumentsLayoutInner() {
         />
       </div>
 
-      <ScrollArea className="flex-1">
-        {renderContent()}
-      </ScrollArea>
+      <div className="relative z-10 flex min-h-0 flex-1">
+        <div className="hidden min-h-0 flex-1 md:flex">
+          <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
+            <ResizablePanel defaultSize={16} minSize={16} maxSize={40}>
+              <div className="h-full border-r border-border/60 bg-background/70">
+                <DocumentsExplorer />
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle className="bg-border/70" />
+            <ResizablePanel defaultSize={76} minSize={40}>
+              <ScrollArea className="h-full">
+                <div className="px-4 pb-4 pt-2">{renderContent()}</div>
+              </ScrollArea>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col md:hidden">
+          <div className="border-b border-border/60 px-4 py-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={() => setMobileExplorerOpen(true)}
+            >
+              <PanelLeft className="mr-2 h-4 w-4" />
+              Open Explorer
+            </Button>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="px-4 pb-4 pt-2">{renderContent()}</div>
+          </ScrollArea>
+        </div>
+      </div>
+
+      <Sheet open={mobileExplorerOpen} onOpenChange={setMobileExplorerOpen}>
+        <SheetContent side="left" className="w-[88vw] max-w-sm p-0">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Documents Explorer</SheetTitle>
+            <SheetDescription>
+              Browse folders and drawing sets in this project.
+            </SheetDescription>
+          </SheetHeader>
+          <DocumentsExplorer className="h-full" />
+        </SheetContent>
+      </Sheet>
 
       <UploadDialog
         open={uploadDialogOpen}
@@ -1165,66 +1188,62 @@ function UnifiedDocumentsLayoutInner() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={folderAccessDialogOpen} onOpenChange={setFolderAccessDialogOpen}>
+      <Dialog
+        open={shareDialogOpen}
+        onOpenChange={(open) => {
+          setShareDialogOpen(open)
+          if (!open) {
+            setShareFile(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Folder Access Defaults</DialogTitle>
+            <DialogTitle>Share file</DialogTitle>
             <DialogDescription>
-              Default visibility for new files in <code>{currentPath || "/"}</code>.
-              Internal team roles (PM/Super/Admin) always keep full access.
+              {shareFile ? `Choose who can see "${shareFile.file_name}".` : "Choose who can see this file."}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>
                 <p className="text-sm font-medium">Client Portal</p>
-                <p className="text-xs text-muted-foreground">Expose new files in this folder to clients.</p>
+                <p className="text-xs text-muted-foreground">Allow clients to access this file.</p>
               </div>
               <Checkbox
-                checked={folderShareWithClients}
-                onCheckedChange={(value) => setFolderShareWithClients(Boolean(value))}
-                disabled={isSavingFolderAccess}
+                checked={shareWithClients}
+                onCheckedChange={(value) => setShareWithClients(Boolean(value))}
+                disabled={isSavingShare}
               />
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>
                 <p className="text-sm font-medium">Subcontractor Portal</p>
-                <p className="text-xs text-muted-foreground">Expose new files in this folder to subs.</p>
+                <p className="text-xs text-muted-foreground">Allow subcontractors to access this file.</p>
               </div>
               <Checkbox
-                checked={folderShareWithSubs}
-                onCheckedChange={(value) => setFolderShareWithSubs(Boolean(value))}
-                disabled={isSavingFolderAccess}
+                checked={shareWithSubs}
+                onCheckedChange={(value) => setShareWithSubs(Boolean(value))}
+                disabled={isSavingShare}
               />
-            </div>
-            <div className="flex items-center gap-2 rounded-md border p-3">
-              <Checkbox
-                id="apply-folder-access"
-                checked={applyFolderAccessToExisting}
-                onCheckedChange={(value) => setApplyFolderAccessToExisting(Boolean(value))}
-                disabled={isSavingFolderAccess}
-              />
-              <Label htmlFor="apply-folder-access" className="text-sm">
-                Also apply to existing files in this folder and subfolders
-              </Label>
             </div>
           </div>
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setFolderAccessDialogOpen(false)}
-              disabled={isSavingFolderAccess}
+              onClick={() => setShareDialogOpen(false)}
+              disabled={isSavingShare}
             >
               Cancel
             </Button>
-            <Button onClick={saveFolderAccess} disabled={isSavingFolderAccess}>
-              {isSavingFolderAccess ? (
+            <Button onClick={handleShareConfirm} disabled={isSavingShare || !shareFile}>
+              {isSavingShare ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Saving...
                 </>
               ) : (
-                "Save Access"
+                "Save Sharing"
               )}
             </Button>
           </DialogFooter>

@@ -20,9 +20,16 @@ import type { QBOConnection } from "@/lib/services/qbo-connection"
 
 interface Props {
   connection: QBOConnection | null
+  onConnectionChange?: (connection: QBOConnection | null) => void
 }
 
-export function QBOConnectionCard({ connection }: Props) {
+type QBOOAuthMessage = {
+  type: "arc:qbo-oauth-complete"
+  status: "success" | "error"
+  redirectPath?: string
+}
+
+export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isDisconnecting, startDisconnect] = useTransition()
   const [isUpdatingSettings, startUpdate] = useTransition()
@@ -41,6 +48,14 @@ export function QBOConnectionCard({ connection }: Props) {
     invoice_number_sync: connection?.settings?.invoice_number_sync ?? true,
   }))
 
+  useEffect(() => {
+    setSettings({
+      auto_sync: connection?.settings?.auto_sync ?? true,
+      sync_payments: connection?.settings?.sync_payments ?? true,
+      invoice_number_sync: connection?.settings?.invoice_number_sync ?? true,
+    })
+  }, [connection])
+
   const expiresInLabel = (() => {
     if (!connection?.token_expires_at) return null
     const expires = new Date(connection.token_expires_at).getTime()
@@ -56,9 +71,9 @@ export function QBOConnectionCard({ connection }: Props) {
     try {
       const result = await connectQBOAction()
       if (result?.authUrl) {
+        const secure = window.location.protocol === "https:"
         if (result.state) {
           // Ensure the state cookie is present even if the server-set cookie is dropped by the browser.
-          const secure = window.location.protocol === "https:"
           document.cookie = [
             `qbo_oauth_state=${result.state}`,
             "Path=/",
@@ -69,6 +84,40 @@ export function QBOConnectionCard({ connection }: Props) {
             .filter(Boolean)
             .join(";")
         }
+        document.cookie = [
+          "qbo_oauth_popup=1",
+          "Path=/",
+          "SameSite=Lax",
+          "Max-Age=600",
+          secure ? "Secure" : "",
+        ]
+          .filter(Boolean)
+          .join(";")
+
+        const popupWidth = 640
+        const popupHeight = 760
+        const left = Math.round(window.screenX + (window.outerWidth - popupWidth) / 2)
+        const top = Math.round(window.screenY + (window.outerHeight - popupHeight) / 2)
+        const popup = window.open(
+          result.authUrl,
+          "arc-qbo-oauth",
+          `width=${popupWidth},height=${popupHeight},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+        )
+
+        if (popup) {
+          popup.focus()
+          return
+        }
+
+        document.cookie = [
+          "qbo_oauth_popup=",
+          "Path=/",
+          "SameSite=Lax",
+          "Max-Age=0",
+          secure ? "Secure" : "",
+        ]
+          .filter(Boolean)
+          .join(";")
         window.location.href = result.authUrl
       }
     } catch (err) {
@@ -104,6 +153,31 @@ export function QBOConnectionCard({ connection }: Props) {
     if (!connection) return
     void loadDiagnostics()
   }, [connection, loadDiagnostics])
+
+  useEffect(() => {
+    const handleOAuthMessage = async (event: MessageEvent<QBOOAuthMessage>) => {
+      if (event.origin !== window.location.origin) return
+      const payload = event.data
+      if (!payload || payload.type !== "arc:qbo-oauth-complete") return
+
+      if (payload.status !== "success") {
+        console.error("QBO OAuth flow returned with an error")
+        return
+      }
+
+      try {
+        const updatedConnection = await getQBOConnectionAction()
+        onConnectionChange?.(updatedConnection as QBOConnection | null)
+      } catch (error) {
+        console.error("Failed to refresh QuickBooks connection after OAuth callback", error)
+      }
+    }
+
+    window.addEventListener("message", handleOAuthMessage)
+    return () => {
+      window.removeEventListener("message", handleOAuthMessage)
+    }
+  }, [onConnectionChange])
 
   const handleSettingChange = (key: keyof typeof settings, value: boolean) => {
     setSettings((prev) => ({ ...prev, [key]: value }))

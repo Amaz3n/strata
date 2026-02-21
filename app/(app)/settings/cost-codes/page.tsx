@@ -4,7 +4,7 @@ import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { listCostCodesAction } from "./actions"
 
 export default async function CostCodesPage() {
-  const costCodes = await listCostCodesAction()
+  const costCodes = await listCostCodesAction(true)
 
   return (
     <PageLayout
@@ -26,7 +26,6 @@ export default async function CostCodesPage() {
     </PageLayout>
   )
 }
-
 
 
 

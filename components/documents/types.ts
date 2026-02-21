@@ -51,6 +51,10 @@ export interface DocumentsContextValue {
   setQuickFilter: (filter: QuickFilter) => void
   setSearchQuery: (query: string) => void
   setViewMode: (mode: ViewMode) => void
+  setSelectedDrawingSet: (id: string | null, title?: string | null) => void
+  navigateToRoot: () => void
+  navigateToFolder: (path: string) => void
+  navigateToDrawingSet: (id: string, title: string) => void
 
   // Actions
   refreshFiles: () => Promise<void>
@@ -69,6 +73,8 @@ export interface DocumentsContextValue {
   // Drawing set sheets
   sheetsBySetId: Record<string, DrawingSheet[]>
   loadSheetsForSet: (setId: string) => Promise<void>
+  selectedDrawingSetId: string | null
+  selectedDrawingSetTitle: string | null
 }
 
 export interface UnifiedDocumentsLayoutProps {
@@ -78,6 +84,7 @@ export interface UnifiedDocumentsLayoutProps {
   initialFolders: string[]
   initialSets: DrawingSet[]
   initialPath?: string
+  initialSetId?: string
 }
 
 export const QUICK_FILTER_CONFIG: Record<

@@ -11,7 +11,7 @@ import { UnifiedDocumentsLayout } from "@/components/documents"
 
 interface ProjectFilesPageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ path?: string }>
+  searchParams: Promise<{ path?: string; set?: string }>
 }
 
 export default async function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
@@ -39,6 +39,7 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
         initialFolders={folders}
         initialSets={sets}
         initialPath={query.path}
+        initialSetId={query.set}
       />
     </PageLayout>
   )

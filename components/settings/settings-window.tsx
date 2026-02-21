@@ -14,11 +14,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { NotificationPreferences } from "@/components/settings/notification-preferences"
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
+import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
 import { Spinner } from "@/components/ui/spinner"
-import { Bell, Building2, CreditCard, Link2, Settings, User as UserIcon, Users } from "@/components/icons"
+import { Bell, Building2, CreditCard, Link2, Settings, Tag, User as UserIcon, Users } from "@/components/icons"
 import { Info } from "lucide-react"
 import { getQBOConnectionAction } from "@/app/(app)/settings/integrations/actions"
+import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
 import {
   createBillingPortalSessionAction,
   createCheckoutSessionAction,
@@ -30,7 +32,7 @@ import {
 } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
-import type { ComplianceRequirementTemplateItem, ComplianceRules, OrgRoleOption, TeamMember, User } from "@/lib/types"
+import type { ComplianceRequirementTemplateItem, ComplianceRules, CostCode, OrgRoleOption, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
 import { MfaSettingsCard } from "@/components/settings/mfa-settings-card"
 import Link from "next/link"
@@ -44,6 +46,7 @@ const sections = [
   { value: "notifications", label: "Notifications", description: "How you get updates", icon: Bell },
   { value: "integrations", label: "Integrations", description: "Connect your tools", icon: Link2 },
   { value: "team", label: "Team", description: "Manage internal members", icon: Users },
+  { value: "cost-codes", label: "Cost Codes", description: "Manage financial coding", icon: Tag },
   { value: "compliance", label: "Payables", description: "Payment gating policy", icon: Settings },
   { value: "about", label: "About", description: "About this workspace", icon: Info },
 ]
@@ -188,6 +191,10 @@ export function SettingsWindow({
   )
   const [loadingTeam, setLoadingTeam] = useState(false)
   const [teamError, setTeamError] = useState<string | null>(null)
+  const [costCodes, setCostCodes] = useState<CostCode[]>([])
+  const [hasFetchedCostCodes, setHasFetchedCostCodes] = useState(false)
+  const [loadingCostCodes, setLoadingCostCodes] = useState(false)
+  const [costCodesError, setCostCodesError] = useState<string | null>(null)
   const [organizationSettings, setOrganizationSettings] = useState<OrganizationSettingsData | null>(null)
   const [organizationForm, setOrganizationForm] = useState({
     name: "",
@@ -407,6 +414,31 @@ export function SettingsWindow({
     }
   }, [hasFetchedTeam, loadingTeam])
 
+  const loadCostCodes = useCallback((forceRefresh = false) => {
+    if ((hasFetchedCostCodes && !forceRefresh) || loadingCostCodes) return
+    let isMounted = true
+    setLoadingCostCodes(true)
+    setCostCodesError(null)
+    Promise.resolve(listCostCodesAction(true))
+      .then((rows) => {
+        if (!isMounted) return
+        setCostCodes(rows ?? [])
+        setHasFetchedCostCodes(true)
+      })
+      .catch((error) => {
+        console.error("Failed to load cost codes", error)
+        if (!isMounted) return
+        setCostCodesError("Unable to load cost codes.")
+        setHasFetchedCostCodes(true)
+      })
+      .finally(() => {
+        if (isMounted) setLoadingCostCodes(false)
+      })
+    return () => {
+      isMounted = false
+    }
+  }, [hasFetchedCostCodes, loadingCostCodes])
+
   const refreshTeam = () => {
     loadTeam(true)
   }
@@ -416,12 +448,20 @@ export function SettingsWindow({
     if (nextTab === "team") {
       loadTeam()
     }
+    if (nextTab === "cost-codes") {
+      loadCostCodes()
+    }
   }
 
   useEffect(() => {
     if (currentMemberRole || loadingTeam) return
     loadTeam()
   }, [currentMemberRole, loadingTeam, loadTeam])
+
+  useEffect(() => {
+    if (tab !== "cost-codes") return
+    loadCostCodes()
+  }, [tab, loadCostCodes])
 
   const containerHeight =
     variant === "dialog"
@@ -1222,7 +1262,7 @@ export function SettingsWindow({
                       </div>
                     ) : (
                       <div className="grid gap-6">
-                        <QBOConnectionCard connection={qboConnection} />
+                        <QBOConnectionCard connection={qboConnection} onConnectionChange={setQboConnection} />
                       </div>
                     )}
                   </div>
@@ -1247,6 +1287,33 @@ export function SettingsWindow({
                     onMemberChange={refreshTeam}
                   />
                 )}
+              </TabsContent>
+
+              <TabsContent value="cost-codes" className="m-0 mt-0">
+                <div className={tabPanelClass}>
+                  <div className={tabPanelHeaderClass}>
+                    <div>
+                      <h2 className="text-base font-semibold">Cost Codes</h2>
+                      <p className="text-sm text-muted-foreground">Manage your org-wide cost code library for financial workflows.</p>
+                    </div>
+                  </div>
+                  <div className={tabPanelBodyClass}>
+                    {loadingCostCodes ? (
+                      <div className="flex items-center gap-3 text-muted-foreground">
+                        <Spinner className="h-4 w-4" />
+                        <span className="text-sm">Loading cost codes...</span>
+                      </div>
+                    ) : costCodesError ? (
+                      <div className="text-sm text-destructive">{costCodesError}</div>
+                    ) : (
+                      <CostCodeManager
+                        costCodes={costCodes}
+                        canManage={Boolean(organizationSettings?.canManageOrganization)}
+                        onCostCodesChange={setCostCodes}
+                      />
+                    )}
+                  </div>
+                </div>
               </TabsContent>
 
               <TabsContent value="compliance" className="m-0 mt-0">

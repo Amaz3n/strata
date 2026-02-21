@@ -22,6 +22,7 @@ interface DocumentsContentProps {
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
   onViewActivity: (fileId: string) => void
+  onShareFile: (fileId: string) => void
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
 }
@@ -38,6 +39,7 @@ export function DocumentsContent({
   onMoveFile,
   onDeleteFile,
   onViewActivity,
+  onShareFile,
   onFileDragStart,
   onFileDragEnd,
 }: DocumentsContentProps) {
@@ -49,7 +51,6 @@ export function DocumentsContent({
     searchQuery,
     viewMode,
     isLoading,
-    setCurrentPath,
   } = useDocuments()
 
   // Build folder tree to get direct children of current path
@@ -209,22 +210,22 @@ export function DocumentsContent({
     return (
       <div
         className={cn(
-          "flex flex-col items-center justify-center py-16 px-8 border-2 border-dashed rounded-lg transition-colors",
-          "border-muted-foreground/25 hover:border-primary/50 cursor-pointer"
+          "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-8 py-16 transition-colors",
+          "border-muted-foreground/25 bg-background/70 hover:border-primary/50"
         )}
         onClick={onUploadClick}
       >
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
+        <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
           {hasFilters ? (
             <FileText className="h-8 w-8 text-muted-foreground" />
           ) : (
             <Upload className="h-8 w-8 text-muted-foreground" />
           )}
         </div>
-        <h3 className="font-semibold text-lg">
+        <h3 className="text-lg font-semibold">
           {hasFilters ? "No files found" : "No documents yet"}
         </h3>
-        <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
+        <p className="mt-1 max-w-sm text-center text-sm text-muted-foreground">
           {hasFilters
             ? "Try adjusting your filters or search query."
             : "Drag and drop files here, or click to upload documents, plans, and photos."}
@@ -243,7 +244,7 @@ export function DocumentsContent({
   if (viewMode === "grid") {
     return (
       <div className="py-3">
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
           {documentItems.map((item) => (
             <DocumentCard
               key={
@@ -265,6 +266,7 @@ export function DocumentsContent({
               onMoveFile={onMoveFile}
               onDeleteFile={onDeleteFile}
               onViewActivity={onViewActivity}
+              onShareFile={onShareFile}
               onDropOnFolder={onDropOnFolder}
               onFileDragStart={onFileDragStart}
               onFileDragEnd={onFileDragEnd}
@@ -285,7 +287,7 @@ export function DocumentsContent({
   // List view
   return (
     <div className="py-3">
-      <div className="rounded-lg border divide-y">
+      <div className="divide-y rounded-xl border border-border/60 bg-background/80">
         {/* Column headers */}
         <div className="flex items-center gap-3 px-3 py-2 text-xs font-medium text-muted-foreground">
           <div className="w-5 shrink-0">
@@ -329,6 +331,7 @@ export function DocumentsContent({
             onMoveFile={onMoveFile}
             onDeleteFile={onDeleteFile}
             onViewActivity={onViewActivity}
+            onShareFile={onShareFile}
             onDropOnFolder={onDropOnFolder}
             onFileDragStart={onFileDragStart}
             onFileDragEnd={onFileDragEnd}

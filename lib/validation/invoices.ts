@@ -7,6 +7,8 @@ export const invoiceLineInputSchema = z.object({
   unit: z.string().max(20).optional().default("unit"),
   unit_cost: z.number({ invalid_type_error: "Unit cost is required" }).min(0, "Unit cost must be positive"),
   taxable: z.boolean().default(true),
+  qbo_income_account_id: z.string().min(1).optional().nullable(),
+  qbo_income_account_name: z.string().max(255).optional().nullable(),
 })
 
 export const invoiceInputSchema = z.object({
@@ -39,6 +41,8 @@ export const invoiceInputSchema = z.object({
   source_type: z.enum(["manual", "draw", "change_order"]).optional(),
   source_draw_id: z.string().uuid().optional(),
   source_change_order_id: z.string().uuid().optional(),
+  qbo_income_account_id: z.string().min(1).optional().nullable(),
+  qbo_income_account_name: z.string().max(255).optional().nullable(),
 })
 
 export type InvoiceLineInput = z.infer<typeof invoiceLineInputSchema>

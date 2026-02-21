@@ -1,10 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { type CSSProperties, useMemo } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
-import type { Project } from "@/lib/types"
+import type { Company, Contact, Project } from "@/lib/types"
 import { rfiInputSchema, type RfiInput } from "@/lib/validation/rfis"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -35,13 +35,23 @@ interface RfiFormProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
+  companies: Company[]
+  contacts: Contact[]
   defaultProjectId?: string
   onSubmit: (values: RfiInput) => Promise<void>
   isSubmitting?: boolean
 }
 
-export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubmit, isSubmitting }: RfiFormProps) {
-  const [statusValue, setStatusValue] = useState("open")
+export function RfiForm({
+  open,
+  onOpenChange,
+  projects,
+  companies,
+  contacts,
+  defaultProjectId,
+  onSubmit,
+  isSubmitting,
+}: RfiFormProps) {
   const isProjectScoped = projects.length === 1
   const scopedProject = isProjectScoped ? projects[0] : null
 
@@ -54,6 +64,8 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
       status: "open",
       priority: "normal",
       due_date: "",
+      assigned_company_id: "",
+      notify_contact_id: "",
       location: "",
       drawing_reference: "",
       spec_reference: "",
@@ -71,6 +83,8 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
       status: "open",
       priority: "normal",
       due_date: "",
+      assigned_company_id: "",
+      notify_contact_id: "",
       location: "",
       drawing_reference: "",
       spec_reference: "",
@@ -79,13 +93,29 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     })
   })
 
+  const selectedCompanyId = form.watch("assigned_company_id") ?? ""
+
+  const externalContacts = useMemo(
+    () =>
+      contacts.filter((contact) => contact.contact_type !== "internal" && !!contact.primary_company_id),
+    [contacts],
+  )
+
+  const companyContacts = useMemo(
+    () =>
+      selectedCompanyId
+        ? externalContacts.filter((contact) => contact.primary_company_id === selectedCompanyId)
+        : externalContacts,
+    [externalContacts, selectedCompanyId],
+  )
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
         mobileFullscreen
         className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-        style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
+        style={{ animationDuration: "150ms", transitionDuration: "150ms" } as CSSProperties}
       >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
@@ -174,10 +204,7 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                     <FormItem>
                       <FormLabel>Status</FormLabel>
                       <Select
-                        onValueChange={(val) => {
-                          field.onChange(val)
-                          setStatusValue(val)
-                        }}
+                        onValueChange={field.onChange}
                         value={field.value}
                       >
                         <FormControl>
@@ -249,6 +276,87 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
                           />
                         </PopoverContent>
                       </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="assigned_company_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Assigned Company</FormLabel>
+                      <Select
+                        onValueChange={(value) => {
+                          const next = value === "__none__" ? "" : value
+                          field.onChange(next)
+                          const currentContactId = form.getValues("notify_contact_id") ?? ""
+                          if (currentContactId) {
+                            const selectedContact = externalContacts.find((c) => c.id === currentContactId)
+                            if (!selectedContact || selectedContact.primary_company_id !== next) {
+                              form.setValue("notify_contact_id", "")
+                            }
+                          }
+                        }}
+                        value={field.value || "__none__"}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select company" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="__none__">Unassigned</SelectItem>
+                          {companies
+                            .filter((company) => company.company_type !== "client")
+                            .map((company) => (
+                              <SelectItem key={company.id} value={company.id}>
+                                {company.name}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="notify_contact_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Notify Contact</FormLabel>
+                      <Select
+                        onValueChange={(value) => {
+                          const next = value === "__none__" ? "" : value
+                          field.onChange(next)
+                          if (!next) return
+                          const selectedContact = externalContacts.find((contact) => contact.id === next)
+                          if (selectedContact?.primary_company_id) {
+                            form.setValue("assigned_company_id", selectedContact.primary_company_id)
+                          }
+                        }}
+                        value={field.value || "__none__"}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select contact" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="__none__">None</SelectItem>
+                          {companyContacts.map((contact) => (
+                            <SelectItem key={contact.id} value={contact.id}>
+                              {contact.full_name}
+                              {contact.email ? ` (${contact.email})` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -354,7 +462,5 @@ export function RfiForm({ open, onOpenChange, projects, defaultProjectId, onSubm
     </Sheet>
   )
 }
-
-
 
 

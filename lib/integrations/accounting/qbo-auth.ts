@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto"
+import { qboApiBaseUrl } from "@/lib/integrations/accounting/qbo-config"
 
 const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID
 const QBO_CLIENT_SECRET = process.env.QBO_CLIENT_SECRET
@@ -124,12 +125,7 @@ export function decryptToken(encrypted: string): string {
 }
 
 export async function fetchQBOCompanyInfo(accessToken: string, realmId: string) {
-  const baseUrl =
-    process.env.NODE_ENV === "production"
-      ? "https://quickbooks.api.intuit.com"
-      : "https://sandbox-quickbooks.api.intuit.com"
-
-  const response = await fetch(`${baseUrl}/v3/company/${realmId}/companyinfo/${realmId}`, {
+  const response = await fetch(`${qboApiBaseUrl}/v3/company/${realmId}/companyinfo/${realmId}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
@@ -142,13 +138,8 @@ export async function fetchQBOCompanyInfo(accessToken: string, realmId: string) 
 }
 
 export async function detectInvoiceNumberPattern(accessToken: string, realmId: string) {
-  const baseUrl =
-    process.env.NODE_ENV === "production"
-      ? "https://quickbooks.api.intuit.com"
-      : "https://sandbox-quickbooks.api.intuit.com"
-
   const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 1`
-  const response = await fetch(`${baseUrl}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, {
+  const response = await fetch(`${qboApiBaseUrl}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",

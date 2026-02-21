@@ -618,6 +618,8 @@ export interface InvoiceLine {
   unit?: string | null
   unit_cost_cents: number
   taxable?: boolean | null
+  qbo_income_account_id?: string | null
+  qbo_income_account_name?: string | null
 }
 
 export interface InvoiceTotals {

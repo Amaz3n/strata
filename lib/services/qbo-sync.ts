@@ -62,13 +62,29 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     .eq("status", "active")
     .maybeSingle()
 
-  const defaultIncomeAccountId = (connection?.settings as any)?.default_income_account_id as string | undefined
+  const invoiceIncomeAccountId = (typedInvoice.metadata as any)?.qbo_income_account_id
+  const defaultIncomeAccountId =
+    typeof invoiceIncomeAccountId === "string" && invoiceIncomeAccountId.trim().length > 0
+      ? invoiceIncomeAccountId.trim()
+      : ((connection?.settings as any)?.default_income_account_id as string | undefined)
   let existingSync: any = null
   let qboInvoice: any = null
 
   try {
     const customer = await client.getOrCreateCustomer(resolveCustomerName(typedInvoice))
-    const defaultItem = await client.getDefaultServiceItem(defaultIncomeAccountId)
+    const serviceItemCache = new Map<string, { value: string; name: string }>()
+    const resolveServiceItem = async (lineIncomeAccountId?: string | null) => {
+      const normalizedLineAccount =
+        typeof lineIncomeAccountId === "string" && lineIncomeAccountId.trim().length > 0
+          ? lineIncomeAccountId.trim()
+          : defaultIncomeAccountId
+      const cacheKey = normalizedLineAccount ?? "__fallback__"
+      const cached = serviceItemCache.get(cacheKey)
+      if (cached) return cached
+      const next = await client.getDefaultServiceItem(normalizedLineAccount)
+      serviceItemCache.set(cacheKey, next)
+      return next
+    }
 
     existingSync = await supabase
       .from("qbo_sync_records")
@@ -87,6 +103,26 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       })
     }
 
+    const qboLines = await Promise.all(
+      (typedInvoice.lines ?? []).map(async (line) => {
+        const lineIncomeAccountId = (line.metadata as any)?.qbo_income_account_id
+        const itemRef = await resolveServiceItem(lineIncomeAccountId)
+        return {
+          DetailType: "SalesItemLineDetail" as const,
+          Amount: (line.quantity * line.unit_price_cents) / 100,
+          Description: line.description,
+          SalesItemLineDetail: {
+            ItemRef: itemRef,
+            Qty: line.quantity,
+            UnitPrice: line.unit_price_cents / 100,
+            TaxCodeRef: {
+              value: (line.metadata as any)?.taxable === false ? "NON" : "TAX",
+            },
+          },
+        }
+      }),
+    )
+
     qboInvoice = {
       Id: existingSync.data?.qbo_id,
       SyncToken: existingSync.data?.qbo_sync_token,
@@ -94,19 +130,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       TxnDate: typedInvoice.issue_date ?? new Date().toISOString().split("T")[0],
       DueDate: typedInvoice.due_date ?? undefined,
       CustomerRef: { value: customer.Id!, name: customer.DisplayName },
-      Line: (typedInvoice.lines ?? []).map((line) => ({
-        DetailType: "SalesItemLineDetail" as const,
-        Amount: (line.quantity * line.unit_price_cents) / 100,
-        Description: line.description,
-        SalesItemLineDetail: {
-          ItemRef: defaultItem,
-          Qty: line.quantity,
-          UnitPrice: line.unit_price_cents / 100,
-          TaxCodeRef: {
-            value: (line.metadata as any)?.taxable === false ? "NON" : "TAX",
-          },
-        },
-      })),
+      Line: qboLines,
       PrivateNote: typedInvoice.title ?? undefined,
     }
 
@@ -204,15 +228,20 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
 
         return { success: true, qbo_id: retryResult.Id }
       } catch (retryError: any) {
+        const retryErrorMessage = retryError instanceof QBOError ? retryError.message : retryError?.message ?? "DocNumber conflict"
         await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
-        await markSyncRecordError(orgId, "invoice", invoiceId, retryError?.message ?? "DocNumber conflict")
-        await markConnectionError(orgId, retryError?.message ?? "DocNumber conflict")
+        await markSyncRecordError(orgId, "invoice", invoiceId, retryErrorMessage)
+        await markConnectionError(orgId, retryErrorMessage)
         logQBO("error", "invoice_sync_docnumber_retry_failed", {
           orgId,
           invoiceId,
-          error: retryError?.message ?? String(retryError),
+          error: retryErrorMessage,
+          qbo_status: retryError instanceof QBOError ? retryError.status : undefined,
+          qbo_fault_type: retryError instanceof QBOError ? retryError.faultType : undefined,
+          qbo_fault_code: retryError instanceof QBOError ? retryError.faultCode : undefined,
+          qbo_fault_detail: retryError instanceof QBOError ? retryError.faultDetail : undefined,
         })
-        return { success: false, error: retryError?.message ?? "DocNumber conflict" }
+        return { success: false, error: retryErrorMessage }
       }
     }
 
@@ -220,7 +249,15 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
     await markSyncRecordError(orgId, "invoice", invoiceId, errorMessage)
     await markConnectionError(orgId, errorMessage)
-    logQBO("error", "invoice_sync_failed", { orgId, invoiceId, error: errorMessage })
+    logQBO("error", "invoice_sync_failed", {
+      orgId,
+      invoiceId,
+      error: errorMessage,
+      qbo_status: err instanceof QBOError ? err.status : undefined,
+      qbo_fault_type: err instanceof QBOError ? err.faultType : undefined,
+      qbo_fault_code: err instanceof QBOError ? err.faultCode : undefined,
+      qbo_fault_detail: err instanceof QBOError ? err.faultDetail : undefined,
+    })
     return { success: false, error: errorMessage }
   }
 }
@@ -316,10 +353,18 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
 
     return { success: true, qbo_id: qboPayment.Id }
   } catch (error: any) {
-    const message = error?.message ?? String(error)
+    const message = error instanceof QBOError ? error.message : error?.message ?? String(error)
     await markSyncRecordError(orgId, "payment", paymentId, message)
     await markConnectionError(orgId, message)
-    logQBO("error", "payment_sync_failed", { orgId, paymentId, error: message })
+    logQBO("error", "payment_sync_failed", {
+      orgId,
+      paymentId,
+      error: message,
+      qbo_status: error instanceof QBOError ? error.status : undefined,
+      qbo_fault_type: error instanceof QBOError ? error.faultType : undefined,
+      qbo_fault_code: error instanceof QBOError ? error.faultCode : undefined,
+      qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
+    })
     return { success: false, error: message }
   }
 }

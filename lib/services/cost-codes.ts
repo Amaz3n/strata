@@ -14,9 +14,68 @@ const costCodeSchema = z.object({
   default_unit_cost_cents: z.number().int().min(0).optional(),
 })
 
+const updateCostCodeSchema = z.object({
+  id: z.string().uuid(),
+  code: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  parent_id: z.string().uuid().nullable().optional(),
+  division: z.string().nullable().optional(),
+  category: z.string().nullable().optional(),
+  standard: z.enum(["nahb", "csi", "custom"]).optional(),
+  unit: z.string().nullable().optional(),
+  default_unit_cost_cents: z.number().int().min(0).nullable().optional(),
+  is_active: z.boolean().optional(),
+})
+
+async function assertParentCodeInOrg(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  parentId: string,
+  orgId: string,
+) {
+  const { data, error } = await supabase
+    .from("cost_codes")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", parentId)
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error("Parent cost code must belong to this organization")
+  }
+}
+
+async function assertNoParentCycle(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  codeId: string,
+  parentId: string,
+) {
+  const { data, error } = await supabase.from("cost_codes").select("id,parent_id").eq("org_id", orgId)
+  if (error) {
+    throw new Error("Unable to validate cost code hierarchy")
+  }
+
+  const parentMap = new Map<string, string | null>()
+  for (const row of data ?? []) {
+    parentMap.set(String(row.id), row.parent_id ? String(row.parent_id) : null)
+  }
+
+  let current: string | null = parentId
+  while (current) {
+    if (current === codeId) {
+      throw new Error("This parent selection would create a circular hierarchy")
+    }
+    current = parentMap.get(current) ?? null
+  }
+}
+
 export async function createCostCode(input: z.infer<typeof costCodeSchema>, orgId?: string) {
   const parsed = costCodeSchema.parse(input)
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  if (parsed.parent_id) {
+    await assertParentCodeInOrg(supabase, parsed.parent_id, resolvedOrgId)
+  }
 
   const { data, error } = await supabase
     .from("cost_codes")
@@ -37,6 +96,62 @@ export async function createCostCode(input: z.infer<typeof costCodeSchema>, orgI
   })
 
   return data
+}
+
+export async function updateCostCode(input: z.infer<typeof updateCostCodeSchema>, orgId?: string) {
+  const parsed = updateCostCodeSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  if (parsed.parent_id && parsed.parent_id === parsed.id) {
+    throw new Error("A cost code cannot be its own parent")
+  }
+  if (parsed.parent_id) {
+    await assertParentCodeInOrg(supabase, parsed.parent_id, resolvedOrgId)
+    await assertNoParentCycle(supabase, resolvedOrgId, parsed.id, parsed.parent_id)
+  }
+
+  const { data: before, error: beforeError } = await supabase
+    .from("cost_codes")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", parsed.id)
+    .maybeSingle()
+
+  if (beforeError || !before) {
+    throw new Error("Cost code not found")
+  }
+
+  const { id, ...changes } = parsed
+  if (Object.keys(changes).length === 0) {
+    return before
+  }
+
+  const { data, error } = await supabase
+    .from("cost_codes")
+    .update(changes)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", id)
+    .select("*")
+    .single()
+
+  if (error) {
+    throw new Error(`Failed to update cost code: ${error.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    action: "update",
+    entityType: "cost_code",
+    entityId: data.id,
+    before,
+    after: data,
+  })
+
+  return data
+}
+
+export async function setCostCodeActive(id: string, isActive: boolean, orgId?: string) {
+  return updateCostCode({ id, is_active: isActive }, orgId)
 }
 
 export async function listCostCodes(orgId?: string, includeInactive = false) {
@@ -150,9 +265,6 @@ export async function importCostCodes(
 
   return { imported: data?.length ?? 0 }
 }
-
-
-
 
 
 

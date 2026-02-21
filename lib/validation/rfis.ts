@@ -12,6 +12,7 @@ export const rfiInputSchema = z.object({
   priority: rfiPrioritySchema.default("normal"),
   due_date: z.string().optional().nullable(),
   attachment_file_id: z.string().uuid().optional().nullable(),
+  notify_contact_id: z.string().uuid().optional().nullable(),
   assigned_to: z.string().uuid().optional().nullable(),
   assigned_company_id: z.string().uuid().optional().nullable(),
   submitted_by_company_id: z.string().uuid().optional().nullable(),

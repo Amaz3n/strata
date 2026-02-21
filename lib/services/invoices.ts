@@ -57,6 +57,8 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
     unit: line.unit ?? "unit",
     unit_cost_cents: toCents(line.unit_cost),
     taxable: line.taxable ?? true,
+    qbo_income_account_id: line.qbo_income_account_id ?? null,
+    qbo_income_account_name: line.qbo_income_account_name ?? null,
   }))
 }
 
@@ -230,6 +232,8 @@ function mapInvoiceWithLines(row: any) {
     cost_code_id: l.cost_code_id ?? null,
     unit_cost_cents: l.unit_price_cents,
     taxable: (l.metadata as any)?.taxable ?? l.taxable ?? undefined,
+    qbo_income_account_id: (l.metadata as any)?.qbo_income_account_id ?? null,
+    qbo_income_account_name: (l.metadata as any)?.qbo_income_account_name ?? null,
   }))
 
   return {
@@ -334,6 +338,8 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
+      qbo_income_account_id: input.qbo_income_account_id ?? null,
+      qbo_income_account_name: input.qbo_income_account_name ?? null,
       // Store org info for invoice display
       org_name: orgData?.name ?? null,
       org_email: orgData?.email ?? null,
@@ -366,7 +372,11 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       quantity: line.quantity,
       unit: line.unit,
       unit_price_cents: line.unit_cost_cents,
-      metadata: { taxable: line.taxable ?? true },
+      metadata: {
+        taxable: line.taxable ?? true,
+        qbo_income_account_id: line.qbo_income_account_id ?? null,
+        qbo_income_account_name: line.qbo_income_account_name ?? null,
+      },
     })),
   )
 
@@ -506,6 +516,8 @@ export async function updateInvoice({
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
+      qbo_income_account_id: input.qbo_income_account_id ?? (existing.metadata as any)?.qbo_income_account_id ?? null,
+      qbo_income_account_name: input.qbo_income_account_name ?? (existing.metadata as any)?.qbo_income_account_name ?? null,
     },
     sent_at: sentAt,
     sent_to_emails: sentTo,
@@ -536,7 +548,11 @@ export async function updateInvoice({
       quantity: line.quantity,
       unit: line.unit,
       unit_price_cents: line.unit_cost_cents,
-      metadata: { taxable: line.taxable ?? true },
+      metadata: {
+        taxable: line.taxable ?? true,
+        qbo_income_account_id: line.qbo_income_account_id ?? null,
+        qbo_income_account_name: line.qbo_income_account_name ?? null,
+      },
     })),
   )
 

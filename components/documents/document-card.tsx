@@ -15,6 +15,7 @@ import {
   FolderInput,
   Trash2,
   Activity,
+  Share2,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -37,6 +38,7 @@ interface DocumentCardProps {
   onMoveFile?: (fileId: string) => void
   onDeleteFile?: (fileId: string) => void
   onViewActivity?: (fileId: string) => void
+  onShareFile?: (fileId: string) => void
   onFileDragStart?: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd?: (fileId: string) => void
   onDropOnFolder?: (path: string) => void
@@ -107,14 +109,16 @@ function FileActions({
   onMoveFile,
   onDeleteFile,
   onViewActivity,
+  onShareFile,
 }: {
   fileId: string
   onRenameFile?: (fileId: string) => void
   onMoveFile?: (fileId: string) => void
   onDeleteFile?: (fileId: string) => void
   onViewActivity?: (fileId: string) => void
+  onShareFile?: (fileId: string) => void
 }) {
-  if (!onRenameFile && !onMoveFile && !onDeleteFile && !onViewActivity) {
+  if (!onRenameFile && !onMoveFile && !onDeleteFile && !onViewActivity && !onShareFile) {
     return null
   }
 
@@ -149,6 +153,12 @@ function FileActions({
             Move
           </DropdownMenuItem>
         )}
+        {onShareFile && (
+          <DropdownMenuItem onClick={() => onShareFile(fileId)}>
+            <Share2 className="h-4 w-4 mr-2" />
+            Share
+          </DropdownMenuItem>
+        )}
         {onDeleteFile && (
           <DropdownMenuItem
             onClick={() => onDeleteFile(fileId)}
@@ -173,6 +183,7 @@ export function DocumentCard({
   onMoveFile,
   onDeleteFile,
   onViewActivity,
+  onShareFile,
   onFileDragStart,
   onFileDragEnd,
   onDropOnFolder,
@@ -196,6 +207,7 @@ export function DocumentCard({
         onMoveFile={onMoveFile}
         onDeleteFile={onDeleteFile}
         onViewActivity={onViewActivity}
+        onShareFile={onShareFile}
         onFileDragStart={onFileDragStart}
         onFileDragEnd={onFileDragEnd}
       />
@@ -209,6 +221,7 @@ export function DocumentCard({
         onMoveFile={onMoveFile}
         onDeleteFile={onDeleteFile}
         onViewActivity={onViewActivity}
+        onShareFile={onShareFile}
         onFileDragStart={onFileDragStart}
         onFileDragEnd={onFileDragEnd}
       />
@@ -293,6 +306,7 @@ interface FileCardProps {
   onMoveFile?: (fileId: string) => void
   onDeleteFile?: (fileId: string) => void
   onViewActivity?: (fileId: string) => void
+  onShareFile?: (fileId: string) => void
   onFileDragStart?: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd?: (fileId: string) => void
 }
@@ -316,6 +330,7 @@ function FileCardGrid({
   onMoveFile,
   onDeleteFile,
   onViewActivity,
+  onShareFile,
   onFileDragStart,
   onFileDragEnd,
 }: FileCardProps) {
@@ -383,6 +398,7 @@ function FileCardGrid({
             onMoveFile={onMoveFile}
             onDeleteFile={onDeleteFile}
             onViewActivity={onViewActivity}
+            onShareFile={onShareFile}
           />
         </div>
       </div>
@@ -399,6 +415,7 @@ function FileCardList({
   onMoveFile,
   onDeleteFile,
   onViewActivity,
+  onShareFile,
   onFileDragStart,
   onFileDragEnd,
 }: FileCardProps) {
@@ -485,6 +502,7 @@ function FileCardList({
           onMoveFile={onMoveFile}
           onDeleteFile={onDeleteFile}
           onViewActivity={onViewActivity}
+          onShareFile={onShareFile}
         />
       </div>
     </div>

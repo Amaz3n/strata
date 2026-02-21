@@ -1,6 +1,7 @@
 "use client"
 
 import type React from "react"
+import { usePathname } from "next/navigation"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 import type { User } from "@/lib/types"
@@ -15,8 +16,20 @@ interface AppShellProps {
 }
 
 export function AppShell({ children, title, breadcrumbs, user }: AppShellProps) {
+  const pathname = usePathname()
+  const isDocsPage = /^\/projects\/[^/]+\/files/.test(pathname)
+
+  // Debug logging
+  if (typeof window !== 'undefined') {
+    console.log('[AppShell] pathname:', pathname, 'isDocsPage:', isDocsPage)
+  }
+
   return (
-    <SidebarProvider>
+    <SidebarProvider
+      style={{
+        "--sidebar-width": isDocsPage ? "28rem" : "16rem"
+      } as React.CSSProperties}
+    >
       <AppSidebar user={user} />
       <SidebarInset className="min-w-0 overflow-x-hidden">
         <AppHeader title={title} breadcrumbs={breadcrumbs} />

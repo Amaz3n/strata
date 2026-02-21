@@ -4,7 +4,7 @@ import { useMemo, useState, useTransition, useCallback } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { Project, Rfi } from "@/lib/types"
+import type { Company, Contact, Project, Rfi } from "@/lib/types"
 import type { RfiInput } from "@/lib/validation/rfis"
 import { createRfiAction, listRfisAction } from "@/app/(app)/rfis/actions"
 import { RfiForm } from "@/components/rfis/rfi-form"
@@ -42,9 +42,11 @@ function formatDate(date?: string | null) {
 interface RfisClientProps {
   rfis: Rfi[]
   projects: Project[]
+  companies: Company[]
+  contacts: Contact[]
 }
 
-export function RfisClient({ rfis, projects }: RfisClientProps) {
+export function RfisClient({ rfis, projects, companies, contacts }: RfisClientProps) {
   const [items, setItems] = useState<Rfi[]>(rfis)
   const [search, setSearch] = useState("")
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
@@ -106,6 +108,8 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         projects={projects}
+        companies={companies}
+        contacts={contacts}
         defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
         onSubmit={handleCreate}
         isSubmitting={isPending}
@@ -312,7 +316,6 @@ export function RfisClient({ rfis, projects }: RfisClientProps) {
     </div>
   )
 }
-
 
 
 

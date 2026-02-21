@@ -6,6 +6,77 @@ import { upsertQBOConnection } from "@/lib/services/qbo-connection"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { logQBO } from "@/lib/services/qbo-logger"
 
+function clearOAuthCookies(response: NextResponse, request: NextRequest) {
+  const secure = request.nextUrl.protocol === "https:"
+  const names = ["qbo_oauth_state", "qbo_oauth_popup"]
+
+  for (const name of names) {
+    response.cookies.set({
+      name,
+      value: "",
+      httpOnly: name === "qbo_oauth_state",
+      path: "/",
+      sameSite: "lax",
+      maxAge: 0,
+      secure,
+    })
+  }
+}
+
+function completeOAuth(request: NextRequest, redirectPath: string, status: "success" | "error") {
+  const isPopupFlow = request.cookies.get("qbo_oauth_popup")?.value === "1"
+
+  if (!isPopupFlow) {
+    const response = NextResponse.redirect(new URL(redirectPath, request.url))
+    clearOAuthCookies(response, request)
+    return response
+  }
+
+  const origin = request.nextUrl.origin
+  const fallbackUrl = new URL(redirectPath, request.url).toString()
+  const payload = JSON.stringify({
+    type: "arc:qbo-oauth-complete",
+    status,
+    redirectPath,
+  })
+
+  const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Finishing QuickBooks connection...</title>
+  </head>
+  <body>
+    <script>
+      (function () {
+        var payload = ${payload};
+        var targetOrigin = ${JSON.stringify(origin)};
+        var fallbackUrl = ${JSON.stringify(fallbackUrl)};
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(payload, targetOrigin);
+          window.close();
+          setTimeout(function () {
+            window.location.replace(fallbackUrl);
+          }, 300);
+          return;
+        }
+        window.location.replace(fallbackUrl);
+      })();
+    </script>
+  </body>
+</html>`
+
+  const response = new NextResponse(html, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  })
+  clearOAuthCookies(response, request)
+  return response
+}
+
 export async function GET(request: NextRequest) {
   // Force Node runtime to ensure cookies API supports get/set.
   // (Edge/runtime differences can otherwise break cookie access.)
@@ -18,11 +89,11 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get("error")
 
   if (error) {
-    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_denied", request.url))
+    return completeOAuth(request, "/settings?tab=integrations&error=qbo_denied", "error")
   }
 
   if (!code || !realmId || !state) {
-    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_invalid", request.url))
+    return completeOAuth(request, "/settings?tab=integrations&error=qbo_invalid", "error")
   }
 
   // Prefer request-scoped cookies (more reliable on Vercel/edge-adjacent runtimes).
@@ -37,12 +108,12 @@ export async function GET(request: NextRequest) {
   }
 
   if (!savedState || state !== savedState) {
-    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_state_mismatch", request.url))
+    return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch", "error")
   }
 
   const [orgId, nonce] = state.split(":")
   if (!orgId || !nonce) {
-    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_state_mismatch", request.url))
+    return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch", "error")
   }
 
   try {
@@ -63,21 +134,10 @@ export async function GET(request: NextRequest) {
     })
     logQBO("info", "oauth_callback_connected", { orgId, realmId, connectedBy })
 
-    const response = NextResponse.redirect(new URL("/settings?tab=integrations&success=qbo_connected", request.url))
-    response.cookies.set({
-      name: "qbo_oauth_state",
-      value: "",
-      httpOnly: true,
-      path: "/",
-      sameSite: "lax",
-      maxAge: 0,
-      secure: request.nextUrl.protocol === "https:",
-    })
-
-    return response
+    return completeOAuth(request, "/settings?tab=integrations&success=qbo_connected", "success")
   } catch (err) {
     logQBO("error", "oauth_callback_failed", { orgId, realmId, error: String(err) })
-    return NextResponse.redirect(new URL("/settings?tab=integrations&error=qbo_failed", request.url))
+    return completeOAuth(request, "/settings?tab=integrations&error=qbo_failed", "error")
   }
 }
 

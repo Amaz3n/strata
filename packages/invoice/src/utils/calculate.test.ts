@@ -1,4 +1,4 @@
-// @ts-ignore
+// @ts-expect-error - bun:test types not available in standard TypeScript
 import { describe, expect, it } from "bun:test";
 import { calculateLineItemTotal, calculateTotal } from "./calculate";
 

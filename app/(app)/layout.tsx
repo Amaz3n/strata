@@ -30,7 +30,7 @@ export default async function AppLayout({
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
 
   if (access.locked) {
-    return <OrgInactiveScreen orgName={access.orgName ?? null} reason={access.reason} />
+    return <OrgInactiveScreen orgName={"orgName" in access ? access.orgName ?? null : null} reason={"reason" in access ? access.reason : undefined} />
   }
 
   return (

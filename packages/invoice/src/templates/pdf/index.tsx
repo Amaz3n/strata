@@ -1,5 +1,5 @@
 import { Document, Font, Image, Page, Text, View } from "@react-pdf/renderer";
-// @ts-ignore
+// @ts-expect-error - qrcode library types not available
 import QRCodeUtil from "qrcode";
 import type { Invoice } from "../../types";
 import { EditorContent } from "./components/editor-content";
