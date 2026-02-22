@@ -66,7 +66,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
 
   const [formState, setFormState] = useState({
     name: company?.name ?? "",
-    company_type: allowedTypes.has(company?.company_type ?? "") ? company?.company_type ?? "subcontractor" : "subcontractor",
+    company_type: (company?.company_type && allowedTypes.has(company.company_type)) ? company.company_type : "subcontractor",
     trade: fallbackTrade ?? "none",
     phone: company?.phone ?? "",
     email: company?.email ?? "",

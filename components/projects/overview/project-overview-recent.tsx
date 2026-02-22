@@ -60,6 +60,7 @@ function formatActivityEvent(event: ProjectActivity): { icon: React.ReactNode; t
 
 function getFileIcon(mimeType?: string | null) {
   if (!mimeType) return <File className="h-3.5 w-3.5" />
+  // eslint-disable-next-line jsx-a11y/alt-text
   if (mimeType.startsWith("image/")) return <Image className="h-3.5 w-3.5" aria-hidden="true" />
   if (mimeType.includes("spreadsheet") || mimeType.includes("excel")) return <FileSpreadsheet className="h-3.5 w-3.5" />
   if (mimeType.includes("pdf")) return <FileText className="h-3.5 w-3.5 text-destructive" />

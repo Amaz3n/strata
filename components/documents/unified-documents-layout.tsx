@@ -1,16 +1,18 @@
-"use client"
+"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { toast } from "sonner"
-import { Loader2, PanelLeft } from "lucide-react"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { FileDropOverlay } from "@/components/files/file-drop-overlay"
-import { FileViewer } from "@/components/files/file-viewer"
-import { DrawingViewer } from "@/components/drawings/drawing-viewer"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Label } from "@/components/ui/label"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { Loader2, PanelLeft } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { FileDropOverlay } from "@/components/files/file-drop-overlay";
+import { FileViewer } from "@/components/files/file-viewer";
+import { DrawingViewer } from "@/components/drawings/drawing-viewer";
+import { CreateFromDrawingDialog } from "@/components/drawings/create-from-drawing-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,7 +22,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -28,18 +30,28 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
-import { DocumentsProvider, useDocuments } from "./documents-context"
-import { DocumentsExplorer } from "./documents-explorer"
-import { DocumentsToolbar } from "./documents-toolbar"
-import { DocumentsContent } from "./documents-content"
-import { SheetsContent } from "./sheets-content"
-import { FileTimelineSheet } from "./file-timeline-sheet"
-import { UploadDialog } from "./upload-dialog"
-import type { UnifiedDocumentsLayoutProps } from "./types"
-import type { FileWithDetails } from "@/components/files/types"
+} from "@/components/ui/dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import { DocumentsProvider, useDocuments } from "./documents-context";
+import { DocumentsExplorer } from "./documents-explorer";
+import { DocumentsToolbar } from "./documents-toolbar";
+import { DocumentsContent } from "./documents-content";
+import { SheetsContent } from "./sheets-content";
+import { FileTimelineSheet } from "./file-timeline-sheet";
+import { UploadDialog } from "./upload-dialog";
+import type { UnifiedDocumentsLayoutProps } from "./types";
+import type { FileWithDetails } from "@/components/files/types";
 import {
   getFileDownloadUrlAction,
   listFileVersionsAction,
@@ -53,28 +65,48 @@ import {
   bulkMoveFilesAction,
   bulkDeleteFilesAction,
   listFileTimelineAction,
-} from "@/app/(app)/files/actions"
-import type { FileVersion, FileWithUrls, FileTimelineEvent } from "@/app/(app)/files/actions"
-import { createDrawingSetFromUpload, getSheetDownloadUrlAction } from "@/app/(app)/drawings/actions"
-import type { DrawingSheet } from "@/app/(app)/drawings/actions"
-import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
-import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings"
+} from "@/app/(app)/files/actions";
+import type {
+  FileVersion,
+  FileWithUrls,
+  FileTimelineEvent,
+} from "@/app/(app)/files/actions";
+import {
+  createDrawingSetFromUpload,
+  getSheetDownloadUrlAction,
+  getSheetOptimizedImageUrlsAction,
+  listDrawingMarkupsAction,
+  listDrawingPinsWithEntitiesAction,
+  createDrawingMarkupAction,
+  deleteDrawingMarkupAction,
+  createDrawingPinAction,
+  createTaskFromDrawingAction,
+  createRfiFromDrawingAction,
+  createPunchItemFromDrawingAction,
+} from "@/app/(app)/drawings/actions";
+import type {
+  DrawingSheet,
+  DrawingMarkup,
+  DrawingPin,
+} from "@/app/(app)/drawings/actions";
+import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client";
+import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings";
 
 function dispatchNavRefresh() {
-  window.dispatchEvent(new CustomEvent("docs-nav-refresh"))
+  window.dispatchEvent(new CustomEvent("docs-nav-refresh"));
 }
 
 interface FileVersionInfo {
-  id: string
-  version_number: number
-  label?: string
-  notes?: string
-  file_name?: string
-  mime_type?: string
-  size_bytes?: number
-  creator_name?: string
-  created_at: string
-  is_current: boolean
+  id: string;
+  version_number: number;
+  label?: string;
+  notes?: string;
+  file_name?: string;
+  mime_type?: string;
+  size_bytes?: number;
+  creator_name?: string;
+  created_at: string;
+  is_current: boolean;
 }
 
 function mapVersion(version: FileVersion): FileVersionInfo {
@@ -89,19 +121,19 @@ function mapVersion(version: FileVersion): FileVersionInfo {
     creator_name: version.creator_name ?? undefined,
     created_at: version.created_at,
     is_current: version.is_current,
-  }
+  };
 }
 
 function normalizeFolderPath(path: string): string | null {
-  const trimmed = path.trim()
-  if (!trimmed) return null
-  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
-  const normalized = withLeadingSlash.replace(/\/+/g, "/")
-  if (normalized === "/") return null
-  return normalized.replace(/\/$/, "")
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const normalized = withLeadingSlash.replace(/\/+/g, "/");
+  if (normalized === "/") return null;
+  return normalized.replace(/\/$/, "");
 }
 
-const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS)
+const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS);
 
 export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
   return (
@@ -116,10 +148,13 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
     >
       <UnifiedDocumentsLayoutInner />
     </DocumentsProvider>
-  )
+  );
 }
 
 function UnifiedDocumentsLayoutInner() {
+  const router = useRouter();
+  const ENABLE_TILES_AUTH =
+    process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true";
   const {
     projectId,
     files,
@@ -129,235 +164,278 @@ function UnifiedDocumentsLayoutInner() {
     setCurrentPath,
     refreshFiles,
     refreshDrawingSets,
-  } = useDocuments()
+  } = useDocuments();
 
-  const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const dragCounterRef = useRef(0)
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const dragCounterRef = useRef(0);
 
-  const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
-  const [uploadFiles, setUploadFiles] = useState<File[]>([])
-  const drawingSetFileInputRef = useRef<HTMLInputElement>(null)
-  const [drawingSetUploadOpen, setDrawingSetUploadOpen] = useState(false)
-  const [drawingSetFile, setDrawingSetFile] = useState<File | null>(null)
-  const [drawingSetTitle, setDrawingSetTitle] = useState("")
-  const [drawingSetType, setDrawingSetType] = useState("general")
-  const [drawingSetUploading, setDrawingSetUploading] = useState(false)
-  const [drawingSetUploadStage, setDrawingSetUploadStage] = useState<string | null>(null)
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const drawingSetFileInputRef = useRef<HTMLInputElement>(null);
+  const [drawingSetUploadOpen, setDrawingSetUploadOpen] = useState(false);
+  const [drawingSetFile, setDrawingSetFile] = useState<File | null>(null);
+  const [drawingSetTitle, setDrawingSetTitle] = useState("");
+  const [drawingSetType, setDrawingSetType] = useState("general");
+  const [drawingSetUploading, setDrawingSetUploading] = useState(false);
+  const [drawingSetUploadStage, setDrawingSetUploadStage] = useState<
+    string | null
+  >(null);
 
-  const [viewerOpen, setViewerOpen] = useState(false)
-  const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null)
-  const [versionsByFile, setVersionsByFile] = useState<Record<string, FileVersionInfo[]>>({})
-  const lastNotifiedViewerFileIdRef = useRef<string | null>(null)
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null);
+  const [versionsByFile, setVersionsByFile] = useState<
+    Record<string, FileVersionInfo[]>
+  >({});
+  const lastNotifiedViewerFileIdRef = useRef<string | null>(null);
 
-  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set())
-  const [isDownloadingSelected, setIsDownloadingSelected] = useState(false)
-  const [draggedFileId, setDraggedFileId] = useState<string | null>(null)
-  const [isDraggingDocumentFile, setIsDraggingDocumentFile] = useState(false)
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [isDownloadingSelected, setIsDownloadingSelected] = useState(false);
+  const [draggedFileId, setDraggedFileId] = useState<string | null>(null);
+  const [isDraggingDocumentFile, setIsDraggingDocumentFile] = useState(false);
 
-  const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false)
-  const [newFolderPath, setNewFolderPath] = useState("")
-  const [isCreatingFolder, setIsCreatingFolder] = useState(false)
+  const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false);
+  const [newFolderPath, setNewFolderPath] = useState("");
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false)
-  const [renameFile, setRenameFile] = useState<FileWithUrls | null>(null)
-  const [renameValue, setRenameValue] = useState("")
-  const [isRenaming, setIsRenaming] = useState(false)
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameFile, setRenameFile] = useState<FileWithUrls | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [isRenaming, setIsRenaming] = useState(false);
 
-  const [shareDialogOpen, setShareDialogOpen] = useState(false)
-  const [shareFile, setShareFile] = useState<FileWithUrls | null>(null)
-  const [shareWithClients, setShareWithClients] = useState(false)
-  const [shareWithSubs, setShareWithSubs] = useState(false)
-  const [isSavingShare, setIsSavingShare] = useState(false)
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareFile, setShareFile] = useState<FileWithUrls | null>(null);
+  const [shareWithClients, setShareWithClients] = useState(false);
+  const [shareWithSubs, setShareWithSubs] = useState(false);
+  const [isSavingShare, setIsSavingShare] = useState(false);
 
-  const [moveDialogOpen, setMoveDialogOpen] = useState(false)
-  const [moveTargetFolder, setMoveTargetFolder] = useState("")
-  const [moveFileIds, setMoveFileIds] = useState<string[]>([])
-  const [isMoving, setIsMoving] = useState(false)
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [moveTargetFolder, setMoveTargetFolder] = useState("");
+  const [moveFileIds, setMoveFileIds] = useState<string[]>([]);
+  const [isMoving, setIsMoving] = useState(false);
 
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-  const [deleteFileIds, setDeleteFileIds] = useState<string[]>([])
-  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteFileIds, setDeleteFileIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  const [timelineOpen, setTimelineOpen] = useState(false)
-  const [timelineFile, setTimelineFile] = useState<FileWithUrls | null>(null)
-  const [timelineEvents, setTimelineEvents] = useState<FileTimelineEvent[]>([])
-  const [timelineLoading, setTimelineLoading] = useState(false)
-  const [mobileExplorerOpen, setMobileExplorerOpen] = useState(false)
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineFile, setTimelineFile] = useState<FileWithUrls | null>(null);
+  const [timelineEvents, setTimelineEvents] = useState<FileTimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [mobileExplorerOpen, setMobileExplorerOpen] = useState(false);
 
-  const [drawingViewerOpen, setDrawingViewerOpen] = useState(false)
-  const [drawingViewerSheet, setDrawingViewerSheet] = useState<DrawingSheet | null>(null)
-  const [drawingViewerUrl, setDrawingViewerUrl] = useState<string | null>(null)
-  const drawingViewerRequestIdRef = useRef(0)
+  const [drawingViewerOpen, setDrawingViewerOpen] = useState(false);
+  const [drawingViewerSheet, setDrawingViewerSheet] =
+    useState<DrawingSheet | null>(null);
+  const [drawingViewerSheets, setDrawingViewerSheets] = useState<
+    DrawingSheet[]
+  >([]);
+  const [drawingViewerUrl, setDrawingViewerUrl] = useState<string | null>(null);
+  const [drawingViewerMarkups, setDrawingViewerMarkups] = useState<
+    DrawingMarkup[]
+  >([]);
+  const [drawingViewerPins, setDrawingViewerPins] = useState<DrawingPin[]>([]);
+  const [drawingViewerHighlightedPinId, setDrawingViewerHighlightedPinId] =
+    useState<string | null>(null);
+  const [createFromDrawingOpen, setCreateFromDrawingOpen] = useState(false);
+  const [createFromDrawingPosition, setCreateFromDrawingPosition] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const drawingViewerRequestIdRef = useRef(0);
+  const tilesCookieRequestedRef = useRef(false);
 
   useEffect(() => {
-    setSelectedFileIds(new Set())
-  }, [currentPath, selectedDrawingSetId])
+    setSelectedFileIds(new Set());
+  }, [currentPath, selectedDrawingSetId]);
 
   useEffect(() => {
     if (!viewerOpen) {
-      lastNotifiedViewerFileIdRef.current = null
+      lastNotifiedViewerFileIdRef.current = null;
     }
-  }, [viewerOpen])
+  }, [viewerOpen]);
+
+  useEffect(() => {
+    if (!ENABLE_TILES_AUTH || tilesCookieRequestedRef.current) return;
+    tilesCookieRequestedRef.current = true;
+
+    fetch("/api/drawings/tiles-cookie", {
+      method: "POST",
+      credentials: "include",
+    }).catch((error) => {
+      console.warn("[drawings] Failed to set tiles cookie:", error);
+    });
+  }, [ENABLE_TILES_AUTH]);
 
   const folderOptions = useMemo(() => {
-    const allFolderPaths = new Set<string>(folders)
+    const allFolderPaths = new Set<string>(folders);
     for (const file of files) {
       if (file.folder_path) {
-        const normalized = normalizeFolderPath(file.folder_path)
+        const normalized = normalizeFolderPath(file.folder_path);
         if (normalized) {
-          allFolderPaths.add(normalized)
+          allFolderPaths.add(normalized);
         }
       }
     }
-    return Array.from(allFolderPaths).sort((a, b) => a.localeCompare(b))
-  }, [files, folders])
+    return Array.from(allFolderPaths).sort((a, b) => a.localeCompare(b));
+  }, [files, folders]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    dragCounterRef.current += 1
-    const hasInternalFileDrag = e.dataTransfer.types.includes("application/x-arc-file-id")
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    const hasInternalFileDrag = e.dataTransfer.types.includes(
+      "application/x-arc-file-id",
+    );
     if (!hasInternalFileDrag && e.dataTransfer.items?.length) {
-      setIsDraggingOver(true)
+      setIsDraggingOver(true);
     }
-  }, [])
+  }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    dragCounterRef.current -= 1
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
     if (dragCounterRef.current === 0) {
-      setIsDraggingOver(false)
+      setIsDraggingOver(false);
     }
-  }, [])
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-  }, [])
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDraggingOver(false)
-    dragCounterRef.current = 0
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    dragCounterRef.current = 0;
 
-    const droppedFiles = Array.from(e.dataTransfer.files)
+    const droppedFiles = Array.from(e.dataTransfer.files);
     if (droppedFiles.length > 0) {
-      setUploadFiles(droppedFiles)
-      setUploadDialogOpen(true)
+      setUploadFiles(droppedFiles);
+      setUploadDialogOpen(true);
     }
-  }, [])
+  }, []);
 
   const handleFileClick = useCallback(
     async (fileId: string) => {
-      const file = files.find((f) => f.id === fileId)
-      if (!file) return
+      const file = files.find((f) => f.id === fileId);
+      if (!file) return;
 
-      const initialDownloadUrl = file.download_url ?? undefined
+      const initialDownloadUrl = file.download_url ?? undefined;
       const initialFile: FileWithDetails = {
         ...file,
         category: file.category as any,
         download_url: initialDownloadUrl,
         thumbnail_url:
           file.thumbnail_url ??
-          (file.mime_type?.startsWith("image/") ? initialDownloadUrl : undefined),
-      }
+          (file.mime_type?.startsWith("image/")
+            ? initialDownloadUrl
+            : undefined),
+      };
 
-      setViewerFile(initialFile)
-      setViewerOpen(true)
+      setViewerFile(initialFile);
+      setViewerOpen(true);
 
       try {
         if (!initialDownloadUrl) {
-          const downloadUrl = await getFileDownloadUrlAction(fileId)
+          const downloadUrl = await getFileDownloadUrlAction(fileId);
           setViewerFile((prev) => {
-            if (!prev || prev.id !== fileId) return prev
+            if (!prev || prev.id !== fileId) return prev;
             return {
               ...prev,
               download_url: downloadUrl,
               thumbnail_url:
                 prev.thumbnail_url ??
-                (prev.mime_type?.startsWith("image/") ? downloadUrl : undefined),
-            }
-          })
+                (prev.mime_type?.startsWith("image/")
+                  ? downloadUrl
+                  : undefined),
+            };
+          });
         }
 
-        const versions = await listFileVersionsAction(fileId)
+        const versions = await listFileVersionsAction(fileId);
         setVersionsByFile((prev) => ({
           ...prev,
           [fileId]: versions.map(mapVersion),
-        }))
+        }));
       } catch (error) {
-        console.error("Failed to open file:", error)
-        toast.error("Failed to open file")
+        console.error("Failed to open file:", error);
+        toast.error("Failed to open file");
       }
     },
-    [files]
-  )
+    [files],
+  );
 
   const handleFolderClick = useCallback(
     (path: string) => {
-      setCurrentPath(path)
+      setCurrentPath(path);
     },
-    [setCurrentPath]
-  )
+    [setCurrentPath],
+  );
 
   const handleUploadClick = useCallback(() => {
-    setUploadFiles([])
-    setUploadDialogOpen(true)
-  }, [])
+    setUploadFiles([]);
+    setUploadDialogOpen(true);
+  }, []);
 
   const resetDrawingSetUploadDialog = useCallback(() => {
-    setDrawingSetFile(null)
-    setDrawingSetTitle("")
-    setDrawingSetType("general")
-    setDrawingSetUploading(false)
-    setDrawingSetUploadStage(null)
+    setDrawingSetFile(null);
+    setDrawingSetTitle("");
+    setDrawingSetType("general");
+    setDrawingSetUploading(false);
+    setDrawingSetUploadStage(null);
     if (drawingSetFileInputRef.current) {
-      drawingSetFileInputRef.current.value = ""
+      drawingSetFileInputRef.current.value = "";
     }
-  }, [])
+  }, []);
 
   const handleOpenDrawingSetUpload = useCallback(() => {
-    resetDrawingSetUploadDialog()
-    setDrawingSetUploadOpen(true)
-  }, [resetDrawingSetUploadDialog])
+    resetDrawingSetUploadDialog();
+    setDrawingSetUploadOpen(true);
+  }, [resetDrawingSetUploadDialog]);
 
-  const handleDrawingSetFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null
-    if (!file) return
-    setDrawingSetFile(file)
-    setDrawingSetTitle((prev) => {
-      if (prev.trim().length > 0) return prev
-      return file.name.replace(/\.pdf$/i, "")
-    })
-  }, [])
+  const handleDrawingSetFileChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0] ?? null;
+      if (!file) return;
+      setDrawingSetFile(file);
+      setDrawingSetTitle((prev) => {
+        if (prev.trim().length > 0) return prev;
+        return file.name.replace(/\.pdf$/i, "");
+      });
+    },
+    [],
+  );
 
   const handleUploadDrawingSet = useCallback(async () => {
     if (!drawingSetFile) {
-      toast.error("Select a PDF file to upload")
-      return
+      toast.error("Select a PDF file to upload");
+      return;
     }
 
     if (drawingSetFile.type !== "application/pdf") {
-      toast.error("Only PDF files are supported for drawing sets")
-      return
+      toast.error("Only PDF files are supported for drawing sets");
+      return;
     }
 
     const normalizedTitle =
       drawingSetTitle.trim().length > 0
         ? drawingSetTitle.trim()
-        : drawingSetFile.name.replace(/\.pdf$/i, "")
+        : drawingSetFile.name.replace(/\.pdf$/i, "");
 
-    setDrawingSetUploading(true)
-    setDrawingSetUploadStage("Uploading PDF…")
+    setDrawingSetUploading(true);
+    setDrawingSetUploadStage("Uploading PDF…");
     try {
       const { storagePath } = await uploadDrawingFileToStorage(
         drawingSetFile,
-        projectId
-      )
+        projectId,
+      );
 
-      setDrawingSetUploadStage("Queueing sheet processing…")
+      setDrawingSetUploadStage("Queueing sheet processing…");
       await createDrawingSetFromUpload({
         projectId,
         title: normalizedTitle,
@@ -366,19 +444,21 @@ function UnifiedDocumentsLayoutInner() {
         storagePath,
         fileSize: drawingSetFile.size,
         mimeType: drawingSetFile.type,
-      })
+      });
 
-      await Promise.all([refreshDrawingSets(), refreshFiles()])
-      dispatchNavRefresh()
-      toast.success("Drawing set uploaded. Processing has started.")
-      setDrawingSetUploadOpen(false)
-      resetDrawingSetUploadDialog()
+      await Promise.all([refreshDrawingSets(), refreshFiles()]);
+      dispatchNavRefresh();
+      toast.success("Drawing set uploaded. Processing has started.");
+      setDrawingSetUploadOpen(false);
+      resetDrawingSetUploadDialog();
     } catch (error) {
-      console.error("Failed to upload drawing set:", error)
-      toast.error(error instanceof Error ? error.message : "Failed to upload drawing set")
+      console.error("Failed to upload drawing set:", error);
+      toast.error(
+        error instanceof Error ? error.message : "Failed to upload drawing set",
+      );
     } finally {
-      setDrawingSetUploading(false)
-      setDrawingSetUploadStage(null)
+      setDrawingSetUploading(false);
+      setDrawingSetUploadStage(null);
     }
   }, [
     drawingSetFile,
@@ -388,467 +468,707 @@ function UnifiedDocumentsLayoutInner() {
     refreshDrawingSets,
     refreshFiles,
     resetDrawingSetUploadDialog,
-  ])
+  ]);
 
-  const handleFileSelectionChange = useCallback((fileId: string, selected: boolean) => {
-    setSelectedFileIds((prev) => {
-      const next = new Set(prev)
-      if (selected) {
-        next.add(fileId)
-      } else {
-        next.delete(fileId)
-      }
-      return next
-    })
-  }, [])
-
-  const handleSelectAllVisibleFiles = useCallback((fileIds: string[], selected: boolean) => {
-    setSelectedFileIds((prev) => {
-      const next = new Set(prev)
-      for (const id of fileIds) {
+  const handleFileSelectionChange = useCallback(
+    (fileId: string, selected: boolean) => {
+      setSelectedFileIds((prev) => {
+        const next = new Set(prev);
         if (selected) {
-          next.add(id)
+          next.add(fileId);
         } else {
-          next.delete(id)
+          next.delete(fileId);
         }
-      }
-      return next
-    })
-  }, [])
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleSelectAllVisibleFiles = useCallback(
+    (fileIds: string[], selected: boolean) => {
+      setSelectedFileIds((prev) => {
+        const next = new Set(prev);
+        for (const id of fileIds) {
+          if (selected) {
+            next.add(id);
+          } else {
+            next.delete(id);
+          }
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   const openRenameDialog = useCallback(
     (fileId: string) => {
-      const file = files.find((item) => item.id === fileId)
-      if (!file) return
-      setRenameFile(file)
-      setRenameValue(file.file_name)
-      setRenameDialogOpen(true)
+      const file = files.find((item) => item.id === fileId);
+      if (!file) return;
+      setRenameFile(file);
+      setRenameValue(file.file_name);
+      setRenameDialogOpen(true);
     },
-    [files]
-  )
+    [files],
+  );
 
   const openShareDialog = useCallback(
     (fileId: string) => {
-      const file = files.find((item) => item.id === fileId)
-      if (!file) return
-      setShareFile(file)
-      setShareWithClients(Boolean(file.share_with_clients))
-      setShareWithSubs(Boolean(file.share_with_subs))
-      setShareDialogOpen(true)
+      const file = files.find((item) => item.id === fileId);
+      if (!file) return;
+      setShareFile(file);
+      setShareWithClients(Boolean(file.share_with_clients));
+      setShareWithSubs(Boolean(file.share_with_subs));
+      setShareDialogOpen(true);
     },
-    [files]
-  )
+    [files],
+  );
 
   const openMoveDialog = useCallback(
     (fileId?: string) => {
       if (fileId) {
-        setMoveFileIds([fileId])
+        setMoveFileIds([fileId]);
       } else {
-        setMoveFileIds(Array.from(selectedFileIds))
+        setMoveFileIds(Array.from(selectedFileIds));
       }
-      setMoveTargetFolder(currentPath || "")
-      setMoveDialogOpen(true)
+      setMoveTargetFolder(currentPath || "");
+      setMoveDialogOpen(true);
     },
-    [selectedFileIds, currentPath]
-  )
+    [selectedFileIds, currentPath],
+  );
 
   const openDeleteDialog = useCallback(
     (fileId?: string) => {
       if (fileId) {
-        setDeleteFileIds([fileId])
+        setDeleteFileIds([fileId]);
       } else {
-        setDeleteFileIds(Array.from(selectedFileIds))
+        setDeleteFileIds(Array.from(selectedFileIds));
       }
-      setDeleteDialogOpen(true)
+      setDeleteDialogOpen(true);
     },
-    [selectedFileIds]
-  )
+    [selectedFileIds],
+  );
 
   const resolveDraggedFileIds = useCallback(
     (primaryFileId?: string): string[] => {
-      const fileId = primaryFileId ?? draggedFileId
-      if (!fileId) return []
+      const fileId = primaryFileId ?? draggedFileId;
+      if (!fileId) return [];
       if (selectedFileIds.has(fileId)) {
-        return Array.from(selectedFileIds)
+        return Array.from(selectedFileIds);
       }
-      return [fileId]
+      return [fileId];
     },
-    [draggedFileId, selectedFileIds]
-  )
+    [draggedFileId, selectedFileIds],
+  );
 
   const handleFileDragStart = useCallback(
     (fileId: string, event: React.DragEvent<HTMLDivElement>) => {
-      setDraggedFileId(fileId)
-      setIsDraggingDocumentFile(true)
-      event.dataTransfer.effectAllowed = "move"
-      event.dataTransfer.setData("application/x-arc-file-id", fileId)
+      setDraggedFileId(fileId);
+      setIsDraggingDocumentFile(true);
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-arc-file-id", fileId);
     },
-    []
-  )
+    [],
+  );
 
   const handleFileDragEnd = useCallback(() => {
-    setIsDraggingDocumentFile(false)
-    setDraggedFileId(null)
-  }, [])
+    setIsDraggingDocumentFile(false);
+    setDraggedFileId(null);
+  }, []);
 
   const moveFilesToFolder = useCallback(
-    async (fileIds: string[], targetPath: string | null, sourceLabel: string) => {
-      if (fileIds.length === 0) return
-      const normalizedTarget = targetPath ? normalizeFolderPath(targetPath) : null
+    async (
+      fileIds: string[],
+      targetPath: string | null,
+      sourceLabel: string,
+    ) => {
+      if (fileIds.length === 0) return;
+      const normalizedTarget = targetPath
+        ? normalizeFolderPath(targetPath)
+        : null;
 
-      setIsMoving(true)
+      setIsMoving(true);
       try {
         if (normalizedTarget) {
-          await createFolderAction(projectId, normalizedTarget)
+          await createFolderAction(projectId, normalizedTarget);
         }
-        await bulkMoveFilesAction(fileIds, normalizedTarget, true)
+        await bulkMoveFilesAction(fileIds, normalizedTarget, true);
         toast.success(
-          `Moved ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to ${sourceLabel}`
-        )
-        setSelectedFileIds(new Set())
-        await refreshFiles()
-        dispatchNavRefresh()
+          `Moved ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to ${sourceLabel}`,
+        );
+        setSelectedFileIds(new Set());
+        await refreshFiles();
+        dispatchNavRefresh();
       } catch (error) {
-        console.error("Failed to move files:", error)
-        toast.error("Failed to move files")
+        console.error("Failed to move files:", error);
+        toast.error("Failed to move files");
       } finally {
-        setIsMoving(false)
+        setIsMoving(false);
       }
     },
-    [projectId, refreshFiles]
-  )
+    [projectId, refreshFiles],
+  );
 
   const handleDropOnFolder = useCallback(
     async (targetPath: string) => {
-      const fileIds = resolveDraggedFileIds()
-      await moveFilesToFolder(fileIds, targetPath, targetPath)
-      setIsDraggingDocumentFile(false)
-      setDraggedFileId(null)
+      const fileIds = resolveDraggedFileIds();
+      await moveFilesToFolder(fileIds, targetPath, targetPath);
+      setIsDraggingDocumentFile(false);
+      setDraggedFileId(null);
     },
-    [resolveDraggedFileIds, moveFilesToFolder]
-  )
+    [resolveDraggedFileIds, moveFilesToFolder],
+  );
 
   const handleDropToRoot = useCallback(async () => {
-    const fileIds = resolveDraggedFileIds()
-    await moveFilesToFolder(fileIds, null, "Root")
-    setIsDraggingDocumentFile(false)
-    setDraggedFileId(null)
-  }, [resolveDraggedFileIds, moveFilesToFolder])
+    const fileIds = resolveDraggedFileIds();
+    await moveFilesToFolder(fileIds, null, "Root");
+    setIsDraggingDocumentFile(false);
+    setDraggedFileId(null);
+  }, [resolveDraggedFileIds, moveFilesToFolder]);
 
   const openTimeline = useCallback(
     async (fileId: string) => {
-      const file = files.find((item) => item.id === fileId)
-      if (!file) return
-      setTimelineFile(file)
-      setTimelineOpen(true)
-      setTimelineLoading(true)
+      const file = files.find((item) => item.id === fileId);
+      if (!file) return;
+      setTimelineFile(file);
+      setTimelineOpen(true);
+      setTimelineLoading(true);
       try {
-        const events = await listFileTimelineAction(fileId)
-        setTimelineEvents(events)
+        const events = await listFileTimelineAction(fileId);
+        setTimelineEvents(events);
       } catch (error) {
-        console.error("Failed to load timeline:", error)
-        toast.error("Failed to load timeline")
-        setTimelineEvents([])
+        console.error("Failed to load timeline:", error);
+        toast.error("Failed to load timeline");
+        setTimelineEvents([]);
       } finally {
-        setTimelineLoading(false)
+        setTimelineLoading(false);
       }
     },
-    [files]
-  )
+    [files],
+  );
 
-  const handleSheetClick = useCallback(async (sheet: DrawingSheet) => {
-    const requestId = drawingViewerRequestIdRef.current + 1
-    drawingViewerRequestIdRef.current = requestId
-    setDrawingViewerSheet(sheet)
-    setDrawingViewerUrl(null)
-    setDrawingViewerOpen(true)
+  const closeDrawingViewer = useCallback(() => {
+    drawingViewerRequestIdRef.current += 1;
+    setDrawingViewerOpen(false);
+    setDrawingViewerSheet(null);
+    setDrawingViewerSheets([]);
+    setDrawingViewerUrl(null);
+    setDrawingViewerMarkups([]);
+    setDrawingViewerPins([]);
+    setDrawingViewerHighlightedPinId(null);
+    setCreateFromDrawingOpen(false);
+    setCreateFromDrawingPosition(null);
+  }, []);
 
-    const hasTiles = Boolean((sheet as any).tile_base_url && (sheet as any).tile_manifest)
-    const hasOptimizedImages = Boolean(
-      sheet.image_thumbnail_url && sheet.image_medium_url && sheet.image_full_url
-    )
-    if (hasTiles || hasOptimizedImages) {
-      return
-    }
+  const handleSheetClick = useCallback(
+    async (sheet: DrawingSheet, sheets: DrawingSheet[] = []) => {
+      const requestId = drawingViewerRequestIdRef.current + 1;
+      drawingViewerRequestIdRef.current = requestId;
+      setDrawingViewerSheet(sheet);
+      setDrawingViewerSheets(sheets.length > 0 ? sheets : [sheet]);
+      setDrawingViewerUrl(null);
+      setDrawingViewerMarkups([]);
+      setDrawingViewerPins([]);
+      setDrawingViewerHighlightedPinId(null);
+      setDrawingViewerOpen(true);
 
-    try {
-      const url = await getSheetDownloadUrlAction(sheet.id)
-      if (drawingViewerRequestIdRef.current !== requestId) return
-      if (!url) {
-        toast.error("Sheet file not available")
-        return
+      try {
+        const hasTiles = Boolean(
+          (sheet as any).tile_base_url && (sheet as any).tile_manifest,
+        );
+        const hasOptimizedImages = Boolean(
+          sheet.image_thumbnail_url &&
+          sheet.image_medium_url &&
+          sheet.image_full_url,
+        );
+
+        const [signedImages, url, markups, pins] = await Promise.all([
+          hasOptimizedImages && !hasTiles
+            ? getSheetOptimizedImageUrlsAction(sheet.id).catch((error) => {
+                console.error("Failed to get signed optimized images:", error);
+                return null;
+              })
+            : Promise.resolve(null),
+          getSheetDownloadUrlAction(sheet.id).catch((error) => {
+            console.error("Failed to get sheet URL:", error);
+            return null;
+          }),
+          listDrawingMarkupsAction({ drawing_sheet_id: sheet.id }).catch(
+            (error) => {
+              console.error("Failed to load markups:", error);
+              return [];
+            },
+          ),
+          listDrawingPinsWithEntitiesAction(sheet.id).catch((error) => {
+            console.error("Failed to load pins:", error);
+            return [];
+          }),
+        ]);
+
+        if (drawingViewerRequestIdRef.current !== requestId) return;
+
+        if (signedImages && !hasTiles) {
+          setDrawingViewerSheet((prev) => {
+            if (!prev || prev.id !== sheet.id) return prev;
+            return {
+              ...prev,
+              image_thumbnail_url:
+                signedImages.thumbnailUrl ?? prev.image_thumbnail_url ?? null,
+              image_medium_url:
+                signedImages.mediumUrl ?? prev.image_medium_url ?? null,
+              image_full_url:
+                signedImages.fullUrl ?? prev.image_full_url ?? null,
+              image_width: signedImages.width ?? prev.image_width ?? null,
+              image_height: signedImages.height ?? prev.image_height ?? null,
+            };
+          });
+        }
+
+        if (!hasOptimizedImages && !hasTiles && !url) {
+          toast.error("Sheet file not available");
+          closeDrawingViewer();
+          return;
+        }
+
+        setDrawingViewerUrl(url);
+        setDrawingViewerMarkups(markups);
+        setDrawingViewerPins(pins);
+      } catch (error) {
+        console.error("Failed to open sheet:", error);
+        if (drawingViewerRequestIdRef.current === requestId) {
+          toast.error("Failed to open sheet");
+        }
       }
-      setDrawingViewerUrl(url)
+    },
+    [closeDrawingViewer],
+  );
+
+  const handleDrawingMarkupSave = useCallback(
+    async (
+      markup: Omit<
+        DrawingMarkup,
+        "id" | "org_id" | "created_at" | "updated_at"
+      >,
+    ) => {
+      try {
+        const created = await createDrawingMarkupAction(markup);
+        setDrawingViewerMarkups((prev) => [...prev, created]);
+        toast.success("Markup saved");
+      } catch (error) {
+        console.error("Failed to save markup:", error);
+        toast.error("Failed to save markup");
+      }
+    },
+    [],
+  );
+
+  const handleDrawingMarkupDelete = useCallback(async (markupId: string) => {
+    try {
+      await deleteDrawingMarkupAction(markupId);
+      setDrawingViewerMarkups((prev) =>
+        prev.filter((item) => item.id !== markupId),
+      );
+      toast.success("Markup deleted");
     } catch (error) {
-      console.error("Failed to open sheet:", error)
-      toast.error("Failed to open sheet")
+      console.error("Failed to delete markup:", error);
+      toast.error("Failed to delete markup");
     }
-  }, [])
+  }, []);
+
+  const handleCreateDrawingPin = useCallback((x: number, y: number) => {
+    setCreateFromDrawingPosition({ x, y });
+    setCreateFromDrawingOpen(true);
+  }, []);
+
+  const handleDrawingPinClick = useCallback(
+    (pin: DrawingPin) => {
+      const base = pin.project_id ? `/projects/${pin.project_id}` : null;
+      if (!base) return;
+
+      switch (pin.entity_type) {
+        case "task":
+          router.push(`${base}/tasks`);
+          break;
+        case "rfi":
+          router.push(`${base}/rfis`);
+          break;
+        case "submittal":
+          router.push(`${base}/submittals`);
+          break;
+        case "punch_list":
+          router.push(`${base}/punch`);
+          break;
+        case "daily_log":
+          router.push(`${base}/daily-logs`);
+          break;
+        default:
+          router.push(base);
+      }
+
+      closeDrawingViewer();
+    },
+    [closeDrawingViewer, router],
+  );
+
+  const handleCreateFromDrawing = useCallback(
+    async (input: any) => {
+      if (!drawingViewerSheet || !createFromDrawingPosition) return;
+
+      try {
+        const targetProjectId = input.project_id ?? projectId;
+        if (!targetProjectId) {
+          throw new Error("Missing project");
+        }
+
+        let entityId: string | null = null;
+
+        if (input.entityType === "task") {
+          const created = await createTaskFromDrawingAction(targetProjectId, {
+            title: input.title,
+            description: input.description,
+            priority:
+              input.priority === "high"
+                ? "high"
+                : input.priority === "low"
+                  ? "low"
+                  : "normal",
+            status: "todo",
+          });
+          entityId = created.id;
+        } else if (input.entityType === "rfi") {
+          const created = await createRfiFromDrawingAction({
+            projectId: targetProjectId,
+            subject: input.subject ?? input.title,
+            question: input.question ?? input.description ?? "",
+            priority:
+              input.priority === "high"
+                ? "high"
+                : input.priority === "low"
+                  ? "low"
+                  : "normal",
+          });
+          entityId = created.id;
+        } else if (input.entityType === "punch_list") {
+          const created = await createPunchItemFromDrawingAction({
+            projectId: targetProjectId,
+            title: input.title,
+            description: input.description,
+            location: input.location,
+            severity: input.priority,
+          });
+          entityId = created.id;
+        } else if (input.entityType === "issue") {
+          const created = await createTaskFromDrawingAction(targetProjectId, {
+            title: input.title,
+            description: input.description,
+            priority: "high",
+            status: "todo",
+            tags: ["issue"],
+          });
+          entityId = created.id;
+        }
+
+        if (!entityId) {
+          throw new Error("Unsupported entity type");
+        }
+
+        const createdPin = await createDrawingPinAction({
+          project_id: targetProjectId,
+          drawing_sheet_id: drawingViewerSheet.id,
+          x_position: createFromDrawingPosition.x,
+          y_position: createFromDrawingPosition.y,
+          entity_type: input.entityType,
+          entity_id: entityId,
+          label: input.title,
+          status: "open",
+        });
+
+        setDrawingViewerPins((prev) => [...prev, createdPin]);
+        setDrawingViewerHighlightedPinId(createdPin.id);
+        setCreateFromDrawingOpen(false);
+        setCreateFromDrawingPosition(null);
+        toast.success("Entity created and pinned to drawing");
+      } catch (error) {
+        console.error("Failed to create entity from drawing:", error);
+        toast.error("Failed to create entity");
+      }
+    },
+    [createFromDrawingPosition, drawingViewerSheet, projectId],
+  );
 
   const handleCreateFolder = useCallback(async () => {
-    const normalized = normalizeFolderPath(newFolderPath)
+    const normalized = normalizeFolderPath(newFolderPath);
     if (!normalized) {
-      toast.error("Enter a folder path like /contracts")
-      return
+      toast.error("Enter a folder path like /contracts");
+      return;
     }
 
-    setIsCreatingFolder(true)
+    setIsCreatingFolder(true);
     try {
-      await createFolderAction(projectId, normalized)
-      toast.success(`Created folder ${normalized}`)
-      setCreateFolderDialogOpen(false)
-      setNewFolderPath("")
-      await refreshFiles()
-      dispatchNavRefresh()
+      await createFolderAction(projectId, normalized);
+      toast.success(`Created folder ${normalized}`);
+      setCreateFolderDialogOpen(false);
+      setNewFolderPath("");
+      await refreshFiles();
+      dispatchNavRefresh();
     } catch (error) {
-      console.error("Failed to create folder:", error)
-      toast.error(error instanceof Error ? error.message : "Failed to create folder")
+      console.error("Failed to create folder:", error);
+      toast.error(
+        error instanceof Error ? error.message : "Failed to create folder",
+      );
     } finally {
-      setIsCreatingFolder(false)
+      setIsCreatingFolder(false);
     }
-  }, [newFolderPath, projectId, refreshFiles])
+  }, [newFolderPath, projectId, refreshFiles]);
 
   const handleRenameConfirm = useCallback(async () => {
-    if (!renameFile) return
-    const nextName = renameValue.trim()
+    if (!renameFile) return;
+    const nextName = renameValue.trim();
     if (!nextName) {
-      toast.error("File name is required")
-      return
+      toast.error("File name is required");
+      return;
     }
 
-    setIsRenaming(true)
+    setIsRenaming(true);
     try {
-      await updateFileAction(renameFile.id, { file_name: nextName })
-      toast.success("File renamed")
-      setRenameDialogOpen(false)
-      setRenameFile(null)
-      await refreshFiles()
+      await updateFileAction(renameFile.id, { file_name: nextName });
+      toast.success("File renamed");
+      setRenameDialogOpen(false);
+      setRenameFile(null);
+      await refreshFiles();
     } catch (error) {
-      console.error("Failed to rename file:", error)
-      toast.error("Failed to rename file")
+      console.error("Failed to rename file:", error);
+      toast.error("Failed to rename file");
     } finally {
-      setIsRenaming(false)
+      setIsRenaming(false);
     }
-  }, [renameFile, renameValue, refreshFiles])
+  }, [renameFile, renameValue, refreshFiles]);
 
   const handleShareConfirm = useCallback(async () => {
-    if (!shareFile) return
-    setIsSavingShare(true)
+    if (!shareFile) return;
+    setIsSavingShare(true);
     try {
       await updateFileAction(shareFile.id, {
         share_with_clients: shareWithClients,
         share_with_subs: shareWithSubs,
-      })
-      toast.success("Sharing updated")
-      setShareDialogOpen(false)
-      setShareFile(null)
-      await refreshFiles()
+      });
+      toast.success("Sharing updated");
+      setShareDialogOpen(false);
+      setShareFile(null);
+      await refreshFiles();
     } catch (error) {
-      console.error("Failed to update sharing:", error)
-      toast.error("Failed to update sharing")
+      console.error("Failed to update sharing:", error);
+      toast.error("Failed to update sharing");
     } finally {
-      setIsSavingShare(false)
+      setIsSavingShare(false);
     }
-  }, [refreshFiles, shareFile, shareWithClients, shareWithSubs])
+  }, [refreshFiles, shareFile, shareWithClients, shareWithSubs]);
 
   const handleMoveConfirm = useCallback(async () => {
-    if (moveFileIds.length === 0) return
+    if (moveFileIds.length === 0) return;
 
-    const normalizedTarget = normalizeFolderPath(moveTargetFolder)
+    const normalizedTarget = normalizeFolderPath(moveTargetFolder);
     await moveFilesToFolder(
       moveFileIds,
       normalizedTarget,
-      normalizedTarget ?? "Root"
-    )
-    setMoveDialogOpen(false)
-    setMoveFileIds([])
-    setMoveTargetFolder("")
-  }, [moveFileIds, moveTargetFolder, moveFilesToFolder])
+      normalizedTarget ?? "Root",
+    );
+    setMoveDialogOpen(false);
+    setMoveFileIds([]);
+    setMoveTargetFolder("");
+  }, [moveFileIds, moveTargetFolder, moveFilesToFolder]);
 
   const handleDeleteConfirm = useCallback(async () => {
-    if (deleteFileIds.length === 0) return
+    if (deleteFileIds.length === 0) return;
 
-    setIsDeleting(true)
+    setIsDeleting(true);
     try {
-      await bulkDeleteFilesAction(deleteFileIds)
-      toast.success(`Deleted ${deleteFileIds.length} file${deleteFileIds.length === 1 ? "" : "s"}`)
-      setDeleteDialogOpen(false)
-      setDeleteFileIds([])
-      setSelectedFileIds(new Set())
-      await refreshFiles()
-      dispatchNavRefresh()
+      await bulkDeleteFilesAction(deleteFileIds);
+      toast.success(
+        `Deleted ${deleteFileIds.length} file${deleteFileIds.length === 1 ? "" : "s"}`,
+      );
+      setDeleteDialogOpen(false);
+      setDeleteFileIds([]);
+      setSelectedFileIds(new Set());
+      await refreshFiles();
+      dispatchNavRefresh();
     } catch (error) {
-      console.error("Failed to delete files:", error)
-      toast.error("Failed to delete files")
+      console.error("Failed to delete files:", error);
+      toast.error("Failed to delete files");
     } finally {
-      setIsDeleting(false)
+      setIsDeleting(false);
     }
-  }, [deleteFileIds, refreshFiles])
+  }, [deleteFileIds, refreshFiles]);
 
   const handleDownloadSelected = useCallback(async () => {
-    const ids = Array.from(selectedFileIds)
-    if (ids.length === 0) return
+    const ids = Array.from(selectedFileIds);
+    if (ids.length === 0) return;
 
-    const selectedFiles = files.filter((file) => selectedFileIds.has(file.id))
+    const selectedFiles = files.filter((file) => selectedFileIds.has(file.id));
     if (selectedFiles.length === 0) {
-      toast.error("No selected files available for download")
-      return
+      toast.error("No selected files available for download");
+      return;
     }
 
-    setIsDownloadingSelected(true)
+    setIsDownloadingSelected(true);
     try {
       const downloads = await Promise.all(
         selectedFiles.map(async (file) => {
           try {
-            const url = await getFileDownloadUrlAction(file.id)
-            return { fileName: file.file_name, url }
+            const url = await getFileDownloadUrlAction(file.id);
+            return { fileName: file.file_name, url };
           } catch {
-            return null
+            return null;
           }
-        })
-      )
+        }),
+      );
 
-      let successCount = 0
+      let successCount = 0;
       for (const download of downloads) {
-        if (!download) continue
-        const link = document.createElement("a")
-        link.href = download.url
-        link.download = download.fileName
-        link.rel = "noopener"
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        successCount += 1
+        if (!download) continue;
+        const link = document.createElement("a");
+        link.href = download.url;
+        link.download = download.fileName;
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        successCount += 1;
       }
 
       if (successCount === 0) {
-        toast.error("Failed to download selected files")
-        return
+        toast.error("Failed to download selected files");
+        return;
       }
 
       if (successCount < ids.length) {
-        toast.success(`Downloaded ${successCount} of ${ids.length} selected files`)
+        toast.success(
+          `Downloaded ${successCount} of ${ids.length} selected files`,
+        );
       } else {
-        toast.success(`Downloading ${successCount} selected file${successCount === 1 ? "" : "s"}`)
+        toast.success(
+          `Downloading ${successCount} selected file${successCount === 1 ? "" : "s"}`,
+        );
       }
     } catch (error) {
-      console.error("Failed to download selected files:", error)
-      toast.error("Failed to download selected files")
+      console.error("Failed to download selected files:", error);
+      toast.error("Failed to download selected files");
     } finally {
-      setIsDownloadingSelected(false)
+      setIsDownloadingSelected(false);
     }
-  }, [files, selectedFileIds])
+  }, [files, selectedFileIds]);
 
   const handleUploadVersion = useCallback(
     async (file: File, label?: string, notes?: string) => {
-      if (!viewerFile) return
-      const formData = new FormData()
-      formData.append("fileId", viewerFile.id)
-      formData.append("file", file)
-      if (label) formData.append("label", label)
-      if (notes) formData.append("notes", notes)
-      await uploadFileVersionAction(formData)
-      const versions = await listFileVersionsAction(viewerFile.id)
+      if (!viewerFile) return;
+      const formData = new FormData();
+      formData.append("fileId", viewerFile.id);
+      formData.append("file", file);
+      if (label) formData.append("label", label);
+      if (notes) formData.append("notes", notes);
+      await uploadFileVersionAction(formData);
+      const versions = await listFileVersionsAction(viewerFile.id);
       setVersionsByFile((prev) => ({
         ...prev,
         [viewerFile.id]: versions.map(mapVersion),
-      }))
-      await refreshFiles()
+      }));
+      await refreshFiles();
     },
-    [viewerFile, refreshFiles]
-  )
+    [viewerFile, refreshFiles],
+  );
 
   const handleMakeCurrentVersion = useCallback(
     async (versionId: string) => {
-      if (!viewerFile) return
-      await makeVersionCurrentAction(viewerFile.id, versionId)
-      const versions = await listFileVersionsAction(viewerFile.id)
+      if (!viewerFile) return;
+      await makeVersionCurrentAction(viewerFile.id, versionId);
+      const versions = await listFileVersionsAction(viewerFile.id);
       setVersionsByFile((prev) => ({
         ...prev,
         [viewerFile.id]: versions.map(mapVersion),
-      }))
-      await refreshFiles()
+      }));
+      await refreshFiles();
     },
-    [viewerFile, refreshFiles]
-  )
+    [viewerFile, refreshFiles],
+  );
 
   const handleDownloadVersion = useCallback(async (versionId: string) => {
-    const url = await getVersionDownloadUrlAction(versionId)
-    const link = document.createElement("a")
-    link.href = url
-    link.click()
-  }, [])
+    const url = await getVersionDownloadUrlAction(versionId);
+    const link = document.createElement("a");
+    link.href = url;
+    link.click();
+  }, []);
 
   const handleUpdateVersion = useCallback(
     async (versionId: string, updates: { label?: string; notes?: string }) => {
-      await updateFileVersionAction(versionId, updates)
+      await updateFileVersionAction(versionId, updates);
       if (viewerFile) {
-        const versions = await listFileVersionsAction(viewerFile.id)
+        const versions = await listFileVersionsAction(viewerFile.id);
         setVersionsByFile((prev) => ({
           ...prev,
           [viewerFile.id]: versions.map(mapVersion),
-        }))
+        }));
       }
     },
-    [viewerFile]
-  )
+    [viewerFile],
+  );
 
   const handleDeleteVersion = useCallback(
     async (versionId: string) => {
-      await deleteFileVersionAction(versionId)
+      await deleteFileVersionAction(versionId);
       if (viewerFile) {
-        const versions = await listFileVersionsAction(viewerFile.id)
+        const versions = await listFileVersionsAction(viewerFile.id);
         setVersionsByFile((prev) => ({
           ...prev,
           [viewerFile.id]: versions.map(mapVersion),
-        }))
-        await refreshFiles()
+        }));
+        await refreshFiles();
       }
     },
-    [viewerFile, refreshFiles]
-  )
+    [viewerFile, refreshFiles],
+  );
 
   const handleViewerFileChange = useCallback((file: FileWithDetails) => {
-    setViewerFile((prev) => (prev?.id === file.id ? prev : file))
+    setViewerFile((prev) => (prev?.id === file.id ? prev : file));
     if (lastNotifiedViewerFileIdRef.current === file.id) {
-      return
+      return;
     }
-    lastNotifiedViewerFileIdRef.current = file.id
+    lastNotifiedViewerFileIdRef.current = file.id;
     listFileVersionsAction(file.id).then((versions) => {
       setVersionsByFile((prev) => ({
         ...prev,
         [file.id]: versions.map(mapVersion),
-      }))
-    })
-  }, [])
+      }));
+    });
+  }, []);
 
   const handleDownload = useCallback(async (file: FileWithDetails) => {
     try {
-      const url = await getFileDownloadUrlAction(file.id)
-      const link = document.createElement("a")
-      link.href = url
-      link.download = file.file_name
-      link.click()
-      toast.success(`Downloading ${file.file_name}`)
+      const url = await getFileDownloadUrlAction(file.id);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = file.file_name;
+      link.click();
+      toast.success(`Downloading ${file.file_name}`);
     } catch (error) {
-      console.error("Download failed:", error)
-      toast.error("Failed to download file")
+      console.error("Download failed:", error);
+      toast.error("Failed to download file");
     }
-  }, [])
+  }, []);
 
   const previewableFiles = useMemo(() => {
     return files
       .filter((f) => {
-        const mime = f.mime_type ?? ""
+        const mime = f.mime_type ?? "";
         return (
           mime.startsWith("image/") ||
           mime === "application/pdf" ||
           mime.startsWith("video/") ||
           mime.startsWith("audio/")
-        )
+        );
       })
       .map((f) => {
-        const selectedViewer = viewerFile?.id === f.id ? viewerFile : null
+        const selectedViewer = viewerFile?.id === f.id ? viewerFile : null;
         return {
           ...f,
           ...(selectedViewer
@@ -858,9 +1178,9 @@ function UnifiedDocumentsLayoutInner() {
               }
             : {}),
           category: f.category as any,
-        }
-      })
-  }, [files, viewerFile])
+        };
+      });
+  }, [files, viewerFile]);
 
   const renderContent = () => {
     // If a drawing set is selected (via sidebar), show sheets
@@ -870,7 +1190,7 @@ function UnifiedDocumentsLayoutInner() {
           onSheetClick={handleSheetClick}
           onUploadDrawingSetClick={handleOpenDrawingSetUpload}
         />
-      )
+      );
     }
 
     // Otherwise show files/folders
@@ -891,8 +1211,8 @@ function UnifiedDocumentsLayoutInner() {
         onFileDragStart={handleFileDragStart}
         onFileDragEnd={handleFileDragEnd}
       />
-    )
-  }
+    );
+  };
 
   return (
     <div
@@ -909,8 +1229,8 @@ function UnifiedDocumentsLayoutInner() {
           onUploadClick={handleUploadClick}
           onUploadDrawingSetClick={handleOpenDrawingSetUpload}
           onCreateFolderClick={() => {
-            setNewFolderPath(currentPath || "")
-            setCreateFolderDialogOpen(true)
+            setNewFolderPath(currentPath || "");
+            setCreateFolderDialogOpen(true);
           }}
           selectedCount={selectedFileIds.size}
           onDownloadSelected={handleDownloadSelected}
@@ -926,7 +1246,10 @@ function UnifiedDocumentsLayoutInner() {
 
       <div className="relative z-10 flex min-h-0 flex-1">
         <div className="hidden min-h-0 flex-1 md:flex">
-          <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
+          <ResizablePanelGroup
+            direction="horizontal"
+            className="min-h-0 flex-1"
+          >
             <ResizablePanel defaultSize={16} minSize={16} maxSize={40}>
               <div className="h-full border-r border-border/60 bg-background/70">
                 <DocumentsExplorer />
@@ -984,9 +1307,9 @@ function UnifiedDocumentsLayoutInner() {
       <Dialog
         open={drawingSetUploadOpen}
         onOpenChange={(open) => {
-          setDrawingSetUploadOpen(open)
+          setDrawingSetUploadOpen(open);
           if (!open) {
-            resetDrawingSetUploadDialog()
+            resetDrawingSetUploadDialog();
           }
         }}
       >
@@ -1048,7 +1371,9 @@ function UnifiedDocumentsLayoutInner() {
 
             {drawingSetFile && (
               <div className="rounded-md border bg-muted/40 px-3 py-2">
-                <p className="text-sm font-medium truncate">{drawingSetFile.name}</p>
+                <p className="text-sm font-medium truncate">
+                  {drawingSetFile.name}
+                </p>
                 <p className="text-xs text-muted-foreground">
                   {(drawingSetFile.size / 1024 / 1024).toFixed(2)} MB
                 </p>
@@ -1093,13 +1418,13 @@ function UnifiedDocumentsLayoutInner() {
         files={previewableFiles}
         open={viewerOpen}
         onOpenChange={(open) => {
-          setViewerOpen(open)
+          setViewerOpen(open);
           if (!open) {
-            setViewerFile(null)
+            setViewerFile(null);
           }
         }}
         onDownload={handleDownload}
-        versions={viewerFile ? versionsByFile[viewerFile.id] ?? [] : []}
+        versions={viewerFile ? (versionsByFile[viewerFile.id] ?? []) : []}
         onUploadVersion={handleUploadVersion}
         onMakeCurrentVersion={handleMakeCurrentVersion}
         onDownloadVersion={handleDownloadVersion}
@@ -1107,11 +1432,11 @@ function UnifiedDocumentsLayoutInner() {
         onDeleteVersion={handleDeleteVersion}
         onRefreshVersions={async () => {
           if (viewerFile) {
-            const versions = await listFileVersionsAction(viewerFile.id)
+            const versions = await listFileVersionsAction(viewerFile.id);
             setVersionsByFile((prev) => ({
               ...prev,
               [viewerFile.id]: versions.map(mapVersion),
-            }))
+            }));
           }
         }}
         onFileChange={viewerOpen ? handleViewerFileChange : undefined}
@@ -1121,13 +1446,17 @@ function UnifiedDocumentsLayoutInner() {
         <DrawingViewer
           sheet={drawingViewerSheet}
           fileUrl={drawingViewerUrl ?? undefined}
-          markups={[]}
-          pins={[]}
-          readOnly
-          onClose={() => {
-            setDrawingViewerOpen(false)
-            setDrawingViewerSheet(null)
-            setDrawingViewerUrl(null)
+          markups={drawingViewerMarkups}
+          pins={drawingViewerPins}
+          highlightedPinId={drawingViewerHighlightedPinId ?? undefined}
+          onClose={closeDrawingViewer}
+          onSaveMarkup={handleDrawingMarkupSave}
+          onDeleteMarkup={handleDrawingMarkupDelete}
+          onCreatePin={handleCreateDrawingPin}
+          onPinClick={handleDrawingPinClick}
+          sheets={drawingViewerSheets}
+          onNavigateSheet={(sheet) => {
+            void handleSheetClick(sheet, drawingViewerSheets);
           }}
           imageThumbnailUrl={drawingViewerSheet.image_thumbnail_url ?? null}
           imageMediumUrl={drawingViewerSheet.image_medium_url ?? null}
@@ -1137,26 +1466,44 @@ function UnifiedDocumentsLayoutInner() {
         />
       )}
 
+      <CreateFromDrawingDialog
+        open={createFromDrawingOpen}
+        onOpenChange={(open) => {
+          setCreateFromDrawingOpen(open);
+          if (!open) {
+            setCreateFromDrawingPosition(null);
+          }
+        }}
+        onCreate={handleCreateFromDrawing}
+        sheet={drawingViewerSheet}
+        position={createFromDrawingPosition || { x: 0, y: 0 }}
+        projectId={projectId}
+      />
+
       <FileTimelineSheet
         file={timelineFile}
         events={timelineEvents}
         loading={timelineLoading}
         open={timelineOpen}
         onOpenChange={(open) => {
-          setTimelineOpen(open)
+          setTimelineOpen(open);
           if (!open) {
-            setTimelineFile(null)
-            setTimelineEvents([])
+            setTimelineFile(null);
+            setTimelineEvents([]);
           }
         }}
       />
 
-      <Dialog open={createFolderDialogOpen} onOpenChange={setCreateFolderDialogOpen}>
+      <Dialog
+        open={createFolderDialogOpen}
+        onOpenChange={setCreateFolderDialogOpen}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Create folder</DialogTitle>
             <DialogDescription>
-              Folders are virtual and support nested paths like <code>/contracts/subcontracts</code>.
+              Folders are virtual and support nested paths like{" "}
+              <code>/contracts/subcontracts</code>.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -1192,9 +1539,9 @@ function UnifiedDocumentsLayoutInner() {
       <Dialog
         open={shareDialogOpen}
         onOpenChange={(open) => {
-          setShareDialogOpen(open)
+          setShareDialogOpen(open);
           if (!open) {
-            setShareFile(null)
+            setShareFile(null);
           }
         }}
       >
@@ -1202,14 +1549,18 @@ function UnifiedDocumentsLayoutInner() {
           <DialogHeader>
             <DialogTitle>Share file</DialogTitle>
             <DialogDescription>
-              {shareFile ? `Choose who can see "${shareFile.file_name}".` : "Choose who can see this file."}
+              {shareFile
+                ? `Choose who can see "${shareFile.file_name}".`
+                : "Choose who can see this file."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>
                 <p className="text-sm font-medium">Client Portal</p>
-                <p className="text-xs text-muted-foreground">Allow clients to access this file.</p>
+                <p className="text-xs text-muted-foreground">
+                  Allow clients to access this file.
+                </p>
               </div>
               <Checkbox
                 checked={shareWithClients}
@@ -1220,7 +1571,9 @@ function UnifiedDocumentsLayoutInner() {
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>
                 <p className="text-sm font-medium">Subcontractor Portal</p>
-                <p className="text-xs text-muted-foreground">Allow subcontractors to access this file.</p>
+                <p className="text-xs text-muted-foreground">
+                  Allow subcontractors to access this file.
+                </p>
               </div>
               <Checkbox
                 checked={shareWithSubs}
@@ -1237,7 +1590,10 @@ function UnifiedDocumentsLayoutInner() {
             >
               Cancel
             </Button>
-            <Button onClick={handleShareConfirm} disabled={isSavingShare || !shareFile}>
+            <Button
+              onClick={handleShareConfirm}
+              disabled={isSavingShare || !shareFile}
+            >
               {isSavingShare ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1267,7 +1623,11 @@ function UnifiedDocumentsLayoutInner() {
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameDialogOpen(false)} disabled={isRenaming}>
+            <Button
+              variant="outline"
+              onClick={() => setRenameDialogOpen(false)}
+              disabled={isRenaming}
+            >
               Cancel
             </Button>
             <Button onClick={handleRenameConfirm} disabled={isRenaming}>
@@ -1289,7 +1649,9 @@ function UnifiedDocumentsLayoutInner() {
           <DialogHeader>
             <DialogTitle>Move files</DialogTitle>
             <DialogDescription>
-              Move {moveFileIds.length} file{moveFileIds.length === 1 ? "" : "s"} to a folder. Leave empty to move to root.
+              Move {moveFileIds.length} file
+              {moveFileIds.length === 1 ? "" : "s"} to a folder. Leave empty to
+              move to root.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -1307,10 +1669,17 @@ function UnifiedDocumentsLayoutInner() {
             </datalist>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setMoveDialogOpen(false)} disabled={isMoving}>
+            <Button
+              variant="outline"
+              onClick={() => setMoveDialogOpen(false)}
+              disabled={isMoving}
+            >
               Cancel
             </Button>
-            <Button onClick={handleMoveConfirm} disabled={isMoving || moveFileIds.length === 0}>
+            <Button
+              onClick={handleMoveConfirm}
+              disabled={isMoving || moveFileIds.length === 0}
+            >
               {isMoving ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -1329,7 +1698,8 @@ function UnifiedDocumentsLayoutInner() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete files?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete {deleteFileIds.length} file{deleteFileIds.length === 1 ? "" : "s"}.
+              This will permanently delete {deleteFileIds.length} file
+              {deleteFileIds.length === 1 ? "" : "s"}.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1352,5 +1722,5 @@ function UnifiedDocumentsLayoutInner() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
+  );
 }

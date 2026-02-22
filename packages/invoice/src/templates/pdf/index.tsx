@@ -115,6 +115,7 @@ export async function PdfTemplate({
 
           {template?.logoUrl && (
             <div style={{ maxWidth: "300px" }}>
+              {/* eslint-disable-next-line jsx-a11y/alt-text */}
               <Image
                 src={template.logoUrl}
                 style={{

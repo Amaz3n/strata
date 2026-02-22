@@ -30,7 +30,7 @@ function normalizeRoleKeys(rows: any[]): PlatformRoleKey[] {
           const role = Array.isArray(row?.role) ? row.role[0] : row?.role
           return role?.key as PlatformRoleKey | undefined
         })
-        .filter(Boolean),
+        .filter((key): key is PlatformRoleKey => key != null),
     ),
   )
 }

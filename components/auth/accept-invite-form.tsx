@@ -28,7 +28,7 @@ const passwordRequirements: PasswordRequirement[] = [
   { label: "One number", test: (p) => /[0-9]/.test(p) },
 ]
 
-const initialState: AcceptInviteState = {}
+const initialState: AcceptInviteState = { error: undefined }
 
 export function AcceptInviteForm({ token, orgName, email }: AcceptInviteFormProps) {
   const [state, formAction, pending] = useActionState(acceptInviteAction, initialState)

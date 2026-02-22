@@ -1,5 +1,6 @@
 "use client"
 
+import React from "react"
 import { format } from "date-fns"
 import { Download, FileText, File, FolderOpen } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -126,7 +127,7 @@ export function BidDocumentsTab({ files }: BidDocumentsTabProps) {
     )
   }
 
-  const renderFolderNode = (node: FolderNode): JSX.Element => (
+  const renderFolderNode = (node: FolderNode): React.ReactNode => (
     <details key={node.path} open className="rounded-md border bg-background/60">
       <summary className="cursor-pointer list-none px-3 py-2.5 hover:bg-muted/40">
         <div className="flex items-center justify-between gap-2">

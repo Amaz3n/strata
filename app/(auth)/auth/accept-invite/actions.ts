@@ -12,7 +12,7 @@ export interface AcceptInviteState {
 }
 
 export async function acceptInviteAction(
-  prevState: AcceptInviteState,
+  _prevState: AcceptInviteState,
   formData: FormData
 ): Promise<AcceptInviteState> {
   const token = formData.get("token") as string

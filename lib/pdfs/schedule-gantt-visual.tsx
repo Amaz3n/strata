@@ -659,7 +659,7 @@ function SummaryCard({
   isLast?: boolean
 }) {
   return (
-    <View style={[styles.summaryCard, isLast ? styles.summaryCardLast : null]}>
+    <View style={[styles.summaryCard, ...(isLast ? [styles.summaryCardLast] : [])]}>
       <View style={[styles.summaryTone, { backgroundColor: tone }]} />
       <Text style={styles.summaryLabel}>{label}</Text>
       <Text style={[styles.summaryValue, { color: darken(tone, 0.24) }]}>{value}</Text>
@@ -824,9 +824,9 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
             </View>
 
             <View style={styles.headerRight}>
-              <View style={[styles.logoBox, isSquareLogo ? styles.logoBoxSquare : null]}>
+              <View style={[styles.logoBox, ...(isSquareLogo ? [styles.logoBoxSquare] : [])]}>
                 {data.orgLogoUrl ? (
-                  <Image src={data.orgLogoUrl} style={styles.logoImage} alt={data.orgName ? `${data.orgName} logo` : "Organization logo"} />
+                  <Image src={data.orgLogoUrl} style={styles.logoImage} /> // eslint-disable-line jsx-a11y/alt-text
                 ) : (
                   <Text style={styles.logoFallbackText}>{compactOrgName(data.orgName)}</Text>
                 )}
@@ -885,8 +885,8 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
                     const statusVisual = STATUS_VISUALS[item.status] || STATUS_VISUALS.planned
                     const rowStyle = [
                       styles.nameRow,
-                      rowIndex % 2 === 1 ? styles.nameRowAlt : null,
-                      item.is_critical_path ? styles.nameRowCritical : null,
+                      ...(rowIndex % 2 === 1 ? [styles.nameRowAlt] : []),
+                      ...(item.is_critical_path ? [styles.nameRowCritical] : []),
                     ]
                     const barColor = getBarColor(item)
                     const typeLabel = ITEM_TYPE_LABELS[item.item_type] || toTitleCase(item.item_type)
@@ -929,7 +929,7 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
                       style={[
                         styles.timelineHeaderCell,
                         { width: col.width },
-                        col.isWeekend ? styles.timelineHeaderCellWeekend : null,
+                        ...(col.isWeekend ? [styles.timelineHeaderCellWeekend] : []),
                       ]}
                     >
                       <Text style={styles.timelineHeaderLabel}>{col.label}</Text>
@@ -944,8 +944,8 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
                   pageItems.map((item, rowIndex) => {
                     const rowStyle = [
                       styles.timelineRow,
-                      rowIndex % 2 === 1 ? styles.timelineRowAlt : null,
-                      item.is_critical_path ? styles.timelineRowCritical : null,
+                      ...(rowIndex % 2 === 1 ? [styles.timelineRowAlt] : []),
+                      ...(item.is_critical_path ? [styles.timelineRowCritical] : []),
                     ]
 
                     const itemStart = item.start_date ? startOfDay(new Date(item.start_date)) : null

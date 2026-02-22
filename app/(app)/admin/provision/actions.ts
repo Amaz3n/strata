@@ -16,7 +16,7 @@ const provisionSchema = z.object({
   trialDays: z.coerce.number().optional(),
 })
 
-export async function provisionOrgAction(prevState: { error?: string; message?: string }, formData: FormData) {
+export async function provisionOrgAction(_prevState: { error?: string; message?: string }, formData: FormData) {
   const parsed = provisionSchema.safeParse({
     orgName: formData.get("orgName"),
     slug: formData.get("slug") ?? formData.get("orgSlug"),

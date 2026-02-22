@@ -89,7 +89,7 @@ export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOpt
   if (options.length > 0) {
     return Array.from(allowedRoleKeys)
       .map((key) => options.find((option) => option.key === key))
-      .filter((option): option is OrgRoleOption => Boolean(option))
+      .filter((option) => option != null) as OrgRoleOption[]
   }
 
   return [

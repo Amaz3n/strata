@@ -37,7 +37,7 @@ const updatePasswordSchema = z.object({
   path: ["confirmPassword"],
 })
 
-export async function signInAction(prevState: AuthState, formData: FormData): Promise<AuthState> {
+export async function signInAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
   const parsed = signInSchema.safeParse({
     email: formData.get("email"),
     password: formData.get("password"),
@@ -85,7 +85,7 @@ export async function signInAction(prevState: AuthState, formData: FormData): Pr
   redirect("/")
 }
 
-export async function signUpAction(prevState: AuthState, formData: FormData): Promise<AuthState> {
+export async function signUpAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
   const parsed = signUpSchema.safeParse({
     email: formData.get("email"),
     password: formData.get("password"),
@@ -169,7 +169,7 @@ export async function signOutAction() {
   redirect("/auth/signin")
 }
 
-export async function requestPasswordResetAction(prevState: AuthState, formData: FormData): Promise<AuthState> {
+export async function requestPasswordResetAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
   const parsed = resetRequestSchema.safeParse({
     email: formData.get("email"),
   })
@@ -190,7 +190,7 @@ export async function requestPasswordResetAction(prevState: AuthState, formData:
   return { message: "Password reset email sent. Check your inbox for the link." }
 }
 
-export async function updatePasswordAction(prevState: AuthState, formData: FormData): Promise<AuthState> {
+export async function updatePasswordAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
   const parsed = updatePasswordSchema.safeParse({
     password: formData.get("password"),
     confirmPassword: formData.get("confirmPassword"),

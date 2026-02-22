@@ -178,9 +178,9 @@ export function BidPortalClient({ token, access, data, pinRequired = false }: Bi
         return
       }
 
-      setCurrentSubmission(result.submission)
+      setCurrentSubmission(result.submission as BidPortalSubmission)
       setSubmissionHistory((prev) => [
-        { ...result.submission, is_current: true },
+        { ...result.submission, is_current: true } as BidPortalSubmission,
         ...prev.map((item) => ({ ...item, is_current: false })),
       ])
       toast.success("Bid submitted successfully")

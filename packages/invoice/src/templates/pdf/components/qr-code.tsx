@@ -8,6 +8,7 @@ interface QRCodeProps {
 export function QRCode({ data, size = 40 }: QRCodeProps) {
   return (
     <View style={{ marginTop: 20 }}>
+      {/* eslint-disable-next-line jsx-a11y/alt-text */}
       <Image src={data} style={{ width: size, height: size }} />
     </View>
   );

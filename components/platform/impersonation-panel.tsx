@@ -14,7 +14,7 @@ interface OrgOption {
   name: string
 }
 
-const initialState = {} as { error?: string; message?: string }
+const initialState = { error: undefined, message: undefined }
 
 export function ImpersonationPanel({ orgs }: { orgs: OrgOption[] }) {
   const router = useRouter()
@@ -24,7 +24,7 @@ export function ImpersonationPanel({ orgs }: { orgs: OrgOption[] }) {
     <form
       action={async (formData) => {
         await formAction(formData)
-        router.refresh()
+        router.refresh?.()
       }}
       className="space-y-4"
     >

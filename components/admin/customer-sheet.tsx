@@ -25,11 +25,11 @@ interface Customer {
   createdAt: string
   subscription?: {
     status: string
-    planName: string
-    amountCents: number
-    currency: string
-    interval: string
-    currentPeriodEnd: string
+    planName: string | null
+    amountCents: number | null
+    currency: string | null
+    interval: string | null
+    currentPeriodEnd: string | null
   } | null
 }
 
@@ -245,7 +245,7 @@ export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetPro
                           <div className="mt-1">
                             {customer.subscription ? (
                               <span className="text-sm font-medium">
-                                ${(customer.subscription.amountCents / 100).toFixed(0)}/{customer.subscription.interval}
+                                ${((customer.subscription.amountCents || 0) / 100).toFixed(0)}/{customer.subscription.interval}
                               </span>
                             ) : (
                               <span className="text-sm text-muted-foreground">-</span>
@@ -259,7 +259,7 @@ export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetPro
                           <div className="mt-1">
                             {customer.subscription ? (
                               <span className="text-sm">
-                                {format(new Date(customer.subscription.currentPeriodEnd), "MMM d, yyyy")}
+                                {customer.subscription.currentPeriodEnd ? format(new Date(customer.subscription.currentPeriodEnd), "MMM d, yyyy") : "N/A"}
                               </span>
                             ) : (
                               <span className="text-sm text-muted-foreground">-</span>

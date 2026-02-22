@@ -749,7 +749,7 @@ export function EnvelopeWizard({
           const document = linkedSourceMetadata
             ? (
                 await createVersionedSourceDocumentDraftAction({
-                  project_id: sourceEntity.project_id,
+                  project_id: sourceEntity.project_id!,
                   document_type: documentType,
                   title: draftTitle,
                   source_file_id: uploadedPdf.id,
@@ -759,7 +759,7 @@ export function EnvelopeWizard({
                 })
               ).document
             : await createDocumentAction({
-                project_id: sourceEntity.project_id,
+                project_id: sourceEntity.project_id!,
                 document_type: documentType,
                 title: draftTitle,
                 source_file_id: uploadedPdf.id,
@@ -1246,6 +1246,7 @@ function RecipientCard({
         .map((suggestion) => ({
           name: suggestion.name.trim(),
           email: suggestion.email.trim(),
+          source: suggestion.source,
         }))
         .filter((suggestion) => suggestion.name.length > 0 && suggestion.email.length > 0),
     [suggestions],

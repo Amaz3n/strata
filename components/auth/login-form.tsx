@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 
-const initialState: AuthState = {}
+const initialState: AuthState = { error: undefined, message: undefined, mfaRequired: undefined }
 
 export function LoginForm({
   className,

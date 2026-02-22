@@ -620,7 +620,7 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
     { count: newOrgsThisMonth },
     { count: usersThisMonth },
     { count: usersPrevMonth },
-    { count: dauCount },
+    { data: dauData },
     { data: subscriptionsData },
     { count: eventsLast24h },
     { count: outboxFailuresLast24h },
@@ -659,7 +659,7 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
     supabase.from("files").select("size_bytes").gte("created_at", thirtyDaysAgoIso),
   ])
 
-  const activeUsers = new Set((dauCount ?? []).map((row: any) => row.user_id).filter(Boolean))
+  const activeUsers = new Set((dauData ?? []).map((row: any) => row.user_id).filter(Boolean))
   const activeSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "active").length
   const trialingSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "trialing").length
   const pastDueSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "past_due").length

@@ -72,7 +72,7 @@ export async function clearOrgContextAction() {
 }
 
 export async function startImpersonationAction(
-  prevState: { error?: string; message?: string },
+  _prevState: { error?: string; message?: string },
   formData: FormData,
 ) {
   const parsed = startImpersonationSchema.safeParse({

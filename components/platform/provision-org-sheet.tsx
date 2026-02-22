@@ -15,7 +15,7 @@ interface PlanOption {
 
 interface ProvisionOrgSheetProps {
   plans: PlanOption[]
-  action: (prevState: { error?: string; message?: string }, formData: FormData) => Promise<{ error?: string; message?: string }>
+  action?: (prevState: { error?: string; message?: string }, formData: FormData) => Promise<{ error?: string; message?: string }>
 }
 
 export function ProvisionOrgSheet({ plans, action }: ProvisionOrgSheetProps) {
