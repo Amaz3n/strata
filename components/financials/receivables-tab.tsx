@@ -47,20 +47,33 @@ export function ReceivablesTab({
 
   // Calculate summary stats
   const stats = useMemo(() => {
-    const totalInvoiced = safeInvoices.reduce((sum, inv) => sum + (inv.total_cents ?? inv.totals?.total_cents ?? 0), 0)
-    const paidInvoices = safeInvoices.filter((inv) => inv.status === "paid")
-    const totalPaid = paidInvoices.reduce((sum, inv) => sum + (inv.total_cents ?? inv.totals?.total_cents ?? 0), 0)
-    const overdueInvoices = safeInvoices.filter((inv) => inv.status === "overdue")
-    const totalOverdue = overdueInvoices.reduce((sum, inv) => sum + (inv.total_cents ?? inv.totals?.total_cents ?? 0), 0)
-    const outstanding = totalInvoiced - totalPaid
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const summarizeInvoice = (inv: Invoice) => {
+      const total = inv.total_cents ?? inv.totals?.total_cents ?? 0
+      const balance = inv.balance_due_cents ?? inv.totals?.balance_due_cents ?? total
+      const collected = Math.max(total - balance, 0)
+      const dueDate = inv.due_date ? new Date(inv.due_date) : null
+      if (dueDate) dueDate.setHours(0, 0, 0, 0)
+      const isOverdue = Boolean(dueDate && dueDate < today && balance > 0)
+      return { total, balance, collected, isOverdue }
+    }
+
+    const invoiceSummaries = safeInvoices.map(summarizeInvoice)
+    const totalInvoiced = invoiceSummaries.reduce((sum, row) => sum + row.total, 0)
+    const totalCollected = invoiceSummaries.reduce((sum, row) => sum + row.collected, 0)
+    const totalOutstanding = invoiceSummaries.reduce((sum, row) => sum + row.balance, 0)
+    const overdueInvoices = invoiceSummaries.filter((row) => row.isOverdue)
+    const totalOverdue = overdueInvoices.reduce((sum, row) => sum + row.balance, 0)
 
     const totalRetainageHeld = safeRetainage.reduce((sum, r) => sum + (r.status === "held" ? r.amount_cents : 0), 0)
 
     return {
       totalInvoiced,
-      totalPaid,
+      totalCollected,
       totalOverdue,
-      outstanding,
+      totalOutstanding,
       invoiceCount: safeInvoices.length,
       overdueCount: overdueInvoices.length,
       totalRetainageHeld,
@@ -72,10 +85,10 @@ export function ReceivablesTab({
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryCard label="Total Invoiced" value={formatCurrency(stats.totalInvoiced)} subtext={`${stats.invoiceCount} invoices`} />
-        <SummaryCard label="Collected" value={formatCurrency(stats.totalPaid)} variant="success" />
+        <SummaryCard label="Collected" value={formatCurrency(stats.totalCollected)} variant="success" />
         <SummaryCard
           label="Outstanding"
-          value={formatCurrency(stats.outstanding)}
+          value={formatCurrency(stats.totalOutstanding)}
           subtext={stats.overdueCount > 0 ? `${stats.overdueCount} overdue` : undefined}
           variant={stats.overdueCount > 0 ? "warning" : "default"}
         />

@@ -1,14 +1,14 @@
 import {
   Body,
   Button,
-  Column,
   Container,
   Head,
   Heading,
   Hr,
   Html,
+  Img,
+  Link,
   Preview,
-  Row,
   Section,
   Text,
 } from "@react-email/components"
@@ -20,6 +20,8 @@ export interface InvoiceReminderEmailProps {
   dueDate: string
   daysOverdue?: number
   payLink: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
 }
 
 export function InvoiceReminderEmail({
@@ -29,11 +31,15 @@ export function InvoiceReminderEmail({
   dueDate = "",
   daysOverdue,
   payLink = "#",
+  orgName,
+  orgLogoUrl,
 }: InvoiceReminderEmailProps) {
-  const isOverdue = daysOverdue && daysOverdue > 0
+  const displayOrgName = orgName ?? "Arc"
+  const isOverdue = typeof daysOverdue === "number" && daysOverdue > 0
   const previewText = isOverdue
     ? `Invoice ${invoiceNumber} is ${daysOverdue} days overdue`
     : `Reminder: Invoice ${invoiceNumber} due ${dueDate}`
+  const greeting = recipientName ? `Hi ${recipientName},` : "Hi,"
 
   return (
     <Html>
@@ -42,67 +48,76 @@ export function InvoiceReminderEmail({
       <Body style={main}>
         <Container style={container}>
           <Section style={header}>
-            <Text style={logoText}>Arc</Text>
+            {orgLogoUrl ? (
+              <Img src={orgLogoUrl} alt={displayOrgName} width="56" height="56" style={logoImage} />
+            ) : (
+              <Text style={logoFallback}>{displayOrgName.slice(0, 1).toUpperCase()}</Text>
+            )}
+            <Text style={brandName}>{displayOrgName}</Text>
+            <Text style={brandSub}>Invoice Reminder</Text>
           </Section>
 
           <Section style={content}>
-            <Heading style={heading}>
-              {isOverdue ? "Payment Overdue" : "Payment Reminder"}
-            </Heading>
+            <Text style={eventLabelText}>{isOverdue ? "Payment Overdue" : "Payment Reminder"}</Text>
+            <Heading style={heading}>Invoice #{invoiceNumber}</Heading>
+            <Text style={subjectText}>{isOverdue ? `${daysOverdue} days overdue` : `Due ${dueDate}`}</Text>
 
-            <Text style={paragraph}>
-              Dear {recipientName || "Valued Customer"},
-            </Text>
+            <Text style={paragraph}>{greeting}</Text>
 
             <Text style={paragraph}>
               {isOverdue
-                ? `This is a reminder that your payment for invoice ${invoiceNumber} is now ${daysOverdue} days overdue. Please make your payment at your earliest convenience.`
+                ? `Payment for invoice ${invoiceNumber} is ${daysOverdue} days overdue. Please submit payment as soon as possible.`
                 : `This is a friendly reminder that payment for invoice ${invoiceNumber} is due on ${dueDate}.`}
             </Text>
 
-            <Section style={isOverdue ? invoiceCardOverdue : invoiceCard}>
-              <Row>
-                <Column style={invoiceDetailColumn}>
-                  <Text style={invoiceLabel}>Invoice Number</Text>
-                  <Text style={invoiceValue}>{invoiceNumber}</Text>
-                </Column>
-                <Column style={invoiceDetailColumn}>
-                  <Text style={invoiceLabel}>Amount Due</Text>
-                  <Text style={invoiceValueHighlight}>{amount}</Text>
-                </Column>
-              </Row>
-              <Hr style={divider} />
-              <Row>
-                <Column style={invoiceDetailColumn}>
-                  <Text style={invoiceLabel}>Due Date</Text>
-                  <Text style={invoiceValue}>{dueDate}</Text>
-                </Column>
-                {isOverdue && (
-                  <Column style={invoiceDetailColumn}>
-                    <Text style={invoiceLabel}>Days Overdue</Text>
-                    <Text style={overdueValue}>{daysOverdue}</Text>
-                  </Column>
-                )}
-              </Row>
+            <Section style={metaCard}>
+              <Text style={metaRow}>
+                <span style={metaLabel}>Invoice:</span> <span style={metaValue}>{invoiceNumber}</span>
+              </Text>
+              <Text style={metaRow}>
+                <span style={metaLabel}>Amount Due:</span> <span style={amountValue}>{amount}</span>
+              </Text>
+              <Text style={metaRow}>
+                <span style={metaLabel}>Due Date:</span> <span style={metaValue}>{dueDate}</span>
+              </Text>
+              {isOverdue ? (
+                <Text style={metaRow}>
+                  <span style={metaLabel}>Days Overdue:</span> <span style={metaValue}>{daysOverdue}</span>
+                </Text>
+              ) : null}
             </Section>
 
-            <Section style={buttonContainer}>
-              <Button style={isOverdue ? buttonUrgent : button} href={payLink}>
-                Pay Now
+            <Section style={isOverdue ? overdueCard : reminderCard}>
+              <Text style={isOverdue ? overdueLabel : reminderLabel}>
+                {isOverdue ? "Action Required" : "Upcoming Due Date"}
+              </Text>
+              <Text style={isOverdue ? overdueStatusText : reminderStatusText}>
+                {isOverdue ? "Payment is overdue" : "Payment reminder"}
+              </Text>
+              <Text style={isOverdue ? overdueContentText : reminderContentText}>
+                {isOverdue
+                  ? "Use the secure link below to complete payment and avoid further delay."
+                  : "Use the secure link below to review and pay before the due date."}
+              </Text>
+            </Section>
+
+            <Section style={buttonWrap}>
+              <Button style={button} href={payLink}>
+                {isOverdue ? "Pay Now" : "View & Pay Invoice"}
               </Button>
             </Section>
 
-            <Text style={helpText}>
-              If you have already made this payment, please disregard this reminder.
-              Thank you for your business.
+            <Text style={fallbackText}>
+              If the button does not open,{" "}
+              <Link href={payLink} style={link}>
+                open secure link
+              </Link>
             </Text>
           </Section>
 
+          <Hr style={hr} />
           <Section style={footer}>
-            <Text style={footerText}>
-              This reminder was sent via Arc. If you have any questions about
-              this invoice, please contact the sender directly.
-            </Text>
+            <Text style={footerText}>Sent via Arc</Text>
           </Section>
         </Container>
       </Body>
@@ -111,155 +126,243 @@ export function InvoiceReminderEmail({
 }
 
 const main: React.CSSProperties = {
-  backgroundColor: "#f6f9fc",
+  backgroundColor: "#ececea",
   fontFamily:
-    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, sans-serif',
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, Arial, sans-serif',
+  margin: "0",
+  padding: "32px 0",
 }
 
 const container: React.CSSProperties = {
   backgroundColor: "#ffffff",
   margin: "0 auto",
-  maxWidth: "600px",
+  maxWidth: "620px",
+  border: "1px solid #dcdcdc",
 }
 
 const header: React.CSSProperties = {
-  backgroundColor: "#111827",
-  padding: "24px 40px",
+  textAlign: "center",
+  padding: "36px 40px 22px 40px",
+  borderBottom: "1px solid #ebebeb",
 }
 
-const logoText: React.CSSProperties = {
-  color: "#ffffff",
-  fontSize: "24px",
-  fontWeight: "700",
+const logoImage: React.CSSProperties = {
+  border: "1px solid #d6d6d6",
+  backgroundColor: "#ffffff",
+  display: "block",
+  margin: "0 auto",
+  padding: "6px",
+}
+
+const logoFallback: React.CSSProperties = {
   margin: "0",
-  letterSpacing: "-0.5px",
+  width: "56px",
+  height: "56px",
+  display: "block",
+  marginLeft: "auto",
+  marginRight: "auto",
+  textAlign: "center",
+  lineHeight: "56px",
+  border: "1px solid #d6d6d6",
+  backgroundColor: "#fff",
+  color: "#111111",
+  fontWeight: 700,
+  fontSize: "18px",
+}
+
+const brandName: React.CSSProperties = {
+  margin: "12px 0 0 0",
+  color: "#111111",
+  fontSize: "15px",
+  fontWeight: 700,
+}
+
+const brandSub: React.CSSProperties = {
+  margin: "4px 0 0 0",
+  color: "#6b6b6b",
+  fontSize: "11px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
 }
 
 const content: React.CSSProperties = {
-  padding: "40px",
+  padding: "30px 40px 32px 40px",
+}
+
+const eventLabelText: React.CSSProperties = {
+  margin: "0 0 10px 0",
+  color: "#666666",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
 }
 
 const heading: React.CSSProperties = {
-  color: "#111827",
-  fontSize: "28px",
-  fontWeight: "700",
-  lineHeight: "1.3",
-  margin: "0 0 24px 0",
+  margin: "0",
+  color: "#111111",
+  fontSize: "34px",
+  lineHeight: "1.1",
+  fontWeight: 700,
+  letterSpacing: "-0.9px",
+}
+
+const subjectText: React.CSSProperties = {
+  margin: "12px 0 24px 0",
+  color: "#111111",
+  fontSize: "18px",
+  fontWeight: 600,
+  lineHeight: "1.5",
 }
 
 const paragraph: React.CSSProperties = {
-  color: "#4b5563",
-  fontSize: "16px",
+  margin: "0 0 12px 0",
+  color: "#2f2f2f",
+  fontSize: "14px",
   lineHeight: "1.6",
-  margin: "0 0 16px 0",
 }
 
-const invoiceCard: React.CSSProperties = {
-  backgroundColor: "#f9fafb",
-  borderRadius: "12px",
-  padding: "24px",
-  marginTop: "8px",
-  marginBottom: "24px",
-  border: "1px solid #e5e7eb",
+const metaCard: React.CSSProperties = {
+  marginTop: "16px",
+  padding: "14px 16px",
+  border: "1px solid #e1e1e1",
+  backgroundColor: "#fafafa",
 }
 
-const invoiceCardOverdue: React.CSSProperties = {
-  backgroundColor: "#fef2f2",
-  borderRadius: "12px",
-  padding: "24px",
-  marginTop: "8px",
-  marginBottom: "24px",
-  border: "1px solid #fecaca",
+const metaRow: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#424242",
+  fontSize: "13px",
+  lineHeight: "1.5",
 }
 
-const invoiceDetailColumn: React.CSSProperties = {
-  width: "50%",
-}
-
-const invoiceLabel: React.CSSProperties = {
-  color: "#6b7280",
+const metaLabel: React.CSSProperties = {
+  color: "#6a6a6a",
   fontSize: "12px",
-  fontWeight: "500",
+  fontWeight: 700,
   textTransform: "uppercase",
-  letterSpacing: "0.5px",
-  margin: "0 0 4px 0",
+  letterSpacing: "0.6px",
 }
 
-const invoiceValue: React.CSSProperties = {
-  color: "#111827",
+const metaValue: React.CSSProperties = {
+  color: "#111111",
+  fontSize: "13px",
+  fontWeight: 600,
+}
+
+const amountValue: React.CSSProperties = {
+  color: "#111111",
+  fontSize: "14px",
+  fontWeight: 700,
+}
+
+const reminderCard: React.CSSProperties = {
+  marginTop: "16px",
+  padding: "16px",
+  border: "1px solid #e1e1e1",
+  backgroundColor: "#ffffff",
+}
+
+const overdueCard: React.CSSProperties = {
+  marginTop: "16px",
+  padding: "16px",
+  border: "2px solid #d08a8a",
+  backgroundColor: "#f3dcdc",
+}
+
+const reminderLabel: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#626262",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "0.8px",
+}
+
+const overdueLabel: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#8f4a4a",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "0.8px",
+}
+
+const reminderStatusText: React.CSSProperties = {
+  margin: "0 0 10px 0",
+  color: "#111111",
+  fontWeight: 700,
   fontSize: "16px",
-  fontWeight: "600",
-  margin: "0",
 }
 
-const invoiceValueHighlight: React.CSSProperties = {
-  color: "#111827",
-  fontSize: "20px",
-  fontWeight: "700",
-  margin: "0",
-}
-
-const overdueValue: React.CSSProperties = {
-  color: "#dc2626",
+const overdueStatusText: React.CSSProperties = {
+  margin: "0 0 10px 0",
+  color: "#b42323",
+  fontWeight: 700,
   fontSize: "16px",
-  fontWeight: "700",
+}
+
+const reminderContentText: React.CSSProperties = {
   margin: "0",
+  color: "#222222",
+  fontSize: "14px",
+  lineHeight: "1.6",
 }
 
-const divider: React.CSSProperties = {
-  borderColor: "#e5e7eb",
-  borderWidth: "1px",
-  margin: "16px 0",
+const overdueContentText: React.CSSProperties = {
+  margin: "0",
+  color: "#7a4b4b",
+  fontSize: "14px",
+  lineHeight: "1.6",
 }
 
-const buttonContainer: React.CSSProperties = {
+const buttonWrap: React.CSSProperties = {
   textAlign: "center",
-  marginBottom: "24px",
+  marginTop: "26px",
+  marginBottom: "16px",
 }
 
 const button: React.CSSProperties = {
-  backgroundColor: "#111827",
-  borderRadius: "8px",
+  backgroundColor: "#3A70EE",
   color: "#ffffff",
-  fontSize: "16px",
-  fontWeight: "600",
+  border: "1px solid #3A70EE",
   textDecoration: "none",
-  textAlign: "center",
-  padding: "14px 32px",
-  display: "inline-block",
-}
-
-const buttonUrgent: React.CSSProperties = {
-  backgroundColor: "#dc2626",
-  borderRadius: "8px",
-  color: "#ffffff",
-  fontSize: "16px",
-  fontWeight: "600",
-  textDecoration: "none",
-  textAlign: "center",
-  padding: "14px 32px",
-  display: "inline-block",
-}
-
-const helpText: React.CSSProperties = {
-  color: "#6b7280",
   fontSize: "14px",
-  lineHeight: "1.5",
+  fontWeight: 700,
+  padding: "12px 24px",
+  display: "inline-block",
+}
+
+const fallbackText: React.CSSProperties = {
   margin: "0",
+  color: "#666666",
+  fontSize: "12px",
+  lineHeight: "1.65",
   textAlign: "center",
+}
+
+const link: React.CSSProperties = {
+  color: "#3A70EE",
+  textDecoration: "underline",
+}
+
+const hr: React.CSSProperties = {
+  border: "none",
+  borderTop: "1px solid #ebebeb",
+  margin: "0",
 }
 
 const footer: React.CSSProperties = {
-  backgroundColor: "#f9fafb",
-  padding: "24px 40px",
-  borderTop: "1px solid #e5e7eb",
+  padding: "18px 40px 22px 40px",
+  backgroundColor: "#ffffff",
 }
 
 const footerText: React.CSSProperties = {
-  color: "#9ca3af",
-  fontSize: "13px",
-  lineHeight: "1.5",
   margin: "0",
+  color: "#777777",
+  fontSize: "12px",
+  lineHeight: "1.5",
   textAlign: "center",
 }
 

@@ -896,7 +896,7 @@ function UnifiedDocumentsLayoutInner() {
 
   return (
     <div
-      className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border/70 bg-background shadow-sm"
+      className="relative flex h-[calc(100vh-10rem)] min-h-[400px] flex-col overflow-hidden border border-border/70 bg-background shadow-sm"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -977,6 +977,7 @@ function UnifiedDocumentsLayoutInner() {
         initialFiles={uploadFiles}
         projectId={projectId}
         folderPath={currentPath}
+        folderOptions={folderOptions}
         onUploadComplete={refreshFiles}
       />
 

@@ -5,8 +5,6 @@ import { cn } from "@/lib/utils"
 import {
   Search,
   X,
-  LayoutGrid,
-  List,
   FolderClosed,
   ChevronRight,
   FolderPlus,
@@ -69,8 +67,6 @@ export function DocumentsToolbar({
     currentPath,
     searchQuery,
     setSearchQuery,
-    viewMode,
-    setViewMode,
     isUploading,
     selectedDrawingSetId,
     navigateToRoot,
@@ -146,34 +142,6 @@ export function DocumentsToolbar({
           )}
         </div>
 
-        {/* View toggle — hidden when viewing drawing sets */}
-        {!isViewingDrawingSet && (
-          <div className="hidden sm:flex items-center rounded-lg border border-border/70 bg-background/80 p-0.5">
-            <button
-              type="button"
-              className={cn(
-                "h-8 w-8 flex items-center justify-center rounded-md transition-colors",
-                viewMode === "list" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-              )}
-              onClick={() => setViewMode("list")}
-              title="List view"
-            >
-              <List className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "h-8 w-8 flex items-center justify-center rounded-md transition-colors",
-                viewMode === "grid" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-              )}
-              onClick={() => setViewMode("grid")}
-              title="Grid view"
-            >
-              <LayoutGrid className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
         {/* New dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -191,7 +159,7 @@ export function DocumentsToolbar({
               <Layers className="h-4 w-4 mr-2" />
               Upload drawing set
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onCreateFolderClick}>
+            <DropdownMenuItem onClick={onCreateFolderClick} disabled={isViewingDrawingSet}>
               <FolderPlus className="h-4 w-4 mr-2" />
               New folder
             </DropdownMenuItem>

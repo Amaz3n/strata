@@ -1,14 +1,14 @@
 import {
   Body,
   Button,
-  Column,
   Container,
   Head,
   Heading,
   Hr,
   Html,
+  Img,
   Preview,
-  Row,
+  Link,
   Section,
   Text,
 } from "@react-email/components"
@@ -20,7 +20,9 @@ export interface InvoiceEmailProps {
   amount: string
   dueDate?: string
   invoiceLink: string
-  companyName?: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  companyName?: string | null
 }
 
 export function InvoiceEmail({
@@ -30,9 +32,12 @@ export function InvoiceEmail({
   amount = "$0.00",
   dueDate,
   invoiceLink = "#",
+  orgName,
+  orgLogoUrl,
   companyName,
 }: InvoiceEmailProps) {
-  const previewText = `Invoice ${invoiceNumber} for ${projectName}`
+  const displayOrgName = orgName ?? companyName ?? "Arc"
+  const previewText = `Invoice ${invoiceNumber} from ${displayOrgName}`
 
   return (
     <Html>
@@ -41,54 +46,66 @@ export function InvoiceEmail({
       <Body style={main}>
         <Container style={container}>
           <Section style={header}>
-            <Text style={logoText}>{companyName || "Arc"}</Text>
+            {orgLogoUrl ? (
+              <Img src={orgLogoUrl} alt={displayOrgName} width="56" height="56" style={logoImage} />
+            ) : (
+              <Text style={logoFallback}>{displayOrgName.slice(0, 1).toUpperCase()}</Text>
+            )}
+            <Text style={brandName}>{displayOrgName}</Text>
+            <Text style={brandSub}>Invoice Notification</Text>
           </Section>
 
           <Section style={content}>
-            <Heading style={heading}>New Invoice</Heading>
-            <Text style={paragraph}>
-              You have received a new invoice for <strong>{projectName}</strong>.
-            </Text>
+            <Text style={eventLabelText}>New Invoice</Text>
+            <Heading style={heading}>Invoice #{invoiceNumber}</Heading>
+            <Text style={subjectText}>{invoiceTitle}</Text>
 
-            <Section style={invoiceCard}>
-              <Row>
-                <Column style={invoiceDetailColumn}>
-                  <Text style={invoiceLabel}>Invoice</Text>
-                  <Text style={invoiceValue}>{invoiceNumber}</Text>
-                </Column>
-                <Column style={invoiceDetailColumn}>
-                  <Text style={invoiceLabel}>Amount</Text>
-                  <Text style={invoiceValueHighlight}>{amount}</Text>
-                </Column>
-              </Row>
-              {dueDate && (
-                <Row style={invoiceRow}>
-                  <Column>
-                    <Text style={invoiceLabel}>Due Date</Text>
-                    <Text style={invoiceValue}>{dueDate}</Text>
-                  </Column>
-                </Row>
-              )}
-              <Hr style={divider} />
-              <Text style={invoiceTitleText}>{invoiceTitle}</Text>
+            <Text style={paragraph}>
+              You received a new invoice from <strong>{displayOrgName}</strong>.
+            </Text>
+            <Text style={paragraph}>Review the invoice and submit payment securely in Arc.</Text>
+
+            <Section style={metaCard}>
+              <Text style={metaRow}>
+                <span style={metaLabel}>Invoice:</span> <span style={metaValue}>{invoiceNumber}</span>
+              </Text>
+              <Text style={metaRow}>
+                <span style={metaLabel}>Project:</span> <span style={metaValue}>{projectName}</span>
+              </Text>
+              <Text style={metaRow}>
+                <span style={metaLabel}>Amount Due:</span> <span style={amountValue}>{amount}</span>
+              </Text>
+              {dueDate ? (
+                <Text style={metaRow}>
+                  <span style={metaLabel}>Due Date:</span> <span style={metaValue}>{dueDate}</span>
+                </Text>
+              ) : null}
             </Section>
 
-            <Section style={buttonContainer}>
+            <Section style={contentCard}>
+              <Text style={contentLabel}>Payment</Text>
+              <Text style={contentText}>
+                Open the invoice to review line items, notes, and full payment details.
+              </Text>
+            </Section>
+
+            <Section style={buttonWrap}>
               <Button style={button} href={invoiceLink}>
                 View Invoice
               </Button>
             </Section>
 
-            <Text style={helpText}>
-              Click the button above to view the full invoice details and make a payment.
+            <Text style={fallbackText}>
+              If the button does not open,{" "}
+              <Link href={invoiceLink} style={link}>
+                open secure link
+              </Link>
             </Text>
           </Section>
 
+          <Hr style={hr} />
           <Section style={footer}>
-            <Text style={footerText}>
-              This invoice was sent via Arc. If you have any questions, please
-              contact the sender directly.
-            </Text>
+            <Text style={footerText}>Sent via Arc</Text>
           </Section>
         </Container>
       </Body>
@@ -97,137 +114,207 @@ export function InvoiceEmail({
 }
 
 const main: React.CSSProperties = {
-  backgroundColor: "#f6f9fc",
+  backgroundColor: "#ececea",
   fontFamily:
-    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, sans-serif',
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, Arial, sans-serif',
+  margin: "0",
+  padding: "32px 0",
 }
 
 const container: React.CSSProperties = {
   backgroundColor: "#ffffff",
   margin: "0 auto",
-  maxWidth: "600px",
+  maxWidth: "620px",
+  border: "1px solid #dcdcdc",
 }
 
 const header: React.CSSProperties = {
-  backgroundColor: "#111827",
-  padding: "24px 40px",
+  textAlign: "center",
+  padding: "36px 40px 22px 40px",
+  borderBottom: "1px solid #ebebeb",
 }
 
-const logoText: React.CSSProperties = {
-  color: "#ffffff",
-  fontSize: "24px",
-  fontWeight: "700",
+const logoImage: React.CSSProperties = {
+  border: "1px solid #d6d6d6",
+  backgroundColor: "#ffffff",
+  display: "block",
+  margin: "0 auto",
+  padding: "6px",
+}
+
+const logoFallback: React.CSSProperties = {
   margin: "0",
-  letterSpacing: "-0.5px",
+  width: "56px",
+  height: "56px",
+  display: "block",
+  marginLeft: "auto",
+  marginRight: "auto",
+  textAlign: "center",
+  lineHeight: "56px",
+  border: "1px solid #d6d6d6",
+  backgroundColor: "#fff",
+  color: "#111111",
+  fontWeight: 700,
+  fontSize: "18px",
+}
+
+const brandName: React.CSSProperties = {
+  margin: "12px 0 0 0",
+  color: "#111111",
+  fontSize: "15px",
+  fontWeight: 700,
+}
+
+const brandSub: React.CSSProperties = {
+  margin: "4px 0 0 0",
+  color: "#6b6b6b",
+  fontSize: "11px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
 }
 
 const content: React.CSSProperties = {
-  padding: "40px",
+  padding: "30px 40px 32px 40px",
+}
+
+const eventLabelText: React.CSSProperties = {
+  margin: "0 0 10px 0",
+  color: "#666666",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
 }
 
 const heading: React.CSSProperties = {
-  color: "#111827",
-  fontSize: "28px",
-  fontWeight: "700",
-  lineHeight: "1.3",
-  margin: "0 0 16px 0",
+  margin: "0",
+  color: "#111111",
+  fontSize: "34px",
+  lineHeight: "1.1",
+  fontWeight: 700,
+  letterSpacing: "-0.9px",
+}
+
+const subjectText: React.CSSProperties = {
+  margin: "12px 0 24px 0",
+  color: "#111111",
+  fontSize: "18px",
+  fontWeight: 600,
+  lineHeight: "1.5",
 }
 
 const paragraph: React.CSSProperties = {
-  color: "#4b5563",
-  fontSize: "16px",
+  margin: "0 0 12px 0",
+  color: "#2f2f2f",
+  fontSize: "14px",
   lineHeight: "1.6",
-  margin: "0 0 24px 0",
 }
 
-const invoiceCard: React.CSSProperties = {
-  backgroundColor: "#f9fafb",
-  borderRadius: "12px",
-  padding: "24px",
-  marginBottom: "24px",
-  border: "1px solid #e5e7eb",
-}
-
-const invoiceRow: React.CSSProperties = {
+const metaCard: React.CSSProperties = {
   marginTop: "16px",
+  padding: "14px 16px",
+  border: "1px solid #e1e1e1",
+  backgroundColor: "#fafafa",
 }
 
-const invoiceDetailColumn: React.CSSProperties = {
-  width: "50%",
+const metaRow: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#424242",
+  fontSize: "13px",
+  lineHeight: "1.5",
 }
 
-const invoiceLabel: React.CSSProperties = {
-  color: "#6b7280",
+const metaLabel: React.CSSProperties = {
+  color: "#6a6a6a",
   fontSize: "12px",
-  fontWeight: "500",
+  fontWeight: 700,
   textTransform: "uppercase",
-  letterSpacing: "0.5px",
-  margin: "0 0 4px 0",
+  letterSpacing: "0.6px",
 }
 
-const invoiceValue: React.CSSProperties = {
-  color: "#111827",
-  fontSize: "16px",
-  fontWeight: "600",
+const metaValue: React.CSSProperties = {
+  color: "#111111",
+  fontSize: "13px",
+  fontWeight: 600,
+}
+
+const amountValue: React.CSSProperties = {
+  color: "#111111",
+  fontSize: "14px",
+  fontWeight: 700,
+}
+
+const contentCard: React.CSSProperties = {
+  marginTop: "16px",
+  padding: "16px",
+  border: "1px solid #e1e1e1",
+  backgroundColor: "#ffffff",
+}
+
+const contentLabel: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#626262",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "0.8px",
+}
+
+const contentText: React.CSSProperties = {
   margin: "0",
+  color: "#222222",
+  fontSize: "14px",
+  lineHeight: "1.6",
+  whiteSpace: "pre-wrap",
 }
 
-const invoiceValueHighlight: React.CSSProperties = {
-  color: "#111827",
-  fontSize: "20px",
-  fontWeight: "700",
-  margin: "0",
-}
-
-const divider: React.CSSProperties = {
-  borderColor: "#e5e7eb",
-  borderWidth: "1px",
-  margin: "20px 0",
-}
-
-const invoiceTitleText: React.CSSProperties = {
-  color: "#374151",
-  fontSize: "15px",
-  fontWeight: "500",
-  margin: "0",
-}
-
-const buttonContainer: React.CSSProperties = {
+const buttonWrap: React.CSSProperties = {
   textAlign: "center",
-  marginBottom: "24px",
+  marginTop: "26px",
+  marginBottom: "16px",
 }
 
 const button: React.CSSProperties = {
-  backgroundColor: "#111827",
-  borderRadius: "8px",
+  backgroundColor: "#3A70EE",
   color: "#ffffff",
-  fontSize: "16px",
-  fontWeight: "600",
+  border: "1px solid #3A70EE",
   textDecoration: "none",
-  textAlign: "center",
-  padding: "14px 32px",
+  fontSize: "14px",
+  fontWeight: 700,
+  padding: "12px 24px",
   display: "inline-block",
 }
 
-const helpText: React.CSSProperties = {
-  color: "#6b7280",
-  fontSize: "14px",
-  lineHeight: "1.5",
+const fallbackText: React.CSSProperties = {
   margin: "0",
+  color: "#666666",
+  fontSize: "12px",
+  lineHeight: "1.65",
   textAlign: "center",
 }
 
+const link: React.CSSProperties = {
+  color: "#3A70EE",
+  textDecoration: "underline",
+}
+
+const hr: React.CSSProperties = {
+  border: "none",
+  borderTop: "1px solid #ebebeb",
+  margin: "0",
+}
+
 const footer: React.CSSProperties = {
-  backgroundColor: "#f9fafb",
-  padding: "24px 40px",
-  borderTop: "1px solid #e5e7eb",
+  padding: "18px 40px 22px 40px",
+  backgroundColor: "#ffffff",
 }
 
 const footerText: React.CSSProperties = {
-  color: "#9ca3af",
-  fontSize: "13px",
-  lineHeight: "1.5",
   margin: "0",
+  color: "#777777",
+  fontSize: "12px",
+  lineHeight: "1.5",
   textAlign: "center",
 }
 

@@ -699,7 +699,7 @@ export async function bulkCreateBidInvites({
   // Fetch org name for email
   const { data: org } = await supabase
     .from("orgs")
-    .select("id, name")
+    .select("id, name, logo_url")
     .eq("id", resolvedOrgId)
     .maybeSingle()
 
@@ -844,6 +844,7 @@ export async function bulkCreateBidInvites({
               trade: bidPackage.trade,
               dueDate: bidPackage.due_at,
               orgName: org?.name,
+              orgLogoUrl: org?.logo_url,
               bidLink,
             })
             emailsSent++

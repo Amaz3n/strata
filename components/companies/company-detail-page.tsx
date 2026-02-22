@@ -264,7 +264,7 @@ export function CompanyDetailPage({
         </TabsContent>
 
         <TabsContent value="contacts">
-          <CompanyContactsTab company={company} onOpenContact={openContact} />
+          <CompanyContactsTab company={company} onOpenContact={openContact} canEdit={canEdit} />
         </TabsContent>
 
         <TabsContent value="projects">

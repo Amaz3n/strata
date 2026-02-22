@@ -43,6 +43,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
     permissions: access.permissions,
     portalType: "client",
     companyId: access.company_id,
+    scopedRfiId: access.scoped_rfi_id ?? null,
   })
 
   await recordPortalAccess(access.id)

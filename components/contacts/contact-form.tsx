@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
@@ -30,28 +30,43 @@ const CONTACT_TYPES: { label: string; value: Contact["contact_type"] }[] = [
 interface ContactFormProps {
   contact?: Contact
   companies?: Company[]
+  defaultPrimaryCompanyId?: string
   onSubmitted?: () => void
   onCancel?: () => void
 }
 
-export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: ContactFormProps) {
-  const [isPending, startTransition] = useTransition()
-  const { toast } = useToast()
-  const router = useRouter()
-  const [formState, setFormState] = useState({
+function getInitialFormState(contact?: Contact, defaultPrimaryCompanyId?: string) {
+  return {
     full_name: contact?.full_name ?? "",
     email: contact?.email ?? "",
     phone: contact?.phone ?? "",
     address: contact?.address?.formatted ?? "",
     role: contact?.role ?? "",
     contact_type: contact?.contact_type ?? "subcontractor",
-    primary_company_id: contact?.primary_company_id ?? "none",
+    primary_company_id: contact?.primary_company_id ?? defaultPrimaryCompanyId ?? "none",
     has_portal_access: contact?.has_portal_access ?? false,
     notes: contact?.notes ?? "",
     preferred_contact_method: contact?.preferred_contact_method ?? "none",
     external_crm_id: contact?.external_crm_id ?? "",
     crm_source: contact?.crm_source ?? "",
-  })
+  }
+}
+
+export function ContactForm({
+  contact,
+  companies = [],
+  defaultPrimaryCompanyId,
+  onSubmitted,
+  onCancel,
+}: ContactFormProps) {
+  const [isPending, startTransition] = useTransition()
+  const { toast } = useToast()
+  const router = useRouter()
+  const [formState, setFormState] = useState(() => getInitialFormState(contact, defaultPrimaryCompanyId))
+
+  useEffect(() => {
+    setFormState(getInitialFormState(contact, defaultPrimaryCompanyId))
+  }, [contact, defaultPrimaryCompanyId])
 
   const setField = (key: string, value: string | boolean) => {
     setFormState((prev) => ({ ...prev, [key]: value }))
@@ -215,5 +230,3 @@ export function ContactForm({ contact, companies = [], onSubmitted, onCancel }: 
     </form>
   )
 }
-
-

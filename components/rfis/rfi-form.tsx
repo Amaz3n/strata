@@ -1,6 +1,6 @@
 "use client"
 
-import { type CSSProperties, useMemo } from "react"
+import { type CSSProperties, useCallback, useMemo } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
@@ -25,11 +25,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
 import { format } from "date-fns"
-import { Calendar, Building2, FileText } from "@/components/icons"
+import { Calendar, Building2, ChevronDown, FileText } from "@/components/icons"
 
 interface RfiFormProps {
   open: boolean
@@ -38,7 +39,7 @@ interface RfiFormProps {
   companies: Company[]
   contacts: Contact[]
   defaultProjectId?: string
-  onSubmit: (values: RfiInput) => Promise<void>
+  onSubmit: (values: RfiInput, options: { sendNow: boolean }) => Promise<void>
   isSubmitting?: boolean
 }
 
@@ -74,8 +75,7 @@ export function RfiForm({
     },
   })
 
-  const handleSubmit = form.handleSubmit(async (values) => {
-    await onSubmit(values)
+  const resetForm = () =>
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
       subject: "",
@@ -91,22 +91,38 @@ export function RfiForm({
       cost_impact_cents: undefined,
       schedule_impact_days: undefined,
     })
-  })
+
+  const submitRfi = (mode: "send" | "draft") =>
+    form.handleSubmit(async (values) => {
+      const payload: RfiInput = {
+        ...values,
+        status: mode === "draft" ? "draft" : values.status === "draft" ? "open" : values.status,
+      }
+      await onSubmit(payload, { sendNow: mode === "send" })
+      resetForm()
+    })()
 
   const selectedCompanyId = form.watch("assigned_company_id") ?? ""
 
   const externalContacts = useMemo(
     () =>
-      contacts.filter((contact) => contact.contact_type !== "internal" && !!contact.primary_company_id),
+      contacts.filter((contact) => contact.contact_type !== "internal" && !!contact.email),
     [contacts],
+  )
+
+  const contactBelongsToCompany = useCallback(
+    (contact: Contact, companyId: string) =>
+      contact.primary_company_id === companyId ||
+      (contact.companies ?? []).some((link) => link.company_id === companyId),
+    [],
   )
 
   const companyContacts = useMemo(
     () =>
       selectedCompanyId
-        ? externalContacts.filter((contact) => contact.primary_company_id === selectedCompanyId)
+        ? externalContacts.filter((contact) => contactBelongsToCompany(contact, selectedCompanyId))
         : externalContacts,
-    [externalContacts, selectedCompanyId],
+    [contactBelongsToCompany, externalContacts, selectedCompanyId],
   )
 
   return (
@@ -128,7 +144,7 @@ export function RfiForm({
         </SheetHeader>
 
         <Form {...form}>
-          <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
+          <form className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
               {!isProjectScoped && (
                 <div className="grid gap-4 md:grid-cols-1">
@@ -296,7 +312,7 @@ export function RfiForm({
                           const currentContactId = form.getValues("notify_contact_id") ?? ""
                           if (currentContactId) {
                             const selectedContact = externalContacts.find((c) => c.id === currentContactId)
-                            if (!selectedContact || selectedContact.primary_company_id !== next) {
+                            if (!selectedContact || !contactBelongsToCompany(selectedContact, next)) {
                               form.setValue("notify_contact_id", "")
                             }
                           }
@@ -319,6 +335,11 @@ export function RfiForm({
                             ))}
                         </SelectContent>
                       </Select>
+                      {selectedCompanyId && companyContacts.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          No contacts are linked to this company yet.
+                        </p>
+                      ) : null}
                       <FormMessage />
                     </FormItem>
                   )}
@@ -336,8 +357,11 @@ export function RfiForm({
                           field.onChange(next)
                           if (!next) return
                           const selectedContact = externalContacts.find((contact) => contact.id === next)
-                          if (selectedContact?.primary_company_id) {
-                            form.setValue("assigned_company_id", selectedContact.primary_company_id)
+                          const linkedCompanyId =
+                            selectedContact?.primary_company_id ??
+                            selectedContact?.companies?.[0]?.company_id
+                          if (linkedCompanyId) {
+                            form.setValue("assigned_company_id", linkedCompanyId)
                           }
                         }}
                         value={field.value || "__none__"}
@@ -452,9 +476,24 @@ export function RfiForm({
               <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" className="flex-1" disabled={isSubmitting}>
-                Save
-              </Button>
+              <div className="flex flex-1 gap-1">
+                <Button type="button" className="flex-1" disabled={isSubmitting} onClick={() => submitRfi("send")}>
+                  Send
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="outline" size="icon" disabled={isSubmitting}>
+                      <ChevronDown className="h-4 w-4" />
+                      <span className="sr-only">More save options</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => submitRfi("draft")}>
+                      Save draft only
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </SheetFooter>
           </form>
         </Form>
@@ -462,5 +501,3 @@ export function RfiForm({
     </Sheet>
   )
 }
-
-

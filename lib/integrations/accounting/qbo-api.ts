@@ -1,6 +1,7 @@
 import { getQBOAccessToken } from "@/lib/services/qbo-connection"
 import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo-config"
 import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo-query"
+import { mapQboAccountRows, pickPreferredQboIncomeAccounts } from "@/lib/integrations/accounting/qbo-account-utils"
 
 interface QBOFaultError {
   Message?: string
@@ -68,7 +69,7 @@ interface QueryInvoiceResponse {
 
 interface QueryAccountResponse {
   QueryResponse: {
-    Account?: Array<{ Id?: string; Name?: string; FullyQualifiedName?: string }>
+    Account?: Array<{ Id?: string; Name?: string; FullyQualifiedName?: string; AccountType?: string; Classification?: string }>
   }
 }
 
@@ -103,6 +104,29 @@ interface QBOInvoice {
 interface QBOItem {
   Id?: string
   Name?: string
+}
+
+export interface QBOInvoiceSnapshot {
+  Id?: string
+  SyncToken?: string
+  DocNumber?: string
+  TxnDate?: string
+  DueDate?: string
+  TotalAmt?: number
+  Balance?: number
+}
+
+export interface QBOPaymentSnapshot {
+  Id?: string
+  SyncToken?: string
+  TotalAmt?: number
+  TxnDate?: string
+  Line?: Array<{
+    LinkedTxn?: Array<{
+      TxnId?: string
+      TxnType?: string
+    }>
+  }>
 }
 
 export interface QBOIncomeAccount {
@@ -252,15 +276,45 @@ export class QBOClient {
   }
 
   async listIncomeAccounts(): Promise<QBOIncomeAccount[]> {
-    const query = `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Income' AND Active = true ORDERBY Name MAXRESULTS 1000`
+    const runAccountQuery = async (query: string): Promise<QBOIncomeAccount[]> => {
+      try {
+        const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+        return mapQboAccountRows(result.QueryResponse.Account)
+      } catch {
+        return []
+      }
+    }
+
+    const incomeAccounts = await runAccountQuery(
+      `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Income' AND Active = true ORDERBY Name MAXRESULTS 1000`,
+    )
+    const otherIncomeAccounts = await runAccountQuery(
+      `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Other Income' AND Active = true ORDERBY Name MAXRESULTS 1000`,
+    )
+
+    const revenueFallback = await runAccountQuery(
+      `SELECT Id, Name, FullyQualifiedName FROM Account WHERE Classification = 'Revenue' AND Active = true ORDERBY Name MAXRESULTS 1000`,
+    )
+    return pickPreferredQboIncomeAccounts({
+      income: incomeAccounts,
+      otherIncome: otherIncomeAccounts,
+      revenueFallback,
+    })
+  }
+
+  async getIncomeAccountById(accountId: string): Promise<QBOIncomeAccount | null> {
+    const normalized = String(accountId ?? "").trim()
+    if (!normalized) return null
+
+    const query = `SELECT Id, Name, FullyQualifiedName FROM Account WHERE Id = '${this.toQboStringLiteral(normalized)}' MAXRESULTS 1`
     const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return (result.QueryResponse.Account ?? [])
-      .filter((account) => Boolean(account.Id && account.Name))
-      .map((account) => ({
-        id: String(account.Id),
-        name: String(account.Name),
-        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
-      }))
+    const match = result.QueryResponse.Account?.[0]
+    if (!match?.Id || !match?.Name) return null
+    return {
+      id: String(match.Id),
+      name: String(match.Name),
+      fullyQualifiedName: match.FullyQualifiedName ? String(match.FullyQualifiedName) : undefined,
+    }
   }
 
   private async findIncomeAccountByName(name: string): Promise<QBOIncomeAccount | null> {
@@ -327,6 +381,38 @@ export class QBOClient {
   async createPayment(payment: any): Promise<any> {
     const result = await this.request<{ Payment: any }>("POST", "payment", payment)
     return result.Payment
+  }
+
+  async getInvoiceById(invoiceId: string): Promise<QBOInvoiceSnapshot | null> {
+    const normalizedId = String(invoiceId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ Invoice?: QBOInvoiceSnapshot }>(
+        "GET",
+        `invoice/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.Invoice ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async getPaymentById(paymentId: string): Promise<QBOPaymentSnapshot | null> {
+    const normalizedId = String(paymentId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ Payment?: QBOPaymentSnapshot }>(
+        "GET",
+        `payment/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.Payment ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
   }
 }
 

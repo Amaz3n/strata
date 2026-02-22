@@ -25,6 +25,12 @@ export const rfiInputSchema = z.object({
 
 export type RfiInput = z.infer<typeof rfiInputSchema>
 
+export const createRfiRequestSchema = rfiInputSchema.extend({
+  send_now: z.boolean().optional().default(true),
+})
+
+export type CreateRfiRequestInput = z.infer<typeof createRfiRequestSchema>
+
 export const rfiResponseInputSchema = z.object({
   rfi_id: z.string().uuid("RFI is required"),
   body: z.string().min(2, "Response is required"),

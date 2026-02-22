@@ -62,6 +62,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       projectId: access.project_id,
       companyId: access.company_id,
       permissions: access.permissions,
+      scopedRfiId: access.scoped_rfi_id ?? null,
     }),
     getCompanyComplianceStatusWithClient(supabase, access.org_id, access.company_id),
     supabase

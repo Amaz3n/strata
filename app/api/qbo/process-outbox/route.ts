@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { syncInvoiceToQBO, syncPaymentToQBO } from "@/lib/services/qbo-sync"
+import { refreshQBOConnectionsDueForKeepalive } from "@/lib/services/qbo-connection"
 import { logQBO } from "@/lib/services/qbo-logger"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const MAX_RETRIES = 3
 const BATCH_SIZE = 25
+const TOKEN_KEEPALIVE_BATCH_SIZE = 10
+const PROCESSING_TIMEOUT_MINUTES = 20
 
 type ClaimedJob = {
   id?: number
@@ -18,13 +21,57 @@ type ClaimedJob = {
   run_at?: string | null
 }
 
+function isAuthorizedCronRequest(request: NextRequest) {
+  const isDev = process.env.NODE_ENV !== "production"
+  if (isDev) return true
+
+  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization")
+  const bearer = typeof authHeader === "string" ? authHeader.trim() : ""
+  const legacyHeader = request.headers.get("x-cron-secret")
+  const isVercelCron = request.headers.get("x-vercel-cron") === "1"
+
+  const secretOk =
+    (!!CRON_SECRET && bearer === `Bearer ${CRON_SECRET}`) ||
+    (!!CRON_SECRET && legacyHeader === CRON_SECRET)
+
+  if (CRON_SECRET) {
+    return secretOk
+  }
+
+  return isVercelCron
+}
+
 export async function POST(request: NextRequest) {
-  const auth = request.headers.get("x-cron-secret")
-  if (!CRON_SECRET || auth !== CRON_SECRET) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const keepalive = await refreshQBOConnectionsDueForKeepalive(TOKEN_KEEPALIVE_BATCH_SIZE)
   const supabase = createServiceSupabaseClient()
+  const staleCutoff = new Date(Date.now() - PROCESSING_TIMEOUT_MINUTES * 60 * 1000).toISOString()
+  let recoveredStale = 0
+
+  const { data: recoveredRows, error: recoveredError } = await supabase
+    .from("outbox")
+    .update({
+      status: "pending",
+      run_at: new Date().toISOString(),
+      last_error: "Recovered stale processing job",
+    })
+    .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+    .eq("status", "processing")
+    .lt("updated_at", staleCutoff)
+    .select("id")
+
+  if (recoveredError) {
+    logQBO("warn", "process_outbox_stale_recovery_failed", { error: recoveredError.message })
+  } else {
+    recoveredStale = recoveredRows?.length ?? 0
+    if (recoveredStale > 0) {
+      logQBO("warn", "process_outbox_stale_recovered", { recovered: recoveredStale })
+    }
+  }
+
   const { data: claimedJobs, error } = await supabase.rpc("claim_jobs", {
     job_types: ["qbo_sync_invoice", "qbo_sync_payment"],
     limit_value: BATCH_SIZE,
@@ -58,7 +105,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!jobs.length) {
-    return NextResponse.json({ processed: 0 })
+    return NextResponse.json({ processed: 0, failed: 0, keepalive, recoveredStale })
   }
   logQBO("info", "process_outbox_claimed", { jobs: jobs.length })
 
@@ -113,5 +160,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ processed, failed })
+  return NextResponse.json({ processed, failed, keepalive, recoveredStale })
 }

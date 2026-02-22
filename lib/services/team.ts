@@ -184,13 +184,13 @@ function shouldBypassInviteRateLimit(message: string) {
   return process.env.NODE_ENV === "development" && /rate limit/i.test(message)
 }
 
-async function getOrgName(client: SupabaseClient, orgId: string) {
-  const { data, error } = await client.from("orgs").select("name").eq("id", orgId).maybeSingle()
+async function getOrgBrand(client: SupabaseClient, orgId: string) {
+  const { data, error } = await client.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle()
   if (error) {
-    console.error("Failed to load org name", error)
-    return null
+    console.error("Failed to load org brand", error)
+    return { name: null, logoUrl: null }
   }
-  return data?.name ?? null
+  return { name: data?.name ?? null, logoUrl: data?.logo_url ?? null }
 }
 
 async function createUserForInvite(client: SupabaseClient, email: string) {
@@ -455,13 +455,14 @@ export async function inviteTeamMember({
   }
 
   // Send invite email with our token-based link
-  const orgName = await getOrgName(serviceClient, resolvedOrgId)
+  const orgBrand = await getOrgBrand(serviceClient, resolvedOrgId)
   const inviteLink = getInviteLink(inviteToken)
   const inviter = data.invited_by_user as { full_name?: string | null; email?: string | null } | null
   await sendInviteEmail({
     to: parsed.email,
     inviteLink,
-    orgName,
+    orgName: orgBrand.name,
+    orgLogoUrl: orgBrand.logoUrl,
     inviterName: inviter?.full_name ?? null,
     inviterEmail: inviter?.email ?? null,
   })
@@ -731,12 +732,13 @@ export async function resendInvite(membershipId: string, orgId?: string) {
     throw new Error(`Failed to generate new invite token: ${updateError.message}`)
   }
 
-  const orgName = await getOrgName(serviceClient, resolvedOrgId)
+  const orgBrand = await getOrgBrand(serviceClient, resolvedOrgId)
   const inviteLink = getInviteLink(inviteToken)
   await sendInviteEmail({
     to: email,
     inviteLink,
-    orgName,
+    orgName: orgBrand.name,
+    orgLogoUrl: orgBrand.logoUrl,
     inviterName: inviterData?.full_name ?? null,
     inviterEmail: inviterData?.email ?? null,
   })

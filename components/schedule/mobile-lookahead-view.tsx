@@ -280,6 +280,12 @@ export function MobileLookaheadView({ className, onAddItem }: MobileLookaheadVie
               <p className="text-xs mt-1">
                 {format(selectedDay, "EEEE, MMMM d")}
               </p>
+              {onAddItem && relevantItems.length === 0 && (
+                <Button onClick={onAddItem} className="mt-4 gap-2">
+                  <Plus className="h-4 w-4" />
+                  Add first item
+                </Button>
+              )}
             </div>
           ) : (
             (selectedDayItems ?? []).map((item) => {

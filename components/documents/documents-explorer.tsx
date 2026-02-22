@@ -20,23 +20,6 @@ interface DocumentsExplorerProps {
   className?: string
 }
 
-function filterFolderTree(nodes: FolderNode[], query: string): FolderNode[] {
-  if (!query) return nodes
-  const q = query.toLowerCase()
-  return nodes
-    .map((node) => {
-      const children = filterFolderTree(node.children, query)
-      const selfMatches =
-        node.name.toLowerCase().includes(q) || node.path.toLowerCase().includes(q)
-      if (!selfMatches && children.length === 0) return null
-      return {
-        ...node,
-        children,
-      }
-    })
-    .filter((node): node is FolderNode => Boolean(node))
-}
-
 function statusTone(set: DrawingSet): string {
   if (set.status === "failed") return "text-red-600"
   if (set.status === "processing") return "text-amber-600"
@@ -48,7 +31,6 @@ export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
     files,
     folders,
     drawingSets,
-    searchQuery,
     currentPath,
     selectedDrawingSetId,
     navigateToRoot,
@@ -57,27 +39,8 @@ export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
     expandedFolders,
     toggleFolderExpanded,
   } = useDocuments()
-  const query = searchQuery.trim()
 
   const folderTree = useMemo(() => buildFolderTree(folders, files), [folders, files])
-  const filteredTree = useMemo(
-    () => filterFolderTree(folderTree, query),
-    [folderTree, query]
-  )
-
-  const visibleDrawingSets = useMemo(() => {
-    if (!query) return drawingSets
-    const q = query.toLowerCase()
-    return drawingSets.filter((set) => {
-      return (
-        set.title.toLowerCase().includes(q) ||
-        (set.description ?? "").toLowerCase().includes(q) ||
-        (set.set_type ?? "").toLowerCase().includes(q)
-      )
-    })
-  }, [drawingSets, query])
-
-  const isFilterActive = query.length > 0
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
@@ -110,9 +73,9 @@ export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
               </span>
             </button>
 
-            {filteredTree.length > 0 ? (
+            {folderTree.length > 0 ? (
               <div className="space-y-0.5 pt-1">
-                {filteredTree.map((node) => (
+                {folderTree.map((node) => (
                   <FolderTreeNode
                     key={node.path}
                     node={node}
@@ -122,14 +85,11 @@ export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
                     expandedFolders={expandedFolders}
                     onToggle={toggleFolderExpanded}
                     onNavigate={navigateToFolder}
-                    forceExpanded={isFilterActive}
                   />
                 ))}
               </div>
             ) : (
-              <p className="px-2 py-1 text-xs text-muted-foreground">
-                {isFilterActive ? "No folders match this search." : "No folders yet."}
-              </p>
+              <p className="px-2 py-1 text-xs text-muted-foreground">No folders yet.</p>
             )}
           </section>
 
@@ -138,12 +98,10 @@ export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
               Drawing Sets
             </p>
             <div className="space-y-0.5">
-              {visibleDrawingSets.length === 0 && (
-                <p className="px-2 py-1 text-xs text-muted-foreground">
-                  {isFilterActive ? "No drawing sets match this search." : "No drawing sets yet."}
-                </p>
+              {drawingSets.length === 0 && (
+                <p className="px-2 py-1 text-xs text-muted-foreground">No drawing sets yet.</p>
               )}
-              {visibleDrawingSets.map((set) => (
+              {drawingSets.map((set) => (
                 <button
                   key={set.id}
                   type="button"
@@ -184,7 +142,6 @@ function FolderTreeNode({
   expandedFolders,
   onToggle,
   onNavigate,
-  forceExpanded = false,
 }: {
   node: FolderNode
   depth: number
@@ -193,10 +150,9 @@ function FolderTreeNode({
   expandedFolders: Set<string>
   onToggle: (path: string) => void
   onNavigate: (path: string) => void
-  forceExpanded?: boolean
 }) {
   const hasChildren = node.children.length > 0
-  const isExpanded = forceExpanded || expandedFolders.has(node.path)
+  const isExpanded = expandedFolders.has(node.path)
   const isActive = !selectedDrawingSetId && currentPath === node.path
 
   return (
@@ -251,7 +207,6 @@ function FolderTreeNode({
               expandedFolders={expandedFolders}
               onToggle={onToggle}
               onNavigate={onNavigate}
-              forceExpanded={forceExpanded}
             />
           ))}
         </div>

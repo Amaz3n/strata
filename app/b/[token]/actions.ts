@@ -9,7 +9,7 @@ import {
   validateBidPortalToken,
   type BidPortalSubmission,
 } from "@/lib/services/bid-portal"
-import { createPortalRfi, addRfiResponse, listRfiResponses } from "@/lib/services/rfis"
+import { createPortalRfi, addPortalRfiResponse, listRfiResponses } from "@/lib/services/rfis"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
@@ -230,12 +230,13 @@ export async function listBidPortalRfiResponsesAction({ token, rfiId }: { token:
   const supabase = createServiceSupabaseClient()
   const { data: rfi } = await supabase
     .from("rfis")
-    .select("id, org_id, project_id, assigned_company_id")
+    .select("id, org_id, project_id, status, assigned_company_id")
     .eq("id", rfiId)
     .eq("org_id", access.org_id)
     .eq("project_id", access.project.id)
     .maybeSingle()
   if (!rfi) throw new Error("RFI not found")
+  if (rfi.status === "draft") throw new Error("RFI not available")
   if (rfi.assigned_company_id && access.invite.company?.id && rfi.assigned_company_id !== access.invite.company.id) {
     throw new Error("Access denied")
   }
@@ -253,15 +254,25 @@ export async function addBidPortalRfiResponseAction({ token, input }: { token: s
   }
 
   try {
-    const result = await addRfiResponse({
+    const supabase = createServiceSupabaseClient()
+    const { data: rfi } = await supabase
+      .from("rfis")
+      .select("id, status, assigned_company_id")
+      .eq("id", parsed.data.rfi_id)
+      .eq("org_id", access.org_id)
+      .eq("project_id", access.project.id)
+      .maybeSingle()
+    if (!rfi) return { success: false, error: "RFI not found" as const }
+    if (rfi.status === "draft") return { success: false, error: "RFI not available" as const }
+    if (rfi.assigned_company_id && access.invite.company?.id && rfi.assigned_company_id !== access.invite.company.id) {
+      return { success: false, error: "Access denied" as const }
+    }
+
+    const result = await addPortalRfiResponse({
       orgId: access.org_id,
-      input: {
-        ...parsed.data,
-        responder_contact_id: access.invite.contact?.id ?? parsed.data.responder_contact_id ?? null,
-        responder_user_id: null,
-        portal_token_id: null,
-        created_via_portal: true,
-      },
+      responderContactId: access.invite.contact?.id ?? null,
+      portalTokenId: null,
+      input: parsed.data,
     })
     return { success: true, result }
   } catch (error) {

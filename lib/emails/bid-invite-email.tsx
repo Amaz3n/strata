@@ -6,6 +6,7 @@ import {
   Heading,
   Hr,
   Html,
+  Img,
   Link,
   Preview,
   Section,
@@ -20,6 +21,7 @@ export interface BidInviteEmailProps {
   trade?: string | null
   dueDate?: string | null
   orgName?: string | null
+  orgLogoUrl?: string | null
   bidLink: string
 }
 
@@ -31,11 +33,12 @@ export function BidInviteEmail({
   trade,
   dueDate,
   orgName,
+  orgLogoUrl,
   bidLink,
 }: BidInviteEmailProps) {
   const previewText = `You're invited to bid on ${bidPackageTitle}`
   const displayOrgName = orgName ?? "Arc"
-  const greeting = contactName ? `Hello ${contactName},` : "Hello,"
+  const greeting = contactName ? `Hi ${contactName},` : "Hi,"
 
   return (
     <Html>
@@ -43,55 +46,77 @@ export function BidInviteEmail({
       <Preview>{previewText}</Preview>
       <Body style={main}>
         <Container style={container}>
-          <Section style={logoSection}>
-            <Text style={logo}>Arc</Text>
-          </Section>
-          <Heading style={heading}>Invitation to Bid</Heading>
-          <Text style={paragraph}>{greeting}</Text>
-          <Text style={paragraph}>
-            <strong>{displayOrgName}</strong> has invited{" "}
-            {companyName ? <strong>{companyName}</strong> : "you"} to submit a bid for the
-            following package:
-          </Text>
-          <Section style={detailsSection}>
-            <Text style={detailLabel}>Bid Package</Text>
-            <Text style={detailValue}>{bidPackageTitle}</Text>
-            {trade && (
-              <>
-                <Text style={detailLabel}>Trade</Text>
-                <Text style={detailValue}>{trade}</Text>
-              </>
+          <Section style={header}>
+            {orgLogoUrl ? (
+              <Img src={orgLogoUrl} alt={displayOrgName} width="56" height="56" style={logoImage} />
+            ) : (
+              <Text style={logoFallback}>{displayOrgName.slice(0, 1).toUpperCase()}</Text>
             )}
-            {projectName && (
-              <>
-                <Text style={detailLabel}>Project</Text>
-                <Text style={detailValue}>{projectName}</Text>
-              </>
-            )}
-            {dueDate && (
-              <>
-                <Text style={detailLabel}>Due Date</Text>
-                <Text style={detailValue}>{dueDate}</Text>
-              </>
-            )}
+            <Text style={brandName}>{displayOrgName}</Text>
+            <Text style={brandSub}>Bid Invitation</Text>
           </Section>
-          <Section style={buttonContainer}>
-            <Button style={button} href={bidLink}>
-              View Bid Package
-            </Button>
+          <Section style={content}>
+            <Text style={eventLabelText}>Invitation to Bid</Text>
+            <Heading style={heading}>Bid Package</Heading>
+            <Text style={subjectText}>{bidPackageTitle}</Text>
+
+            <Text style={paragraph}>{greeting}</Text>
+            <Text style={paragraph}>
+              <strong>{displayOrgName}</strong> invited{" "}
+              {companyName ? <strong>{companyName}</strong> : "you"} to submit a bid.
+            </Text>
+
+            <Section style={metaCard}>
+              {companyName ? (
+                <Text style={metaRow}>
+                  <span style={metaLabel}>Invitee:</span> <span style={metaValue}>{companyName}</span>
+                </Text>
+              ) : null}
+              <Text style={metaRow}>
+                <span style={metaLabel}>Invited By:</span> <span style={metaValue}>{displayOrgName}</span>
+              </Text>
+              {projectName ? (
+                <Text style={metaRow}>
+                  <span style={metaLabel}>Project:</span> <span style={metaValue}>{projectName}</span>
+                </Text>
+              ) : null}
+              {trade ? (
+                <Text style={metaRow}>
+                  <span style={metaLabel}>Trade:</span> <span style={metaValue}>{trade}</span>
+                </Text>
+              ) : null}
+              {dueDate ? (
+                <Text style={metaRow}>
+                  <span style={metaLabel}>Due Date:</span> <span style={metaValue}>{dueDate}</span>
+                </Text>
+              ) : null}
+            </Section>
+
+            <Section style={contentCard}>
+              <Text style={contentLabel}>What to Expect</Text>
+              <Text style={contentText}>
+                Review requirements and submit pricing, clarifications, and supporting details through Arc.
+              </Text>
+            </Section>
+
+            <Section style={buttonWrap}>
+              <Button style={button} href={bidLink}>
+                View Bid Package
+              </Button>
+            </Section>
+
+            <Text style={fallbackText}>
+              If the button does not open,{" "}
+              <Link href={bidLink} style={link}>
+                open secure link
+              </Link>
+            </Text>
           </Section>
-          <Text style={fallbackText}>
-            or copy and paste this URL into your browser:{" "}
-            <Link href={bidLink} style={link}>
-              {bidLink}
-            </Link>
-          </Text>
+
           <Hr style={hr} />
-          <Text style={footer}>
-            This invitation was sent to{" "}
-            <span style={footerHighlight}>{companyName ?? "your company"}</span>. If you were not
-            expecting this invitation, you can ignore this email.
-          </Text>
+          <Section style={footer}>
+            <Text style={footerText}>Sent via Arc</Text>
+          </Section>
         </Container>
       </Body>
     </Html>
@@ -99,118 +124,202 @@ export function BidInviteEmail({
 }
 
 const main: React.CSSProperties = {
-  backgroundColor: "#ffffff",
+  backgroundColor: "#ececea",
   fontFamily:
-    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, sans-serif',
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, Arial, sans-serif',
+  margin: "0",
+  padding: "32px 0",
 }
 
 const container: React.CSSProperties = {
   backgroundColor: "#ffffff",
-  border: "1px solid #eaeaea",
-  borderRadius: "5px",
-  margin: "40px auto",
-  padding: "20px",
-  maxWidth: "465px",
+  margin: "0 auto",
+  maxWidth: "620px",
+  border: "1px solid #dcdcdc",
 }
 
-const logoSection: React.CSSProperties = {
-  marginTop: "32px",
+const header: React.CSSProperties = {
   textAlign: "center",
+  padding: "36px 40px 22px 40px",
+  borderBottom: "1px solid #ebebeb",
 }
 
-const logo: React.CSSProperties = {
-  color: "#000000",
-  fontSize: "24px",
-  fontWeight: "700",
+const logoImage: React.CSSProperties = {
+  border: "1px solid #d6d6d6",
+  backgroundColor: "#ffffff",
+  display: "block",
+  margin: "0 auto",
+  padding: "6px",
+}
+
+const logoFallback: React.CSSProperties = {
   margin: "0",
-  letterSpacing: "-0.5px",
+  width: "56px",
+  height: "56px",
+  display: "block",
+  marginLeft: "auto",
+  marginRight: "auto",
+  textAlign: "center",
+  lineHeight: "56px",
+  border: "1px solid #d6d6d6",
+  backgroundColor: "#fff",
+  color: "#111111",
+  fontWeight: 700,
+  fontSize: "18px",
+}
+
+const brandName: React.CSSProperties = {
+  margin: "12px 0 0 0",
+  color: "#111111",
+  fontSize: "15px",
+  fontWeight: 700,
+}
+
+const brandSub: React.CSSProperties = {
+  margin: "4px 0 0 0",
+  color: "#6b6b6b",
+  fontSize: "11px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+}
+
+const content: React.CSSProperties = {
+  padding: "30px 40px 32px 40px",
+}
+
+const eventLabelText: React.CSSProperties = {
+  margin: "0 0 10px 0",
+  color: "#666666",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
 }
 
 const heading: React.CSSProperties = {
-  color: "#000000",
-  fontSize: "24px",
-  fontWeight: "400",
-  textAlign: "center",
-  margin: "30px 0",
-  padding: "0",
+  margin: "0",
+  color: "#111111",
+  fontSize: "34px",
+  lineHeight: "1.1",
+  fontWeight: 700,
+  letterSpacing: "-0.9px",
+}
+
+const subjectText: React.CSSProperties = {
+  margin: "12px 0 24px 0",
+  color: "#111111",
+  fontSize: "18px",
+  fontWeight: 600,
+  lineHeight: "1.5",
 }
 
 const paragraph: React.CSSProperties = {
-  color: "#000000",
+  color: "#2f2f2f",
   fontSize: "14px",
-  lineHeight: "24px",
-  margin: "0 0 10px 0",
-}
-
-const detailsSection: React.CSSProperties = {
-  backgroundColor: "#f9fafb",
-  borderRadius: "5px",
-  padding: "16px",
-  margin: "20px 0",
-}
-
-const detailLabel: React.CSSProperties = {
-  color: "#666666",
-  fontSize: "12px",
-  fontWeight: "600",
-  textTransform: "uppercase",
-  margin: "0 0 4px 0",
-  letterSpacing: "0.5px",
-}
-
-const detailValue: React.CSSProperties = {
-  color: "#000000",
-  fontSize: "14px",
-  fontWeight: "500",
+  lineHeight: "1.6",
   margin: "0 0 12px 0",
 }
 
-const buttonContainer: React.CSSProperties = {
+const metaCard: React.CSSProperties = {
+  marginTop: "16px",
+  padding: "14px 16px",
+  border: "1px solid #e1e1e1",
+  backgroundColor: "#fafafa",
+}
+
+const metaRow: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#424242",
+  fontSize: "13px",
+  lineHeight: "1.5",
+}
+
+const metaLabel: React.CSSProperties = {
+  color: "#6a6a6a",
+  fontSize: "12px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.6px",
+}
+
+const metaValue: React.CSSProperties = {
+  color: "#111111",
+  fontSize: "13px",
+  fontWeight: 600,
+}
+
+const contentCard: React.CSSProperties = {
+  marginTop: "16px",
+  padding: "16px",
+  border: "1px solid #e1e1e1",
+  backgroundColor: "#ffffff",
+}
+
+const contentLabel: React.CSSProperties = {
+  margin: "0 0 8px 0",
+  color: "#626262",
+  fontWeight: 700,
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "0.8px",
+}
+
+const contentText: React.CSSProperties = {
+  margin: "0",
+  color: "#222222",
+  fontSize: "14px",
+  lineHeight: "1.6",
+  whiteSpace: "pre-wrap",
+}
+
+const buttonWrap: React.CSSProperties = {
   textAlign: "center",
-  marginTop: "32px",
-  marginBottom: "32px",
+  marginTop: "26px",
+  marginBottom: "16px",
 }
 
 const button: React.CSSProperties = {
-  backgroundColor: "#000000",
-  borderRadius: "5px",
+  backgroundColor: "#3A70EE",
   color: "#ffffff",
-  fontSize: "12px",
-  fontWeight: "600",
+  border: "1px solid #3A70EE",
   textDecoration: "none",
-  textAlign: "center",
-  padding: "12px 20px",
+  fontSize: "14px",
+  fontWeight: 700,
+  padding: "12px 24px",
   display: "inline-block",
 }
 
 const link: React.CSSProperties = {
-  color: "#2563eb",
-  textDecoration: "none",
+  color: "#3A70EE",
+  textDecoration: "underline",
 }
 
 const fallbackText: React.CSSProperties = {
-  color: "#000000",
-  fontSize: "14px",
-  lineHeight: "24px",
   margin: "0",
+  color: "#666666",
+  fontSize: "12px",
+  lineHeight: "1.65",
+  textAlign: "center",
 }
 
 const hr: React.CSSProperties = {
   border: "none",
-  borderTop: "1px solid #eaeaea",
-  margin: "26px 0",
-  width: "100%",
-}
-
-const footer: React.CSSProperties = {
-  color: "#666666",
-  fontSize: "12px",
-  lineHeight: "24px",
+  borderTop: "1px solid #ebebeb",
   margin: "0",
 }
 
-const footerHighlight: React.CSSProperties = {
-  color: "#000000",
+const footer: React.CSSProperties = {
+  padding: "18px 40px 22px 40px",
+  backgroundColor: "#ffffff",
+}
+
+const footerText: React.CSSProperties = {
+  margin: "0",
+  color: "#777777",
+  fontSize: "12px",
+  lineHeight: "1.5",
+  textAlign: "center",
 }
 
 export default BidInviteEmail

@@ -4,13 +4,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateDrawingTiles = generateDrawingTiles;
-const fs_1 = require("fs");
-const os_1 = require("os");
-const path_1 = require("path");
 const sharp_1 = __importDefault(require("sharp"));
+const tiles_1 = require("../storage/tiles");
 const TILE_SIZE = 256;
-const OVERLAP = 0; // No overlap for simplicity
-const MAX_ZOOM_LEVELS = 8;
+const OVERLAP = 0;
+const TILE_FORMAT = 'png';
+const TILE_UPLOAD_CONCURRENCY = 8;
 async function generateDrawingTiles(supabase, job) {
     const { sheetVersionId } = job.payload;
     if (!sheetVersionId) {
@@ -27,12 +26,21 @@ async function generateDrawingTiles(supabase, job) {
         throw new Error(`Sheet version not found: ${versionError?.message}`);
     }
     const orgId = version.org_id;
-    const pageIndex = version.page_index;
     const metadata = version.extracted_metadata || {};
     const tempPngPath = metadata.temp_png_path;
     const sourceHash = metadata.source_hash;
+    const pageIndexFromVersion = typeof version.page_index === 'number' && Number.isFinite(version.page_index)
+        ? version.page_index
+        : null;
+    const pageIndexFromPath = typeof tempPngPath === 'string'
+        ? parsePageIndexFromPath(tempPngPath)
+        : null;
+    const pageIndex = pageIndexFromVersion ?? pageIndexFromPath;
     if (!tempPngPath) {
         throw new Error('Sheet version missing temp PNG path - was PDF extraction completed?');
+    }
+    if (pageIndex === null || pageIndex === undefined) {
+        throw new Error('Sheet version missing page_index and could not infer from temp PNG path');
     }
     // Check if tiles already exist (idempotency)
     const { data: existingVersion } = await supabase
@@ -44,117 +52,137 @@ async function generateDrawingTiles(supabase, job) {
         console.log('Tiles already exist, skipping generation');
         return;
     }
-    const tempDir = (0, os_1.tmpdir)();
-    const tempLocalPngPath = (0, path_1.join)(tempDir, `page-${sheetVersionId}-${pageIndex}.png`);
     const basePath = `${orgId}/${sourceHash}/page-${pageIndex}`;
+    // Download pre-rendered PNG from storage
+    const pngBytes = await (0, tiles_1.downloadTileObject)({ supabase, path: tempPngPath });
+    console.log(`Downloaded pre-rendered PNG: ${pngBytes.length} bytes`);
+    // Load and process the image with Sharp
+    const sourceBuffer = Buffer.from(pngBytes);
+    const image = (0, sharp_1.default)(sourceBuffer, { limitInputPixels: false });
+    const imageMetadata = await image.metadata();
+    if (!imageMetadata.width || !imageMetadata.height) {
+        throw new Error('Failed to get image dimensions');
+    }
+    const { width, height } = imageMetadata;
+    console.log(`Rendered page ${pageIndex}: ${width}x${height}px`);
+    const maxLevel = getMaxDziLevel(width, height);
+    const levels = maxLevel + 1;
+    console.log(`Generating ${levels} levels (maxLevel=${maxLevel})`);
+    const tileManifest = {
+        Image: {
+            xmlns: "http://schemas.microsoft.com/deepzoom/2008",
+            Format: TILE_FORMAT,
+            Overlap: OVERLAP,
+            TileSize: TILE_SIZE,
+            Size: { Width: width, Height: height },
+        },
+        Levels: levels,
+    };
+    const tileBaseUrl = (0, tiles_1.buildTilesBaseUrl)(basePath);
+    if (process.env.DRAWINGS_TILES_DEBUG === 'true') {
+        console.log('[tiles] tile_base_url', tileBaseUrl);
+    }
+    await generateTilePyramid({
+        supabase,
+        sourceBuffer,
+        basePath,
+        width,
+        height,
+        maxLevel,
+    });
+    // Generate and upload thumbnail
+    const thumbBuffer = await image
+        .resize(256, 256, { fit: 'inside' })
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+    const thumbPath = `${basePath}/thumbnail.${TILE_FORMAT}`;
+    await uploadToStorage(supabase, thumbPath, thumbBuffer, 'image/png');
+    // Upload manifest
+    const manifestJson = JSON.stringify(tileManifest);
+    const manifestPath = `${basePath}/manifest.json`;
+    await uploadToStorage(supabase, manifestPath, Buffer.from(manifestJson), 'application/json');
+    // Update database (and backfill page_index if missing)
+    await supabase
+        .from('drawing_sheet_versions')
+        .update({
+        tile_manifest: tileManifest,
+        tile_base_url: tileBaseUrl,
+        source_hash: sourceHash,
+        tile_levels: levels,
+        tiles_generated_at: new Date().toISOString(),
+        thumbnail_url: `${tileBaseUrl}/thumbnail.${TILE_FORMAT}`,
+        image_width: width,
+        image_height: height,
+        tile_manifest_path: manifestPath,
+        tiles_base_path: basePath,
+        page_index: pageIndex,
+    })
+        .eq('id', sheetVersionId);
+    console.log(`✅ Generated tiles for sheet version ${sheetVersionId}`);
+    // Delete the temp PNG from storage (no longer needed)
     try {
-        // Download pre-rendered PNG from storage
-        const { data: pngData, error: downloadError } = await supabase.storage
-            .from('drawings-tiles')
-            .download(tempPngPath);
-        if (downloadError || !pngData) {
-            throw new Error(`Failed to download pre-rendered PNG: ${downloadError?.message}`);
-        }
-        const pngBytes = new Uint8Array(await pngData.arrayBuffer());
-        await fs_1.promises.writeFile(tempLocalPngPath, pngBytes);
-        console.log(`Downloaded pre-rendered PNG: ${pngBytes.length} bytes`);
-        // Load and process the image with Sharp
-        const image = (0, sharp_1.default)(tempLocalPngPath);
-        const metadata = await image.metadata();
-        if (!metadata.width || !metadata.height) {
-            throw new Error('Failed to get image dimensions');
-        }
-        const { width, height } = metadata;
-        console.log(`Rendered page ${pageIndex}: ${width}x${height}px`);
-        // Generate tile pyramid (Phase P0: single level for now)
-        const tileManifest = {
-            Image: {
-                xmlns: "http://schemas.microsoft.com/deepzoom/2008",
-                Format: "png",
-                Overlap: OVERLAP,
-                TileSize: TILE_SIZE,
-                Size: { Width: width, Height: height }
-            }
-        };
-        const supabaseUrl = process.env.SUPABASE_URL;
-        if (!supabaseUrl) {
-            throw new Error('Missing SUPABASE_URL environment variable');
-        }
-        const tileBaseUrl = `${supabaseUrl}/storage/v1/object/public/drawings-tiles/${basePath}`;
-        // Upload the full-resolution image as a single tile
-        const tilePath = `${basePath}/tiles/0/0_0.png`;
-        await uploadToStorage(supabase, tilePath, tempLocalPngPath);
-        // Generate and upload thumbnail
-        const thumbBuffer = await image
-            .resize(256, 256, { fit: 'inside' })
-            .png()
-            .toBuffer();
-        const thumbPath = `${basePath}/thumbnail.png`;
-        await uploadToStorage(supabase, thumbPath, thumbBuffer);
-        // Upload manifest
-        const manifestJson = JSON.stringify(tileManifest);
-        const manifestPath = `${basePath}/manifest.json`;
-        await uploadToStorage(supabase, manifestPath, Buffer.from(manifestJson));
-        // Update database
-        await supabase
-            .from('drawing_sheet_versions')
-            .update({
-            tile_manifest: tileManifest,
-            tile_base_url: tileBaseUrl,
-            source_hash: sourceHash,
-            tile_levels: 1, // Single level for Phase P0
-            tiles_generated_at: new Date().toISOString(),
-            thumbnail_url: `${tileBaseUrl}/thumbnail.png`,
-            image_width: width,
-            image_height: height,
-            tiles_base_path: basePath,
-        })
-            .eq('id', sheetVersionId);
-        console.log(`✅ Generated tiles for sheet version ${sheetVersionId}`);
-        // Delete the temp PNG from storage (no longer needed)
-        try {
-            await supabase.storage
-                .from('drawings-tiles')
-                .remove([tempPngPath]);
-            console.log(`Cleaned up temp PNG from storage: ${tempPngPath}`);
-        }
-        catch (e) {
-            console.warn('Failed to delete temp PNG from storage:', e);
-        }
-        // Check if this completes the drawing set
-        await checkAndUpdateDrawingSetStatus(supabase, orgId);
+        await (0, tiles_1.deleteTileObjects)({ supabase, paths: [tempPngPath] });
+        console.log(`Cleaned up temp PNG from storage: ${tempPngPath}`);
     }
-    finally {
-        // Clean up local temp file
-        try {
-            await fs_1.promises.unlink(tempLocalPngPath);
-        }
-        catch (e) {
-            console.warn('Failed to clean up local temp file:', e);
-        }
+    catch (e) {
+        console.warn('Failed to delete temp PNG from storage:', e);
     }
+    // Check if this completes the drawing set
+    await checkAndUpdateDrawingSetStatus(supabase, orgId);
 }
 async function uploadToStorage(supabase, path, data, contentType) {
-    let buffer;
-    let mimeType;
-    if (typeof data === 'string') {
-        // Assume it's a file path
-        buffer = await fs_1.promises.readFile(data);
-        mimeType = contentType || 'application/octet-stream';
-    }
-    else {
-        buffer = data;
-        mimeType = contentType || 'application/octet-stream';
-    }
-    const { error } = await supabase.storage
-        .from('drawings-tiles')
-        .upload(path, buffer, {
+    const mimeType = contentType || 'application/octet-stream';
+    await (0, tiles_1.uploadTileObject)({
+        supabase,
+        path,
+        bytes: data,
         contentType: mimeType,
         cacheControl: 'public, max-age=31536000, immutable',
-        upsert: true,
     });
-    if (error && !error.message?.includes?.('already exists')) {
-        throw new Error(`Upload failed: ${error.message}`);
+}
+function getMaxDziLevel(width, height) {
+    const maxDimension = Math.max(width, height);
+    return Math.ceil(Math.log2(maxDimension));
+}
+function getLevelDimensions(width, height, level, maxLevel) {
+    const scaleDivisor = 2 ** (maxLevel - level);
+    const levelWidth = Math.max(1, Math.ceil(width / scaleDivisor));
+    const levelHeight = Math.max(1, Math.ceil(height / scaleDivisor));
+    return { levelWidth, levelHeight };
+}
+async function generateTilePyramid(params) {
+    const { supabase, sourceBuffer, basePath, width, height, maxLevel } = params;
+    for (let level = 0; level <= maxLevel; level++) {
+        const { levelWidth, levelHeight } = getLevelDimensions(width, height, level, maxLevel);
+        const cols = Math.ceil(levelWidth / TILE_SIZE);
+        const rows = Math.ceil(levelHeight / TILE_SIZE);
+        // Resize once per level, then extract tiles from that resized image.
+        const levelImageBuffer = await (0, sharp_1.default)(sourceBuffer, { limitInputPixels: false })
+            .resize(levelWidth, levelHeight, { fit: 'fill', kernel: sharp_1.default.kernel.lanczos3 })
+            .png({ compressionLevel: 9 })
+            .toBuffer();
+        const tiles = [];
+        for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+                tiles.push({ col, row });
+            }
+        }
+        for (let i = 0; i < tiles.length; i += TILE_UPLOAD_CONCURRENCY) {
+            const chunk = tiles.slice(i, i + TILE_UPLOAD_CONCURRENCY);
+            await Promise.all(chunk.map(async ({ col, row }) => {
+                const left = col * TILE_SIZE;
+                const top = row * TILE_SIZE;
+                const tileWidth = Math.min(TILE_SIZE, levelWidth - left);
+                const tileHeight = Math.min(TILE_SIZE, levelHeight - top);
+                const tileBuffer = await (0, sharp_1.default)(levelImageBuffer, { limitInputPixels: false })
+                    .extract({ left, top, width: tileWidth, height: tileHeight })
+                    .png({ compressionLevel: 9 })
+                    .toBuffer();
+                const tilePath = `${basePath}/tiles/${level}/${col}_${row}.${TILE_FORMAT}`;
+                await uploadToStorage(supabase, tilePath, tileBuffer, 'image/png');
+            }));
+        }
+        console.log(`Generated level ${level}/${maxLevel}: ${cols}x${rows} tiles`);
     }
 }
 async function checkAndUpdateDrawingSetStatus(supabase, orgId) {
@@ -206,4 +234,11 @@ async function checkAndUpdateDrawingSetStatus(supabase, orgId) {
     catch (e) {
         console.error('Failed to update drawing set status:', e);
     }
+}
+function parsePageIndexFromPath(path) {
+    const match = path.match(/page-(\d+)\.png$/);
+    if (!match)
+        return null;
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : null;
 }

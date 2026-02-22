@@ -1,22 +1,17 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { cn } from "@/lib/utils"
 import {
   AlertCircle,
-  Eye,
   FilePlus2,
   Layers,
   Loader2,
   MoreHorizontal,
   Pencil,
-  RefreshCcw,
   Trash2,
-  Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
   AlertDialog,
@@ -45,6 +40,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { SheetsTable } from "./documents-table"
 import {
   createDrawingRevisionAction,
   createDrawingSetFromUpload,
@@ -82,12 +78,6 @@ function coerceSetType(value?: string | null): DrawingSetType {
   return "general"
 }
 
-function statusBadgeVariant(set: DrawingSet): "destructive" | "secondary" | "outline" {
-  if (set.status === "failed") return "destructive"
-  if (set.status === "ready") return "secondary"
-  return "outline"
-}
-
 function matchesSheetQuery(sheet: DrawingSheet, query: string): boolean {
   if (!query) return true
   const q = query.toLowerCase()
@@ -99,13 +89,23 @@ function matchesSheetQuery(sheet: DrawingSheet, query: string): boolean {
   )
 }
 
+function formatCompactDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "Unknown"
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined,
+  })
+}
+
 function dispatchNavRefresh() {
   window.dispatchEvent(new CustomEvent("docs-nav-refresh"))
 }
 
 export function SheetsContent({
   onSheetClick,
-  onUploadDrawingSetClick,
+  onUploadDrawingSetClick: _onUploadDrawingSetClick,
 }: {
   onSheetClick?: (sheet: DrawingSheet) => void
   onUploadDrawingSetClick?: () => void
@@ -125,7 +125,6 @@ export function SheetsContent({
     [drawingSets, selectedDrawingSetId],
   )
 
-  const [sheetSearch, setSheetSearch] = useState("")
   const [sheetPage, setSheetPage] = useState(1)
   const [sheets, setSheets] = useState<DrawingSheet[]>([])
   const [loadingSheets, setLoadingSheets] = useState(false)
@@ -195,8 +194,8 @@ export function SheetsContent({
   }, [selectedSet?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredSheets = useMemo(
-    () => sheets.filter((sheet) => matchesSheetQuery(sheet, sheetSearch.trim())),
-    [sheets, sheetSearch],
+    () => sheets.filter((sheet) => matchesSheetQuery(sheet, searchQuery.trim())),
+    [sheets, searchQuery],
   )
 
   const totalPages = Math.max(1, Math.ceil(filteredSheets.length / SHEETS_PAGE_SIZE))
@@ -209,6 +208,10 @@ export function SheetsContent({
   useEffect(() => {
     if (sheetPage > totalPages) setSheetPage(totalPages)
   }, [sheetPage, totalPages])
+
+  useEffect(() => {
+    setSheetPage(1)
+  }, [searchQuery])
 
   const openSetEdit = useCallback((set: DrawingSet) => {
     setEditingSet(set)
@@ -506,26 +509,26 @@ export function SheetsContent({
 
   return (
     <>
-      <div className="py-3">
-        {/* Set header */}
-        <div className="border rounded-lg bg-card mb-3">
+      <div className="space-y-3 py-3">
+        <div className="border bg-card">
           <div className="px-4 py-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-base truncate">{selectedSet.title}</h3>
-                  <Badge variant={statusBadgeVariant(selectedSet)} className="text-[10px]">
-                    {selectedSet.status}
-                  </Badge>
-                  <Badge variant="outline" className="text-[10px]">
-                    {selectedSet.sheet_count ?? 0} sheets
-                  </Badge>
-                </div>
+                <h3 className="truncate text-base font-semibold">{selectedSet.title}</h3>
                 {selectedSet.description && (
-                  <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
+                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                     {selectedSet.description}
                   </p>
                 )}
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>{selectedSet.sheet_count ?? 0} sheets</span>
+                  <span aria-hidden>•</span>
+                  <span>{DRAWING_SET_TYPE_LABELS[coerceSetType(selectedSet.set_type)]}</span>
+                  <span aria-hidden>•</span>
+                  <span>Uploaded {formatCompactDate(selectedSet.created_at)}</span>
+                  <span aria-hidden>•</span>
+                  <span>Updated {formatCompactDate(selectedSet.updated_at)}</span>
+                </div>
               </div>
 
               <div className="flex items-center gap-1">
@@ -539,14 +542,11 @@ export function SheetsContent({
                   >
                     {retryingSetId === selectedSet.id ? (
                       <>
-                        <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                         Retrying
                       </>
                     ) : (
-                      <>
-                        <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />
-                        Retry
-                      </>
+                      "Retry processing"
                     )}
                   </Button>
                 )}
@@ -559,11 +559,11 @@ export function SheetsContent({
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-52">
                     <DropdownMenuItem onClick={() => openSetEdit(selectedSet)}>
-                      <Pencil className="h-4 w-4 mr-2" />
+                      <Pencil className="mr-2 h-4 w-4" />
                       Edit set metadata
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => openSetRevisionDialog(selectedSet)}>
-                      <FilePlus2 className="h-4 w-4 mr-2" />
+                      <FilePlus2 className="mr-2 h-4 w-4" />
                       Upload set revision
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
@@ -571,7 +571,7 @@ export function SheetsContent({
                       className="text-destructive"
                       onClick={() => setDeletingSet(selectedSet)}
                     >
-                      <Trash2 className="h-4 w-4 mr-2" />
+                      <Trash2 className="mr-2 h-4 w-4" />
                       Delete set
                     </DropdownMenuItem>
                   </DropdownMenuContent>
@@ -596,7 +596,7 @@ export function SheetsContent({
             )}
 
             {selectedSet.status === "failed" && selectedSet.error_message && (
-              <div className="mt-2 text-xs text-destructive flex items-center gap-1.5">
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5" />
                 <span>{selectedSet.error_message}</span>
               </div>
@@ -605,70 +605,49 @@ export function SheetsContent({
         </div>
 
         {selectedSet.status !== "ready" && (
-          <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+          <div className="flex items-center justify-center border bg-card px-6 py-16 text-sm text-muted-foreground">
             Sheets will appear when processing is complete.
           </div>
         )}
 
         {selectedSet.status === "ready" && (
           <>
-            {/* Sheet search + refresh */}
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              <Input
-                className="h-8 w-full sm:w-64"
-                placeholder="Search sheets in this set..."
-                value={sheetSearch}
-                onChange={(event) => {
-                  setSheetSearch(event.target.value)
-                  setSheetPage(1)
-                }}
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8"
-                onClick={() => void loadSheets(selectedSet.id, true)}
-              >
-                <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />
-                Refresh
-              </Button>
-            </div>
+            {searchQuery && (
+              <p className="text-xs text-muted-foreground">
+                Filtering sheets by: <span className="font-medium text-foreground">{searchQuery}</span>
+              </p>
+            )}
 
             {loadingSheets && (
               <div className="space-y-2">
                 {Array.from({ length: 6 }).map((_, idx) => (
                   <div
                     key={`sheet-loading-${idx}`}
-                    className="h-[60px] rounded-md border bg-muted/20 animate-pulse"
+                    className="h-[60px] border bg-muted/20 animate-pulse"
                   />
                 ))}
               </div>
             )}
 
             {!loadingSheets && filteredSheets.length === 0 && (
-              <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
-                No sheets match your search.
+              <div className="flex items-center justify-center border bg-card px-6 py-16 text-sm text-muted-foreground">
+                {searchQuery ? "No sheets match the current search." : "No sheets in this drawing set yet."}
               </div>
             )}
 
             {!loadingSheets && filteredSheets.length > 0 && (
               <>
-                <div className="space-y-2">
-                  {paginatedSheets.map((sheet) => (
-                    <SheetRow
-                      key={sheet.id}
-                      sheet={sheet}
-                      onOpen={onSheetClick}
-                      onEdit={() => openSheetEdit(sheet)}
-                      onDelete={() => setDeletingSheet({ sheet })}
-                      onAddVersion={() => {
-                        void openVersionDialog(sheet)
-                      }}
-                    />
-                  ))}
-                </div>
+                <SheetsTable
+                  sheets={paginatedSheets}
+                  onSheetClick={onSheetClick}
+                  onEditSheet={openSheetEdit}
+                  onDeleteSheet={(sheet) => setDeletingSheet({ sheet })}
+                  onAddVersion={(sheet) => {
+                    void openVersionDialog(sheet)
+                  }}
+                />
 
-                <div className="mt-3 flex items-center justify-between">
+                <div className="flex items-center justify-between">
                   <p className="text-xs text-muted-foreground">
                     Showing {(clampedPage - 1) * SHEETS_PAGE_SIZE + 1}
                     -
@@ -685,7 +664,7 @@ export function SheetsContent({
                     >
                       Prev
                     </Button>
-                    <span className="text-xs text-muted-foreground tabular-nums">
+                    <span className="tabular-nums text-xs text-muted-foreground">
                       {clampedPage}/{totalPages}
                     </span>
                     <Button
@@ -940,100 +919,3 @@ export function SheetsContent({
   )
 }
 
-const SheetRow = memo(function SheetRow({
-  sheet,
-  onOpen,
-  onEdit,
-  onDelete,
-  onAddVersion,
-}: {
-  sheet: DrawingSheet
-  onOpen?: (sheet: DrawingSheet) => void
-  onEdit: () => void
-  onDelete: () => void
-  onAddVersion: () => void
-}) {
-  const thumbnail = sheet.image_thumbnail_url ?? null
-
-  return (
-    <div className="rounded-md border bg-background p-2">
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => onOpen?.(sheet)}
-          disabled={!onOpen}
-          className={cn("flex min-w-0 flex-1 items-center gap-3 text-left", !onOpen && "cursor-default")}
-        >
-          <div className="h-12 w-16 shrink-0 rounded border bg-muted/40 overflow-hidden flex items-center justify-center">
-            {thumbnail ? (
-              <img
-                src={thumbnail}
-                alt={sheet.sheet_number}
-                className="h-full w-full object-cover"
-                loading="lazy"
-              />
-            ) : (
-              <div className="text-[10px] text-muted-foreground px-1 text-center">
-                No thumbnail
-              </div>
-            )}
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-sm">{sheet.sheet_number}</span>
-              {sheet.discipline && (
-                <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
-                  {sheet.discipline}
-                </Badge>
-              )}
-              {sheet.current_revision_label && (
-                <Badge variant="outline" className="text-[10px] h-5 px-1.5">
-                  {sheet.current_revision_label}
-                </Badge>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground truncate">
-              {sheet.sheet_title || "Untitled sheet"}
-            </p>
-          </div>
-        </button>
-
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8"
-            onClick={() => onOpen?.(sheet)}
-            disabled={!onOpen}
-          >
-            <Eye className="h-3.5 w-3.5 mr-1.5" />
-            Open
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem onClick={onEdit}>
-                <Pencil className="h-4 w-4 mr-2" />
-                Edit sheet
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onAddVersion}>
-                <FilePlus2 className="h-4 w-4 mr-2" />
-                Add version
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-destructive" onClick={onDelete}>
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete sheet
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
-    </div>
-  )
-})

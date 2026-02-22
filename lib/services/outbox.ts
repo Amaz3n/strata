@@ -12,8 +12,15 @@ interface OutboxJobInput {
 
 export async function enqueueOutboxJob(input: OutboxJobInput) {
   try {
-    const { orgId } = await requireOrgContext(input.orgId)
     const supabase = createServiceSupabaseClient()
+    let orgId = input.orgId
+    if (!orgId) {
+      const context = await requireOrgContext()
+      orgId = context.orgId
+    }
+    if (!orgId) {
+      return { enqueued: false as const, reason: "error" as const }
+    }
     const payload = input.payload ?? {}
 
     if ((input.dedupeByPayloadKeys ?? []).length > 0) {

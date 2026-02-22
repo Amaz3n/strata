@@ -8,6 +8,7 @@ type EventChannel = "activity" | "integration" | "notification"
 
 export interface EventInput {
   orgId?: string
+  actorId?: string | null
   eventType: string
   entityType?: string
   entityId?: string
@@ -43,16 +44,33 @@ interface EventRecord {
 }
 
 export async function recordEvent(input: EventInput) {
-  const { supabase, user, orgId } = await requireOrgMembership(input.orgId)
+  let resolvedOrgId = input.orgId
+  let actorId = input.actorId ?? null
+
+  try {
+    const { user, orgId } = await requireOrgMembership(input.orgId)
+    resolvedOrgId = orgId
+    actorId = input.actorId ?? user.id
+  } catch (error) {
+    if (!input.orgId) {
+      throw error
+    }
+  }
+
+  if (!resolvedOrgId) {
+    throw new Error("Failed to record event: organization context is required")
+  }
+
+  const supabase = createServiceSupabaseClient()
   const payload = {
-    ...input.payload,
-    actor_id: user.id,
+    ...(input.payload ?? {}),
+    ...(actorId ? { actor_id: actorId } : {}),
   }
 
   const { data, error } = await supabase
     .from("events")
     .insert({
-      org_id: orgId,
+      org_id: resolvedOrgId,
       event_type: input.eventType,
       entity_type: input.entityType ?? null,
       entity_id: input.entityId ?? null,
@@ -70,13 +88,13 @@ export async function recordEvent(input: EventInput) {
   try {
     await createNotificationsFromEvent({
       id: data.id,
-      org_id: orgId,
+      org_id: resolvedOrgId,
       event_type: input.eventType,
       entity_type: input.entityType ?? null,
       entity_id: input.entityId ?? null,
       payload,
       created_at: data.created_at,
-    }, orgId)
+    }, resolvedOrgId)
   } catch (notificationError) {
     // Don't fail the event recording if notification creation fails
     console.error('Failed to create notifications from event:', notificationError)

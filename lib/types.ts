@@ -507,6 +507,7 @@ export interface PortalAccessToken {
   project_id: string
   contact_id?: string | null
   company_id?: string | null      // For sub portals
+  scoped_rfi_id?: string | null
   token: string
   name: string
   portal_type: "client" | "sub"   // Explicit portal type
@@ -978,9 +979,11 @@ export interface Rfi {
   priority?: string | null
   assigned_to?: string | null
   assigned_company_id?: string | null
+  notify_contact_id?: string | null
   submitted_by?: string | null
   submitted_by_company_id?: string | null
   submitted_at?: string | null
+  sent_to_emails?: string[] | null
   due_date?: string | null
   answered_at?: string | null
   closed_at?: string | null
@@ -1010,6 +1013,8 @@ export interface RfiResponse {
   body: string
   responder_user_id?: string | null
   responder_contact_id?: string | null
+  responder_name?: string | null
+  responder_email?: string | null
   created_at: string
   file_id?: string | null
   portal_token_id?: string | null

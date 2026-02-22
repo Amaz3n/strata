@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useMemo, useState, useTransition, useCallback } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -37,6 +38,11 @@ const statusStyles: Record<string, string> = {
 function formatDate(date?: string | null) {
   if (!date) return ""
   return format(new Date(date), "MMM d, yyyy")
+}
+
+function sentStatusLabel(rfi: Rfi) {
+  if (!rfi.submitted_at) return rfi.status === "draft" ? "Not sent" : null
+  return `Sent ${formatDate(rfi.submitted_at)}`
 }
 
 interface RfisClientProps {
@@ -77,16 +83,18 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
   }, [filterProjectId, items, search, statusFilter])
 
 
-  async function handleCreate(values: RfiInput) {
+  async function handleCreate(values: RfiInput, options: { sendNow: boolean }) {
     startTransition(async () => {
       try {
-        const created = await createRfiAction(values)
+        const created = await createRfiAction({ ...values, send_now: options.sendNow })
         setItems((prev) => [created, ...prev])
         setSheetOpen(false)
-        toast.success("RFI created", { description: created.subject })
+        toast.success(options.sendNow ? "RFI sent" : "RFI saved as draft", { description: created.subject })
       } catch (error: any) {
         console.error(error)
-        toast.error("Could not create RFI", { description: error?.message ?? "Please try again." })
+        toast.error(options.sendNow ? "Could not send RFI" : "Could not save draft", {
+          description: error?.message ?? "Please try again.",
+        })
       }
     })
   }
@@ -94,13 +102,14 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
   const refreshRfis = useCallback(async () => {
     startTransition(async () => {
       try {
-        const updatedRfis = await listRfisAction()
+        const scopedProjectId = projects.length === 1 ? projects[0]?.id : undefined
+        const updatedRfis = await listRfisAction(scopedProjectId)
         setItems(updatedRfis)
       } catch (error) {
         console.error("Failed to refresh RFIs:", error)
       }
     })
-  }, [])
+  }, [projects])
 
   return (
     <div className="space-y-4">
@@ -121,6 +130,8 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
         onUpdate={refreshRfis}
+        companies={companies}
+        contacts={contacts}
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -160,10 +171,15 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
             </Select>
           </div>
         </div>
-        <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-          <Plus className="mr-2 h-4 w-4" />
-          New RFI
-        </Button>
+        <div className="flex w-full sm:w-auto gap-2">
+          <Button asChild variant="outline" className="w-full sm:w-auto">
+            <Link href="/emails/preview?template=rfi-notification">Preview Emails</Link>
+          </Button>
+          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+            <Plus className="mr-2 h-4 w-4" />
+            New RFI
+          </Button>
+        </div>
       </div>
 
       {/* Mobile: Card layout */}
@@ -184,6 +200,9 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                   </Badge>
                 </div>
                 <p className="font-semibold mt-1 line-clamp-2">{rfi.subject}</p>
+                {sentStatusLabel(rfi) && (
+                  <p className="text-xs text-muted-foreground mt-1">{sentStatusLabel(rfi)}</p>
+                )}
                 {rfi.due_date && (
                   <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                     <Calendar className="h-3 w-3" />
@@ -260,9 +279,14 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                   {projects.find((p) => p.id === rfi.project_id)?.name ?? "Unknown project"}
                 </TableCell>
                 <TableCell className="px-4 py-4 text-center">
-                  <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
-                    {statusLabels[rfi.status] ?? rfi.status}
-                  </Badge>
+                  <div className="space-y-1">
+                    <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
+                      {statusLabels[rfi.status] ?? rfi.status}
+                    </Badge>
+                    {sentStatusLabel(rfi) && (
+                      <div className="text-[11px] text-muted-foreground">{sentStatusLabel(rfi)}</div>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
                   {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
@@ -316,6 +340,3 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
     </div>
   )
 }
-
-
-

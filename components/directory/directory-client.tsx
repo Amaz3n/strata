@@ -39,6 +39,7 @@ export function DirectoryClient({
   const [contactDialogOpen, setContactDialogOpen] = useState(false)
   const [selectedCompany, setSelectedCompany] = useState<Company | undefined>()
   const [selectedContact, setSelectedContact] = useState<Contact | undefined>()
+  const [newContactCompanyId, setNewContactCompanyId] = useState<string | undefined>()
   const [detailContactId, setDetailContactId] = useState<string | undefined>()
   const [detailContactOpen, setDetailContactOpen] = useState(false)
 
@@ -52,6 +53,7 @@ export function DirectoryClient({
   }
 
   const openEditContact = (contact: Contact) => {
+    setNewContactCompanyId(undefined)
     setSelectedContact(contact)
     setDetailContactOpen(false)
     setContactDialogOpen(true)
@@ -68,12 +70,16 @@ export function DirectoryClient({
     setCompanyDialogOpen(true)
   }
 
-  const openNewContact = () => {
+  const openNewContact = (companyId?: string) => {
+    setNewContactCompanyId(companyId)
     setSelectedContact(undefined)
     setContactDialogOpen(true)
   }
 
   const viewLabel = view === "all" ? "All" : view === "companies" ? "Companies" : "People"
+  const contactFormKey = selectedContact?.id
+    ? `edit-${selectedContact.id}`
+    : `new-${newContactCompanyId ?? "none"}-${contactDialogOpen ? "open" : "closed"}`
 
   return (
     <div className="space-y-6">
@@ -128,6 +134,7 @@ export function DirectoryClient({
         search={searchTerm}
         onSelectCompany={openCompanyDetail}
         onSelectContact={openContactDetail}
+        onAddContactForCompany={canCreate ? openNewContact : undefined}
       />
 
       <Sheet
@@ -166,7 +173,10 @@ export function DirectoryClient({
         open={contactDialogOpen}
         onOpenChange={(open) => {
           setContactDialogOpen(open)
-          if (!open) setSelectedContact(undefined)
+          if (!open) {
+            setSelectedContact(undefined)
+            setNewContactCompanyId(undefined)
+          }
         }}
       >
         <SheetContent
@@ -186,8 +196,10 @@ export function DirectoryClient({
           </SheetHeader>
           <div className="flex-1 px-6 py-4">
             <ContactForm
+              key={contactFormKey}
               contact={selectedContact}
               companies={companies}
+              defaultPrimaryCompanyId={newContactCompanyId}
               onSubmitted={() => setContactDialogOpen(false)}
               onCancel={() => setContactDialogOpen(false)}
             />

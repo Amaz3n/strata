@@ -48,7 +48,14 @@ function ScheduleViewInner({ projectId, className }: { projectId: string; classN
         return <LookaheadView className="flex-1" onAddItem={handleAddItem} />
       case "gantt":
       default:
-        return <GanttChart className="flex-1" onQuickAdd={handleQuickAdd} onEditItem={handleEditItem} />
+        return (
+          <GanttChart
+            className="flex-1"
+            onQuickAdd={handleQuickAdd}
+            onEditItem={handleEditItem}
+            onAddItem={handleAddItem}
+          />
+        )
     }
   }
 

@@ -25,6 +25,16 @@ export async function POST() {
     return NextResponse.json({ error: error?.message }, { status: 500 })
   }
 
+  const orgIds = Array.from(new Set((reminders as any[]).map((item) => item.org_id).filter(Boolean)))
+  const orgById = new Map<string, { name: string | null; logo_url: string | null }>()
+
+  if (orgIds.length > 0) {
+    const { data: orgRows } = await supabase.from("orgs").select("id, name, logo_url").in("id", orgIds)
+    for (const row of orgRows ?? []) {
+      orgById.set(row.id, { name: row.name ?? null, logo_url: row.logo_url ?? null })
+    }
+  }
+
   const now = new Date()
   const today = now.toISOString().split("T")[0]
   let sentCount = 0
@@ -76,6 +86,7 @@ export async function POST() {
       }
 
       if (reminder.channel === "email" && reminder.invoice.recipient?.email) {
+        const orgMeta = orgById.get(reminder.org_id)
         providerMessageId = await sendReminderEmail({
           to: reminder.invoice.recipient.email,
           recipientName: reminder.invoice.recipient.full_name,
@@ -84,6 +95,8 @@ export async function POST() {
           dueDate: reminder.invoice.due_date,
           daysOverdue: daysOverdue > 0 ? daysOverdue : undefined,
           payLink,
+          orgName: orgMeta?.name ?? null,
+          orgLogoUrl: orgMeta?.logo_url ?? null,
         })
       } else if (reminder.channel === "sms" && reminder.invoice.recipient?.phone) {
         providerMessageId = await sendReminderSMS({

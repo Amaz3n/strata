@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { Company, Contact } from "@/lib/types"
 import { getCompanyContactsForDirectoryAction } from "@/app/(app)/directory/actions"
-import { Building2, ChevronDown, ChevronRight, User, Loader2 } from "@/components/icons"
+import { Building2, ChevronDown, ChevronRight, User, Loader2, Plus } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
 type DirectoryItem =
@@ -20,9 +20,17 @@ interface DirectoryTableProps {
   search: string
   onSelectCompany?: (id: string) => void
   onSelectContact?: (id: string) => void
+  onAddContactForCompany?: (companyId: string) => void
 }
 
-export function DirectoryTable({ companies, contacts, search, onSelectCompany, onSelectContact }: DirectoryTableProps) {
+export function DirectoryTable({
+  companies,
+  contacts,
+  search,
+  onSelectCompany,
+  onSelectContact,
+  onAddContactForCompany,
+}: DirectoryTableProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [loadingCompany, setLoadingCompany] = useState<string | null>(null)
   const [companyContacts, setCompanyContacts] = useState<Record<string, Contact[]>>({})
@@ -93,6 +101,7 @@ export function DirectoryTable({ companies, contacts, search, onSelectCompany, o
                 onToggle={() => toggleExpand(item.id)}
                 onSelectCompany={onSelectCompany}
                 onSelectContact={onSelectContact}
+                onAddContactForCompany={onAddContactForCompany}
               />
             ) : (
               <ContactRow key={item.id} item={item} onSelectContact={onSelectContact} />
@@ -119,6 +128,7 @@ function CompanyRow({
   onToggle,
   onSelectCompany,
   onSelectContact,
+  onAddContactForCompany,
 }: {
   item: Extract<DirectoryItem, { type: "company" }>
   expanded: boolean
@@ -127,6 +137,7 @@ function CompanyRow({
   onToggle: () => void
   onSelectCompany?: (id: string) => void
   onSelectContact?: (id: string) => void
+  onAddContactForCompany?: (companyId: string) => void
 }) {
   return (
     <>
@@ -160,6 +171,20 @@ function CompanyRow({
       {expanded && (
         <TableRow className="divide-x bg-muted/30">
           <TableCell colSpan={4} className="px-4 py-4">
+            {onAddContactForCompany ? (
+              <div className="mb-3 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onAddContactForCompany(item.id)}
+                  className="h-8 gap-1.5"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add contact
+                </Button>
+              </div>
+            ) : null}
             {loading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground py-1">
                 <Loader2 className="h-4 w-4 animate-spin" />

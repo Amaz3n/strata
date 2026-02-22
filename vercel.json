@@ -1,6 +1,14 @@
 {
   "crons": [
     {
+      "path": "/api/qbo/process-outbox",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/qbo/process-webhooks",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/jobs/process-outbox",
       "schedule": "0 2 * * *"
     },
@@ -15,6 +23,12 @@
     },
     "app/api/jobs/process-outbox/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/qbo/process-outbox/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/qbo/process-webhooks/route.ts": {
+      "maxDuration": 120
     },
     "app/api/jobs/rbac-evidence/route.ts": {
       "maxDuration": 60

@@ -31,16 +31,16 @@ export async function renderEmailTemplate(template: ReactElement): Promise<strin
  * - No-ops if API key missing or no recipients.
  * - Deduplicates recipients and filters falsy values.
  */
-export async function sendEmail(payload: EmailPayload): Promise<void> {
+export async function sendEmail(payload: EmailPayload): Promise<boolean> {
   if (!RESEND_API_KEY) {
     console.warn("RESEND_API_KEY not set; skipping email send")
-    return
+    return false
   }
 
   const recipients = Array.from(new Set(payload.to.filter(Boolean))) as string[]
   if (recipients.length === 0) {
     console.warn("No email recipients provided; skipping email send")
-    return
+    return false
   }
 
   try {
@@ -63,9 +63,12 @@ export async function sendEmail(payload: EmailPayload): Promise<void> {
     if (!response.ok) {
       const errorText = await response.text()
       console.error("Resend API error", response.status, errorText)
+      return false
     }
+    return true
   } catch (error) {
     console.error("Failed to send email via Resend", error)
+    return false
   }
 }
 
@@ -81,6 +84,8 @@ export interface ReminderEmailPayload {
   dueDate: string
   daysOverdue?: number
   payLink: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
 }
 
 /**
@@ -109,6 +114,8 @@ export async function sendReminderEmail(payload: ReminderEmailPayload): Promise<
       dueDate,
       daysOverdue: payload.daysOverdue,
       payLink: payload.payLink,
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
     })
   )
 
@@ -129,6 +136,7 @@ export interface InviteEmailPayload {
   to: string
   inviteLink: string
   orgName?: string | null
+  orgLogoUrl?: string | null
   inviterName?: string | null
   inviterEmail?: string | null
 }
@@ -137,6 +145,7 @@ export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void
   const html = await renderEmailTemplate(
     InviteTeamMemberEmail({
       orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
       inviterName: payload.inviterName,
       inviterEmail: payload.inviterEmail,
       inviteeEmail: payload.to,
@@ -177,6 +186,7 @@ export interface BidInviteEmailPayload {
   trade?: string | null
   dueDate?: string | null
   orgName?: string | null
+  orgLogoUrl?: string | null
   bidLink: string
 }
 
@@ -200,6 +210,7 @@ export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promis
       trade: payload.trade,
       dueDate,
       orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
       bidLink: payload.bidLink,
     })
   )
@@ -210,10 +221,6 @@ export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promis
     html,
   })
 }
-
-
-
-
 
 
 

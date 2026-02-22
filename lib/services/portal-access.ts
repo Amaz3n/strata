@@ -64,6 +64,7 @@ function mapAccessToken(row: any): PortalAccessToken {
     project_id: row.project_id,
     contact_id: row.contact_id ?? null,
     company_id: row.company_id ?? null,
+    scoped_rfi_id: row.scoped_rfi_id ?? null,
     token: row.token,
     name: row.name,
     portal_type: row.portal_type,
@@ -86,6 +87,7 @@ export async function createPortalAccessToken({
   portalType,
   contactId,
   companyId,
+  scopedRfiId,
   permissions,
   expiresAt,
   orgId,
@@ -94,6 +96,7 @@ export async function createPortalAccessToken({
   portalType: "client" | "sub"
   contactId?: string
   companyId?: string
+  scopedRfiId?: string | null
   permissions?: Partial<PortalPermissions>
   expiresAt?: string | null
   orgId?: string
@@ -108,6 +111,7 @@ export async function createPortalAccessToken({
     portal_type: portalType,
     contact_id: contactId ?? null,
     company_id: companyId ?? null,
+    scoped_rfi_id: scopedRfiId ?? null,
     expires_at: expiresAt ?? null,
     created_by: userId,
     ...permissionsToColumns(permissions),
@@ -766,12 +770,14 @@ export async function loadClientPortalData({
   permissions,
   portalType = "client",
   companyId,
+  scopedRfiId,
 }: {
   orgId: string
   projectId: string
   permissions: PortalPermissions
   portalType?: "client" | "sub"
   companyId?: string | null
+  scopedRfiId?: string | null
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
@@ -825,7 +831,7 @@ export async function loadClientPortalData({
   const invoices = permissions.can_view_invoices
     ? await fetchInvoices(supabase, orgId, projectId, permissions.can_pay_invoices ?? false)
     : []
-  const rfis = permissions.can_view_rfis ? await fetchRfis(supabase, orgId, projectId) : []
+  const rfis = permissions.can_view_rfis ? await fetchRfis(supabase, orgId, projectId, scopedRfiId ?? null) : []
   const submittals = permissions.can_view_submittals ? await fetchSubmittals(supabase, orgId, projectId) : []
 
   const selections = permissions.can_submit_selections ? await fetchSelections(supabase, orgId, projectId) : []
@@ -868,11 +874,13 @@ export async function loadSubPortalData({
   projectId,
   companyId,
   permissions,
+  scopedRfiId,
 }: {
   orgId: string
   projectId: string
   companyId: string
   permissions: PortalPermissions
+  scopedRfiId?: string | null
 }): Promise<SubPortalData> {
   const supabase = createServiceSupabaseClient()
 
@@ -970,13 +978,20 @@ export async function loadSubPortalData({
 
     // RFIs assigned to this company
     permissions.can_view_rfis
-      ? supabase
-          .from("rfis")
-          .select("*")
-          .eq("org_id", orgId)
-          .eq("project_id", projectId)
-          .eq("assigned_company_id", companyId)
-          .order("created_at", { ascending: false })
+      ? (() => {
+          let query = supabase
+            .from("rfis")
+            .select("*")
+            .eq("org_id", orgId)
+            .eq("project_id", projectId)
+            .eq("assigned_company_id", companyId)
+            .neq("status", "draft")
+            .order("created_at", { ascending: false })
+          if (scopedRfiId) {
+            query = query.eq("id", scopedRfiId)
+          }
+          return query
+        })()
       : Promise.resolve({ data: [] }),
 
     // Submittals assigned to this company
@@ -1269,15 +1284,27 @@ async function fetchInvoices(
   return invoices
 }
 
-async function fetchRfis(supabase: any, orgId: string, projectId: string): Promise<Rfi[]> {
-  const { data, error } = await supabase
+async function fetchRfis(
+  supabase: any,
+  orgId: string,
+  projectId: string,
+  scopedRfiId?: string | null,
+): Promise<Rfi[]> {
+  let query = supabase
     .from("rfis")
     .select(
       "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id",
     )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
+    .neq("status", "draft")
     .order("rfi_number", { ascending: true })
+
+  if (scopedRfiId) {
+    query = query.eq("id", scopedRfiId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error("Failed to load RFIs for portal", error)

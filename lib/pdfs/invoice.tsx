@@ -28,10 +28,13 @@ export type InvoicePdfData = {
 
 const palette = {
   bg: "#FFFFFF",
-  text: "#111827",
-  muted: "#6B7280",
+  text: "#111111",
+  muted: "#4B5563",
   line: "#E5E7EB",
 }
+
+// Using Helvetica as it's a reliable PDF font similar to Montserrat
+// Helvetica is built into PDFs and renders consistently
 
 const styles = StyleSheet.create({
   page: {
@@ -41,6 +44,7 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bg,
     color: palette.text,
     fontFamily: "Helvetica",
+    fontWeight: "normal",
     fontSize: 10,
   },
   header: {
@@ -54,15 +58,17 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   title: {
-    fontFamily: "Times-Roman",
+    fontFamily: "Helvetica",
     fontSize: 34,
     color: "#111111",
     letterSpacing: 0.15,
+    fontWeight: "bold",
   },
   subtitle: {
     marginTop: 6,
     fontSize: 11,
     color: palette.muted,
+    fontWeight: "normal",
     lineHeight: 1.35,
   },
   logoWrap: {
@@ -97,11 +103,13 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 9.5,
     color: palette.muted,
+    fontWeight: "normal",
     marginBottom: 6,
   },
   value: {
     fontSize: 10.5,
     color: palette.text,
+    fontWeight: "normal",
     lineHeight: 1.35,
     marginBottom: 3,
   },
@@ -120,6 +128,7 @@ const styles = StyleSheet.create({
   metaValue: {
     fontSize: 11,
     color: palette.text,
+    fontWeight: "normal",
   },
   table: {
     marginTop: 10,
@@ -135,6 +144,7 @@ const styles = StyleSheet.create({
   th: {
     fontSize: 9.5,
     color: palette.muted,
+    fontWeight: "normal",
   },
   row: {
     flexDirection: "row",
@@ -146,6 +156,7 @@ const styles = StyleSheet.create({
   td: {
     fontSize: 10.8,
     color: palette.text,
+    fontWeight: "normal",
   },
   totalsWrap: {
     width: 260,
@@ -160,10 +171,12 @@ const styles = StyleSheet.create({
   totalLabel: {
     fontSize: 10,
     color: palette.muted,
+    fontWeight: "normal",
   },
   totalValue: {
     fontSize: 11,
     color: palette.text,
+    fontWeight: "normal",
   },
   grandTotal: {
     marginTop: 12,
@@ -176,10 +189,11 @@ const styles = StyleSheet.create({
   grandTotalLabel: {
     fontSize: 11,
     color: palette.muted,
+    fontWeight: "bold",
   },
   grandTotalValue: {
     fontSize: 13,
-    fontWeight: 700,
+    fontWeight: "bold",
     color: palette.text,
   },
   footerDividerTop: {
@@ -201,6 +215,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontSize: 10.5,
     color: palette.text,
+    fontWeight: "normal",
     lineHeight: 1.45,
   },
   payButton: {
@@ -211,7 +226,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     color: "#1D4ED8",
     fontSize: 10.25,
-    fontWeight: 600,
+    fontWeight: "bold",
     textDecoration: "none",
     width: 112,
     textAlign: "center",

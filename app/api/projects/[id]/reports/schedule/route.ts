@@ -1,11 +1,69 @@
 import { NextRequest, NextResponse } from "next/server"
 import { format } from "date-fns"
+import sharp from "sharp"
 
 import { listScheduleItemsByProject } from "@/lib/services/schedule"
 import { renderScheduleGanttPdf, type ScheduleItemData } from "@/lib/pdfs/schedule-gantt"
 import { renderScheduleGanttVisualPdf } from "@/lib/pdfs/schedule-gantt-visual"
 import { toCsv, type CsvColumn } from "@/lib/services/reports/csv"
 import { requireOrgContext } from "@/lib/services/context"
+
+function resolveOrgLogoPath(logoUrl?: string | null) {
+  if (!logoUrl) return null
+
+  try {
+    const parsed = new URL(logoUrl)
+    const marker = "/storage/v1/object/public/org-logos/"
+    const markerIndex = parsed.pathname.indexOf(marker)
+    if (markerIndex === -1) return null
+    return decodeURIComponent(parsed.pathname.slice(markerIndex + marker.length))
+  } catch {
+    return null
+  }
+}
+
+type NormalizedLogoResult = {
+  src?: string
+  aspectRatio?: number
+}
+
+async function normalizeLogoForPdf(
+  logoUrl: string | null | undefined,
+  supabase: {
+    storage: {
+      from: (bucket: string) => {
+        download: (path: string) => Promise<{ data: Blob | null; error: unknown }>
+      }
+    }
+  },
+): Promise<NormalizedLogoResult> {
+  if (!logoUrl) return {}
+
+  const logoPath = resolveOrgLogoPath(logoUrl)
+  if (!logoPath) return { src: logoUrl }
+
+  try {
+    const { data: logoBlob, error } = await supabase.storage.from("org-logos").download(logoPath)
+    if (error || !logoBlob) return { src: logoUrl }
+
+    const logoBuffer = Buffer.from(await logoBlob.arrayBuffer())
+    const metadata = await sharp(logoBuffer).metadata()
+    const aspectRatio = metadata.width && metadata.height ? metadata.width / metadata.height : undefined
+
+    const normalizedBuffer = await sharp(logoBuffer)
+      .ensureAlpha()
+      .resize({ width: 520, height: 160, fit: "inside", withoutEnlargement: true })
+      .png()
+      .toBuffer()
+
+    return {
+      src: `data:image/png;base64,${normalizedBuffer.toString("base64")}`,
+      aspectRatio,
+    }
+  } catch {
+    return { src: logoUrl }
+  }
+}
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
@@ -20,7 +78,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // Fetch project info
     const { data: project, error: projectError } = await supabase
       .from("projects")
-      .select("id, name, org_id, orgs(name)")
+      .select("id, name, org_id, orgs(name, logo_url)")
       .eq("id", projectId)
       .single()
 
@@ -28,8 +86,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Project not found" }, { status: 404 })
     }
 
-    const orgsData = project.orgs as unknown as { name: string } | null
+    const orgsData = project.orgs as unknown as { name: string; logo_url?: string | null } | null
     const orgName = orgsData?.name
+    const orgLogoUrl = orgsData?.logo_url ?? undefined
 
     // Calculate date range from items
     let minDate: Date | null = null
@@ -85,7 +144,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     // Handle visual Gantt PDF export
     if (outputFormat === "gantt-pdf") {
-      const pdfBuffer = await renderScheduleGanttVisualPdf(pdfData)
+      const normalizedLogo = await normalizeLogoForPdf(orgLogoUrl, supabase)
+      const pdfBuffer = await renderScheduleGanttVisualPdf({
+        ...pdfData,
+        orgLogoUrl: normalizedLogo.src,
+        orgLogoAspectRatio: normalizedLogo.aspectRatio,
+      })
       const filename = `schedule-gantt-${project.name.toLowerCase().replace(/\s+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.pdf`
 
       return new NextResponse(new Uint8Array(pdfBuffer), {

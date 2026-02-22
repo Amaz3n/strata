@@ -6,12 +6,42 @@ const fs_1 = require("fs");
 const os_1 = require("os");
 const path_1 = require("path");
 const crypto_1 = require("crypto");
+const pdfs_1 = require("../storage/pdfs");
+const tiles_1 = require("../storage/tiles");
+const SHEET_NUMBER_MAX_LENGTH = 50;
+const SHEET_TITLE_MAX_LENGTH = 255;
+const PAGE_TEXT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+const DISCIPLINE_CODES = new Set([
+    'A',
+    'S',
+    'M',
+    'E',
+    'P',
+    'C',
+    'L',
+    'I',
+    'FP',
+    'G',
+    'T',
+    'SP',
+    'D',
+    'X',
+]);
+const SHEET_LABEL_PATTERNS = [
+    /\b(?:SHEET|SHT)\s*(?:NO|NUMBER|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9./-]{1,19})\b/i,
+    /\b(?:DWG|DRAWING)\s*(?:NO|NUMBER|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9./-]{1,19})\b/i,
+];
+const SHEET_TITLE_LABEL_PATTERNS = [
+    /\b(?:SHEET\s+TITLE|DRAWING\s+TITLE)\s*[:\-]\s*(.+)$/i,
+    /\bTITLE\s*[:\-]\s*(.+)$/i,
+];
+const GENERIC_SHEET_NUMBER_PATTERN = /\b(?:FP|SP|[ASMEPCLIGTDX])[-./]?\d{1,4}(?:\.\d{1,3})?[A-Z]?\b/gi;
 async function processDrawingSet(supabase, job) {
-    const { drawingSetId, projectId, sourceFileId, storagePath } = job.payload;
+    const { drawingSetId, projectId, sourceFileId } = job.payload;
     console.log(`📄 Processing drawing set ${drawingSetId}`);
     // Validate required parameters
-    if (!drawingSetId || !projectId || !sourceFileId || !storagePath) {
-        throw new Error('Missing required payload fields: drawingSetId, projectId, sourceFileId, storagePath');
+    if (!drawingSetId || !projectId || !sourceFileId) {
+        throw new Error('Missing required payload fields: drawingSetId, projectId, sourceFileId');
     }
     // Get drawing set info
     const { data: drawingSet, error: setError } = await supabase
@@ -22,12 +52,15 @@ async function processDrawingSet(supabase, job) {
     if (setError || !drawingSet) {
         throw new Error(`Drawing set not found: ${setError?.message}`);
     }
+    const setTitle = normalizeWhitespace(drawingSet.title || '').trim() || 'Drawing Set';
     console.log(`Found drawing set: ${drawingSet.title}`);
     // Get file info
     const { data: fileRecord, error: fileError } = await supabase
         .from('files')
         .select('file_name, storage_path')
         .eq('id', sourceFileId)
+        .eq('org_id', drawingSet.org_id)
+        .eq('project_id', projectId)
         .single();
     if (fileError || !fileRecord) {
         throw new Error(`File record not found: ${fileError?.message}`);
@@ -36,18 +69,18 @@ async function processDrawingSet(supabase, job) {
     const tempDir = (0, os_1.tmpdir)();
     const tempPdfPath = (0, path_1.join)(tempDir, `pdf-${drawingSetId}-${Date.now()}.pdf`);
     try {
-        const { data: pdfData, error: downloadError } = await supabase.storage
-            .from('project-files')
-            .download(storagePath);
-        if (downloadError || !pdfData) {
-            throw new Error(`Failed to download PDF: ${downloadError?.message}`);
-        }
-        const pdfBytes = new Uint8Array(await pdfData.arrayBuffer());
+        const pdfBytes = await (0, pdfs_1.downloadPdfObject)({
+            supabase,
+            path: fileRecord.storage_path,
+        });
         await fs_1.promises.writeFile(tempPdfPath, pdfBytes);
         console.log(`Downloaded PDF: ${pdfBytes.length} bytes`);
         // Get page count using MuPDF
         const pageCount = getPdfPageCount(tempPdfPath);
         console.log(`PDF has ${pageCount} pages`);
+        const pageTexts = extractPdfTextByPage(tempPdfPath, pageCount);
+        const pagesWithText = pageTexts.reduce((count, text) => (text.trim() ? count + 1 : count), 0);
+        console.log(`Extracted searchable text for ${pagesWithText}/${pageCount} pages`);
         // Create a default revision for this drawing set
         const { data: revision, error: revisionError } = await supabase
             .from('drawing_revisions')
@@ -87,19 +120,19 @@ async function processDrawingSet(supabase, job) {
                 console.log(`Extracted page ${pageIndex + 1}/${pageCount}`);
                 // Upload PNG to drawings-tiles bucket
                 const pngBuffer = await fs_1.promises.readFile(localPngPath);
-                const { error: uploadError } = await supabase.storage
-                    .from('drawings-tiles')
-                    .upload(storagePngPath, pngBuffer, {
-                    contentType: 'image/png',
-                    cacheControl: 'public, max-age=3600',
-                    upsert: true,
-                });
-                if (uploadError) {
-                    console.warn(`Failed to upload PNG for page ${pageIndex}:`, uploadError);
-                }
-                else {
+                try {
+                    await (0, tiles_1.uploadTileObject)({
+                        supabase,
+                        path: storagePngPath,
+                        bytes: pngBuffer,
+                        contentType: 'image/png',
+                        cacheControl: 'public, max-age=3600',
+                    });
                     tempPngPaths.push(storagePngPath);
                     console.log(`Uploaded page ${pageIndex + 1}/${pageCount}`);
+                }
+                catch (uploadError) {
+                    console.warn(`Failed to upload PNG for page ${pageIndex}:`, uploadError);
                 }
                 // Clean up local PNG to save disk space
                 await fs_1.promises.unlink(localPngPath).catch(() => { });
@@ -112,8 +145,17 @@ async function processDrawingSet(supabase, job) {
         console.log(`Processed ${tempPngPaths.length}/${pageCount} pages`);
         // Create drawing sheets and versions
         const sheetsCreated = [];
+        const usedSheetNumbers = new Set();
         for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
-            const sheetNumber = `${drawingSet.title} - Page ${pageIndex + 1}`;
+            const pageNumber = pageIndex + 1;
+            const detectedSheet = detectSheetMetadata({
+                pageText: pageTexts[pageIndex] || '',
+                setTitle,
+                pageNumber,
+            });
+            const sheetNumber = ensureUniqueSheetNumber(detectedSheet.sheetNumber, pageNumber, usedSheetNumbers);
+            const sheetTitle = truncateValue(detectedSheet.sheetTitle || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH);
+            console.log(`[SheetDetect] Page ${pageNumber}: ${sheetNumber} (${detectedSheet.method}, ${detectedSheet.confidence})`);
             // Create sheet record
             const { data: sheet, error: sheetError } = await supabase
                 .from('drawing_sheets')
@@ -122,7 +164,8 @@ async function processDrawingSet(supabase, job) {
                 project_id: projectId,
                 drawing_set_id: drawingSetId,
                 sheet_number: sheetNumber,
-                sheet_title: `${drawingSet.title} - Page ${pageIndex + 1}`,
+                sheet_title: sheetTitle,
+                discipline: detectedSheet.discipline,
                 sort_order: pageIndex,
                 share_with_clients: false,
                 share_with_subs: false,
@@ -147,6 +190,12 @@ async function processDrawingSet(supabase, job) {
                 extracted_metadata: {
                     temp_png_path: tempPngPaths[pageIndex] || null,
                     source_hash: hash,
+                    page_index: pageIndex,
+                    sheet_detection: {
+                        method: detectedSheet.method,
+                        confidence: detectedSheet.confidence,
+                        source_line: detectedSheet.sourceLine,
+                    },
                 },
                 created_at: new Date().toISOString(),
             })
@@ -231,4 +280,211 @@ function getPdfPageCount(pdfPath) {
         console.error('Failed to get PDF page count:', error);
         throw new Error(`PDF page count detection failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+}
+function extractPdfTextByPage(pdfPath, pageCount) {
+    if (pageCount <= 0)
+        return [];
+    try {
+        const rawOutput = (0, child_process_1.execFileSync)('pdftotext', ['-layout', '-enc', 'UTF-8', pdfPath, '-'], {
+            encoding: 'utf8',
+            timeout: 180000,
+            maxBuffer: PAGE_TEXT_MAX_BUFFER_BYTES,
+        });
+        const normalized = rawOutput.replace(/\r/g, '');
+        const pages = normalized.split('\f');
+        if (pages.length > 0 && !pages[pages.length - 1].trim()) {
+            pages.pop();
+        }
+        return Array.from({ length: pageCount }, (_, index) => pages[index] || '');
+    }
+    catch (error) {
+        console.warn('Failed to extract PDF text with pdftotext:', error);
+        return Array.from({ length: pageCount }, () => '');
+    }
+}
+function detectSheetMetadata(input) {
+    const { pageText, setTitle, pageNumber } = input;
+    const normalizedText = pageText.replace(/\r/g, '');
+    const lines = normalizedText
+        .split('\n')
+        .map((line) => normalizeWhitespace(line))
+        .map((line) => line.trim())
+        .filter(Boolean);
+    const labeledMatch = detectSheetNumberFromLabel(lines);
+    if (labeledMatch) {
+        const titleFromLabel = detectSheetTitleFromLabels(lines);
+        const titleFromNearby = titleFromLabel || detectSheetTitleNearLine(lines, labeledMatch.sourceLine);
+        return {
+            sheetNumber: truncateValue(labeledMatch.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
+            sheetTitle: truncateValue(titleFromNearby || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH),
+            discipline: detectDiscipline(labeledMatch.sheetNumber),
+            method: 'label',
+            confidence: 'high',
+            sourceLine: labeledMatch.sourceLine,
+        };
+    }
+    const patternMatch = detectSheetNumberByPattern(lines);
+    if (patternMatch) {
+        const title = detectSheetTitleNearLine(lines, patternMatch.sourceLine);
+        return {
+            sheetNumber: truncateValue(patternMatch.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
+            sheetTitle: truncateValue(title || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH),
+            discipline: detectDiscipline(patternMatch.sheetNumber),
+            method: 'pattern',
+            confidence: 'medium',
+            sourceLine: patternMatch.sourceLine,
+        };
+    }
+    return {
+        sheetNumber: truncateValue(`${setTitle} - Page ${pageNumber}`, SHEET_NUMBER_MAX_LENGTH),
+        sheetTitle: truncateValue(`${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH),
+        discipline: 'X',
+        method: 'fallback',
+        confidence: 'low',
+        sourceLine: null,
+    };
+}
+function detectSheetNumberFromLabel(lines) {
+    for (const line of lines) {
+        for (const pattern of SHEET_LABEL_PATTERNS) {
+            const match = line.match(pattern);
+            if (!match)
+                continue;
+            const sheetNumber = normalizeSheetNumberCandidate(match[1]);
+            if (sheetNumber) {
+                return { sheetNumber, sourceLine: line };
+            }
+        }
+    }
+    return null;
+}
+function detectSheetNumberByPattern(lines) {
+    let best = null;
+    for (const line of lines) {
+        const candidates = line.match(GENERIC_SHEET_NUMBER_PATTERN) || [];
+        for (const candidate of candidates) {
+            const normalized = normalizeSheetNumberCandidate(candidate);
+            if (!normalized)
+                continue;
+            let score = 0;
+            if (/[-./]/.test(normalized))
+                score += 2;
+            if (/\b(SHEET|SHT|DWG|DRAWING)\b/i.test(line))
+                score += 4;
+            if (line.length <= 40)
+                score += 1;
+            if (/\b(DETAIL|SCALE|DATE|ISSUED|REVISION|PROJECT)\b/i.test(line))
+                score -= 1;
+            const numeric = parseInt(normalized.replace(/^[A-Z]+[-./]?/, ''), 10);
+            if (Number.isFinite(numeric) && numeric >= 1900 && numeric <= 2100 && !/[-./]/.test(normalized)) {
+                score -= 3;
+            }
+            if (!best || score > best.score) {
+                best = { sheetNumber: normalized, sourceLine: line, score };
+            }
+        }
+    }
+    if (!best || best.score < 2) {
+        return null;
+    }
+    return { sheetNumber: best.sheetNumber, sourceLine: best.sourceLine };
+}
+function detectSheetTitleFromLabels(lines) {
+    for (const line of lines) {
+        for (const pattern of SHEET_TITLE_LABEL_PATTERNS) {
+            const match = line.match(pattern);
+            if (!match)
+                continue;
+            const title = sanitizeTitle(match[1]);
+            if (title)
+                return title;
+        }
+    }
+    return null;
+}
+function detectSheetTitleNearLine(lines, sourceLine) {
+    const index = lines.findIndex((line) => line === sourceLine);
+    if (index === -1)
+        return null;
+    const nearbyIndexes = [index + 1, index + 2, index - 1, index - 2];
+    for (const i of nearbyIndexes) {
+        if (i < 0 || i >= lines.length)
+            continue;
+        const title = sanitizeTitle(lines[i]);
+        if (title)
+            return title;
+    }
+    return null;
+}
+function sanitizeTitle(raw) {
+    const value = normalizeWhitespace(raw).trim();
+    if (!value)
+        return null;
+    if (value.length < 3 || value.length > SHEET_TITLE_MAX_LENGTH)
+        return null;
+    if (!/[A-Za-z]/.test(value))
+        return null;
+    if (/^(SHEET|SHT|DWG|DRAWING|REVISION|PROJECT|SCALE)\b/i.test(value))
+        return null;
+    return truncateValue(value, SHEET_TITLE_MAX_LENGTH);
+}
+function normalizeSheetNumberCandidate(raw) {
+    const value = raw
+        .toUpperCase()
+        .replace(/[^A-Z0-9./-]/g, '')
+        .replace(/^[./-]+|[./-]+$/g, '');
+    if (!value)
+        return null;
+    const valid = /^(?:FP|SP|[ASMEPCLIGTDX])[-./]?\d{1,4}(?:\.\d{1,3})?[A-Z]?$/.test(value);
+    return valid ? truncateValue(value, SHEET_NUMBER_MAX_LENGTH) : null;
+}
+function detectDiscipline(sheetNumber) {
+    const normalized = sheetNumber.toUpperCase();
+    if (normalized.startsWith('FP'))
+        return 'FP';
+    if (normalized.startsWith('SP'))
+        return 'SP';
+    const single = normalized[0];
+    return DISCIPLINE_CODES.has(single) ? single : 'X';
+}
+function ensureUniqueSheetNumber(baseSheetNumber, pageNumber, used) {
+    const base = truncateValue(baseSheetNumber, SHEET_NUMBER_MAX_LENGTH);
+    const baseKey = base.toUpperCase();
+    if (!used.has(baseKey)) {
+        used.add(baseKey);
+        return base;
+    }
+    const firstSuffix = `-P${pageNumber}`;
+    const firstCandidate = truncateForSuffix(base, firstSuffix, SHEET_NUMBER_MAX_LENGTH);
+    const firstKey = firstCandidate.toUpperCase();
+    if (!used.has(firstKey)) {
+        used.add(firstKey);
+        return firstCandidate;
+    }
+    let attempt = 2;
+    while (attempt < 1000) {
+        const suffix = `-${attempt}`;
+        const candidate = truncateForSuffix(base, suffix, SHEET_NUMBER_MAX_LENGTH);
+        const key = candidate.toUpperCase();
+        if (!used.has(key)) {
+            used.add(key);
+            return candidate;
+        }
+        attempt += 1;
+    }
+    const finalFallback = truncateValue(`PAGE-${pageNumber}`, SHEET_NUMBER_MAX_LENGTH);
+    used.add(finalFallback.toUpperCase());
+    return finalFallback;
+}
+function truncateForSuffix(base, suffix, maxLength) {
+    const roomForBase = Math.max(1, maxLength - suffix.length);
+    return `${base.slice(0, roomForBase)}${suffix}`;
+}
+function truncateValue(value, maxLength) {
+    if (value.length <= maxLength)
+        return value;
+    return value.slice(0, maxLength).trim();
+}
+function normalizeWhitespace(value) {
+    return value.replace(/\s+/g, ' ');
 }

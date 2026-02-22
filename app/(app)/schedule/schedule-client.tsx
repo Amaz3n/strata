@@ -408,6 +408,7 @@ function MasterScheduleInner({
             className="flex-1"
             onQuickAdd={handleQuickAdd}
             onEditItem={handleEditItem}
+            onAddItem={handleAddItem}
           />
         )
       case "lookahead":
@@ -418,6 +419,7 @@ function MasterScheduleInner({
             className="flex-1"
             onQuickAdd={handleQuickAdd}
             onEditItem={handleEditItem}
+            onAddItem={handleAddItem}
           />
         )
     }

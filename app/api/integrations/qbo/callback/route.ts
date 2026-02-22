@@ -129,6 +129,7 @@ export async function GET(request: NextRequest) {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       expiresInSeconds: tokens.expires_in,
+      refreshTokenExpiresInSeconds: tokens.x_refresh_token_expires_in,
       connectedBy,
       companyName: (companyInfo as any)?.CompanyName ?? (companyInfo as any)?.LegalName ?? null,
     })

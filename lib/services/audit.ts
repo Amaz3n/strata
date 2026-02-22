@@ -14,12 +14,27 @@ interface AuditInput {
 
 export async function recordAudit(input: AuditInput) {
   try {
-    const context = await requireOrgContext(input.orgId)
+    let resolvedOrgId = input.orgId
+    let actorId = input.actorId ?? null
+    try {
+      const context = await requireOrgContext(input.orgId)
+      resolvedOrgId = context.orgId
+      actorId = input.actorId ?? context.userId
+    } catch (contextError) {
+      if (!input.orgId) {
+        throw contextError
+      }
+    }
+
+    if (!resolvedOrgId) {
+      throw new Error("Missing org context for audit logging")
+    }
+
     const supabase = createServiceSupabaseClient()
 
     const { error } = await supabase.from("audit_log").insert({
-      org_id: context.orgId,
-      actor_user_id: input.actorId ?? context.userId,
+      org_id: resolvedOrgId,
+      actor_user_id: actorId,
       action: input.action,
       entity_type: input.entityType,
       entity_id: input.entityId,

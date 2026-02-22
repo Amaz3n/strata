@@ -6,6 +6,7 @@ import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw } from "lucide-react
 import {
   connectQBOAction,
   disconnectQBOAction,
+  getQBOConnectionAction,
   getQBODiagnosticsAction,
   refreshQBOTokenAction,
   retryFailedQBOJobsAction,
@@ -60,10 +61,10 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
     if (!connection?.token_expires_at) return null
     const expires = new Date(connection.token_expires_at).getTime()
     const diffHours = Math.round((expires - Date.now()) / (1000 * 60 * 60))
-    if (diffHours < 0) return "Token expired"
-    if (diffHours < 24) return `Token expires in ${diffHours}h`
+    if (diffHours < 0) return "Access token expired (auto-renews on next sync)"
+    if (diffHours < 24) return `Access token rotates in ${diffHours}h (auto-renews)`
     const days = Math.ceil(diffHours / 24)
-    return `Token expires in ${days}d`
+    return `Access token rotates in ${days}d (auto-renews)`
   })()
 
   const handleConnect = async () => {
@@ -287,7 +288,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
 
             {expiresInLabel && (
               <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Connection health:</span>
+                <span className="text-muted-foreground">Token rotation:</span>
                 <span className="font-medium">{expiresInLabel}</span>
               </div>
             )}

@@ -335,6 +335,9 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       customer_name: input.customer_name,
       customer_address: input.customer_address,
       customer_email: input.sent_to_emails?.[0],
+      from_name: input.from_name ?? orgData?.name ?? null,
+      from_email: input.from_email ?? orgData?.email ?? null,
+      from_address: input.from_address ?? orgData?.address ?? null,
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
@@ -513,6 +516,9 @@ export async function updateInvoice({
       customer_name: input.customer_name ?? (existing.metadata as any)?.customer_name,
       customer_address: input.customer_address ?? (existing.metadata as any)?.customer_address,
       customer_email: (input.sent_to_emails ?? [])[0] ?? (existing.metadata as any)?.customer_email,
+      from_name: input.from_name ?? (existing.metadata as any)?.from_name ?? null,
+      from_email: input.from_email ?? (existing.metadata as any)?.from_email ?? null,
+      from_address: input.from_address ?? (existing.metadata as any)?.from_address ?? null,
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
@@ -785,12 +791,15 @@ async function sendInvoiceEmail({
   dueDate?: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: invoice, error } = await supabase
-    .from("invoices")
-    .select("invoice_number, title, token, sent_to_emails, project:projects(name)")
-    .eq("id", invoiceId)
-    .eq("org_id", orgId)
-    .maybeSingle()
+  const [{ data: invoice, error }, { data: org }] = await Promise.all([
+    supabase
+      .from("invoices")
+      .select("invoice_number, title, token, sent_to_emails, project:projects(name)")
+      .eq("id", invoiceId)
+      .eq("org_id", orgId)
+      .maybeSingle(),
+    supabase.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle(),
+  ])
 
   if (error || !invoice) {
     console.warn("Unable to load invoice for email notification", error)
@@ -835,6 +844,8 @@ async function sendInvoiceEmail({
       amount,
       dueDate: dueDisplay,
       invoiceLink,
+      orgName: org?.name ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
     })
   )
 

@@ -17,6 +17,9 @@ export const invoiceInputSchema = z.object({
   customer_id: z.string().uuid().optional().nullable(),
   customer_name: z.string().optional().nullable(),
   customer_address: z.string().max(500).optional().nullable(),
+  from_name: z.string().max(255).optional().nullable(),
+  from_email: z.string().max(255).optional().nullable(),
+  from_address: z.string().max(500).optional().nullable(),
   reservation_id: z
     .string()
     .uuid()

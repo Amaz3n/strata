@@ -383,6 +383,12 @@ export function LookaheadView({ className, weeks = 2, onAddItem }: LookaheadView
                   <Clock className="h-12 w-12 mx-auto mb-4 opacity-20" />
                   <p className="text-sm">No scheduled items for this period</p>
                   <p className="text-xs mt-1">Try expanding the date range or adding new items</p>
+                  {onAddItem && (
+                    <Button onClick={onAddItem} className="mt-4 gap-2">
+                      <Plus className="h-4 w-4" />
+                      Add first item
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
@@ -421,7 +427,6 @@ export function LookaheadView({ className, weeks = 2, onAddItem }: LookaheadView
     </TooltipProvider>
   )
 }
-
 
 
 

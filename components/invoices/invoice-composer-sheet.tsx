@@ -2,7 +2,7 @@
 
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
-import { CalendarIcon, Check, ChevronDown, Download, Plus, Send, Trash2 } from "lucide-react"
+import { CalendarIcon, Check, ChevronDown, Download, Plus, Send, X } from "lucide-react"
 import { NumberFlowLite, partitionParts } from "number-flow"
 
 import type { ChangeOrder, Contact, CostCode, Invoice, Project } from "@/lib/types"
@@ -23,7 +23,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
+import { buildPartyDetailsBlock, parsePartyDetailsBlock } from "@/lib/invoices/party-details"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -79,6 +81,12 @@ type QBOIncomeAccountOption = {
 type ComposerSettings = {
   defaultPaymentTermsDays: number
   defaultInvoiceNote: string
+}
+
+type QboDiagnostics = {
+  connectionLastError: string | null
+  refreshFailureCount: number
+  accountLoadWarning: string | null
 }
 
 const NUMBER_FLOW_TAG = "number-flow"
@@ -231,6 +239,46 @@ function formatQboAccountLabel(account?: QBOIncomeAccountOption | null) {
   return account.fullyQualifiedName ?? account.name
 }
 
+function openPdfBase64(pdfBase64: string, fileName?: string) {
+  if (typeof window === "undefined") return
+  const binary = atob(pdfBase64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  const blob = new Blob([bytes], { type: "application/pdf" })
+  const objectUrl = URL.createObjectURL(blob)
+  const popup = window.open(objectUrl, "_blank", "noopener,noreferrer")
+  if (!popup) {
+    const link = document.createElement("a")
+    link.href = objectUrl
+    link.download = fileName || "invoice.pdf"
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+}
+
+async function openPdfUrl(url: string, fileName?: string) {
+  const response = await fetch(url, { credentials: "include", cache: "no-store" })
+  if (!response.ok) {
+    throw new Error("Unable to open generated PDF")
+  }
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const popup = window.open(objectUrl, "_blank", "noopener,noreferrer")
+  if (!popup) {
+    const link = document.createElement("a")
+    link.href = objectUrl
+    link.download = fileName || "invoice.pdf"
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+}
+
 interface QboLineAccountPickerProps {
   valueId: string | null
   valueLabel: string | null
@@ -299,7 +347,7 @@ function QboLineAccountPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-6 w-[132px] items-center rounded px-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex h-5 max-w-[140px] items-center rounded-sm px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
           title={displayLabel}
         >
           <span className="truncate">{displayLabel}</span>
@@ -376,6 +424,7 @@ export function InvoiceComposerSheet({
   costCodes = [],
 }: Props) {
   const initialProjectId = defaultProjectId ?? invoice?.project_id ?? projects[0]?.id
+  const initialProjectName = projects.find((project) => project.id === initialProjectId)?.name ?? "Project"
 
   const [projectId, setProjectId] = useState<string | undefined>(initialProjectId)
   const [source, setSource] = useState<BillingSource>("manual")
@@ -386,16 +435,28 @@ export function InvoiceComposerSheet({
   const [qboConnected, setQboConnected] = useState(false)
   const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
   const [qboDefaultIncomeAccountId, setQboDefaultIncomeAccountId] = useState<string | null>(null)
+  const [qboDiagnostics, setQboDiagnostics] = useState<QboDiagnostics | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
 
   const [invoiceNumber, setInvoiceNumber] = useState(invoice?.invoice_number ?? "")
-  const [title, setTitle] = useState(invoice?.title ?? "Services")
+  const [title, setTitle] = useState(invoice?.title ?? initialProjectName)
   const [issueDate, setIssueDate] = useState(invoice?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
   const [dueDate, setDueDate] = useState(invoice?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
   const [customerId, setCustomerId] = useState<string>(invoice?.metadata?.customer_id ?? "none")
-  const [customerName, setCustomerName] = useState(invoice?.customer_name ?? "")
-  const [customerEmail, setCustomerEmail] = useState("")
-  const [customerAddress, setCustomerAddress] = useState(formatAddressBlock((invoice?.metadata?.customer_address as string | undefined) ?? ""))
+  const [customerDetails, setCustomerDetails] = useState(
+    buildPartyDetailsBlock({
+      name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
+      email: String(invoice?.metadata?.customer_email ?? ""),
+      address: formatAddressBlock(String(invoice?.metadata?.customer_address ?? "")),
+    }),
+  )
+  const [fromDetails, setFromDetails] = useState(
+    buildPartyDetailsBlock({
+      name: String(invoice?.metadata?.from_name ?? builderInfo?.name ?? "Arc Builder"),
+      email: String(invoice?.metadata?.from_email ?? builderInfo?.email ?? ""),
+      address: formatAddressBlock(String(invoice?.metadata?.from_address ?? builderInfo?.address ?? "")),
+    }),
+  )
   const [notes, setNotes] = useState(typeof invoice?.notes === "string" ? invoice.notes : "")
   const [taxRate, setTaxRate] = useState<number>(invoice?.totals?.tax_rate ?? ((invoice?.metadata?.tax_rate as number) ?? 0))
   const [paymentTermsDays, setPaymentTermsDays] = useState<number>((invoice?.metadata?.payment_terms_days as number) ?? 15)
@@ -412,6 +473,8 @@ export function InvoiceComposerSheet({
 
   const reservationRef = useRef<string | null>(null)
   const reservationConsumedRef = useRef(false)
+  const submitInFlightRef = useRef(false)
+  const pdfInFlightRef = useRef(false)
 
   const contactsSorted = useMemo(() => [...contacts].sort((a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? "")), [contacts])
 
@@ -421,6 +484,15 @@ export function InvoiceComposerSheet({
   )
 
   const selectedContact = useMemo(() => contactsSorted.find((contact) => contact.id === customerId), [contactsSorted, customerId])
+  const selectedProjectName = useMemo(
+    () => projects.find((project) => project.id === projectId)?.name ?? "Project",
+    [projectId, projects],
+  )
+  const showCustomerSelector = customerDetails.trim().length === 0
+  const showQboWarning = Boolean(
+    qboConnected &&
+      (qboIncomeAccounts.length === 0 || qboDiagnostics?.accountLoadWarning || qboDiagnostics?.connectionLastError),
+  )
 
   const lineTotals = useMemo(() => {
     const subtotal = lines.reduce((sum, line) => {
@@ -479,13 +551,18 @@ export function InvoiceComposerSheet({
     setSource("manual")
     setSourceDrawId("none")
     setSourceChangeOrderId("none")
-    setTitle("Services")
+    setTitle(selectedProjectName)
     setIssueDate(format(new Date(), "yyyy-MM-dd"))
     setDueDate(format(addDays(new Date(), composerSettings.defaultPaymentTermsDays), "yyyy-MM-dd"))
     setCustomerId("none")
-    setCustomerName("")
-    setCustomerEmail("")
-    setCustomerAddress("")
+    setCustomerDetails("")
+    setFromDetails(
+      buildPartyDetailsBlock({
+        name: builderInfo?.name ?? "Arc Builder",
+        email: builderInfo?.email ?? "",
+        address: formatAddressBlock(builderInfo?.address ?? ""),
+      }),
+    )
     setNotes(composerSettings.defaultInvoiceNote)
     setTaxRate(0)
     setPaymentTermsDays(composerSettings.defaultPaymentTermsDays)
@@ -502,16 +579,14 @@ export function InvoiceComposerSheet({
         qbo_income_account_name: null,
       },
     ])
-  }, [composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays])
+  }, [builderInfo?.address, builderInfo?.email, builderInfo?.name, composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays, selectedProjectName])
 
   const applyDrawToInvoice = (drawId: string) => {
     const draw = drawOptions.find((option) => option.id === drawId)
     if (!draw) return
     setSource("draw")
     setSourceDrawId(drawId)
-    setTitle(`Draw ${draw.draw_number}: ${draw.title}`)
     setDueDate(draw.due_date ?? dueDate)
-    setNotes(draw.description ?? "")
     setLines([
       {
         id: crypto.randomUUID(),
@@ -533,8 +608,6 @@ export function InvoiceComposerSheet({
 
     setSource("change_order")
     setSourceChangeOrderId(changeOrderId)
-    setTitle(`Change Order: ${changeOrder.title}`)
-    setNotes(changeOrder.description ?? "")
 
     if (Array.isArray(changeOrder.lines) && changeOrder.lines.length > 0) {
       setLines(
@@ -546,8 +619,8 @@ export function InvoiceComposerSheet({
           unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
           taxable: line.taxable !== false,
           cost_code_id: line.cost_code_id ?? null,
-          qbo_income_account_id: line.qbo_income_account_id ?? null,
-          qbo_income_account_name: line.qbo_income_account_name ?? null,
+          qbo_income_account_id: (line as Record<string, any>).qbo_income_account_id ?? null,
+          qbo_income_account_name: (line as Record<string, any>).qbo_income_account_name ?? null,
         })),
       )
     } else {
@@ -586,19 +659,38 @@ export function InvoiceComposerSheet({
     setIssueDate(invoice?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
     setDueDate(invoice?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
     setCustomerId((invoice?.metadata?.customer_id as string) ?? "none")
-    setCustomerName(invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""))
-    setCustomerEmail("")
-    setCustomerAddress(formatAddressBlock((invoice?.metadata?.customer_address as string | undefined) ?? ""))
+    setCustomerDetails(
+      buildPartyDetailsBlock({
+        name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
+        email: String(invoice?.metadata?.customer_email ?? ""),
+        address: formatAddressBlock(String(invoice?.metadata?.customer_address ?? "")),
+      }),
+    )
+    setFromDetails(
+      buildPartyDetailsBlock({
+        name: String(invoice?.metadata?.from_name ?? builderInfo?.name ?? "Arc Builder"),
+        email: String(invoice?.metadata?.from_email ?? builderInfo?.email ?? ""),
+        address: formatAddressBlock(String(invoice?.metadata?.from_address ?? builderInfo?.address ?? "")),
+      }),
+    )
     setNotes(typeof invoice?.notes === "string" ? invoice.notes : "")
     setTaxRate(invoice?.totals?.tax_rate ?? ((invoice?.metadata?.tax_rate as number) ?? 0))
     setPaymentTermsDays((invoice?.metadata?.payment_terms_days as number) ?? 15)
     setLines(toLineState(invoice))
-  }, [open, mode, invoice, defaultProjectId, projects, loadInvoiceNumber, resetForCreate])
+  }, [open, mode, invoice, defaultProjectId, projects, loadInvoiceNumber, resetForCreate, builderInfo?.address, builderInfo?.email, builderInfo?.name])
 
-  // Sync customer details when selectedContact changes
   useEffect(() => {
-    setCustomerAddress(formatAddressBlock(selectedContact?.address?.formatted))
-  }, [selectedContact])
+    if (customerDetails.trim().length === 0 && customerId !== "none") {
+      setCustomerId("none")
+    }
+  }, [customerDetails, customerId])
+
+  useEffect(() => {
+    if (!open || mode !== "create") return
+    if (title !== selectedProjectName) {
+      setTitle(selectedProjectName)
+    }
+  }, [open, mode, title, selectedProjectName])
 
   useEffect(() => {
     if (!open) return
@@ -612,6 +704,7 @@ export function InvoiceComposerSheet({
         setChangeOrderOptions(result.changeOrders ?? [])
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
+        setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
         const defaultIncomeAccountId =
           typeof result.qboDefaultIncomeAccountId === "string" ? result.qboDefaultIncomeAccountId : null
         setQboDefaultIncomeAccountId(defaultIncomeAccountId)
@@ -634,6 +727,7 @@ export function InvoiceComposerSheet({
         setChangeOrderOptions([])
         setQboConnected(false)
         setQboIncomeAccounts([])
+        setQboDiagnostics(null)
         setQboDefaultIncomeAccountId(null)
         setComposerSettings({ defaultPaymentTermsDays: 15, defaultInvoiceNote: "" })
         toast.error("Unable to load billing sources", { description: error?.message ?? "Try again." })
@@ -689,8 +783,13 @@ export function InvoiceComposerSheet({
     setCustomerId(contactId)
     const contact = financialContacts.find((item) => item.id === contactId)
     if (contact) {
-      setCustomerName(contact.full_name)
-      setCustomerAddress(formatAddressBlock(contact.address?.formatted))
+      setCustomerDetails(
+        buildPartyDetailsBlock({
+          name: contact.full_name,
+          email: contact.email ?? "",
+          address: formatAddressBlock(contact.address?.formatted ?? ""),
+        }),
+      )
     }
   }
 
@@ -720,6 +819,7 @@ export function InvoiceComposerSheet({
     sendToClient: boolean,
     actionMode: "save" | "send" | "save_and_download" = sendToClient ? "send" : "save",
   ) => {
+    if (submitInFlightRef.current) return
     if (!projectId) {
       toast.error("Project is required")
       return
@@ -766,7 +866,9 @@ export function InvoiceComposerSheet({
     }
 
     const mergedNotes = notes.trim()
-    const recipientEmail = customerEmail.trim()
+    const parsedCustomerDetails = parsePartyDetailsBlock(customerDetails)
+    const parsedFromDetails = parsePartyDetailsBlock(fromDetails)
+    const recipientEmail = parsedCustomerDetails.email.trim()
     const recipientEmails = recipientEmail ? [recipientEmail] : undefined
     const nextStatus = sendToClient
       ? "sent"
@@ -778,8 +880,11 @@ export function InvoiceComposerSheet({
       project_id: projectId,
       invoice_number: invoiceNumber.trim(),
       customer_id: customerId === "none" ? undefined : customerId,
-      customer_name: customerName.trim() || selectedContact?.full_name || undefined,
-      customer_address: customerAddress.trim() || undefined,
+      customer_name: parsedCustomerDetails.name.trim() || selectedContact?.full_name || undefined,
+      customer_address: parsedCustomerDetails.address.trim() || undefined,
+      from_name: parsedFromDetails.name.trim() || undefined,
+      from_email: parsedFromDetails.email.trim() || undefined,
+      from_address: parsedFromDetails.address.trim() || undefined,
       reservation_id: reservationRef.current ?? undefined,
       title: title.trim(),
       status: nextStatus,
@@ -798,6 +903,7 @@ export function InvoiceComposerSheet({
       qbo_income_account_name: null,
     }
 
+    submitInFlightRef.current = true
     setSubmittingMode(actionMode)
     try {
       const savedInvoice = await onSubmit(payload, sendToClient, { silent: actionMode === "save_and_download" })
@@ -806,24 +912,44 @@ export function InvoiceComposerSheet({
       return savedInvoice
     } finally {
       setSubmittingMode(null)
+      submitInFlightRef.current = false
     }
   }
 
   const generateAndDownloadPdf = async () => {
+    if (pdfInFlightRef.current) return
+    pdfInFlightRef.current = true
+
+    const slowToastTimer = window.setTimeout(() => {
+      toast.message("Still preparing PDF…", {
+        description: "This can take a few seconds on larger invoices.",
+      })
+    }, 2500)
     setGeneratingPdf(true)
     try {
       const savedInvoice = await submit(false, "save_and_download")
       const invoiceId = savedInvoice?.id ?? invoice?.id
-      if (!invoiceId) return
+      if (!invoiceId) {
+        return
+      }
 
-      const result = await generateInvoicePdfAction(invoiceId)
-      if (result.downloadUrl && typeof window !== "undefined") {
-        window.open(result.downloadUrl, "_blank", "noopener,noreferrer")
+      const result = await generateInvoicePdfAction(invoiceId, { persistToArc: false })
+      if (result.pdfBase64) {
+        openPdfBase64(result.pdfBase64, result.fileName)
+      } else if (result.downloadUrl && typeof window !== "undefined") {
+        await openPdfUrl(result.downloadUrl, result.fileName)
+      }
+      if (result.durationMs >= 5000) {
+        toast.warning("PDF generation is slower than expected", {
+          description: "We captured diagnostics so we can keep improving performance.",
+        })
       }
     } catch (error: any) {
       toast.error("Failed to generate PDF", { description: error?.message ?? "Please try again." })
     } finally {
+      window.clearTimeout(slowToastTimer)
       setGeneratingPdf(false)
+      pdfInFlightRef.current = false
     }
   }
 
@@ -863,19 +989,6 @@ export function InvoiceComposerSheet({
       >
         {/* ── TOOLBAR ── */}
         <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2.5 shrink-0">
-          <Select value={projectId} onValueChange={setProjectId}>
-            <SelectTrigger className="h-8 w-[240px] text-xs">
-              <SelectValue placeholder="Select project" />
-            </SelectTrigger>
-            <SelectContent>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
           <Select value={sourceValue} onValueChange={handleSourceChange}>
             <SelectTrigger className="w-[240px] h-8 text-xs">
               <SelectValue placeholder="Link source (optional)" />
@@ -907,6 +1020,13 @@ export function InvoiceComposerSheet({
 
           {contextLoading && <Badge variant="outline" className="text-xs h-6">Loading...</Badge>}
         </div>
+        {showQboWarning && (
+          <div className="border-b bg-amber-50/60 px-4 py-2 text-xs text-amber-900">
+            {qboDiagnostics?.accountLoadWarning ||
+              qboDiagnostics?.connectionLastError ||
+              "QuickBooks is connected, but no income accounts were found."}
+          </div>
+        )}
 
         {/* ── SCROLLABLE CONTENT ── */}
         <div className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8">
@@ -915,12 +1035,7 @@ export function InvoiceComposerSheet({
           <div className="flex items-start justify-between gap-8">
             <div className="flex-1 min-w-0">
               <h1 className="text-2xl font-bold tracking-tight text-foreground">Invoice</h1>
-              <GhostInput
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Subject"
-                className="mt-1 text-sm text-muted-foreground h-8 px-2 -ml-2 max-w-xs"
-              />
+              <p className="mt-1 text-sm text-muted-foreground">{selectedProjectName}</p>
             </div>
             <div className="text-right text-sm space-y-1.5 shrink-0">
               <div className="flex items-center justify-end gap-2">
@@ -956,82 +1071,128 @@ export function InvoiceComposerSheet({
           <div className="mt-6 grid grid-cols-2 gap-3">
             <div className="rounded border border-border/60 p-4">
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">From</p>
-              <p className="mt-2 text-sm font-medium">{builderInfo?.name ?? "Arc Builder"}</p>
-              {formatAddressBlock(builderInfo?.address) && (
-                <p className="mt-1 whitespace-pre-line text-sm text-muted-foreground leading-relaxed">{formatAddressBlock(builderInfo?.address)}</p>
-              )}
-              {builderInfo?.email && (
-                <p className="mt-1 text-sm text-muted-foreground">{builderInfo.email}</p>
-              )}
+              <Textarea
+                value={fromDetails}
+                onChange={(e) => setFromDetails(e.target.value)}
+                placeholder={"Business name\nemail@company.com\nAddress"}
+                className="mt-2 min-h-[124px] border-transparent bg-transparent text-sm shadow-none hover:border-input focus:border-input transition-colors leading-relaxed"
+              />
             </div>
             <div className="rounded border border-border/60 p-4">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">Bill To</p>
-              <Select
-                value={customerId}
-                onValueChange={(value) => {
-                  if (value === "none") {
-                    setCustomerId("none")
-                    return
-                  }
-                  selectContact(value)
-                }}
-              >
-                <SelectTrigger className="mt-2 h-8 text-sm border-transparent bg-transparent shadow-none hover:border-input focus:border-input transition-colors">
-                  <SelectValue placeholder="Select contact" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No linked contact</SelectItem>
-                  {financialContacts.map((contact) => (
-                    <SelectItem key={contact.id} value={contact.id}>
-                      {contact.full_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="mt-2 space-y-1">
-                <GhostInput
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  placeholder="Customer name"
-                  className="h-7 text-sm font-medium px-2"
-                />
-                <GhostInput
-                  value={customerEmail}
-                  onChange={(e) => setCustomerEmail(e.target.value)}
-                  placeholder="Email"
-                  type="email"
-                  className="h-7 text-sm text-muted-foreground px-2"
-                />
-                <Textarea
-                  value={customerAddress}
-                  onChange={(e) => setCustomerAddress(e.target.value)}
-                  placeholder={"Billing address\nCity, State ZIP"}
-                  className="min-h-[74px] border-transparent bg-transparent text-sm text-muted-foreground shadow-none hover:border-input focus:border-input transition-colors"
-                />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">Bill To</p>
+                {!showCustomerSelector && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomerDetails("")}
+                    className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Clear
+                  </button>
+                )}
               </div>
+              {showCustomerSelector && (
+                <Select
+                  value={customerId}
+                  onValueChange={(value) => {
+                    if (value === "none") {
+                      setCustomerId("none")
+                      setCustomerDetails("")
+                      return
+                    }
+                    selectContact(value)
+                  }}
+                >
+                  <SelectTrigger className="mt-2 h-8 text-sm border-transparent bg-transparent shadow-none hover:border-input focus:border-input transition-colors">
+                    <SelectValue placeholder="Select contact" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No linked contact</SelectItem>
+                    {financialContacts.map((contact) => (
+                      <SelectItem key={contact.id} value={contact.id}>
+                        {contact.full_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Textarea
+                value={customerDetails}
+                onChange={(e) => setCustomerDetails(e.target.value)}
+                placeholder={"Name\nemail@customer.com\nBilling address"}
+                className="mt-2 min-h-[124px] border-transparent bg-transparent text-sm shadow-none hover:border-input focus:border-input transition-colors leading-relaxed"
+              />
             </div>
           </div>
 
-          {/* ── LINE ITEMS TABLE ── */}
+          {/* ── LINE ITEMS ── */}
           <div className="mt-6">
-            <div className="rounded border border-border/60 overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/50 text-muted-foreground text-xs">
-                    <th className="px-2 py-2 text-left font-medium w-[140px]">Account</th>
-                    <th className="px-3 py-2 text-left font-medium">Description</th>
-                    <th className="px-2 py-2 text-left font-medium w-16">Qty</th>
-                    <th className="px-2 py-2 text-left font-medium w-16">Unit</th>
-                    <th className="px-2 py-2 text-right font-medium w-28">Unit Cost</th>
-                    <th className="px-3 py-2 text-right font-medium w-28">Amount</th>
-                    <th className="w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((line) => (
-                    <tr key={line.id} className="group border-t border-border/40">
-                      <td className="px-1 py-1.5 align-top">
-                        <div className="px-1">
+            {/* Column headers */}
+            <div className="grid grid-cols-[1fr_64px_64px_96px_96px_28px] items-end gap-x-1.5 px-3 pb-1.5">
+              <span className="text-[11px] text-muted-foreground font-medium pl-2">Description</span>
+              <span className="text-[11px] text-muted-foreground font-medium text-center">Qty</span>
+              <span className="text-[11px] text-muted-foreground font-medium text-center">Unit</span>
+              <span className="text-[11px] text-muted-foreground font-medium text-right pr-2">Price</span>
+              <span className="text-[11px] text-muted-foreground font-medium text-right">Amount</span>
+              <span />
+            </div>
+
+            {/* Line items */}
+            <div className="rounded border border-border/60 divide-y divide-border/40">
+              {lines.map((line) => {
+                const selectedCostCode = costCodes.find((c) => c.id === line.cost_code_id)
+                const lineAmount = (Number(line.quantity) || 0) * (Number(line.unit_cost) || 0)
+                const hasMeta = qboConnected || costCodes.length > 0
+
+                return (
+                  <div key={line.id} className="group">
+                    {/* Primary row */}
+                    <div className="grid grid-cols-[1fr_64px_64px_96px_96px_28px] items-center gap-x-1.5 px-1.5 pt-2 pb-1">
+                      <GhostInput
+                        value={line.description}
+                        onChange={(e) => updateLine(line.id, "description", e.target.value)}
+                        placeholder="Line item description"
+                        className="h-8 text-sm px-2"
+                      />
+                      <GhostInput
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={line.quantity}
+                        onChange={(e) => updateLine(line.id, "quantity", e.target.value)}
+                        className="h-8 text-sm px-2 text-center"
+                      />
+                      <GhostInput
+                        value={line.unit}
+                        onChange={(e) => updateLine(line.id, "unit", e.target.value)}
+                        className="h-8 text-sm px-2 text-center"
+                      />
+                      <GhostInput
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={line.unit_cost}
+                        onChange={(e) => updateLine(line.id, "unit_cost", e.target.value)}
+                        className="h-8 text-sm px-2 text-right"
+                        placeholder="0.00"
+                      />
+                      <div className="text-right text-sm font-medium tabular-nums pr-0.5">
+                        {formatMoney(lineAmount)}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeLine(line.id)}
+                        disabled={lines.length === 1}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive disabled:invisible mx-auto"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+
+                    {/* Meta row — account, cost code, tax */}
+                    <div className="flex items-center gap-2 pl-4 pr-2 pb-2 text-[10px]">
+                      {qboConnected && (
+                        <>
                           <QboLineAccountPicker
                             valueId={line.qbo_income_account_id}
                             valueLabel={line.qbo_income_account_name}
@@ -1057,95 +1218,57 @@ export function InvoiceComposerSheet({
                               }
                             }}
                           />
-                        </div>
-                      </td>
-                      <td className="px-1 py-1.5">
-                        <GhostInput
-                          value={line.description}
-                          onChange={(e) => updateLine(line.id, "description", e.target.value)}
-                          placeholder="Line item description"
-                          className="h-7 text-sm px-2"
-                        />
-                        {costCodes.length > 0 && (
-                          <div className="flex items-center gap-1.5 mt-0.5 px-2">
-                            <Select
-                              value={line.cost_code_id ?? "none"}
-                              onValueChange={(value) => updateLine(line.id, "cost_code_id", value === "none" ? null : value)}
-                            >
-                              <SelectTrigger className="h-6 text-[11px] border-none shadow-none bg-transparent text-muted-foreground hover:text-foreground w-auto gap-1 px-1">
-                                <SelectValue placeholder="Cost code" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="none">No cost code</SelectItem>
-                                {costCodes.map((code) => (
-                                  <SelectItem key={code.id} value={code.id}>
-                                    {code.code} — {code.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        )}
-                        <div className="flex items-center gap-1.5 mt-0.5 px-2">
-                          <button
-                            type="button"
-                            onClick={() => updateLine(line.id, "taxable", !line.taxable)}
-                            className={`text-[11px] px-1.5 py-0.5 rounded transition-colors ${
-                              line.taxable
-                                ? "text-muted-foreground hover:text-foreground"
-                                : "text-muted-foreground/50 line-through hover:text-muted-foreground"
-                            }`}
-                          >
-                            Tax
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-1 py-1.5 align-top">
-                        <GhostInput
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={line.quantity}
-                          onChange={(e) => updateLine(line.id, "quantity", e.target.value)}
-                          className="h-7 text-sm px-2 w-full"
-                        />
-                      </td>
-                      <td className="px-1 py-1.5 align-top">
-                        <GhostInput
-                          value={line.unit}
-                          onChange={(e) => updateLine(line.id, "unit", e.target.value)}
-                          className="h-7 text-sm px-2 w-full"
-                        />
-                      </td>
-                      <td className="px-1 py-1.5 align-top">
-                        <GhostInput
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={line.unit_cost}
-                          onChange={(e) => updateLine(line.id, "unit_cost", e.target.value)}
-                          className="h-7 text-sm px-2 w-full text-right"
-                          placeholder="0.00"
-                        />
-                      </td>
-                      <td className="px-3 py-1.5 align-top text-right font-medium text-sm tabular-nums">
-                        {formatMoney((Number(line.quantity) || 0) * (Number(line.unit_cost) || 0))}
-                      </td>
-                      <td className="px-1 py-1.5 align-top">
-                        <button
-                          type="button"
-                          onClick={() => removeLine(line.id)}
-                          disabled={lines.length === 1}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive disabled:invisible"
+                          {costCodes.length > 0 && <span className="text-muted-foreground/30">·</span>}
+                        </>
+                      )}
+                      {costCodes.length > 0 && (
+                        <Select
+                          value={line.cost_code_id ?? "none"}
+                          onValueChange={(value) => updateLine(line.id, "cost_code_id", value === "none" ? null : value)}
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                          <SelectTrigger
+                            className={cn(
+                              "h-5 w-auto max-w-[140px] min-w-0 shrink rounded-sm border-0 px-0 py-0 shadow-none focus:ring-0 gap-0.5 bg-transparent transition-colors text-[10px] [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:shrink-0 [&>svg]:text-muted-foreground/40",
+                              selectedCostCode
+                                ? "text-muted-foreground hover:text-foreground"
+                                : "text-muted-foreground/40 hover:text-muted-foreground",
+                            )}
+                          >
+                            <SelectValue placeholder="Cost code">
+                              {selectedCostCode ? selectedCostCode.code : "Cost code"}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">No cost code</SelectItem>
+                            {costCodes.map((code) => (
+                              <SelectItem key={code.id} value={code.id}>
+                                {code.code} — {code.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {hasMeta && <span className="text-muted-foreground/30">·</span>}
+                      <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                        <Checkbox
+                          checked={line.taxable}
+                          onCheckedChange={(checked) => updateLine(line.id, "taxable", checked === true)}
+                          className="size-3 rounded-[2px] shadow-none"
+                        />
+                        <span className={cn(
+                          "text-[10px] transition-colors",
+                          line.taxable ? "text-muted-foreground" : "text-muted-foreground/40",
+                        )}>
+                          Tax
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
+
+            {/* Add line */}
             <div className="flex justify-end mt-2">
               <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground" onClick={addLine}>
                 <Plus className="mr-1 h-3 w-3" />

@@ -18,11 +18,14 @@ import { invoiceInputSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
 import { renderInvoicePdf } from "@/lib/pdfs/invoice"
-import { uploadFilesObject, buildFilesPublicUrl } from "@/lib/storage/files-storage"
+import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import { recordEvent } from "@/lib/services/events"
+
+const INVOICE_PDF_TEMPLATE_VERSION = 2
 
 function resolveOrgLogoPath(logoUrl?: string | null) {
   if (!logoUrl) return null
@@ -36,6 +39,15 @@ function resolveOrgLogoPath(logoUrl?: string | null) {
   } catch {
     return null
   }
+}
+
+const normalizedLogoCache = new Map<string, string>()
+
+function rememberNormalizedLogo(sourceUrl: string, normalized: string) {
+  normalizedLogoCache.set(sourceUrl, normalized)
+  if (normalizedLogoCache.size <= 30) return
+  const oldest = normalizedLogoCache.keys().next().value
+  if (oldest) normalizedLogoCache.delete(oldest)
 }
 
 function largestOpaqueComponentBounds(raw: Buffer, width: number, height: number, channels: number) {
@@ -100,13 +112,21 @@ function largestOpaqueComponentBounds(raw: Buffer, width: number, height: number
 
 async function normalizeLogoForPdf(logoUrl: string | null | undefined, supabase: ReturnType<typeof createServiceSupabaseClient>) {
   if (!logoUrl) return undefined
+  const cached = normalizedLogoCache.get(logoUrl)
+  if (cached) return cached
 
   const logoPath = resolveOrgLogoPath(logoUrl)
-  if (!logoPath) return logoUrl
+  if (!logoPath) {
+    rememberNormalizedLogo(logoUrl, logoUrl)
+    return logoUrl
+  }
 
   try {
     const { data: logoBlob, error } = await supabase.storage.from("org-logos").download(logoPath)
-    if (error || !logoBlob) return logoUrl
+    if (error || !logoBlob) {
+      rememberNormalizedLogo(logoUrl, logoUrl)
+      return logoUrl
+    }
 
     const logoBuffer = Buffer.from(await logoBlob.arrayBuffer())
     const resizedBuffer = await sharp(logoBuffer)
@@ -119,7 +139,9 @@ async function normalizeLogoForPdf(logoUrl: string | null | undefined, supabase:
     const bounds = largestOpaqueComponentBounds(rawData, info.width, info.height, info.channels)
 
     if (!bounds || bounds.area < 24) {
-      return `data:image/png;base64,${resizedBuffer.toString("base64")}`
+      const fallback = `data:image/png;base64,${resizedBuffer.toString("base64")}`
+      rememberNormalizedLogo(logoUrl, fallback)
+      return fallback
     }
 
     const horizontalPadding = 20
@@ -128,8 +150,11 @@ async function normalizeLogoForPdf(logoUrl: string | null | undefined, supabase:
 
     // Keep full height to avoid trimming top/bottom logo edges from anti-aliased pixels.
     const cropped = await sharp(resizedBuffer).extract({ left, top: 0, width, height: info.height }).png().toBuffer()
-    return `data:image/png;base64,${cropped.toString("base64")}`
+    const normalized = `data:image/png;base64,${cropped.toString("base64")}`
+    rememberNormalizedLogo(logoUrl, normalized)
+    return normalized
   } catch {
+    rememberNormalizedLogo(logoUrl, logoUrl)
     return logoUrl
   }
 }
@@ -139,8 +164,24 @@ export async function listInvoicesAction(projectId?: string) {
 }
 
 export async function createInvoiceAction(input: unknown) {
+  const startedAt = Date.now()
   const parsed = invoiceInputSchema.parse(input)
   const invoice = await createInvoice({ input: parsed })
+  const durationMs = Date.now() - startedAt
+  if (durationMs >= 1500) {
+    console.warn("[invoice.create] Slow create detected", { durationMs, invoiceId: invoice.id })
+    try {
+      await recordEvent({
+        eventType: "invoice_create_slow",
+        entityType: "invoice",
+        entityId: invoice.id,
+        channel: "integration",
+        payload: { duration_ms: durationMs },
+      })
+    } catch {
+      // Non-blocking telemetry.
+    }
+  }
   revalidatePath("/invoices")
   return invoice
 }
@@ -165,8 +206,24 @@ export async function createQBOIncomeAccountAction(name: string) {
 
 export async function updateInvoiceAction(invoiceId: string, input: unknown) {
   if (!invoiceId) throw new Error("Invoice id is required")
+  const startedAt = Date.now()
   const parsed = invoiceInputSchema.parse(input)
   const invoice = await updateInvoice({ invoiceId, input: parsed })
+  const durationMs = Date.now() - startedAt
+  if (durationMs >= 1500) {
+    console.warn("[invoice.update] Slow update detected", { durationMs, invoiceId })
+    try {
+      await recordEvent({
+        eventType: "invoice_update_slow",
+        entityType: "invoice",
+        entityId: invoiceId,
+        channel: "integration",
+        payload: { duration_ms: durationMs },
+      })
+    } catch {
+      // Non-blocking telemetry.
+    }
+  }
   revalidatePath("/invoices")
   return invoice
 }
@@ -259,7 +316,7 @@ export async function syncPendingInvoicesNowAction(limit = 15) {
 export async function sendInvoiceReminderAction(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
 
-  const { orgId } = await requireOrgContext()
+  const { orgId, supabase } = await requireOrgContext()
   const invoice = await getInvoiceWithLines(invoiceId, orgId)
 
   if (!invoice) throw new Error("Invoice not found")
@@ -285,6 +342,8 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
     daysOverdue = Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
   }
 
+  const { data: org } = await supabase.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle()
+
   await sendReminderEmail({
     to: recipientEmail,
     recipientName: (invoice.metadata as any)?.customer_name ?? null,
@@ -293,6 +352,8 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
     dueDate: invoice.due_date ?? new Date().toISOString(),
     daysOverdue,
     payLink,
+    orgName: org?.name ?? null,
+    orgLogoUrl: org?.logo_url ?? null,
   })
 
   return { success: true }
@@ -349,26 +410,39 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
 
   const { data: qboConnection } = await supabase
     .from("qbo_connections")
-    .select("status, settings")
+    .select("status, settings, last_error, refresh_failure_count")
     .eq("org_id", orgId)
     .eq("status", "active")
     .maybeSingle()
 
-  const qboConnected = Boolean(qboConnection)
+  let qboConnected = Boolean(qboConnection)
   const qboDefaultIncomeAccountId =
     typeof (qboConnection?.settings as any)?.default_income_account_id === "string"
       ? (qboConnection?.settings as any).default_income_account_id
       : null
 
   let qboIncomeAccounts: Array<{ id: string; name: string; fullyQualifiedName?: string }> = []
+  let qboAccountLoadWarning: string | null = null
   if (qboConnected) {
     try {
       const qboClient = await QBOClient.forOrg(orgId)
-      if (qboClient) {
+      if (!qboClient) {
+        qboConnected = false
+      } else {
         qboIncomeAccounts = await qboClient.listIncomeAccounts()
+        if (qboIncomeAccounts.length === 0 && qboDefaultIncomeAccountId) {
+          const fallbackAccount = await qboClient.getIncomeAccountById(qboDefaultIncomeAccountId).catch(() => null)
+          if (fallbackAccount) {
+            qboIncomeAccounts = [fallbackAccount]
+          }
+        }
+        if (qboIncomeAccounts.length === 0) {
+          qboAccountLoadWarning = "QuickBooks returned no income accounts. Check your chart of accounts and default income account."
+        }
       }
     } catch (error) {
       console.warn("Unable to load QBO income accounts for invoice composer", error)
+      qboAccountLoadWarning = error instanceof Error ? error.message : "Unable to load QuickBooks income accounts."
     }
   }
 
@@ -387,6 +461,11 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
     qboConnected,
     qboIncomeAccounts,
     qboDefaultIncomeAccountId,
+    qboDiagnostics: {
+      connectionLastError: (qboConnection as any)?.last_error ?? null,
+      refreshFailureCount: Number((qboConnection as any)?.refresh_failure_count ?? 0),
+      accountLoadWarning: qboAccountLoadWarning,
+    },
     settings: {
       defaultPaymentTermsDays: Number(settings.invoice_default_payment_terms_days ?? 15),
       defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
@@ -394,38 +473,77 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
   }
 }
 
-export async function generateInvoicePdfAction(invoiceId: string) {
+export async function generateInvoicePdfAction(
+  invoiceId: string,
+  options?: {
+    persistToArc?: boolean
+  },
+) {
   if (!invoiceId) throw new Error("Invoice id is required")
+  const startedAt = Date.now()
 
   const { supabase, orgId } = await requireOrgContext()
+  const persistToArc = options?.persistToArc === true
 
   const invoice = await getInvoiceWithLines(invoiceId, orgId)
   if (!invoice) {
     throw new Error("Invoice not found")
   }
 
-  const { data: project } = invoice.project_id
-    ? await supabase
-        .from("projects")
-        .select("name")
-        .eq("org_id", orgId)
-        .eq("id", invoice.project_id)
-        .maybeSingle()
-    : { data: null as any }
-
-  const { data: org } = await supabase
-    .from("orgs")
-    .select("name, billing_email, address, logo_url")
-    .eq("id", orgId)
-    .maybeSingle()
-
   const metadata = (invoice.metadata ?? {}) as Record<string, any>
-  const { data: orgSettingsRow } = await supabase
-    .from("org_settings")
-    .select("settings")
-    .eq("org_id", orgId)
-    .maybeSingle()
-  const orgSettings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
+  const cachedPdfFileId = typeof metadata.latest_pdf_file_id === "string" ? metadata.latest_pdf_file_id : null
+  const cachedPdfForUpdatedAt =
+    typeof metadata.latest_pdf_invoice_updated_at === "string" ? metadata.latest_pdf_invoice_updated_at : null
+  const cachedPdfTemplateVersion =
+    typeof metadata.latest_pdf_template_version === "number"
+      ? metadata.latest_pdf_template_version
+      : Number(metadata.latest_pdf_template_version ?? 0)
+  const invoiceUpdatedAt = typeof invoice.updated_at === "string" ? invoice.updated_at : null
+
+  if (
+    persistToArc &&
+    cachedPdfFileId &&
+    cachedPdfForUpdatedAt &&
+    invoiceUpdatedAt &&
+    cachedPdfForUpdatedAt === invoiceUpdatedAt &&
+    cachedPdfTemplateVersion === INVOICE_PDF_TEMPLATE_VERSION
+  ) {
+    return {
+      fileId: cachedPdfFileId,
+      fileName: `invoice-${String(invoice.invoice_number).replace(/[^a-zA-Z0-9._-]/g, "_")}.pdf`,
+      downloadUrl: `/api/files/${cachedPdfFileId}/raw`,
+      pdfBase64: null,
+      durationMs: Date.now() - startedAt,
+      persistedToArc: true,
+      fromCache: true,
+    }
+  }
+
+  const [projectResult, orgResult, orgSettingsResult, token] = await Promise.all([
+    invoice.project_id
+      ? supabase
+          .from("projects")
+          .select("name")
+          .eq("org_id", orgId)
+          .eq("id", invoice.project_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null as any }),
+    supabase
+      .from("orgs")
+      .select("name, billing_email, address, logo_url")
+      .eq("id", orgId)
+      .maybeSingle(),
+    supabase
+      .from("org_settings")
+      .select("settings")
+      .eq("org_id", orgId)
+      .maybeSingle(),
+    ensureInvoiceToken(invoice.id, orgId),
+  ])
+
+  const project = projectResult.data
+  const org = orgResult.data
+  const orgSettings = (orgSettingsResult.data?.settings as Record<string, any> | null) ?? {}
   const lines = (invoice.lines ?? []).map((line) => {
     const qty = Number(line.quantity ?? 0)
     const unitCost = Number(line.unit_cost_cents ?? 0)
@@ -438,14 +556,20 @@ export async function generateInvoicePdfAction(invoiceId: string) {
     }
   })
 
+  const fromAddress =
+    typeof metadata.from_address === "string" && metadata.from_address.trim().length > 0
+      ? metadata.from_address
+      : typeof org?.address === "string"
+        ? org.address
+        : org?.address?.formatted ??
+          [org?.address?.street1, org?.address?.street2, [org?.address?.city, org?.address?.state].filter(Boolean).join(", "), org?.address?.postal_code]
+            .filter(Boolean)
+            .join(" ")
+
   const fromLines = [
-    org?.name ?? "Arc Builder",
-    typeof org?.address === "string"
-      ? org.address
-      : org?.address?.formatted ??
-        [org?.address?.street1, org?.address?.street2, [org?.address?.city, org?.address?.state].filter(Boolean).join(", "), org?.address?.postal_code]
-          .filter(Boolean)
-          .join(" "),
+    (metadata.from_name as string | undefined) ?? org?.name ?? "Arc Builder",
+    (metadata.from_email as string | undefined) ?? org?.billing_email ?? "",
+    fromAddress,
   ]
     .map((line) => (typeof line === "string" ? line.trim() : ""))
     .filter((line) => line.length > 0)
@@ -467,13 +591,13 @@ export async function generateInvoicePdfAction(invoiceId: string) {
 
   const billToLines = [
     invoice.customer_name ?? metadata.customer_name ?? "Client",
+    typeof metadata.customer_email === "string" ? metadata.customer_email : invoice.sent_to_emails?.[0] ?? "",
     customerAddress ?? "",
   ]
     .map((line) => String(line ?? "").trim())
     .filter((line) => line.length > 0)
 
   const normalizedLogo = await normalizeLogoForPdf((org?.logo_url as string | null) ?? null, supabase)
-  const token = await ensureInvoiceToken(invoice.id, orgId)
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
 
   const pdfBuffer = await renderInvoicePdf({
@@ -496,6 +620,37 @@ export async function generateInvoicePdfAction(invoiceId: string) {
     taxRate: invoice.totals?.tax_rate ?? (metadata.tax_rate as number | undefined),
     lines,
   })
+  const pdfBase64 = pdfBuffer.toString("base64")
+
+  if (!persistToArc) {
+    const durationMs = Date.now() - startedAt
+    if (durationMs >= 5000) {
+      console.warn("[invoice.pdf] Slow PDF render detected", { durationMs, invoiceId })
+      try {
+        await recordEvent({
+          eventType: "invoice_pdf_render_slow",
+          entityType: "invoice",
+          entityId: invoice.id,
+          channel: "integration",
+          payload: {
+            duration_ms: durationMs,
+            persisted_to_arc: false,
+          },
+        })
+      } catch {
+        // Non-blocking telemetry.
+      }
+    }
+    return {
+      fileId: null,
+      fileName: `invoice-${String(invoice.invoice_number).replace(/[^a-zA-Z0-9._-]/g, "_")}.pdf`,
+      downloadUrl: null,
+      pdfBase64,
+      durationMs,
+      persistedToArc: false,
+      fromCache: false,
+    }
+  }
 
   const safeInvoiceNumber = String(invoice.invoice_number).replace(/[^a-zA-Z0-9._-]/g, "_")
   const fileName = `invoice-${safeInvoiceNumber}.pdf`
@@ -544,14 +699,52 @@ export async function generateInvoicePdfAction(invoiceId: string) {
     link_role: "invoice_pdf",
   })
 
+  await supabase
+    .from("invoices")
+    .update({
+      metadata: {
+        ...metadata,
+        latest_pdf_file_id: fileRecord.id,
+        latest_pdf_invoice_updated_at: invoice.updated_at ?? null,
+        latest_pdf_generated_at: new Date().toISOString(),
+        latest_pdf_template_version: INVOICE_PDF_TEMPLATE_VERSION,
+      },
+    })
+    .eq("org_id", orgId)
+    .eq("id", invoice.id)
+
   revalidatePath("/invoices")
   if (invoice.project_id) {
     revalidatePath(`/projects/${invoice.project_id}/financials`)
   }
 
+  const durationMs = Date.now() - startedAt
+  if (durationMs >= 5000) {
+    console.warn("[invoice.pdf] Slow PDF generation + persist detected", { durationMs, invoiceId })
+    try {
+      await recordEvent({
+        orgId,
+        eventType: "invoice_pdf_slow",
+        entityType: "invoice",
+        entityId: invoice.id,
+        channel: "integration",
+        payload: {
+          duration_ms: durationMs,
+          persisted_to_arc: true,
+        },
+      })
+    } catch {
+      // Non-blocking telemetry.
+    }
+  }
+
   return {
     fileId: fileRecord.id,
     fileName,
-    downloadUrl: buildFilesPublicUrl(storagePath) ?? null,
+    downloadUrl: `/api/files/${fileRecord.id}/raw`,
+    pdfBase64: null,
+    durationMs,
+    persistedToArc: true,
+    fromCache: false,
   }
 }

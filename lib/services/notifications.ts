@@ -46,14 +46,15 @@ export class NotificationService {
     }
 
     // Queue delivery for all channels
-    await this.queueDelivery(notification.id)
+    await this.queueDelivery(notification.id, input.orgId)
 
     return notification.id
   }
 
   // Queue delivery for a notification
-  private async queueDelivery(notificationId: string): Promise<void> {
+  private async queueDelivery(notificationId: string, orgId: string): Promise<void> {
     await enqueueOutboxJob({
+      orgId,
       jobType: 'deliver_notification',
       payload: { notificationId },
       runAt: new Date().toISOString() // Immediate delivery

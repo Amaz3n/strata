@@ -80,6 +80,8 @@ export interface DrawingSheet {
   discipline?: DrawingDiscipline
   current_revision_id?: string
   current_revision_label?: string
+  current_revision_creator_name?: string
+  last_modified_by_name?: string
   sort_order: number
   share_with_clients: boolean
   share_with_subs: boolean
@@ -194,6 +196,11 @@ function mapDrawingSheet(row: any): DrawingSheet {
   const thumbPath = row.thumb_path ?? row.image_thumbnail_path ?? row.image_thumb_path ?? null
   const mediumPath = row.medium_path ?? row.image_medium_path ?? null
   const fullPath = row.full_path ?? row.image_full_path ?? null
+  const currentRevision = (row.drawing_revisions as any) ?? null
+  const currentRevisionCreator =
+    (currentRevision?.app_users as any)?.full_name ??
+    (currentRevision?.creator_name as string | undefined) ??
+    undefined
 
   return {
     id: row.id,
@@ -204,7 +211,9 @@ function mapDrawingSheet(row: any): DrawingSheet {
     sheet_title: row.sheet_title ?? undefined,
     discipline: row.discipline ?? undefined,
     current_revision_id: row.current_revision_id ?? undefined,
-    current_revision_label: (row.drawing_revisions as any)?.revision_label ?? undefined,
+    current_revision_label: currentRevision?.revision_label ?? undefined,
+    current_revision_creator_name: currentRevisionCreator,
+    last_modified_by_name: currentRevisionCreator,
     sort_order: row.sort_order ?? 0,
     share_with_clients: row.share_with_clients ?? false,
     share_with_subs: row.share_with_subs ?? false,
@@ -802,7 +811,11 @@ export async function listDrawingSheets(
       current_revision_id, sort_order,
       share_with_clients, share_with_subs,
       created_at, updated_at,
-      drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)
+      drawing_revisions!drawing_sheets_current_revision_id_fkey(
+        revision_label,
+        created_by,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      )
     `)
     .eq("org_id", resolvedOrgId)
 
@@ -861,7 +874,7 @@ export async function listDrawingSheetsWithUrls(
   }
 
   const sheets = await listDrawingSheets(filters, orgId)
-  const { supabase } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
   // Get the current versions for each sheet (including optimized image URLs).
   // IMPORTANT: Do NOT generate signed URLs here. This function is used for
@@ -869,6 +882,57 @@ export async function listDrawingSheetsWithUrls(
   // destroys performance on Vercel/server actions.
   const sheetIds = sheets.map((s) => s.id)
   if (sheetIds.length === 0) return sheets
+
+  // Enrich with current revision creator metadata for "last modified by" in the UI.
+  const { data: revisionMetaRows, error: revisionMetaError } = await supabase
+    .from("drawing_sheets")
+    .select(`
+      id,
+      current_revision_id,
+      drawing_revisions!drawing_sheets_current_revision_id_fkey(
+        revision_label,
+        created_by,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      )
+    `)
+    .eq("org_id", resolvedOrgId)
+    .in("id", sheetIds)
+
+  if (revisionMetaError) {
+    console.error("[drawings] Failed to load revision metadata for sheets:", revisionMetaError)
+  }
+
+  const revisionMetaBySheetId = new Map<string, {
+    current_revision_id?: string
+    current_revision_label?: string
+    current_revision_creator_name?: string
+  }>()
+
+  for (const row of revisionMetaRows ?? []) {
+    const revision = (row as any).drawing_revisions as any
+    revisionMetaBySheetId.set(row.id as string, {
+      current_revision_id: (row as any).current_revision_id ?? undefined,
+      current_revision_label: revision?.revision_label ?? undefined,
+      current_revision_creator_name:
+        (revision?.app_users as any)?.full_name ??
+        (revision?.creator_name as string | undefined) ??
+        undefined,
+    })
+  }
+
+  const sheetsWithRevisionMeta = sheets.map((sheet) => {
+    const meta = revisionMetaBySheetId.get(sheet.id)
+    if (!meta) return sheet
+    const lastModifier = meta.current_revision_creator_name
+    return {
+      ...sheet,
+      current_revision_id: meta.current_revision_id ?? sheet.current_revision_id,
+      current_revision_label: meta.current_revision_label ?? sheet.current_revision_label,
+      current_revision_creator_name:
+        meta.current_revision_creator_name ?? sheet.current_revision_creator_name,
+      last_modified_by_name: lastModifier ?? sheet.last_modified_by_name,
+    }
+  })
 
   const { data: versions, error: versionsError } = await supabase
     .from("drawing_sheet_versions")
@@ -921,7 +985,7 @@ export async function listDrawingSheetsWithUrls(
 
   // Include optimized image URLs only. Signed URLs should be generated on-demand
   // (e.g. when the user clicks Download, or when we must fall back to PDF viewer).
-  return sheets.map((sheet) => {
+  return sheetsWithRevisionMeta.map((sheet) => {
     const versionData = versionMap.get(sheet.id)
     return {
       ...sheet,
@@ -957,7 +1021,11 @@ export async function getDrawingSheet(
       current_revision_id, sort_order,
       share_with_clients, share_with_subs,
       created_at, updated_at,
-      drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)
+      drawing_revisions!drawing_sheets_current_revision_id_fkey(
+        revision_label,
+        created_by,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      )
     `)
     .eq("org_id", resolvedOrgId)
     .eq("id", sheetId)
@@ -1001,7 +1069,11 @@ export async function createDrawingSheet(
       current_revision_id, sort_order,
       share_with_clients, share_with_subs,
       created_at, updated_at,
-      drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)
+      drawing_revisions!drawing_sheets_current_revision_id_fkey(
+        revision_label,
+        created_by,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      )
     `)
     .single()
 
@@ -1063,7 +1135,11 @@ export async function updateDrawingSheet(
       current_revision_id, sort_order,
       share_with_clients, share_with_subs,
       created_at, updated_at,
-      drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)
+      drawing_revisions!drawing_sheets_current_revision_id_fkey(
+        revision_label,
+        created_by,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      )
     `)
     .single()
 

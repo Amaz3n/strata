@@ -45,6 +45,25 @@ function formatMoneyFromCents(cents?: number | null) {
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
+async function openPdfUrl(url: string, fileName?: string) {
+  const response = await fetch(url, { credentials: "include", cache: "no-store" })
+  if (!response.ok) {
+    throw new Error("Unable to open generated PDF")
+  }
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const popup = window.open(objectUrl, "_blank", "noopener,noreferrer")
+  if (!popup) {
+    const link = document.createElement("a")
+    link.href = objectUrl
+    link.download = fileName || "invoice.pdf"
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+}
+
 type CopyInputProps = { value: string; actions?: React.ReactNode }
 
 function CopyInput({ value, actions }: CopyInputProps) {
@@ -238,9 +257,9 @@ export function InvoiceDetailSheet({
     if (!invoice?.id) return
     setPdfLoading(true)
     try {
-      const result = await generateInvoicePdfAction(invoice.id)
+      const result = await generateInvoicePdfAction(invoice.id, { persistToArc: true })
       if (result.downloadUrl && typeof window !== "undefined") {
-        window.open(result.downloadUrl, "_blank", "noopener,noreferrer")
+        await openPdfUrl(result.downloadUrl, result.fileName)
       }
       toast.success("Invoice PDF saved to Arc")
     } catch (error: any) {

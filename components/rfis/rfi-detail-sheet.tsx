@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
-import type { Rfi, Project, RfiResponse } from "@/lib/types"
+import type { Company, Contact, Rfi, Project, RfiResponse } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -45,7 +45,7 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/files/actions"
-import { addRfiResponseAction, decideRfiAction, listRfiResponsesAction } from "@/app/(app)/rfis/actions"
+import { addRfiResponseAction, decideRfiAction, listRfiResponsesAction, sendRfiAction } from "@/app/(app)/rfis/actions"
 import { rfiResponseInputSchema, rfiDecisionSchema, type RfiResponseInput, type RfiDecisionInput } from "@/lib/validation/rfis"
 
 const statusLabels: Record<string, string> = {
@@ -65,6 +65,8 @@ const statusStyles: Record<string, string> = {
 interface RfiDetailSheetProps {
   rfi: Rfi | null
   project?: Project
+  companies?: Company[]
+  contacts?: Contact[]
   open: boolean
   onOpenChange: (open: boolean) => void
   onUpdate?: () => void
@@ -73,6 +75,8 @@ interface RfiDetailSheetProps {
 export function RfiDetailSheet({
   rfi,
   project,
+  companies = [],
+  contacts = [],
   open,
   onOpenChange,
   onUpdate,
@@ -243,12 +247,31 @@ export function RfiDetailSheet({
     }
   }
 
+  const handleSendDraft = async () => {
+    if (!rfi) return
+    setIsSubmitting(true)
+    try {
+      await sendRfiAction(rfi.id)
+      toast.success("RFI sent", { description: "Portal and email notifications were sent." })
+      await onUpdate?.()
+    } catch (error: any) {
+      console.error("Failed to send RFI:", error)
+      toast.error("Failed to send RFI", { description: error?.message ?? "Please try again." })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   if (!rfi) return null
 
   const formatDate = (date?: string | null) => {
     if (!date) return null
     return format(new Date(date), "MMM d, yyyy")
   }
+
+  const assignedCompanyName = companies.find((company) => company.id === rfi.assigned_company_id)?.name
+  const notifyContact = contacts.find((contact) => contact.id === rfi.notify_contact_id)
+  const sentToEmails = rfi.sent_to_emails ?? []
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -317,6 +340,24 @@ export function RfiDetailSheet({
             )}
           </div>
 
+          <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+            <h4 className="text-sm font-medium">Delivery</h4>
+            <div className="text-sm text-muted-foreground space-y-1">
+              <p>{rfi.submitted_at ? `Sent ${formatDate(rfi.submitted_at)}` : "Not sent yet"}</p>
+              {rfi.answered_at ? <p>Answered {formatDate(rfi.answered_at)}</p> : null}
+              {assignedCompanyName ? <p>Assigned company: {assignedCompanyName}</p> : null}
+              {notifyContact ? <p>Notify contact: {notifyContact.full_name}{notifyContact.email ? ` (${notifyContact.email})` : ""}</p> : null}
+              {sentToEmails.length > 0 ? (
+                <p className="break-all">Recipients: {sentToEmails.join(", ")}</p>
+              ) : null}
+            </div>
+            {rfi.status === "draft" ? (
+              <Button size="sm" onClick={handleSendDraft} disabled={isSubmitting}>
+                {isSubmitting ? "Sending..." : "Send Now"}
+              </Button>
+            ) : null}
+          </div>
+
           <Separator />
 
           {/* Question */}
@@ -344,7 +385,15 @@ export function RfiDetailSheet({
                 responses.map((response) => (
                   <div key={response.id} className="rounded-lg border p-3 space-y-1">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="capitalize">{response.response_type}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="capitalize">{response.response_type}</span>
+                        {response.created_via_portal ? (
+                          <Badge variant="outline" className="text-[10px]">via portal</Badge>
+                        ) : null}
+                        {response.responder_name ? (
+                          <span>{response.responder_name}</span>
+                        ) : null}
+                      </div>
                       <span>{formatDate(response.created_at)}</span>
                     </div>
                     <p className="text-sm whitespace-pre-wrap">{response.body}</p>

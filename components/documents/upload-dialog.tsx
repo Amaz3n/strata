@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import {
@@ -13,10 +13,7 @@ import {
   Plus,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Progress } from "@/components/ui/progress"
-import { Badge } from "@/components/ui/badge"
 import {
   Dialog,
   DialogContent,
@@ -48,6 +45,7 @@ interface UploadDialogProps {
   initialFiles?: File[]
   projectId: string
   folderPath?: string
+  folderOptions?: string[]
   onUploadComplete?: () => void
 }
 
@@ -64,12 +62,24 @@ const CATEGORY_OPTIONS: { value: FileCategory | "auto"; label: string }[] = [
   { value: "other", label: "Other" },
 ]
 
+const ROOT_FOLDER_VALUE = "__docs-root__"
+
+function normalizeFolderPath(value?: string | null): string {
+  if (!value) return ""
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  const normalized = withLeadingSlash.replace(/\/+/g, "/").replace(/\/$/, "")
+  return normalized === "/" ? "" : normalized
+}
+
 export function UploadDialog({
   open,
   onOpenChange,
   initialFiles = [],
   projectId,
   folderPath,
+  folderOptions = [],
   onUploadComplete,
 }: UploadDialogProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -77,7 +87,20 @@ export function UploadDialog({
   const [queue, setQueue] = useState<UploadQueueItem[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [category, setCategory] = useState<FileCategory | "auto">("auto")
-  const [targetFolder, setTargetFolder] = useState(folderPath ?? "")
+  const [targetFolder, setTargetFolder] = useState(normalizeFolderPath(folderPath))
+
+  const currentFolder = useMemo(() => normalizeFolderPath(folderPath), [folderPath])
+  const selectableFolders = useMemo(() => {
+    const paths = new Set<string>()
+    for (const path of folderOptions) {
+      const normalized = normalizeFolderPath(path)
+      if (normalized) paths.add(normalized)
+    }
+    if (currentFolder) paths.add(currentFolder)
+    const normalizedTarget = normalizeFolderPath(targetFolder)
+    if (normalizedTarget) paths.add(normalizedTarget)
+    return Array.from(paths).sort((a, b) => a.localeCompare(b))
+  }, [folderOptions, currentFolder, targetFolder])
 
   // Populate queue with initial files
   const addFiles = useCallback((files: File[]) => {
@@ -97,12 +120,15 @@ export function UploadDialog({
     if (!signature || seededInitialFilesRef.current === signature) return
     seededInitialFilesRef.current = signature
     setQueue([])
-    setTargetFolder(folderPath ?? "")
+    setTargetFolder(normalizeFolderPath(folderPath))
     addFiles(initialFiles)
   }, [open, initialFiles, folderPath, addFiles])
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
+      if (nextOpen) {
+        setTargetFolder(normalizeFolderPath(folderPath))
+      }
       if (!nextOpen) {
         setQueue([])
         setCategory("auto")
@@ -111,7 +137,7 @@ export function UploadDialog({
       }
       onOpenChange(nextOpen)
     },
-    [onOpenChange]
+    [folderPath, onOpenChange]
   )
 
   // Handle file input change
@@ -333,13 +359,26 @@ export function UploadDialog({
 
               <div className="space-y-2">
                 <Label htmlFor="folder">Folder</Label>
-                <Input
-                  id="folder"
-                  placeholder="/folder/path"
-                  value={targetFolder}
-                  onChange={(e) => setTargetFolder(e.target.value)}
+                <Select
+                  value={targetFolder || ROOT_FOLDER_VALUE}
+                  onValueChange={(value) =>
+                    setTargetFolder(value === ROOT_FOLDER_VALUE ? "" : value)
+                  }
                   disabled={isUploading}
-                />
+                >
+                  <SelectTrigger id="folder">
+                    <SelectValue placeholder="Choose folder" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ROOT_FOLDER_VALUE}>Project root</SelectItem>
+                    {selectableFolders.map((path) => (
+                      <SelectItem key={path} value={path}>
+                        {path}
+                        {path === currentFolder ? " (Current)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           )}

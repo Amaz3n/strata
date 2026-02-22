@@ -23,6 +23,7 @@ import { useSchedule } from "./schedule-context"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -61,6 +62,7 @@ interface GanttChartProps {
   className?: string
   onQuickAdd?: (startDate: Date, endDate: Date) => void
   onEditItem?: (item: ScheduleItem) => void
+  onAddItem?: () => void
 }
 
 // Get icon for item type
@@ -295,7 +297,7 @@ interface DateSelection {
   isDragging: boolean
 }
 
-export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProps) {
+export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: GanttChartProps) {
   const {
     items: rawItems,
     dependencies,
@@ -972,12 +974,26 @@ export function GanttChart({ className, onQuickAdd, onEditItem }: GanttChartProp
               
               {/* Empty state */}
                 {items.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-                    <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
-                      <Plus className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <p className="text-sm text-muted-foreground">No schedule items yet</p>
-                    <p className="text-xs text-muted-foreground mt-1">Click "Add Item" or drag on the timeline</p>
+                  <div className="px-4 py-8">
+                    <Empty className="min-h-[240px] border border-dashed bg-muted/10">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <Plus className="h-5 w-5 text-muted-foreground" />
+                        </EmptyMedia>
+                        <EmptyTitle>No schedule items yet</EmptyTitle>
+                        <EmptyDescription>
+                          Create the first schedule item with the button, or drag across dates on the timeline to create one in place.
+                        </EmptyDescription>
+                      </EmptyHeader>
+                      {onAddItem && (
+                        <EmptyContent>
+                          <Button onClick={onAddItem} className="gap-2">
+                            <Plus className="h-4 w-4" />
+                            Add first item
+                          </Button>
+                        </EmptyContent>
+                      )}
+                    </Empty>
                   </div>
                 )}
               </div>

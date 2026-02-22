@@ -277,6 +277,7 @@ export function FileViewer({
   const PdfPage = pdfComponents?.Page
   const showPdfThumbnails =
     isPdf && !pdfLoadFailed && Boolean(currentPdfUrl) && Boolean(PdfDocument && PdfPage) && pdfPageCount > 1
+  const pdfThumbnailWidth = 88
 
   // Calculate optimal dialog size based on image aspect ratio
   const getDialogStyle = () => {
@@ -609,8 +610,9 @@ export function FileViewer({
                           <button
                             key={`pdf-page-${pageNumber}`}
                             onClick={() => setActivePdfPage(pageNumber)}
+                            aria-label={`Go to page ${pageNumber}`}
                             className={cn(
-                              "group shrink-0 rounded-md border border-white/15 bg-black/40 p-1 transition-all",
+                              "group shrink-0 rounded-md border border-white/15 bg-black/40 px-1.5 pb-1.5 pt-1.5 transition-all",
                               pageNumber === activePdfPageClamped
                                 ? "border-primary ring-2 ring-primary/50"
                                 : "hover:border-white/30"
@@ -619,9 +621,17 @@ export function FileViewer({
                             <div className="overflow-hidden rounded bg-white shadow-sm">
                               <PdfPage
                                 pageNumber={pageNumber}
-                                width={68}
+                                width={pdfThumbnailWidth}
                                 renderTextLayer={false}
                                 renderAnnotationLayer={false}
+                                loading={
+                                  <div className="h-[114px] w-[88px] animate-pulse bg-zinc-200" />
+                                }
+                                error={
+                                  <div className="flex h-[114px] w-[88px] items-center justify-center bg-zinc-200 text-[10px] font-medium text-zinc-600">
+                                    Page {pageNumber}
+                                  </div>
+                                }
                               />
                             </div>
                             <p
@@ -630,7 +640,7 @@ export function FileViewer({
                                 pageNumber === activePdfPageClamped ? "text-white" : "text-white/60 group-hover:text-white/90"
                               )}
                             >
-                              {pageNumber}
+                              Page {pageNumber}
                             </p>
                           </button>
                         )

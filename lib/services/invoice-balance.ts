@@ -23,6 +23,35 @@ function isOverdue(dueDate: string | null | undefined) {
   return due.getTime() < Date.now()
 }
 
+export function deriveInvoiceLifecycleStatus(params: {
+  currentStatus: string | null | undefined
+  totalCents: number
+  balanceCents: number
+  paidCents: number
+  dueDate: string | null | undefined
+  clientVisible: boolean | null | undefined
+  sentAt: string | null | undefined
+}) {
+  const currentStatus = params.currentStatus ?? "sent"
+  const hasBeenSent =
+    Boolean(params.clientVisible || params.sentAt) ||
+    ["sent", "partial", "paid", "overdue"].includes(currentStatus)
+
+  if (params.totalCents > 0 && params.balanceCents === 0) {
+    return "paid"
+  }
+  if (params.paidCents > 0 && params.balanceCents > 0) {
+    return "partial"
+  }
+  if (!hasBeenSent) {
+    return currentStatus === "draft" ? "draft" : "saved"
+  }
+  if (isOverdue(params.dueDate) && params.balanceCents > 0) {
+    return "overdue"
+  }
+  return "sent"
+}
+
 export async function recalcInvoiceBalanceAndStatus({
   supabase,
   orgId,
@@ -71,19 +100,15 @@ export async function recalcInvoiceBalanceAndStatus({
   }
 
   const nextBalance = Math.max(totalCents - paidCents, 0)
-
-  let nextStatus: string
-  if (totalCents > 0 && nextBalance === 0) {
-    nextStatus = "paid"
-  } else if (currentStatus === "draft" && paidCents === 0 && !(invoiceRow.client_visible || invoiceRow.sent_at)) {
-    nextStatus = "draft"
-  } else if (paidCents > 0 && nextBalance > 0) {
-    nextStatus = "partial"
-  } else if (isOverdue(invoiceRow.due_date) && nextBalance > 0) {
-    nextStatus = "overdue"
-  } else {
-    nextStatus = "sent"
-  }
+  const nextStatus = deriveInvoiceLifecycleStatus({
+    currentStatus,
+    totalCents,
+    balanceCents: nextBalance,
+    paidCents,
+    dueDate: invoiceRow.due_date,
+    clientVisible: invoiceRow.client_visible,
+    sentAt: invoiceRow.sent_at,
+  })
 
   const { error: updateError } = await supabase
     .from("invoices")

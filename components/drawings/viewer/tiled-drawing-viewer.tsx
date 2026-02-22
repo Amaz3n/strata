@@ -13,6 +13,8 @@ export type TileManifest = {
     TileSize: number
     Size: { Width: number; Height: number }
   }
+  // Non-standard helper written by our worker for reliable level detection.
+  Levels?: number
 }
 
 export interface FallbackImageViewerProps {
@@ -62,6 +64,11 @@ function buildMatrix(args: {
   return { a, b, c, d, e, f }
 }
 
+function normalizeFormat(value?: string) {
+  const normalized = (value ?? "png").trim().toLowerCase()
+  return normalized || "png"
+}
+
 export function TiledDrawingViewer({
   tileBaseUrl,
   tileManifest,
@@ -96,12 +103,40 @@ export function TiledDrawingViewer({
   }, [onTransformChange])
 
   const buildTileSource = useCallback(
-    (baseUrl: string) => ({
-      // Phase P0: single tile image source
-      type: "image",
-      url: `${baseUrl}/tiles/0/0_0.png`,
-      buildPyramid: false,
-    }),
+    (baseUrl: string, manifest: TileManifest) => {
+      const width = manifest?.Image?.Size?.Width ?? 1
+      const height = manifest?.Image?.Size?.Height ?? 1
+      const format = normalizeFormat(manifest?.Image?.Format)
+      const explicitLevels =
+        typeof manifest?.Levels === "number" && Number.isFinite(manifest.Levels)
+          ? Math.max(1, Math.floor(manifest.Levels))
+          : null
+
+      // Backward compatibility:
+      // Legacy manifests had no level metadata and only one file at /tiles/0/0_0.png.
+      if (!explicitLevels || explicitLevels <= 1) {
+        return {
+          type: "image",
+          url: `${baseUrl}/tiles/0/0_0.${format}`,
+          buildPyramid: false,
+        }
+      }
+
+      const maxLevel = explicitLevels - 1
+      const tileSize = Math.max(1, manifest?.Image?.TileSize ?? 256)
+      const overlap = Math.max(0, manifest?.Image?.Overlap ?? 0)
+
+      return {
+        width,
+        height,
+        minLevel: 0,
+        maxLevel,
+        tileSize,
+        tileOverlap: overlap,
+        getTileUrl: (level: number, x: number, y: number) =>
+          `${baseUrl}/tiles/${level}/${x}_${y}.${format}`,
+      }
+    },
     []
   )
 
@@ -120,7 +155,7 @@ export function TiledDrawingViewer({
 
       viewer = OSD({
         element: containerRef.current,
-        tileSources: [buildTileSource(tileBaseUrl)],
+        tileSources: [buildTileSource(tileBaseUrl, tileManifest)],
         crossOriginPolicy: "Anonymous",
         // Interaction
         gestureSettingsMouse: {
@@ -194,16 +229,16 @@ export function TiledDrawingViewer({
       viewerRef.current = null
       onReadyRef.current?.(null)
     }
-  }, [buildTileSource, tileBaseUrl])
+  }, [buildTileSource, tileBaseUrl, tileManifest])
 
   useEffect(() => {
     if (!viewerRef.current) return
     try {
-      viewerRef.current.open(buildTileSource(tileBaseUrl))
+      viewerRef.current.open(buildTileSource(tileBaseUrl, tileManifest))
     } catch (e) {
       console.error('[TiledViewer] Failed to update tile source:', e)
     }
-  }, [buildTileSource, tileBaseUrl])
+  }, [buildTileSource, tileBaseUrl, tileManifest])
 
   return <div ref={containerRef} className={cn("h-full w-full", className)} />
 }
