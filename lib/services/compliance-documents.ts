@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type {
   ComplianceDocument,
   ComplianceDocumentType,
+  ComplianceRequirementDeficiency,
   ComplianceRequirement,
   ComplianceStatusSummary,
 } from "@/lib/types"
@@ -51,6 +52,9 @@ function mapRequirement(row: any): ComplianceRequirement {
       : undefined,
     is_required: row.is_required,
     min_coverage_cents: row.min_coverage_cents ?? undefined,
+    requires_additional_insured: row.requires_additional_insured ?? false,
+    requires_primary_noncontributory: row.requires_primary_noncontributory ?? false,
+    requires_waiver_of_subrogation: row.requires_waiver_of_subrogation ?? false,
     notes: row.notes ?? undefined,
     created_at: row.created_at,
     created_by: row.created_by ?? undefined,
@@ -87,6 +91,9 @@ function mapDocument(row: any): ComplianceDocument {
     policy_number: row.policy_number ?? undefined,
     coverage_amount_cents: row.coverage_amount_cents ?? undefined,
     carrier_name: row.carrier_name ?? undefined,
+    additional_insured: row.additional_insured ?? false,
+    primary_noncontributory: row.primary_noncontributory ?? false,
+    waiver_of_subrogation: row.waiver_of_subrogation ?? false,
     reviewed_by: row.reviewed_by ?? undefined,
     reviewed_at: row.reviewed_at ?? undefined,
     review_notes: row.review_notes ?? undefined,
@@ -222,6 +229,9 @@ export async function setCompanyRequirements({
         document_type_id: r.document_type_id,
         is_required: r.is_required,
         min_coverage_cents: r.min_coverage_cents ?? null,
+        requires_additional_insured: r.requires_additional_insured ?? false,
+        requires_primary_noncontributory: r.requires_primary_noncontributory ?? false,
+        requires_waiver_of_subrogation: r.requires_waiver_of_subrogation ?? false,
         notes: r.notes ?? null,
         created_by: userId,
       }))
@@ -354,6 +364,9 @@ export async function uploadComplianceDocument({
       policy_number: parsed.policy_number ?? null,
       coverage_amount_cents: parsed.coverage_amount_cents ?? null,
       carrier_name: parsed.carrier_name ?? null,
+      additional_insured: parsed.additional_insured ?? false,
+      primary_noncontributory: parsed.primary_noncontributory ?? false,
+      waiver_of_subrogation: parsed.waiver_of_subrogation ?? false,
       submitted_via_portal: false,
     })
     .select(
@@ -420,6 +433,9 @@ export async function uploadComplianceDocumentFromPortal({
       policy_number: parsed.policy_number ?? null,
       coverage_amount_cents: parsed.coverage_amount_cents ?? null,
       carrier_name: parsed.carrier_name ?? null,
+      additional_insured: parsed.additional_insured ?? false,
+      primary_noncontributory: parsed.primary_noncontributory ?? false,
+      waiver_of_subrogation: parsed.waiver_of_subrogation ?? false,
       submitted_via_portal: true,
       portal_token_id: portalTokenId,
     })
@@ -526,6 +542,133 @@ export async function reviewComplianceDocument({
 
 // ============ Compliance Status ============
 
+function isExpiredDocument(document: ComplianceDocument, now: Date): boolean {
+  if (!document.expiry_date) return false
+  return new Date(document.expiry_date) < now
+}
+
+function getMostRecentDocument(documents: ComplianceDocument[]): ComplianceDocument | null {
+  if (documents.length === 0) return null
+  return documents.reduce((latest, current) => {
+    if (!latest) return current
+    const latestTime = new Date(latest.created_at).getTime()
+    const currentTime = new Date(current.created_at).getTime()
+    return currentTime > latestTime ? current : latest
+  }, documents[0] as ComplianceDocument | null)
+}
+
+function deficiencyMessage(
+  codes: ComplianceRequirementDeficiency["codes"],
+  requirement: ComplianceRequirement
+): string {
+  const parts: string[] = []
+  if (codes.includes("min_coverage")) {
+    const required = ((requirement.min_coverage_cents ?? 0) / 100).toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    })
+    parts.push(`Coverage below required minimum (${required})`)
+  }
+  if (codes.includes("additional_insured")) {
+    parts.push("Additional insured endorsement required")
+  }
+  if (codes.includes("primary_noncontributory")) {
+    parts.push("Primary & non-contributory wording required")
+  }
+  if (codes.includes("waiver_of_subrogation")) {
+    parts.push("Waiver of subrogation endorsement required")
+  }
+  return parts.join("; ")
+}
+
+function buildComplianceStatus({
+  companyId,
+  requirements,
+  documents,
+}: {
+  companyId: string
+  requirements: ComplianceRequirement[]
+  documents: ComplianceDocument[]
+}): ComplianceStatusSummary {
+  const now = new Date()
+  const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+
+  const approvedDocs = documents.filter((d) => d.status === "approved")
+  const pendingReview = documents.filter((d) => d.status === "pending_review")
+
+  const expired = approvedDocs.filter((d) => isExpiredDocument(d, now))
+  const expiringSoon = approvedDocs.filter((d) => {
+    if (!d.expiry_date) return false
+    const expiryDate = new Date(d.expiry_date)
+    return expiryDate >= now && expiryDate <= thirtyDaysFromNow
+  })
+
+  const missing: ComplianceDocumentType[] = []
+  const deficiencies: ComplianceRequirementDeficiency[] = []
+
+  for (const requirement of requirements) {
+    if (!requirement.is_required) continue
+
+    const approvedForType = approvedDocs.filter(
+      (document) => document.document_type_id === requirement.document_type_id
+    )
+    const nonExpiredApproved = approvedForType.filter((document) => !isExpiredDocument(document, now))
+
+    if (nonExpiredApproved.length === 0) {
+      if (requirement.document_type) {
+        missing.push(requirement.document_type)
+      }
+      continue
+    }
+
+    const bestDocument = getMostRecentDocument(nonExpiredApproved)
+    if (!bestDocument) continue
+
+    const codes: ComplianceRequirementDeficiency["codes"] = []
+    if (
+      requirement.min_coverage_cents != null &&
+      (bestDocument.coverage_amount_cents ?? 0) < requirement.min_coverage_cents
+    ) {
+      codes.push("min_coverage")
+    }
+    if (requirement.requires_additional_insured && !bestDocument.additional_insured) {
+      codes.push("additional_insured")
+    }
+    if (requirement.requires_primary_noncontributory && !bestDocument.primary_noncontributory) {
+      codes.push("primary_noncontributory")
+    }
+    if (requirement.requires_waiver_of_subrogation && !bestDocument.waiver_of_subrogation) {
+      codes.push("waiver_of_subrogation")
+    }
+
+    if (codes.length > 0) {
+      deficiencies.push({
+        requirement_id: requirement.id,
+        document_type_id: requirement.document_type_id,
+        document_type_name: requirement.document_type?.name ?? bestDocument.document_type?.name ?? undefined,
+        document_id: bestDocument.id,
+        codes,
+        message: deficiencyMessage(codes, requirement),
+      })
+    }
+  }
+
+  const isCompliant = missing.length === 0 && expired.length === 0 && deficiencies.length === 0
+
+  return {
+    company_id: companyId,
+    requirements,
+    documents,
+    missing,
+    deficiencies,
+    expiring_soon: expiringSoon,
+    expired,
+    pending_review: pendingReview,
+    is_compliant: isCompliant,
+  }
+}
+
 export async function getCompanyComplianceStatus(
   companyId: string,
   orgId?: string
@@ -581,51 +724,11 @@ export async function getCompanyComplianceStatusWithClient(
   const requirements = (requirementsResult.data ?? []).map(mapRequirement)
   const documents = (documentsResult.data ?? []).map(mapDocument)
 
-  // Calculate status
-  const now = new Date()
-  const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
-
-  const approvedDocs = documents.filter((d) => d.status === "approved")
-  const pendingReview = documents.filter((d) => d.status === "pending_review")
-
-  // Find expired docs
-  const expired = approvedDocs.filter((d) => {
-    if (!d.expiry_date) return false
-    return new Date(d.expiry_date) < now
-  })
-
-  // Find docs expiring soon (within 30 days)
-  const expiringSoon = approvedDocs.filter((d) => {
-    if (!d.expiry_date) return false
-    const expiryDate = new Date(d.expiry_date)
-    return expiryDate >= now && expiryDate <= thirtyDaysFromNow
-  })
-
-  // Find missing required document types
-  const approvedDocTypeIds = new Set(
-    approvedDocs
-      .filter((d) => !expired.some((e) => e.id === d.id))
-      .map((d) => d.document_type_id)
-  )
-
-  const missing: ComplianceDocumentType[] = requirements
-    .filter((r) => r.is_required && !approvedDocTypeIds.has(r.document_type_id))
-    .map((r) => r.document_type)
-    .filter((dt): dt is ComplianceDocumentType => dt !== undefined)
-
-  // Is compliant if no missing required docs and no expired docs
-  const isCompliant = missing.length === 0 && expired.length === 0
-
-  return {
-    company_id: companyId,
+  return buildComplianceStatus({
+    companyId,
     requirements,
     documents,
-    missing,
-    expiring_soon: expiringSoon,
-    expired,
-    pending_review: pendingReview,
-    is_compliant: isCompliant,
-  }
+  })
 }
 
 export async function getCompaniesComplianceStatus(
@@ -695,47 +798,11 @@ export async function getCompaniesComplianceStatus(
     const companyRequirements = requirementsByCompanyId.get(companyId) ?? []
     const companyDocuments = documentsByCompanyId.get(companyId) ?? []
 
-    // Calculate status (same logic as getCompanyComplianceStatusWithClient)
-    const now = new Date()
-    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
-
-    const approvedDocs = companyDocuments.filter((d) => d.status === "approved")
-    const pendingReview = companyDocuments.filter((d) => d.status === "pending_review")
-
-    const expired = approvedDocs.filter((d) => {
-      if (!d.expiry_date) return false
-      return new Date(d.expiry_date) < now
-    })
-
-    const expiringSoon = approvedDocs.filter((d) => {
-      if (!d.expiry_date) return false
-      const expiryDate = new Date(d.expiry_date)
-      return expiryDate >= now && expiryDate <= thirtyDaysFromNow
-    })
-
-    const approvedDocTypeIds = new Set(
-      approvedDocs
-        .filter((d) => !expired.some((e) => e.id === d.id))
-        .map((d) => d.document_type_id)
-    )
-
-    const missing: ComplianceDocumentType[] = companyRequirements
-      .filter((r) => r.is_required && !approvedDocTypeIds.has(r.document_type_id))
-      .map((r) => r.document_type)
-      .filter((dt): dt is ComplianceDocumentType => dt !== undefined)
-
-    const isCompliant = missing.length === 0 && expired.length === 0
-
-    result[companyId] = {
-      company_id: companyId,
+    result[companyId] = buildComplianceStatus({
+      companyId,
       requirements: companyRequirements,
       documents: companyDocuments,
-      missing,
-      expiring_soon: expiringSoon,
-      expired,
-      pending_review: pendingReview,
-      is_compliant: isCompliant,
-    }
+    })
   }
 
   return result

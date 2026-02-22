@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AdminStats } from "@/components/admin/admin-stats"
 import { QuickActions } from "@/components/admin/quick-actions"
+import { PlatformAiDefaultsCard } from "@/components/platform/platform-ai-defaults-card"
 import { getPlans } from "@/lib/services/admin"
 import Link from "next/link"
 
@@ -15,6 +16,10 @@ import { provisionPlatformOrgAction } from "@/app/(app)/platform/actions"
 import { ImpersonationPanel } from "@/components/platform/impersonation-panel"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
 import { ProvisionOrgSheet } from "@/components/platform/provision-org-sheet"
+import { getPlatformAiSearchDefaultConfig } from "@/lib/services/ai-config"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { hasAnyPermission } from "@/lib/services/permissions"
+import { requireAuth } from "@/lib/auth/context"
 
 export const dynamic = "force-dynamic"
 
@@ -25,7 +30,14 @@ export default async function PlatformPage() {
     redirect("/unauthorized")
   }
 
-  const [orgs, session, plans] = await Promise.all([listPlatformOrganizations(), getPlatformSessionState(), getPlans()])
+  const { user } = await requireAuth()
+  const [orgs, session, plans, platformAiConfig, canManagePlatformAi] = await Promise.all([
+    listPlatformOrganizations(),
+    getPlatformSessionState(),
+    getPlans(),
+    getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() }),
+    hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
+  ])
 
   return (
     <PageLayout
@@ -58,19 +70,28 @@ export default async function PlatformPage() {
             <QuickActions />
           </Suspense>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Impersonation</CardTitle>
-              <CardDescription>
-                Start an audited impersonation session for support and diagnostics. Active session:
-                {" "}
-                {session.impersonation.active ? "yes" : "no"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ImpersonationPanel orgs={orgs.map((org) => ({ id: org.id, name: org.name }))} />
-            </CardContent>
-          </Card>
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Impersonation</CardTitle>
+                <CardDescription>
+                  Start an audited impersonation session for support and diagnostics. Active session:
+                  {" "}
+                  {session.impersonation.active ? "yes" : "no"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ImpersonationPanel orgs={orgs.map((org) => ({ id: org.id, name: org.name }))} />
+              </CardContent>
+            </Card>
+
+            <PlatformAiDefaultsCard
+              initialProvider={platformAiConfig.provider}
+              initialModel={platformAiConfig.model}
+              initialSource={platformAiConfig.source}
+              canManage={canManagePlatformAi}
+            />
+          </div>
         </div>
 
       </div>

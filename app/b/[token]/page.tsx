@@ -1,6 +1,5 @@
-import { notFound } from "next/navigation"
-
 import {
+  isBidPortalPinVerified,
   loadBidPortalData,
   recordBidPortalAccess,
   validateBidPortalToken,
@@ -18,6 +17,14 @@ interface BidPortalPageProps {
 }
 
 export const revalidate = 0
+
+const EMPTY_BID_PORTAL_DATA = {
+  packageFiles: [],
+  addenda: [],
+  submissions: [],
+  currentSubmission: undefined,
+  rfis: [],
+}
 
 export default async function BidPortalPage({ params }: BidPortalPageProps) {
   const { token } = await params
@@ -105,8 +112,13 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
     }
   }
 
+  const hasPinAccess = access.pin_required ? await isBidPortalPinVerified(token) : true
+  if (!hasPinAccess) {
+    return <BidPortalClientNew token={token} access={access} data={EMPTY_BID_PORTAL_DATA} pinRequired />
+  }
+
   const data = await loadBidPortalData(access)
   await recordBidPortalAccess(access.id, access.bid_invite_id, access.org_id)
 
-  return <BidPortalClientNew token={token} access={access} data={data} pinRequired={access.pin_required} />
+  return <BidPortalClientNew token={token} access={access} data={data} pinRequired={false} />
 }

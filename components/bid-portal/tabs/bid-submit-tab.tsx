@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useRef, useCallback, useEffect } from "react"
+import { useState, useTransition, useRef, useCallback } from "react"
 import { format } from "date-fns"
 import {
   Send,

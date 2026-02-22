@@ -72,11 +72,6 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     email: company?.email ?? "",
     website: company?.website ?? "",
     license_number: company?.license_number ?? "",
-    license_expiry: company?.license_expiry ?? "",
-    license_verified: company?.license_verified ?? false,
-    insurance_expiry: company?.insurance_expiry ?? "",
-    insurance_provider: company?.insurance_provider ?? "",
-    w9_on_file: company?.w9_on_file ?? false,
     prequalified: company?.prequalified ?? false,
     rating: company?.rating ? String(company.rating) : "none",
     default_payment_terms: company?.default_payment_terms ?? "",
@@ -104,11 +99,6 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       email: formState.email || undefined,
       website: normalizedWebsite || undefined,
       license_number: formState.license_number || undefined,
-      license_expiry: formState.license_expiry || undefined,
-      license_verified: formState.license_verified,
-      insurance_expiry: formState.insurance_expiry || undefined,
-      insurance_provider: formState.insurance_provider || undefined,
-      w9_on_file: formState.w9_on_file,
       prequalified: formState.prequalified,
       rating: formState.rating === "none" ? undefined : Number(formState.rating),
       default_payment_terms: formState.default_payment_terms || undefined,
@@ -219,21 +209,9 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
           <Label>License #</Label>
           <Input value={formState.license_number} onChange={(e) => setField("license_number", e.target.value)} placeholder="LIC-1234" />
         </div>
-        <div className="space-y-2">
-          <Label>Insurance expiry</Label>
-          <Input type="date" value={formState.insurance_expiry} onChange={(e) => setField("insurance_expiry", e.target.value)} />
-        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="space-y-2">
-          <Label>License expiry</Label>
-          <Input type="date" value={formState.license_expiry} onChange={(e) => setField("license_expiry", e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>Insurance provider</Label>
-          <Input value={formState.insurance_provider} onChange={(e) => setField("insurance_provider", e.target.value)} placeholder="Carrier name" />
-        </div>
         <div className="space-y-2">
           <Label>Performance rating</Label>
           <Select value={formState.rating} onValueChange={(value) => setField("rating", value)}>
@@ -261,20 +239,6 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="flex items-center gap-3 rounded-lg border p-3">
-          <Switch checked={formState.license_verified} onCheckedChange={(checked) => setBooleanField("license_verified", checked)} />
-          <div>
-            <div className="text-sm font-medium">License verified</div>
-            <div className="text-xs text-muted-foreground">Track verification status</div>
-          </div>
-        </div>
-        <div className="flex items-center gap-3 rounded-lg border p-3">
-          <Switch checked={formState.w9_on_file} onCheckedChange={(checked) => setBooleanField("w9_on_file", checked)} />
-          <div>
-            <div className="text-sm font-medium">W-9 on file</div>
-            <div className="text-xs text-muted-foreground">Tax document status</div>
-          </div>
-        </div>
         <div className="flex items-center gap-3 rounded-lg border p-3">
           <Switch checked={formState.prequalified} onCheckedChange={(checked) => setBooleanField("prequalified", checked)} />
           <div>

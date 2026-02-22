@@ -41,6 +41,9 @@ export function ComplianceSettings({
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [minCoverage, setMinCoverage] = useState<Record<string, string>>({})
+  const [requiresAdditionalInsured, setRequiresAdditionalInsured] = useState<Record<string, boolean>>({})
+  const [requiresPrimaryNonContributory, setRequiresPrimaryNonContributory] = useState<Record<string, boolean>>({})
+  const [requiresWaiverOfSubrogation, setRequiresWaiverOfSubrogation] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -62,17 +65,26 @@ export function ComplianceSettings({
     const sel: Record<string, boolean> = {}
     const n: Record<string, string> = {}
     const cov: Record<string, string> = {}
+    const ai: Record<string, boolean> = {}
+    const pnc: Record<string, boolean> = {}
+    const wos: Record<string, boolean> = {}
     for (const dt of documentTypes) {
       const d = defaultsByTypeId.get(dt.id)
       if (d) {
         sel[dt.id] = true
         if (d.notes) n[dt.id] = d.notes
         if (d.min_coverage_cents) cov[dt.id] = (d.min_coverage_cents / 100).toString()
+        ai[dt.id] = Boolean(d.requires_additional_insured)
+        pnc[dt.id] = Boolean(d.requires_primary_noncontributory)
+        wos[dt.id] = Boolean(d.requires_waiver_of_subrogation)
       }
     }
     setSelected(sel)
     setNotes(n)
     setMinCoverage(cov)
+    setRequiresAdditionalInsured(ai)
+    setRequiresPrimaryNonContributory(pnc)
+    setRequiresWaiverOfSubrogation(wos)
   }, [documentTypes, defaultsByTypeId])
 
   const setRule = (key: keyof ComplianceRules, value: boolean) => {
@@ -101,6 +113,9 @@ export function ComplianceSettings({
             min_coverage_cents: minCoverage[dt.id]
               ? Math.round(Number.parseFloat(minCoverage[dt.id]) * 100)
               : undefined,
+            requires_additional_insured: requiresAdditionalInsured[dt.id] ?? false,
+            requires_primary_noncontributory: requiresPrimaryNonContributory[dt.id] ?? false,
+            requires_waiver_of_subrogation: requiresWaiverOfSubrogation[dt.id] ?? false,
             notes: notes[dt.id] || undefined,
           }))
 
@@ -171,7 +186,9 @@ export function ComplianceSettings({
             <div className="space-y-3">
               {documentTypes.map((dt) => {
                 const checked = selected[dt.id] || false
-                const showCoverage = checked && dt.code.includes("coi")
+                const showInsuranceRequirements =
+                  checked &&
+                  (dt.code.includes("coi") || dt.code.includes("insurance") || dt.code.includes("umbrella"))
                 return (
                   <div key={dt.id} className="rounded-lg border p-3 space-y-2">
                     <div className="flex items-center gap-3">
@@ -193,19 +210,51 @@ export function ComplianceSettings({
                       </div>
                     </div>
 
-                    {showCoverage ? (
-                      <div className="pl-7 flex items-center gap-2">
-                        <Label className="text-xs text-muted-foreground whitespace-nowrap">Min coverage $</Label>
-                        <Input
-                          type="number"
-                          placeholder="e.g. 1000000"
-                          className="h-8 w-32"
-                          value={minCoverage[dt.id] || ""}
-                          onChange={(e) =>
-                            setMinCoverage((prev) => ({ ...prev, [dt.id]: e.target.value }))
-                          }
-                          disabled={!canManage}
-                        />
+                    {showInsuranceRequirements ? (
+                      <div className="pl-7 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs text-muted-foreground whitespace-nowrap">Min coverage $</Label>
+                          <Input
+                            type="number"
+                            placeholder="e.g. 1000000"
+                            className="h-8 w-32"
+                            value={minCoverage[dt.id] || ""}
+                            onChange={(e) =>
+                              setMinCoverage((prev) => ({ ...prev, [dt.id]: e.target.value }))
+                            }
+                            disabled={!canManage}
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={requiresAdditionalInsured[dt.id] || false}
+                            onCheckedChange={(checked) =>
+                              setRequiresAdditionalInsured((prev) => ({ ...prev, [dt.id]: checked === true }))
+                            }
+                            disabled={!canManage}
+                          />
+                          <span>Require additional insured endorsement</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={requiresPrimaryNonContributory[dt.id] || false}
+                            onCheckedChange={(checked) =>
+                              setRequiresPrimaryNonContributory((prev) => ({ ...prev, [dt.id]: checked === true }))
+                            }
+                            disabled={!canManage}
+                          />
+                          <span>Require primary & non-contributory wording</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={requiresWaiverOfSubrogation[dt.id] || false}
+                            onCheckedChange={(checked) =>
+                              setRequiresWaiverOfSubrogation((prev) => ({ ...prev, [dt.id]: checked === true }))
+                            }
+                            disabled={!canManage}
+                          />
+                          <span>Require waiver of subrogation endorsement</span>
+                        </label>
                       </div>
                     ) : null}
 

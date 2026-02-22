@@ -49,7 +49,9 @@ export function SubPortalClient({
 
   const hasAttentionItems = data.pendingRfiCount > 0 || data.pendingSubmittalCount > 0
   const complianceIssues =
-    (complianceStatus?.missing.length ?? 0) + (complianceStatus?.expired.length ?? 0)
+    (complianceStatus?.missing.length ?? 0) +
+    (complianceStatus?.expired.length ?? 0) +
+    (complianceStatus?.deficiencies.length ?? 0)
 
   const refreshCompliance = useCallback(() => {
     startTransition(async () => {
@@ -93,7 +95,14 @@ export function SubPortalClient({
 
   const renderTab = (tab: SubPortalTab) => {
     if (tab === "dashboard") {
-      return <SubDashboard data={data} token={token} canSubmitInvoices={canSubmitInvoices} />
+      return (
+        <SubDashboard
+          data={data}
+          token={token}
+          canSubmitInvoices={canSubmitInvoices}
+          complianceStatus={complianceStatus}
+        />
+      )
     }
     if (tab === "documents") {
       return <SubDocumentsTab files={data.sharedFiles} canDownload={canDownloadFiles} portalToken={token} />

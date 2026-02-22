@@ -6,6 +6,12 @@ import type { NotificationType, NotificationInput } from "@/lib/types/notificati
 // Re-export types for backward compatibility
 export type { NotificationType, NotificationInput }
 
+export interface UserNotificationPreferences {
+  email_enabled: boolean
+  weekly_snapshot_enabled: boolean
+  weekly_snapshot_last_sent_for_week?: string | null
+}
+
 export interface NotificationRecord {
   id: string
   org_id: string
@@ -120,24 +126,24 @@ export class NotificationService {
   }
 
   // Basic preferences (just email on/off for now)
-  async getUserPreferences(userId: string, orgId?: string) {
+  async getUserPreferences(userId: string, orgId?: string): Promise<UserNotificationPreferences> {
     if (!orgId) {
       // For server actions, we need to get the orgId from context
       const { supabase, orgId: resolvedOrgId } = await import('@/lib/auth/context').then(m => m.requireOrgMembership())
 
       const { data, error } = await supabase
         .from('user_notification_prefs')
-        .select('email_enabled')
+        .select('email_enabled, weekly_snapshot_enabled, weekly_snapshot_last_sent_for_week')
         .eq('user_id', userId)
         .eq('org_id', resolvedOrgId)
         .single()
 
       if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
         console.error('Failed to get user preferences:', error)
-        return { email_enabled: true } // Default to enabled
+        return { email_enabled: true, weekly_snapshot_enabled: false } // Default preferences
       }
 
-      return data || { email_enabled: true }
+      return data || { email_enabled: true, weekly_snapshot_enabled: false }
     }
 
     // For direct service calls with orgId provided
@@ -145,20 +151,24 @@ export class NotificationService {
 
     const { data, error } = await supabase
       .from('user_notification_prefs')
-      .select('email_enabled')
+      .select('email_enabled, weekly_snapshot_enabled, weekly_snapshot_last_sent_for_week')
       .eq('user_id', userId)
       .eq('org_id', orgId)
       .single()
 
     if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
       console.error('Failed to get user preferences:', error)
-      return { email_enabled: true } // Default to enabled
+      return { email_enabled: true, weekly_snapshot_enabled: false } // Default preferences
     }
 
-    return data || { email_enabled: true }
+    return data || { email_enabled: true, weekly_snapshot_enabled: false }
   }
 
-  async updateUserPreferences(userId: string, emailEnabled: boolean, orgId?: string): Promise<void> {
+  async updateUserPreferences(
+    userId: string,
+    input: { email_enabled: boolean; weekly_snapshot_enabled: boolean },
+    orgId?: string,
+  ): Promise<void> {
     let resolvedOrgId = orgId
 
     if (!resolvedOrgId) {
@@ -174,7 +184,8 @@ export class NotificationService {
       .upsert({
         org_id: resolvedOrgId,
         user_id: userId,
-        email_enabled: emailEnabled,
+        email_enabled: input.email_enabled,
+        weekly_snapshot_enabled: input.weekly_snapshot_enabled,
         updated_at: new Date().toISOString()
       }, {
         onConflict: 'user_id,org_id'

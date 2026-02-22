@@ -25,9 +25,6 @@ export interface VendorBillSummary {
   commitment_total_cents?: number
   company_id?: string
   company_name?: string
-  company_insurance_expiry?: string
-  company_license_expiry?: string
-  company_w9_on_file?: boolean
   bill_number?: string
   status: VendorBillStatus | string
   bill_date?: string
@@ -54,7 +51,6 @@ export interface VendorBillSummary {
 function mapVendorBill(row: any): VendorBillSummary {
   const metadata = row?.metadata ?? {}
   const company = row?.commitment?.company ?? row?.company ?? {}
-  const companyMetadata = company?.metadata ?? {}
   const paidCents =
     typeof row.paid_cents === "number"
       ? row.paid_cents
@@ -71,13 +67,6 @@ function mapVendorBill(row: any): VendorBillSummary {
     commitment_total_cents: row.commitment?.total_cents ?? undefined,
     company_id: company.id ?? row.company_id ?? undefined,
     company_name: company.name ?? row.company?.name ?? undefined,
-    company_insurance_expiry: company.insurance_expiry ?? companyMetadata.insurance_expiry ?? undefined,
-    company_license_expiry: company.license_expiry ?? companyMetadata.license_expiry ?? undefined,
-    company_w9_on_file: typeof company.w9_on_file === "boolean"
-      ? company.w9_on_file
-      : typeof companyMetadata.w9_on_file === "boolean"
-        ? companyMetadata.w9_on_file
-        : undefined,
     bill_number: row.bill_number ?? undefined,
     status: row.status ?? "pending",
     bill_date: row.bill_date ?? undefined,
@@ -133,7 +122,7 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
       `
       id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name, insurance_expiry, license_expiry, w9_on_file, metadata))
+      commitment:commitments(id, title, total_cents, company:companies(id, name))
     `,
     )
     .eq("org_id", resolvedOrgId)
@@ -166,7 +155,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
       `
       id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name, insurance_expiry, license_expiry, w9_on_file, metadata))
+      commitment:commitments(id, title, total_cents, company:companies(id, name))
     `,
     )
     .eq("org_id", resolvedOrgId)
@@ -358,7 +347,7 @@ export async function updateVendorBillStatus({
       `
       id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name, insurance_expiry, license_expiry, w9_on_file, metadata))
+      commitment:commitments(id, title, total_cents, company:companies(id, name))
     `,
     )
     .single()

@@ -915,7 +915,7 @@ export async function loadSubPortalData({
     // Company info
     supabase
       .from("companies")
-      .select("id, name, insurance_expiry, license_expiry, w9_on_file, metadata")
+      .select("id, name, metadata")
       .eq("id", companyId)
       .single(),
 
@@ -1116,9 +1116,6 @@ export async function loadSubPortalData({
       id: companyResult.data?.id ?? companyId,
       name: companyResult.data?.name ?? "",
       trade: companyResult.data?.metadata?.trade,
-      insurance_expiry: companyResult.data?.insurance_expiry ?? companyResult.data?.metadata?.insurance_expiry ?? null,
-      license_expiry: companyResult.data?.license_expiry ?? companyResult.data?.metadata?.license_expiry ?? null,
-      w9_on_file: companyResult.data?.w9_on_file ?? companyResult.data?.metadata?.w9_on_file ?? null,
     },
     projectManager: (() => {
       const candidate = (pmResult.data as any)?.users

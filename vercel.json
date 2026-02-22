@@ -15,6 +15,10 @@
     {
       "path": "/api/jobs/rbac-evidence",
       "schedule": "15 2 * * *"
+    },
+    {
+      "path": "/api/jobs/weekly-executive-snapshot",
+      "schedule": "0 13 * * 5"
     }
   ],
   "functions": {
@@ -32,6 +36,9 @@
     },
     "app/api/jobs/rbac-evidence/route.ts": {
       "maxDuration": 60
+    },
+    "app/api/jobs/weekly-executive-snapshot/route.ts": {
+      "maxDuration": 300
     }
   }
 }

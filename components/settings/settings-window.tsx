@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -67,6 +68,38 @@ const appInfo = {
   logoUrl: "/icon.svg",
 }
 
+type AiProvider = "openai" | "anthropic" | "google"
+type AiConfigSource = "org" | "platform" | "env" | "default"
+
+const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+}
+
+const AI_PROVIDER_DEFAULT_MODELS: Record<AiProvider, string> = {
+  openai: "gpt-4.1-mini",
+  anthropic: "claude-3-5-sonnet-latest",
+  google: "gemini-2.0-flash",
+}
+
+const AI_PROVIDER_PRESET_MODELS: Record<AiProvider, string[]> = {
+  openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
+  anthropic: ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
+  google: ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-1.5-pro"],
+}
+
+const AI_CONFIG_SOURCE_LABELS: Record<AiConfigSource, string> = {
+  org: "Organization override",
+  platform: "Arc default",
+  env: "Environment default",
+  default: "Built-in default",
+}
+
+function isAiProvider(value: string): value is AiProvider {
+  return value === "openai" || value === "anthropic" || value === "google"
+}
+
 const tabPanelClass = "overflow-hidden rounded-xl border border-border/80 bg-background/75 shadow-sm"
 const tabPanelHeaderClass = "flex flex-col gap-3 border-b border-border/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6"
 const tabPanelBodyClass = "space-y-6 px-5 py-5 lg:px-6 lg:py-6"
@@ -115,6 +148,9 @@ type OrganizationSettingsData = {
   country: string
   defaultPaymentTermsDays: number
   defaultInvoiceNote: string
+  aiProvider: AiProvider
+  aiModel: string
+  aiConfigSource: AiConfigSource
   logoUrl: string | null
   canManageOrganization: boolean
 }
@@ -207,7 +243,12 @@ export function SettingsWindow({
     country: "",
     defaultPaymentTermsDays: 15,
     defaultInvoiceNote: "",
+    aiProvider: "openai" as AiProvider,
+    aiModel: AI_PROVIDER_DEFAULT_MODELS.openai,
   })
+  const [organizationAiSource, setOrganizationAiSource] = useState<AiConfigSource>("default")
+  const [useInheritedAiDefaults, setUseInheritedAiDefaults] = useState(true)
+  const [aiSettingsDirty, setAiSettingsDirty] = useState(false)
   const [hasFetchedOrganization, setHasFetchedOrganization] = useState(false)
   const [loadingOrganization, setLoadingOrganization] = useState(false)
   const [organizationError, setOrganizationError] = useState<string | null>(null)
@@ -231,6 +272,34 @@ export function SettingsWindow({
       toRoleLabel(currentMemberRole)
     : null
   const isMobile = useIsMobile()
+
+  const applyOrganizationSettings = useCallback((data: OrganizationSettingsData) => {
+    setOrganizationSettings(data)
+    setOrganizationForm({
+      name: data.name ?? "",
+      billingEmail: data.billingEmail ?? "",
+      addressLine1: data.addressLine1 ?? "",
+      addressLine2: data.addressLine2 ?? "",
+      city: data.city ?? "",
+      state: data.state ?? "",
+      postalCode: data.postalCode ?? "",
+      country: data.country ?? "",
+      defaultPaymentTermsDays: data.defaultPaymentTermsDays ?? 15,
+      defaultInvoiceNote: data.defaultInvoiceNote ?? "",
+      aiProvider: data.aiProvider ?? "openai",
+      aiModel: data.aiModel ?? AI_PROVIDER_DEFAULT_MODELS[data.aiProvider ?? "openai"],
+    })
+    setOrganizationAiSource(data.aiConfigSource ?? "default")
+    setUseInheritedAiDefaults(data.aiConfigSource !== "org")
+    setAiSettingsDirty(false)
+  }, [])
+
+  const aiSourceLabel = useMemo(() => {
+    if (useInheritedAiDefaults && organizationAiSource === "org") {
+      return "Arc default (pending save)"
+    }
+    return AI_CONFIG_SOURCE_LABELS[organizationAiSource]
+  }, [organizationAiSource, useInheritedAiDefaults])
 
   useEffect(() => {
     const nextTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
@@ -290,19 +359,7 @@ export function SettingsWindow({
     getOrganizationSettingsAction()
       .then((data) => {
         if (!isMounted) return
-        setOrganizationSettings(data)
-        setOrganizationForm({
-          name: data.name ?? "",
-          billingEmail: data.billingEmail ?? "",
-          addressLine1: data.addressLine1 ?? "",
-          addressLine2: data.addressLine2 ?? "",
-          city: data.city ?? "",
-          state: data.state ?? "",
-          postalCode: data.postalCode ?? "",
-          country: data.country ?? "",
-          defaultPaymentTermsDays: data.defaultPaymentTermsDays ?? 15,
-          defaultInvoiceNote: data.defaultInvoiceNote ?? "",
-        })
+        applyOrganizationSettings(data)
         setHasFetchedOrganization(true)
       })
       .catch((error) => {
@@ -318,7 +375,7 @@ export function SettingsWindow({
     return () => {
       isMounted = false
     }
-  }, [hasFetchedOrganization])
+  }, [applyOrganizationSettings, hasFetchedOrganization])
 
   useEffect(() => {
     if (hasFetchedIntegrations) return
@@ -552,6 +609,49 @@ export function SettingsWindow({
     setOrganizationError(null)
   }
 
+  const handleAiProviderChange = (provider: string) => {
+    if (!isAiProvider(provider)) return
+
+    setOrganizationForm((prev) => {
+      const previousDefaultModel = AI_PROVIDER_DEFAULT_MODELS[prev.aiProvider]
+      const nextDefaultModel = AI_PROVIDER_DEFAULT_MODELS[provider]
+      const shouldResetModel = !prev.aiModel.trim() || prev.aiModel.trim() === previousDefaultModel
+      return {
+        ...prev,
+        aiProvider: provider,
+        aiModel: shouldResetModel ? nextDefaultModel : prev.aiModel,
+      }
+    })
+    setOrganizationAiSource("org")
+    setUseInheritedAiDefaults(false)
+    setAiSettingsDirty(true)
+    setOrganizationNotice(null)
+    setOrganizationError(null)
+  }
+
+  const handleAiModelChange = (value: string) => {
+    setOrganizationForm((prev) => ({ ...prev, aiModel: value }))
+    setOrganizationAiSource("org")
+    setUseInheritedAiDefaults(false)
+    setAiSettingsDirty(true)
+    setOrganizationNotice(null)
+    setOrganizationError(null)
+  }
+
+  const handleUseInheritedAiDefaults = (inherit: boolean) => {
+    setUseInheritedAiDefaults(inherit)
+    if (!inherit) {
+      setOrganizationAiSource("org")
+      setOrganizationForm((prev) => ({
+        ...prev,
+        aiModel: prev.aiModel.trim() || AI_PROVIDER_DEFAULT_MODELS[prev.aiProvider],
+      }))
+    }
+    setAiSettingsDirty(true)
+    setOrganizationNotice(null)
+    setOrganizationError(null)
+  }
+
   const handleOrganizationSave = () => {
     if (!organizationSettings?.canManageOrganization || isSavingOrganization) return
 
@@ -570,6 +670,9 @@ export function SettingsWindow({
         country: organizationForm.country,
         defaultPaymentTermsDays: Number(organizationForm.defaultPaymentTermsDays ?? 15),
         defaultInvoiceNote: organizationForm.defaultInvoiceNote,
+        aiProvider: useInheritedAiDefaults ? undefined : organizationForm.aiProvider,
+        aiModel: useInheritedAiDefaults ? undefined : organizationForm.aiModel,
+        aiInheritDefaults: useInheritedAiDefaults,
       })
 
       if (result?.error) {
@@ -577,31 +680,13 @@ export function SettingsWindow({
         return
       }
 
-      setOrganizationSettings((prev) =>
-        prev
-          ? {
-              ...prev,
-              name: organizationForm.name.trim(),
-              billingEmail: organizationForm.billingEmail.trim(),
-              address: [
-                [organizationForm.addressLine1.trim(), organizationForm.addressLine2.trim()].filter(Boolean).join(" ").trim(),
-                [organizationForm.city.trim(), organizationForm.state.trim(), organizationForm.postalCode.trim()].filter(Boolean).join(" ").trim(),
-                organizationForm.country.trim(),
-              ]
-                .filter(Boolean)
-                .join("\n")
-                .trim(),
-              addressLine1: organizationForm.addressLine1.trim(),
-              addressLine2: organizationForm.addressLine2.trim(),
-              city: organizationForm.city.trim(),
-              state: organizationForm.state.trim(),
-              postalCode: organizationForm.postalCode.trim(),
-              country: organizationForm.country.trim(),
-              defaultPaymentTermsDays: Number(organizationForm.defaultPaymentTermsDays ?? 15),
-              defaultInvoiceNote: organizationForm.defaultInvoiceNote.trim(),
-            }
-          : prev,
-      )
+      try {
+        const refreshed = await getOrganizationSettingsAction()
+        applyOrganizationSettings(refreshed)
+      } catch (error) {
+        console.error("Failed to refresh organization settings", error)
+        setAiSettingsDirty(false)
+      }
       setOrganizationNotice("Organization settings saved.")
     })
   }
@@ -1055,6 +1140,85 @@ export function SettingsWindow({
                                 className="min-h-[88px]"
                                 disabled={!organizationSettings?.canManageOrganization}
                               />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-4 rounded-lg border border-border/70 bg-background/60 p-4">
+                          <p className="text-sm font-semibold text-foreground">AI defaults</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="secondary" className="rounded-md">
+                              {useInheritedAiDefaults ? "Inherited" : "Org override"}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              {useInheritedAiDefaults
+                                ? `Using ${aiSourceLabel}`
+                                : "Custom provider/model for this org"}
+                            </span>
+                            {aiSettingsDirty && <span className="text-xs text-amber-600">Unsaved AI change</span>}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {useInheritedAiDefaults
+                              ? "Inherited mode follows Arc-wide defaults from the Platform console."
+                              : "Override mode pins this organization to a custom provider/model."}
+                          </p>
+                          <div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleUseInheritedAiDefaults(!useInheritedAiDefaults)}
+                              disabled={!organizationSettings?.canManageOrganization}
+                            >
+                              {useInheritedAiDefaults ? "Set org override" : "Use inherited default"}
+                            </Button>
+                          </div>
+                          <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
+                            <div className="space-y-2">
+                              <Label htmlFor="ai-provider" className="text-sm font-medium">Provider</Label>
+                              <Select
+                                value={organizationForm.aiProvider}
+                                onValueChange={handleAiProviderChange}
+                                disabled={!organizationSettings?.canManageOrganization || useInheritedAiDefaults}
+                              >
+                                <SelectTrigger id="ai-provider" className="h-11">
+                                  <SelectValue placeholder="Select provider" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="openai">{AI_PROVIDER_LABELS.openai}</SelectItem>
+                                  <SelectItem value="anthropic">{AI_PROVIDER_LABELS.anthropic}</SelectItem>
+                                  <SelectItem value="google">{AI_PROVIDER_LABELS.google}</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="ai-model" className="text-sm font-medium">Model</Label>
+                              <Input
+                                id="ai-model"
+                                value={organizationForm.aiModel}
+                                onChange={(event) => handleAiModelChange(event.target.value)}
+                                placeholder={AI_PROVIDER_DEFAULT_MODELS[organizationForm.aiProvider]}
+                                className="h-11"
+                                disabled={!organizationSettings?.canManageOrganization || useInheritedAiDefaults}
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                {AI_PROVIDER_PRESET_MODELS[organizationForm.aiProvider].map((modelOption) => (
+                                  <button
+                                    key={modelOption}
+                                    type="button"
+                                    onClick={() => handleAiModelChange(modelOption)}
+                                    className={cn(
+                                      "rounded-md border px-2.5 py-1 text-xs transition-colors",
+                                      organizationForm.aiModel === modelOption
+                                        ? "border-primary/40 bg-primary/10 text-primary"
+                                        : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground",
+                                    )}
+                                    disabled={!organizationSettings?.canManageOrganization || useInheritedAiDefaults}
+                                  >
+                                    {modelOption}
+                                  </button>
+                                ))}
+                              </div>
                             </div>
                           </div>
                         </div>

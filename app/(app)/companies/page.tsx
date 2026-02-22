@@ -4,8 +4,9 @@ import { CompaniesTable } from "@/components/companies/companies-table"
 import { listCompanies } from "@/lib/services/companies"
 import { listContacts } from "@/lib/services/contacts"
 import { listTeamMembers } from "@/lib/services/team"
-import { InsuranceWidget } from "@/components/companies/insurance-widget"
+import { ComplianceWatchWidget } from "@/components/companies/compliance-watch-widget"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 
 export default async function CompaniesPage() {
   const [companies, contacts, teamMembers, permissionResult] = await Promise.all([
@@ -14,6 +15,10 @@ export default async function CompaniesPage() {
     listTeamMembers(),
     getCurrentUserPermissions(),
   ])
+  const complianceCompanyIds = companies
+    .filter((company) => company.company_type === "subcontractor" || company.company_type === "supplier")
+    .map((company) => company.id)
+  const complianceStatusByCompanyId = await getCompaniesComplianceStatus(complianceCompanyIds).catch(() => ({}))
 
   const permissions = permissionResult.permissions
   const canEdit = permissions.includes("org.member")
@@ -26,11 +31,11 @@ export default async function CompaniesPage() {
           <div>
             <h1 className="text-2xl font-semibold">Companies</h1>
             <p className="text-muted-foreground mt-1">
-              Track subcontractors, suppliers, and partners with trade and insurance details.
+              Track subcontractors, suppliers, and partners with a unified compliance system.
             </p>
           </div>
           <div className="w-full lg:max-w-sm">
-            <InsuranceWidget companies={companies} />
+            <ComplianceWatchWidget companies={companies} complianceStatusByCompanyId={complianceStatusByCompanyId} />
           </div>
         </div>
         <CompaniesTable
@@ -45,4 +50,3 @@ export default async function CompaniesPage() {
     </PageLayout>
   )
 }
-

@@ -14,6 +14,7 @@ import {
 } from "@/lib/validation/bids"
 import { createCommitment } from "@/lib/services/commitments"
 import { sendBidInviteEmail } from "@/lib/services/mailer"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export interface BidPackage {
   id: string
@@ -77,6 +78,7 @@ export interface BidSubmission {
   status: string
   version: number
   is_current: boolean
+  is_awarded?: boolean
   total_cents?: number | null
   currency?: string | null
   valid_until?: string | null
@@ -91,6 +93,21 @@ export interface BidSubmission {
   submitted_at?: string | null
   created_at: string
   invite?: BidInvite
+  benchmark?: BidSubmissionBenchmark
+}
+
+export interface BidSubmissionBenchmark {
+  has_benchmark: boolean
+  signal: "below_range" | "in_range" | "above_range" | "insufficient_data"
+  message: string
+  match_level: string
+  sample_size: number
+  org_count: number
+  median_cents?: number | null
+  p25_cents?: number | null
+  p75_cents?: number | null
+  submitted_total_cents?: number | null
+  deviation_pct?: number | null
 }
 
 export interface BidAwardResult {
@@ -176,6 +193,7 @@ function mapBidSubmission(row: any): BidSubmission {
     status: row.status,
     version: row.version,
     is_current: row.is_current,
+    is_awarded: row.is_awarded ?? false,
     total_cents: row.total_cents ?? null,
     currency: row.currency ?? null,
     valid_until: row.valid_until ?? null,
@@ -190,6 +208,23 @@ function mapBidSubmission(row: any): BidSubmission {
     submitted_at: row.submitted_at ?? null,
     created_at: row.created_at,
     invite: row.bid_invite ? mapBidInvite(row.bid_invite) : undefined,
+    benchmark: row.benchmark ? mapBidSubmissionBenchmark(row.benchmark) : undefined,
+  }
+}
+
+function mapBidSubmissionBenchmark(row: any): BidSubmissionBenchmark {
+  return {
+    has_benchmark: !!row.has_benchmark,
+    signal: (row.signal ?? "insufficient_data") as BidSubmissionBenchmark["signal"],
+    message: row.message ?? "Benchmark unavailable.",
+    match_level: row.match_level ?? "none",
+    sample_size: Number(row.sample_size ?? 0),
+    org_count: Number(row.org_count ?? 0),
+    median_cents: row.median_cents ?? null,
+    p25_cents: row.p25_cents ?? null,
+    p75_cents: row.p75_cents ?? null,
+    submitted_total_cents: row.submitted_total_cents ?? null,
+    deviation_pct: row.deviation_pct != null ? Number(row.deviation_pct) : null,
   }
 }
 
@@ -230,6 +265,55 @@ async function ensureProjectBiddingStatus(projectId: string, orgId: string, supa
   }
 }
 
+async function ensureProjectInOrg(projectId: string, orgId: string, supabase: any) {
+  const { data: project, error } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+  if (error || !project) {
+    throw new Error("Project not found in this organization")
+  }
+}
+
+async function ensureBidPackageInOrg(bidPackageId: string, orgId: string, supabase: any) {
+  const { data: bidPackage, error } = await supabase
+    .from("bid_packages")
+    .select("id, project_id")
+    .eq("org_id", orgId)
+    .eq("id", bidPackageId)
+    .maybeSingle()
+  if (error || !bidPackage) {
+    throw new Error("Bid package not found in this organization")
+  }
+  return bidPackage
+}
+
+async function ensureCompanyInOrg(companyId: string, orgId: string, supabase: any) {
+  const { data: company, error } = await supabase
+    .from("companies")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", companyId)
+    .maybeSingle()
+  if (error || !company) {
+    throw new Error("Company not found in this organization")
+  }
+}
+
+async function ensureContactInOrg(contactId: string, orgId: string, supabase: any) {
+  const { data: contact, error } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", contactId)
+    .maybeSingle()
+  if (error || !contact) {
+    throw new Error("Contact not found in this organization")
+  }
+}
+
 export async function listBidPackages(projectId: string, orgId?: string): Promise<BidPackage[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
@@ -238,7 +322,7 @@ export async function listBidPackages(projectId: string, orgId?: string): Promis
     .from("bid_packages")
     .select(`
       id, org_id, project_id, title, trade, scope, instructions, due_at, status, created_by, created_at, updated_at,
-      bid_invites(count)
+      bid_invites!bid_invites_org_package_fk(count)
     `)
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
@@ -279,6 +363,7 @@ export async function createBidPackage({
   const parsed = createBidPackageInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await ensureProjectInOrg(parsed.project_id, resolvedOrgId, supabase)
 
   const { data, error } = await supabase
     .from("bid_packages")
@@ -393,8 +478,8 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
       `
       id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
       declined_at, created_by, created_at, updated_at,
-      company:companies(id, name, phone, email),
-      contact:contacts(id, full_name, email, phone)
+      company:companies!bid_invites_org_company_fk(id, name, phone, email),
+      contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
     `,
     )
     .eq("org_id", resolvedOrgId)
@@ -611,6 +696,11 @@ export async function createBidInvite({
   const parsed = createBidInviteInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
+  await ensureCompanyInOrg(parsed.company_id, resolvedOrgId, supabase)
+  if (parsed.contact_id) {
+    await ensureContactInOrg(parsed.contact_id, resolvedOrgId, supabase)
+  }
 
   const { data, error } = await supabase
     .from("bid_invites")
@@ -627,8 +717,8 @@ export async function createBidInvite({
       `
       id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
       declined_at, created_by, created_at, updated_at,
-      company:companies(id, name, phone, email),
-      contact:contacts(id, full_name, email, phone)
+      company:companies!bid_invites_org_company_fk(id, name, phone, email),
+      contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
     `,
     )
     .single()
@@ -707,6 +797,8 @@ export async function bulkCreateBidInvites({
   const failed: Array<{ identifier: string; error: string }> = []
   let emailsSent = 0
   let companiesCreated = 0
+  const validatedCompanyIds = new Set<string>()
+  const validatedContactIds = new Set<string>()
 
   for (const inviteItem of parsed.invites) {
     const identifier = inviteItem.company_id || inviteItem.invite_email || "unknown"
@@ -754,6 +846,16 @@ export async function bulkCreateBidInvites({
         continue
       }
 
+      if (!validatedCompanyIds.has(companyId)) {
+        await ensureCompanyInOrg(companyId, resolvedOrgId, supabase)
+        validatedCompanyIds.add(companyId)
+      }
+
+      if (inviteItem.contact_id && !validatedContactIds.has(inviteItem.contact_id)) {
+        await ensureContactInOrg(inviteItem.contact_id, resolvedOrgId, supabase)
+        validatedContactIds.add(inviteItem.contact_id)
+      }
+
       // Create the invite
       const { data, error } = await supabase
         .from("bid_invites")
@@ -770,8 +872,8 @@ export async function bulkCreateBidInvites({
           `
           id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
           declined_at, created_by, created_at, updated_at,
-          company:companies(id, name, phone, email),
-          contact:contacts(id, full_name, email, phone)
+          company:companies!bid_invites_org_company_fk(id, name, phone, email),
+          contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
         `
         )
         .single()
@@ -980,6 +1082,7 @@ export async function createBidAddendum({
   const parsed = createBidAddendumInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
 
   const { data: existing } = await supabase
     .from("bid_addenda")
@@ -1032,30 +1135,92 @@ export async function listBidSubmissions(bidPackageId: string, orgId?: string): 
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
+  const { data: inviteRows, error: inviteError } = await supabase
+    .from("bid_invites")
+    .select(
+      `
+      id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
+      declined_at, created_by, created_at, updated_at,
+      company:companies!bid_invites_org_company_fk(id, name, phone, email),
+      contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
+    `,
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("bid_package_id", bidPackageId)
+
+  if (inviteError) {
+    throw new Error(`Failed to list bid invites for submissions: ${inviteError.message}`)
+  }
+
+  const inviteIdList = (inviteRows ?? []).map((row) => row.id as string)
+  if (inviteIdList.length === 0) {
+    return []
+  }
+
+  const inviteById = new Map<string, BidInvite>((inviteRows ?? []).map((row) => [row.id as string, mapBidInvite(row)]))
+
   const { data, error } = await supabase
     .from("bid_submissions")
     .select(
       `
       id, org_id, bid_invite_id, status, version, is_current, total_cents, currency, submitted_at, created_at,
       valid_until, lead_time_days, duration_days, start_available_on,
-      exclusions, clarifications, notes, submitted_by_name, submitted_by_email,
-      bid_invite:bid_invites!inner(
-        id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
-        declined_at, created_by, created_at, updated_at,
-        company:companies(id, name, phone, email),
-        contact:contacts(id, full_name, email, phone)
-      )
+      exclusions, clarifications, notes, submitted_by_name, submitted_by_email
     `,
     )
     .eq("org_id", resolvedOrgId)
-    .eq("bid_invites.bid_package_id", bidPackageId)
+    .in("bid_invite_id", inviteIdList)
     .order("created_at", { ascending: false })
 
   if (error) {
     throw new Error(`Failed to list bid submissions: ${error.message}`)
   }
 
-  return (data ?? []).map(mapBidSubmission)
+  const { data: award, error: awardError } = await supabase
+    .from("bid_awards")
+    .select("awarded_submission_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("bid_package_id", bidPackageId)
+    .maybeSingle()
+
+  if (awardError) {
+    throw new Error(`Failed to resolve awarded submission: ${awardError.message}`)
+  }
+
+  const awardedSubmissionId = (award as any)?.awarded_submission_id as string | undefined
+  const rows = (data ?? []).map((row) => ({
+    ...mapBidSubmission({ ...row, is_awarded: awardedSubmissionId === row.id }),
+    invite: inviteById.get(row.bid_invite_id as string),
+  }))
+
+  const serviceSupabase = createServiceSupabaseClient()
+  const benchmarkPairs = await Promise.all(
+    rows.map(async (row) => {
+      try {
+        const { data: benchmarkData, error: benchmarkError } = await serviceSupabase.rpc(
+          "record_bid_submission_benchmark",
+          { p_bid_submission_id: row.id },
+        )
+        if (benchmarkError) {
+          throw benchmarkError
+        }
+        const benchmarkRow = Array.isArray(benchmarkData) ? benchmarkData[0] : benchmarkData
+        return [row.id, benchmarkRow ? mapBidSubmissionBenchmark(benchmarkRow) : undefined] as const
+      } catch (benchmarkError) {
+        console.warn("Failed to load bid benchmark signal", {
+          submissionId: row.id,
+          error: (benchmarkError as Error)?.message,
+        })
+        return [row.id, undefined] as const
+      }
+    }),
+  )
+
+  const benchmarkBySubmissionId = new Map<string, BidSubmissionBenchmark | undefined>(benchmarkPairs)
+  return rows.map((row) => ({
+    ...row,
+    benchmark: benchmarkBySubmissionId.get(row.id),
+  }))
 }
 
 export async function awardBidSubmission({
@@ -1125,39 +1290,96 @@ export async function awardBidSubmission({
     throw new Error("This bid package has already been awarded")
   }
 
-  const commitment = await createCommitment({
-    input: {
-      project_id: bidPackage.project_id,
-      company_id: invite.company_id,
-      title: `${bidPackage.title} - Award`,
-      total_cents: submission.total_cents,
-      status: "draft",
-    },
-    orgId: resolvedOrgId,
-  })
-
-  const { data: award, error: awardError } = await supabase
+  const { data: awardPlaceholder, error: awardError } = await supabase
     .from("bid_awards")
     .insert({
       org_id: resolvedOrgId,
       bid_package_id: bidPackage.id,
       awarded_submission_id: submission.id,
-      awarded_commitment_id: commitment.id,
+      awarded_commitment_id: null,
       awarded_by: userId,
       notes: parsed.notes ?? null,
     })
     .select("id, org_id, bid_package_id, awarded_submission_id, awarded_commitment_id, awarded_by, awarded_at, notes")
     .single()
 
-  if (awardError || !award) {
+  if (awardError || !awardPlaceholder) {
+    if ((awardError as any)?.code === "23505") {
+      throw new Error("This bid package has already been awarded")
+    }
     throw new Error(`Failed to create bid award: ${awardError?.message}`)
   }
 
-  await supabase
+  const awardId = awardPlaceholder.id as string
+  let commitmentId: string | null = null
+
+  try {
+    const commitment = await createCommitment({
+      input: {
+        project_id: bidPackage.project_id,
+        company_id: invite.company_id,
+        title: `${bidPackage.title} - Award`,
+        total_cents: submission.total_cents,
+        status: "draft",
+      },
+      orgId: resolvedOrgId,
+    })
+    commitmentId = commitment.id
+  } catch (commitmentError) {
+    await supabase
+      .from("bid_awards")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("id", awardId)
+      .is("awarded_commitment_id", null)
+    throw commitmentError
+  }
+
+  const { data: award, error: linkAwardError } = await supabase
+    .from("bid_awards")
+    .update({ awarded_commitment_id: commitmentId })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", awardId)
+    .select("id, org_id, bid_package_id, awarded_submission_id, awarded_commitment_id, awarded_by, awarded_at, notes")
+    .single()
+
+  if (linkAwardError || !award) {
+    await supabase
+      .from("commitments")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("id", commitmentId)
+      .eq("status", "draft")
+    await supabase
+      .from("bid_awards")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("id", awardId)
+      .is("awarded_commitment_id", null)
+    throw new Error(`Failed to finalize bid award: ${linkAwardError?.message}`)
+  }
+
+  const { error: packageStatusError } = await supabase
     .from("bid_packages")
     .update({ status: "awarded", updated_at: new Date().toISOString() })
     .eq("org_id", resolvedOrgId)
     .eq("id", bidPackage.id)
+
+  if (packageStatusError) {
+    await supabase
+      .from("bid_awards")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("id", awardId)
+      .eq("awarded_commitment_id", commitmentId)
+    await supabase
+      .from("commitments")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("id", commitmentId)
+      .eq("status", "draft")
+    throw new Error(`Failed to update bid package status: ${packageStatusError.message}`)
+  }
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -1167,7 +1389,7 @@ export async function awardBidSubmission({
     payload: {
       bid_package_id: bidPackage.id,
       bid_submission_id: submission.id,
-      commitment_id: commitment.id,
+      commitment_id: commitmentId,
     },
   })
 
@@ -1182,6 +1404,6 @@ export async function awardBidSubmission({
 
   return {
     awardId: award.id as string,
-    commitmentId: commitment.id,
+    commitmentId: commitmentId as string,
   }
 }

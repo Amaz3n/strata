@@ -4,13 +4,25 @@ import type { ComplianceRequirementTemplateItem, ComplianceRules } from "@/lib/t
 import { complianceRequirementInputSchema } from "@/lib/validation/compliance-documents"
 
 const defaultRules: ComplianceRules = {
-  require_license: false,
   require_lien_waiver: false,
   block_payment_on_missing_docs: true,
 }
 
+function normalizeBoolean(raw: unknown, fallback: boolean): boolean {
+  if (typeof raw === "boolean") return raw
+  return fallback
+}
+
 function mergeRules(raw?: Partial<ComplianceRules> | null): ComplianceRules {
-  return { ...defaultRules, ...(raw ?? {}) }
+  const source = raw ?? {}
+  // Only keep canonical keys so legacy payloads do not leak into runtime behavior.
+  return {
+    require_lien_waiver: normalizeBoolean(source.require_lien_waiver, defaultRules.require_lien_waiver ?? false),
+    block_payment_on_missing_docs: normalizeBoolean(
+      source.block_payment_on_missing_docs,
+      defaultRules.block_payment_on_missing_docs ?? true
+    ),
+  }
 }
 
 export async function getComplianceRules(orgId?: string): Promise<ComplianceRules> {

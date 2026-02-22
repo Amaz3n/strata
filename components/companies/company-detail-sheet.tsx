@@ -66,7 +66,6 @@ export function CompanyDetailSheet({ companyId, open, onOpenChange }: CompanyDet
                     <Badge variant="secondary">{company.company_type}</Badge>
                     <TradeBadge trade={company.trade} />
                     {company.license_number && <Badge variant="outline">Lic #{company.license_number}</Badge>}
-                    {company.insurance_expiry && <Badge variant="outline">Ins exp {company.insurance_expiry}</Badge>}
                   </div>
                 </div>
               </div>
@@ -165,7 +164,6 @@ export function CompanyDetailSheet({ companyId, open, onOpenChange }: CompanyDet
     </Sheet>
   )
 }
-
 
 
 

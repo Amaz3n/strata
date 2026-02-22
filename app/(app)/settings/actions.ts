@@ -9,6 +9,7 @@ import { createStripeBillingPortalSession, createStripeCheckoutSession, createSt
 import { getCurrentUserPermissions, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getOrgAccessState } from "@/lib/services/access"
+import { AI_PROVIDER_VALUES, defaultModelForProvider, getOrgAiSearchConfig, normalizeAiProvider } from "@/lib/services/ai-config"
 
 export async function getNotificationPreferencesAction() {
   const { user } = await requireOrgMembership()
@@ -17,11 +18,17 @@ export async function getNotificationPreferencesAction() {
   return await service.getUserPreferences(user.id)
 }
 
-export async function updateNotificationPreferencesAction(emailEnabled: boolean) {
+export async function updateNotificationPreferencesAction(input: {
+  emailEnabled: boolean
+  weeklySnapshotEnabled: boolean
+}) {
   const { user } = await requireOrgMembership()
 
   const service = new NotificationService()
-  await service.updateUserPreferences(user.id, emailEnabled)
+  await service.updateUserPreferences(user.id, {
+    email_enabled: input.emailEnabled,
+    weekly_snapshot_enabled: input.weeklySnapshotEnabled,
+  })
 
   return { success: true }
 }
@@ -344,6 +351,9 @@ const organizationSettingsSchema = z.object({
   country: z.string().trim().max(80).optional().default(""),
   defaultPaymentTermsDays: z.number().min(0).max(365).default(15),
   defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
+  aiProvider: z.enum(AI_PROVIDER_VALUES).optional(),
+  aiModel: z.string().trim().max(120).optional(),
+  aiInheritDefaults: z.boolean().optional(),
 })
 
 type OrgAddress = {
@@ -485,6 +495,7 @@ export async function getOrganizationSettingsAction() {
     .select("settings")
     .eq("org_id", orgId)
     .maybeSingle()
+  const aiConfig = await getOrgAiSearchConfig({ supabase: createServiceSupabaseClient(), orgId })
 
   const orgAddress = resolveAddressFields((orgResult.data.address as OrgAddress) ?? null)
   const settings = (orgSettingsData?.settings as Record<string, any> | null) ?? {}
@@ -504,6 +515,9 @@ export async function getOrganizationSettingsAction() {
     country: orgAddress.country,
     defaultPaymentTermsDays,
     defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
+    aiProvider: aiConfig.provider,
+    aiModel: aiConfig.model,
+    aiConfigSource: aiConfig.source,
     logoUrl: (orgResult.data.logo_url as string | null) ?? null,
     canManageOrganization,
   }
@@ -520,6 +534,9 @@ export async function updateOrganizationSettingsAction(input: {
   country?: string
   defaultPaymentTermsDays?: number
   defaultInvoiceNote?: string
+  aiProvider?: string
+  aiModel?: string
+  aiInheritDefaults?: boolean
 }) {
   const parsed = organizationSettingsSchema.safeParse(input)
   if (!parsed.success) {
@@ -552,11 +569,30 @@ export async function updateOrganizationSettingsAction(input: {
     return { error: error.message ?? "Failed to update organization settings." }
   }
 
-  const mergedSettings = {
-    ...((existingSettings?.settings as Record<string, any> | null) ?? {}),
+  const existingSettingPayload = ((existingSettings?.settings as Record<string, any> | null) ?? {})
+  const mergedSettings: Record<string, any> = {
+    ...existingSettingPayload,
     invoice_default_payment_terms_days: parsed.data.defaultPaymentTermsDays,
     invoice_default_payment_details: parsed.data.defaultInvoiceNote || null,
     invoice_default_note: parsed.data.defaultInvoiceNote || null,
+  }
+
+  const shouldInheritAiDefaults = parsed.data.aiInheritDefaults === true
+  const hasAiInput = parsed.data.aiProvider !== undefined || parsed.data.aiModel !== undefined
+
+  if (shouldInheritAiDefaults) {
+    delete mergedSettings.ai_search_provider
+    delete mergedSettings.ai_search_model
+  } else if (hasAiInput) {
+    const existingAiProvider = normalizeAiProvider(existingSettingPayload.ai_search_provider)
+    const existingAiModel =
+      typeof existingSettingPayload.ai_search_model === "string" ? existingSettingPayload.ai_search_model.trim() : ""
+    const normalizedAiProvider = normalizeAiProvider(parsed.data.aiProvider) ?? existingAiProvider ?? "openai"
+    const requestedAiModel = parsed.data.aiModel?.trim() ?? ""
+    const normalizedAiModel = requestedAiModel || existingAiModel || defaultModelForProvider(normalizedAiProvider)
+
+    mergedSettings.ai_search_provider = normalizedAiProvider
+    mergedSettings.ai_search_model = normalizedAiModel
   }
 
   const { error: settingsError } = await service

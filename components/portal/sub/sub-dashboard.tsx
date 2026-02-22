@@ -8,18 +8,20 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { SubFinancialSummary } from "./sub-financial-summary"
 import { SubContractsCard } from "./sub-contracts-card"
-import type { SubPortalData } from "@/lib/types"
+import type { ComplianceStatusSummary, SubPortalData } from "@/lib/types"
 
 interface SubDashboardProps {
   data: SubPortalData
   token: string
   canSubmitInvoices?: boolean
+  complianceStatus?: ComplianceStatusSummary
 }
 
 export function SubDashboard({
   data,
   token,
   canSubmitInvoices = true,
+  complianceStatus,
 }: SubDashboardProps) {
   const upcomingSchedule = data.schedule
     .filter((s) => s.status === "planned" || s.status === "in_progress")
@@ -28,24 +30,33 @@ export function SubDashboard({
   const needsAttention = data.pendingRfiCount + data.pendingSubmittalCount
   const complianceAlerts = (() => {
     const alerts: { label: string; detail?: string }[] = []
-    const insuranceExpiry = data.company.insurance_expiry ? new Date(data.company.insurance_expiry) : null
-    if (!insuranceExpiry || Number.isNaN(insuranceExpiry.getTime())) {
-      alerts.push({ label: "Insurance not on file" })
-    } else {
-      const days = Math.ceil((insuranceExpiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-      if (days < 0) alerts.push({ label: "Insurance expired", detail: format(insuranceExpiry, "MMM d, yyyy") })
-      else if (days <= 30) alerts.push({ label: "Insurance expiring soon", detail: format(insuranceExpiry, "MMM d, yyyy") })
+    if (!complianceStatus) {
+      return alerts
     }
 
-    if (!data.company.w9_on_file) {
-      alerts.push({ label: "W-9 missing" })
+    if (complianceStatus.missing.length > 0) {
+      alerts.push({ label: `${complianceStatus.missing.length} required document(s) missing` })
     }
-
-    const licenseExpiry = data.company.license_expiry ? new Date(data.company.license_expiry) : null
-    if (licenseExpiry && !Number.isNaN(licenseExpiry.getTime())) {
-      const days = Math.ceil((licenseExpiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-      if (days < 0) alerts.push({ label: "License expired", detail: format(licenseExpiry, "MMM d, yyyy") })
-      else if (days <= 30) alerts.push({ label: "License expiring soon", detail: format(licenseExpiry, "MMM d, yyyy") })
+    if (complianceStatus.expired.length > 0) {
+      alerts.push({ label: `${complianceStatus.expired.length} document(s) expired` })
+    }
+    if (complianceStatus.deficiencies.length > 0) {
+      alerts.push({ label: `${complianceStatus.deficiencies.length} document(s) need updates` })
+    }
+    if (complianceStatus.pending_review.length > 0) {
+      alerts.push({ label: `${complianceStatus.pending_review.length} document(s) under review` })
+    }
+    if (complianceStatus.expiring_soon.length > 0) {
+      const nearestExpiry = complianceStatus.expiring_soon
+        .map((doc) => doc.expiry_date)
+        .filter((expiry): expiry is string => Boolean(expiry))
+        .map((expiry) => new Date(expiry))
+        .filter((date) => !Number.isNaN(date.getTime()))
+        .sort((a, b) => a.getTime() - b.getTime())[0]
+      alerts.push({
+        label: `${complianceStatus.expiring_soon.length} document(s) expiring soon`,
+        detail: nearestExpiry ? format(nearestExpiry, "MMM d, yyyy") : undefined,
+      })
     }
 
     return alerts

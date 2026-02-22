@@ -1,13 +1,16 @@
 import { createHmac } from "node:crypto"
 import { compare } from "bcryptjs"
+import { cookies } from "next/headers"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import type { FileMetadata, Rfi } from "@/lib/types"
+import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 
-const PIN_SALT_ROUNDS = 10
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
+const BID_PORTAL_PIN_COOKIE_PREFIX = "bid_portal_pin"
+const BID_PORTAL_PIN_COOKIE_TTL_SECONDS = 60 * 60 * 12
 
 export interface BidPortalPackage {
   id: string
@@ -79,6 +82,20 @@ export interface BidPortalSubmission {
   created_at: string
 }
 
+export interface BidPriceBenchmarkSignal {
+  has_benchmark: boolean
+  signal: "below_range" | "in_range" | "above_range" | "insufficient_data"
+  message: string
+  match_level: string
+  sample_size: number
+  org_count: number
+  median_cents?: number | null
+  p25_cents?: number | null
+  p75_cents?: number | null
+  submitted_total_cents?: number | null
+  deviation_pct?: number | null
+}
+
 export interface BidPortalData {
   packageFiles: FileMetadata[]
   addenda: BidPortalAddendum[]
@@ -97,6 +114,77 @@ function getBidPortalSecret() {
 
 function hashBidToken(token: string) {
   return createHmac("sha256", getBidPortalSecret()).update(token).digest("hex")
+}
+
+function getBidPortalPinCookieName(tokenHash: string) {
+  return `${BID_PORTAL_PIN_COOKIE_PREFIX}_${tokenHash.slice(0, 16)}`
+}
+
+function signBidPortalPinCookie(tokenHash: string) {
+  return createHmac("sha256", getBidPortalSecret()).update(`pin:${tokenHash}`).digest("hex")
+}
+
+export async function markBidPortalPinVerified(token: string) {
+  const tokenHash = hashBidToken(token)
+  const store = await cookies()
+  store.set({
+    name: getBidPortalPinCookieName(tokenHash),
+    value: signBidPortalPinCookie(tokenHash),
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: BID_PORTAL_PIN_COOKIE_TTL_SECONDS,
+  })
+}
+
+export async function clearBidPortalPinVerification(token: string) {
+  const tokenHash = hashBidToken(token)
+  const store = await cookies()
+  store.set({
+    name: getBidPortalPinCookieName(tokenHash),
+    value: "",
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 0,
+  })
+}
+
+export async function isBidPortalPinVerified(token: string): Promise<boolean> {
+  const tokenHash = hashBidToken(token)
+  const store = await cookies()
+  const cookieValue = store.get(getBidPortalPinCookieName(tokenHash))?.value
+  if (!cookieValue) return false
+  return cookieValue === signBidPortalPinCookie(tokenHash)
+}
+
+export async function assertBidPortalActionAccess(token: string): Promise<BidPortalAccess> {
+  const access = await validateBidPortalToken(token)
+  if (!access) {
+    throw new Error("Invalid or expired bid link")
+  }
+
+  if (access.require_account) {
+    const hasAccountAccess = await hasExternalPortalGrantForToken({
+      orgId: access.org_id,
+      tokenId: access.id,
+      tokenType: "bid",
+    })
+    if (!hasAccountAccess) {
+      throw new Error("Account access is required for this bid link")
+    }
+  }
+
+  if (access.pin_required) {
+    const pinVerified = await isBidPortalPinVerified(token)
+    if (!pinVerified) {
+      throw new Error("PIN verification is required for this bid link")
+    }
+  }
+
+  return access
 }
 
 function mapFile(file: any, orgId: string): FileMetadata {
@@ -133,10 +221,10 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       `
       id, org_id, bid_invite_id, expires_at, max_access_count, access_count, last_accessed_at,
       pin_required, require_account, pin_locked_until, paused_at, revoked_at,
-      bid_invite:bid_invites(
+      bid_invite:bid_invites!bid_access_tokens_org_invite_fk(
         id, bid_package_id, status, invite_email, sent_at, last_viewed_at, submitted_at,
-        company:companies(id, name, email, phone),
-        contact:contacts(id, full_name, email, phone)
+        company:companies!bid_invites_org_company_fk(id, name, email, phone),
+        contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
       )
     `,
     )
@@ -533,6 +621,34 @@ export async function acknowledgeBidAddendum({
   return { acknowledged_at: data.acknowledged_at ?? now }
 }
 
+async function recordBidSubmissionBenchmarkSignal(submissionId: string): Promise<BidPriceBenchmarkSignal | undefined> {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase.rpc("record_bid_submission_benchmark", {
+    p_bid_submission_id: submissionId,
+  })
+
+  if (error) {
+    throw new Error(`Failed to compute bid benchmark signal: ${error.message}`)
+  }
+
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) return undefined
+
+  return {
+    has_benchmark: !!row.has_benchmark,
+    signal: (row.signal ?? "insufficient_data") as BidPriceBenchmarkSignal["signal"],
+    message: row.message ?? "Benchmark unavailable.",
+    match_level: row.match_level ?? "none",
+    sample_size: Number(row.sample_size ?? 0),
+    org_count: Number(row.org_count ?? 0),
+    median_cents: row.median_cents ?? null,
+    p25_cents: row.p25_cents ?? null,
+    p75_cents: row.p75_cents ?? null,
+    submitted_total_cents: row.submitted_total_cents ?? null,
+    deviation_pct: row.deviation_pct ?? null,
+  }
+}
+
 export async function submitBidFromPortal({
   access,
   input,
@@ -576,10 +692,13 @@ export async function submitBidFromPortal({
   const now = new Date().toISOString()
 
   if (current?.id) {
-    await supabase
+    const { error: demoteError } = await supabase
       .from("bid_submissions")
       .update({ is_current: false, updated_at: now })
       .eq("id", current.id)
+    if (demoteError) {
+      throw new Error(`Failed to update previous bid revision: ${demoteError.message}`)
+    }
   }
 
   const status = nextVersion > 1 ? "revised" : "submitted"
@@ -614,6 +733,14 @@ export async function submitBidFromPortal({
     .single()
 
   if (error || !created) {
+    if (current?.id) {
+      await supabase
+        .from("bid_submissions")
+        .update({ is_current: true, updated_at: new Date().toISOString() })
+        .eq("id", current.id)
+        .eq("org_id", access.org_id)
+        .eq("bid_invite_id", access.bid_invite_id)
+    }
     throw new Error(`Failed to submit bid: ${error?.message}`)
   }
 
@@ -634,7 +761,7 @@ export async function submitBidFromPortal({
     await supabase.from("file_links").insert(fileLinks)
   }
 
-  return {
+  const submission: BidPortalSubmission = {
     id: created.id,
     status: created.status,
     version: created.version,
@@ -653,4 +780,15 @@ export async function submitBidFromPortal({
     submitted_at: created.submitted_at ?? null,
     created_at: created.created_at,
   }
+
+  try {
+    await recordBidSubmissionBenchmarkSignal(created.id)
+  } catch (benchmarkError) {
+    console.warn("Bid benchmark signal computation failed", {
+      submissionId: created.id,
+      error: (benchmarkError as Error)?.message,
+    })
+  }
+
+  return submission
 }

@@ -6,6 +6,7 @@ import {
   InvoiceReminderEmail,
   InviteTeamMemberEmail,
   RfiNotificationEmail,
+  WeeklyExecutiveSnapshotEmail,
 } from "@/lib/emails"
 import { ComplianceDocumentReviewedEmail } from "@/lib/emails/compliance-document-reviewed-email"
 import { ComplianceDocumentUploadedEmail } from "@/lib/emails/compliance-document-uploaded-email"
@@ -20,6 +21,7 @@ type TemplateId =
   | "team-invite"
   | "compliance-uploaded"
   | "compliance-reviewed"
+  | "weekly-executive-snapshot"
 
 const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: string }> = [
   { id: "rfi-notification", label: "RFI Notification", description: "Created, response, and decision updates." },
@@ -29,6 +31,11 @@ const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: stri
   { id: "team-invite", label: "Team Invite", description: "Org invitation email." },
   { id: "compliance-uploaded", label: "Compliance Uploaded", description: "Internal alert for upload review." },
   { id: "compliance-reviewed", label: "Compliance Reviewed", description: "Approved or rejected result." },
+  {
+    id: "weekly-executive-snapshot",
+    label: "Weekly Executive Snapshot",
+    description: "Executive portfolio digest for active projects, risk, and financial exposure.",
+  },
 ]
 
 const RFI_KIND_OPTIONS = ["created", "response", "decision"] as const
@@ -126,10 +133,16 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
       params.get("rejectionReason") ?? undefined,
       "Missing worker's compensation endorsement and additional insured language.",
     ),
+    snapshotWeekLabel: pick(params.get("snapshotWeekLabel") ?? undefined, "Week of Feb 16 - Feb 22, 2026"),
+    snapshotGeneratedAt: pick(
+      params.get("snapshotGeneratedAt") ?? undefined,
+      "Generated Feb 22, 2026 at 8:00 AM EST",
+    ),
     inviteLink: params.get("inviteLink") ?? "https://app.arcnaples.com/auth/accept-invite?token=example",
     bidLink: params.get("bidLink") ?? "https://app.arcnaples.com/b/example-bid-token",
     invoiceLink: params.get("invoiceLink") ?? "https://app.arcnaples.com/i/example-invoice-token",
     payLink: params.get("payLink") ?? "https://app.arcnaples.com/i/example-invoice-token",
+    snapshotLink: params.get("snapshotLink") ?? "https://app.arcnaples.com",
     rfiInternalLink:
       params.get("rfiInternalLink") ??
       "https://app.arcnaples.com/rfis?highlight=726acd18-1be8-4840-a9ee-db63348237c5",
@@ -223,6 +236,97 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
             decision: complianceDecision,
             reviewNotes: sample.reviewNotes,
             rejectionReason: complianceDecision === "rejected" ? sample.rejectionReason : null,
+          })
+        case "weekly-executive-snapshot":
+          return WeeklyExecutiveSnapshotEmail({
+            orgName: sample.orgName,
+            orgLogoUrl: sample.orgLogoUrl,
+            recipientName: sample.recipientName,
+            weekLabel: sample.snapshotWeekLabel,
+            generatedAtLabel: sample.snapshotGeneratedAt,
+            controlTowerLink: sample.snapshotLink,
+            metrics: [
+              { label: "Active Projects", value: "18" },
+              { label: "Exec Attention", value: "4" },
+              { label: "AR 30+ Days", value: "$128K" },
+              { label: "Pending CO Value", value: "$412K" },
+              { label: "Decisions This Week", value: "9" },
+            ],
+            watchlist: [
+              {
+                projectName: "Naples Bay Villas",
+                schedule: "2 critical path milestones trending 9 days late",
+                cost: "$96K unpaid AR + $140K pending CO",
+                docs: "Approve steel CO by Thu to protect framing sequence",
+              },
+              {
+                projectName: "Southport Medical Plaza",
+                schedule: "OR wing turnover milestone at risk for Mar 18",
+                cost: "$128K AR overdue; $52K vendor bills pending",
+                docs: "Escalate owner billing call + release 3 aged bills",
+              },
+              {
+                projectName: "Harbor Townhomes",
+                schedule: "Facade package submittal approval blocking install",
+                cost: "2 COs pending, net $74K exposure",
+                docs: "Finalize glazing submittal decision within 72 hours",
+              },
+              {
+                projectName: "Gulfshore Offices Phase 2",
+                schedule: "Concrete pour sequence stable; no critical slips",
+                cost: "Healthy cash position; AR current",
+                docs: "No executive intervention needed this week",
+              },
+            ],
+            decisions: [
+              {
+                typeLabel: "Change Order",
+                title: "CO-017 Structural steel revision",
+                projectName: "Naples Bay Villas",
+                owner: "Precon + Ops",
+                dueBy: "Thu 5:00 PM",
+                ageLabel: "9d",
+                impactLabel: "$83,000 · 6d impact",
+              },
+              {
+                typeLabel: "Submittal",
+                title: "Curtain wall glazing package",
+                projectName: "Southport Medical Plaza",
+                owner: "Project Lead",
+                dueBy: "Wed 2:00 PM",
+                ageLabel: "6d",
+                impactLabel: "Lead time 21d",
+              },
+              {
+                typeLabel: "Vendor Bill",
+                title: "Bill #VB-2048 awaiting approval",
+                projectName: "Harbor Townhomes",
+                owner: "Office Admin",
+                dueBy: "Fri 12:00 PM",
+                ageLabel: "11d",
+                impactLabel: "$42,500",
+              },
+              {
+                typeLabel: "Owner Decision",
+                title: "Lobby finish alternate selection",
+                projectName: "Gulfshore Offices Phase 2",
+                owner: "Client + PM",
+                dueBy: "Fri EOD",
+                ageLabel: "4d",
+                impactLabel: "Could shift handover by 3 days",
+              },
+            ],
+            drift: [
+              { label: "Critical Delays", current: "6", delta: "-1 vs prior 7d" },
+              { label: "AR 30+ Days", current: "$128K", delta: "+$22K vs prior 7d" },
+              { label: "Pending COs", current: "$412K", delta: "+$58K vs prior 7d" },
+              { label: "Overdue RFIs", current: "11", delta: "-3 vs prior 7d" },
+            ],
+            executiveNotes: [
+              "Biggest immediate lever: close 2 high-value decisions by Thursday to prevent schedule carryover into next week.",
+              "Cash trend is mixed: collections slowed in medical and multifamily portfolios while AP approvals remain backlogged.",
+              "Current risk concentration is acceptable if Naples steel and Southport glazing decisions are resolved on time.",
+            ],
           })
         default:
           return RfiNotificationEmail({

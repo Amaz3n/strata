@@ -40,6 +40,7 @@ function complianceWarnings(
   if (status) {
     if (status.missing.length > 0) warnings.push(`${status.missing.length} missing required doc(s)`)
     if (status.expired.length > 0) warnings.push(`${status.expired.length} expired doc(s)`)
+    if (status.deficiencies.length > 0) warnings.push(`${status.deficiencies.length} doc(s) need updates`)
     if (status.pending_review.length > 0) warnings.push(`${status.pending_review.length} pending review`)
     if (status.expiring_soon.length > 0) warnings.push(`${status.expiring_soon.length} expiring soon`)
   }

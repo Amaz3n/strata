@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 
 import type {
   Company,
@@ -110,21 +110,33 @@ function RequirementsEditor({
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [minCoverage, setMinCoverage] = useState<Record<string, string>>({})
+  const [requiresAdditionalInsured, setRequiresAdditionalInsured] = useState<Record<string, boolean>>({})
+  const [requiresPrimaryNonContributory, setRequiresPrimaryNonContributory] = useState<Record<string, boolean>>({})
+  const [requiresWaiverOfSubrogation, setRequiresWaiverOfSubrogation] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     if (open) {
       const sel: Record<string, boolean> = {}
       const n: Record<string, string> = {}
       const cov: Record<string, string> = {}
+      const ai: Record<string, boolean> = {}
+      const pnc: Record<string, boolean> = {}
+      const wos: Record<string, boolean> = {}
       for (const req of currentRequirements) {
         sel[req.document_type_id] = true
         if (req.notes) n[req.document_type_id] = req.notes
         if (req.min_coverage_cents)
           cov[req.document_type_id] = (req.min_coverage_cents / 100).toString()
+        ai[req.document_type_id] = Boolean(req.requires_additional_insured)
+        pnc[req.document_type_id] = Boolean(req.requires_primary_noncontributory)
+        wos[req.document_type_id] = Boolean(req.requires_waiver_of_subrogation)
       }
       setSelected(sel)
       setNotes(n)
       setMinCoverage(cov)
+      setRequiresAdditionalInsured(ai)
+      setRequiresPrimaryNonContributory(pnc)
+      setRequiresWaiverOfSubrogation(wos)
     }
   }, [open, currentRequirements])
 
@@ -139,6 +151,9 @@ function RequirementsEditor({
             min_coverage_cents: minCoverage[dt.id]
               ? Math.round(Number.parseFloat(minCoverage[dt.id]) * 100)
               : undefined,
+            requires_additional_insured: requiresAdditionalInsured[dt.id] ?? false,
+            requires_primary_noncontributory: requiresPrimaryNonContributory[dt.id] ?? false,
+            requires_waiver_of_subrogation: requiresWaiverOfSubrogation[dt.id] ?? false,
             notes: notes[dt.id] || undefined,
           }))
         await setCompanyRequirementsAction(companyId, requirements)
@@ -165,7 +180,7 @@ function RequirementsEditor({
         </DialogHeader>
         <div className="space-y-4 max-h-[60vh] overflow-y-auto py-2">
           {documentTypes.map((dt) => (
-            <div key={dt.id} className="space-y-2 rounded-lg border p-3">
+              <div key={dt.id} className="space-y-2 rounded-lg border p-3">
               <div className="flex items-center gap-3">
                 <Checkbox
                   id={`req-${dt.id}`}
@@ -188,7 +203,8 @@ function RequirementsEditor({
                   </Badge>
                 )}
               </div>
-              {selected[dt.id] && dt.code.includes("coi") && (
+              {selected[dt.id] &&
+                (dt.code.includes("coi") || dt.code.includes("insurance") || dt.code.includes("umbrella")) && (
                 <div className="pl-7 space-y-2">
                   <div className="flex items-center gap-2">
                     <Label className="text-xs text-muted-foreground whitespace-nowrap">
@@ -203,6 +219,35 @@ function RequirementsEditor({
                         setMinCoverage((prev) => ({ ...prev, [dt.id]: e.target.value }))
                       }
                     />
+                  </div>
+                  <div className="grid gap-2 text-sm">
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={requiresAdditionalInsured[dt.id] || false}
+                        onCheckedChange={(checked) =>
+                          setRequiresAdditionalInsured((prev) => ({ ...prev, [dt.id]: checked === true }))
+                        }
+                      />
+                      <span>Require additional insured endorsement</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={requiresPrimaryNonContributory[dt.id] || false}
+                        onCheckedChange={(checked) =>
+                          setRequiresPrimaryNonContributory((prev) => ({ ...prev, [dt.id]: checked === true }))
+                        }
+                      />
+                      <span>Require primary & non-contributory wording</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={requiresWaiverOfSubrogation[dt.id] || false}
+                        onCheckedChange={(checked) =>
+                          setRequiresWaiverOfSubrogation((prev) => ({ ...prev, [dt.id]: checked === true }))
+                        }
+                      />
+                      <span>Require waiver of subrogation</span>
+                    </label>
                   </div>
                 </div>
               )}
@@ -411,6 +456,20 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
     setReviewOpen(true)
   }
 
+  const pendingCount = status?.pending_review.length ?? 0
+  const missingCount = status?.missing.length ?? 0
+  const expiringCount = status?.expiring_soon.length ?? 0
+  const deficiencyCount = status?.deficiencies.length ?? 0
+  const deficienciesByRequirementId = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const deficiency of status?.deficiencies ?? []) {
+      const current = map.get(deficiency.requirement_id) ?? []
+      current.push(deficiency.message)
+      map.set(deficiency.requirement_id, current)
+    }
+    return map
+  }, [status?.deficiencies])
+
   if (isPending && !status) {
     return (
       <div className="flex items-center justify-center py-10 text-muted-foreground">
@@ -419,10 +478,6 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
       </div>
     )
   }
-
-  const pendingCount = status?.pending_review.length ?? 0
-  const missingCount = status?.missing.length ?? 0
-  const expiringCount = status?.expiring_soon.length ?? 0
 
   return (
     <div className="space-y-6">
@@ -451,6 +506,12 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
             <Badge variant="outline" className="gap-1 text-yellow-600">
               <Clock className="h-3 w-3" />
               {expiringCount} expiring soon
+            </Badge>
+          )}
+          {deficiencyCount > 0 && (
+            <Badge variant="outline" className="gap-1 text-orange-700">
+              <AlertCircle className="h-3 w-3" />
+              {deficiencyCount} requirement issue{deficiencyCount === 1 ? "" : "s"}
             </Badge>
           )}
         </div>
@@ -513,6 +574,18 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
                         </Badge>
                       )}
                     </div>
+                  </div>
+                )
+              })}
+              {(status?.requirements ?? []).map((req) => {
+                const messages = deficienciesByRequirementId.get(req.id) ?? []
+                if (messages.length === 0) return null
+                return (
+                  <div key={`${req.id}-deficiency`} className="rounded-md border border-orange-200 bg-orange-50 p-2 text-xs text-orange-900">
+                    <p className="font-medium">{req.document_type?.name}: update required</p>
+                    {messages.map((message) => (
+                      <p key={`${req.id}-${message}`}>{message}</p>
+                    ))}
                   </div>
                 )
               })}

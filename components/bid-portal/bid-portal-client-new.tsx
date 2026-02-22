@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { useRouter } from "next/navigation"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { Home, FileText, Bell, Send, MessageSquare } from "lucide-react"
 import { BidBottomNav, type BidPortalTab } from "@/components/bid-portal/bid-bottom-nav"
@@ -21,6 +22,7 @@ interface BidPortalClientNewProps {
 }
 
 export function BidPortalClientNew({ token, access, data, pinRequired = false }: BidPortalClientNewProps) {
+  const router = useRouter()
   const [pinVerified, setPinVerified] = useState(!pinRequired)
   const [activeTab, setActiveTab] = useState<BidPortalTab>("home")
   const [currentSubmission, setCurrentSubmission] = useState<BidPortalSubmission | undefined>(data.currentSubmission)
@@ -106,7 +108,10 @@ export function BidPortalClientNew({ token, access, data, pinRequired = false }:
           orgName={access.org.name}
           projectName={access.project.name}
           packageTitle={access.bidPackage.title}
-          onSuccess={() => setPinVerified(true)}
+          onSuccess={() => {
+            setPinVerified(true)
+            router.refresh()
+          }}
         />
       }
       mobileNav={

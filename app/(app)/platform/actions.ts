@@ -5,7 +5,8 @@ import { redirect } from "next/navigation"
 import { z } from "zod"
 
 import { requireAuth } from "@/lib/auth/context"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { hasAnyPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import {
   clearPlatformOrgContext,
   endImpersonationSession,
@@ -15,6 +16,14 @@ import {
 } from "@/lib/services/platform-session"
 import { provisionOrganization } from "@/lib/services/provisioning"
 import { setPlatformOrganizationStatus } from "@/lib/services/platform-access"
+import {
+  AI_PROVIDER_VALUES,
+  clearPlatformAiSearchDefaultConfig,
+  defaultModelForProvider,
+  getPlatformAiSearchDefaultConfig,
+  normalizeAiProvider,
+  upsertPlatformAiSearchDefaultConfig,
+} from "@/lib/services/ai-config"
 
 const enterOrgContextSchema = z.object({
   orgId: z.string().uuid("Invalid organization id"),
@@ -42,6 +51,11 @@ const setOrganizationStatusSchema = z.object({
   orgId: z.string().uuid("Invalid organization id"),
   status: z.enum(["active", "archived"]),
   reason: z.string().max(300).optional(),
+})
+
+const updatePlatformAiDefaultsSchema = z.object({
+  provider: z.enum(AI_PROVIDER_VALUES),
+  model: z.string().trim().max(120).optional(),
 })
 
 export async function enterOrgContextAction(formData: FormData) {
@@ -189,4 +203,77 @@ export async function setOrganizationStatusAction(formData: FormData) {
   revalidatePath("/platform")
   revalidatePath("/admin/customers")
   revalidatePath("/")
+}
+
+export async function getPlatformAiDefaultsAction() {
+  const { user } = await requireAuth()
+  await requirePermission("platform.org.access", { userId: user.id })
+
+  const [canManage, config] = await Promise.all([
+    hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
+    getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() }),
+  ])
+
+  return {
+    provider: config.provider,
+    model: config.model,
+    source: config.source,
+    canManage,
+  }
+}
+
+export async function updatePlatformAiDefaultsAction(input: { provider: string; model?: string }) {
+  const parsed = updatePlatformAiDefaultsSchema.safeParse(input)
+  if (!parsed.success) {
+    return { error: parsed.error.errors[0]?.message ?? "Invalid AI defaults." }
+  }
+
+  const { user } = await requireAuth()
+  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+  const provider = normalizeAiProvider(parsed.data.provider) ?? "openai"
+  const model = parsed.data.model?.trim() || defaultModelForProvider(provider)
+
+  try {
+    await upsertPlatformAiSearchDefaultConfig({
+      supabase: createServiceSupabaseClient(),
+      provider,
+      model,
+      updatedBy: user.id,
+    })
+  } catch (error: any) {
+    console.error("Failed to update platform AI defaults", error)
+    return { error: error?.message ?? "Unable to update platform AI defaults." }
+  }
+
+  revalidatePath("/platform")
+  revalidatePath("/settings")
+  return {
+    success: true as const,
+    provider,
+    model,
+    source: "platform" as const,
+  }
+}
+
+export async function clearPlatformAiDefaultsAction() {
+  const { user } = await requireAuth()
+  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+  try {
+    await clearPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() })
+  } catch (error: any) {
+    console.error("Failed to clear platform AI defaults", error)
+    return { error: error?.message ?? "Unable to clear platform AI defaults." }
+  }
+
+  revalidatePath("/platform")
+  revalidatePath("/settings")
+  const config = await getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() })
+  return {
+    success: true as const,
+    provider: config.provider,
+    model: config.model,
+    source: config.source,
+  }
 }

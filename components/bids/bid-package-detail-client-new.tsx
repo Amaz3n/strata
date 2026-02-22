@@ -299,6 +299,27 @@ function getInviteAccessSummary(invite: BidInvite): { label: string; color: stri
   return { label: "No link generated", color: "text-muted-foreground" }
 }
 
+function getBenchmarkSummary(submission?: BidSubmission | null): {
+  label: string
+  color: string
+  message?: string
+} {
+  const benchmark = submission?.benchmark
+  if (!benchmark) {
+    return { label: "Arc benchmark pending", color: "text-muted-foreground" }
+  }
+  if (!benchmark.has_benchmark || benchmark.signal === "insufficient_data") {
+    return { label: "Arc: insufficient market data", color: "text-muted-foreground", message: benchmark.message }
+  }
+  if (benchmark.signal === "in_range") {
+    return { label: "Arc: in market range", color: "text-emerald-600", message: benchmark.message }
+  }
+  if (benchmark.signal === "below_range") {
+    return { label: "Arc: below market range", color: "text-amber-600", message: benchmark.message }
+  }
+  return { label: "Arc: above market range", color: "text-rose-600", message: benchmark.message }
+}
+
 interface BidPackageDetailClientProps {
   projectId: string
   bidPackage: BidPackage
@@ -322,7 +343,7 @@ export function BidPackageDetailClientNew({
   const [current, setCurrent] = useState(bidPackage)
   const [inviteList, setInviteList] = useState(invites)
   const [addendumList, setAddendumList] = useState(addenda)
-  const [submissionList] = useState(submissions)
+  const [submissionList, setSubmissionList] = useState(submissions)
 
   // Edit form state
   const [title, setTitle] = useState(bidPackage.title)
@@ -1047,11 +1068,26 @@ export function BidPackageDetailClientNew({
 
   const handleAward = () => {
     if (!selectedSubmission) return
+    const awardedSubmissionId = selectedSubmission.id
     startAwarding(async () => {
       try {
-        await awardBidSubmissionAction(projectId, bidPackage.id, selectedSubmission.id)
+        await awardBidSubmissionAction(projectId, bidPackage.id, awardedSubmissionId)
         setCurrent((prev) => ({ ...prev, status: "awarded" }))
         setStatus("awarded")
+        setSubmissionList((prev) =>
+          prev.map((submission) => ({
+            ...submission,
+            is_awarded: submission.id === awardedSubmissionId,
+          })),
+        )
+        setDetailSubmission((prev) =>
+          prev
+            ? {
+                ...prev,
+                is_awarded: prev.id === awardedSubmissionId,
+              }
+            : prev,
+        )
         setAwardDialogOpen(false)
         setSelectedSubmission(null)
         toast.success("Bid awarded and commitment created")
@@ -1103,6 +1139,8 @@ export function BidPackageDetailClientNew({
     detailSubmission?.invite?.contact?.email ??
     detailSubmission?.invite?.invite_email ??
     "—"
+  const detailBenchmark = detailSubmission?.benchmark
+  const detailBenchmarkSummary = getBenchmarkSummary(detailSubmission)
   const showDetailNotes = Boolean(
     detailSubmission?.exclusions || detailSubmission?.clarifications || detailSubmission?.notes
   )
@@ -1307,7 +1345,7 @@ export function BidPackageDetailClientNew({
                     >
                       {detailSubmission.status}
                     </Badge>
-                    {detailSubmission.is_current && current.status === "awarded" && (
+                    {detailSubmission.is_awarded && (
                       <Badge className="bg-amber-500/15 text-amber-600 border-amber-500/30">
                         <Trophy className="mr-1 h-3 w-3" />
                         Awarded
@@ -1346,6 +1384,32 @@ export function BidPackageDetailClientNew({
                       </div>
                     </div>
                   </div>
+
+                  {detailBenchmark && (
+                    <div className="rounded-lg border bg-card p-4 space-y-2">
+                      <p className="text-xs font-semibold uppercase text-muted-foreground">Arc Benchmark</p>
+                      <p className={cn("text-sm font-medium", detailBenchmarkSummary.color)}>
+                        {detailBenchmarkSummary.label}
+                      </p>
+                      <p className="text-sm text-muted-foreground">{detailBenchmarkSummary.message ?? detailBenchmark.message}</p>
+                      {detailBenchmark.has_benchmark && (
+                        <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                          <div>
+                            Typical range: {formatCurrency(detailBenchmark.p25_cents)} to {formatCurrency(detailBenchmark.p75_cents)}
+                          </div>
+                          <div>
+                            Median: {formatCurrency(detailBenchmark.median_cents)}
+                          </div>
+                          <div>
+                            Comparable bids: {detailBenchmark.sample_size}
+                          </div>
+                          <div>
+                            Distinct builders: {detailBenchmark.org_count}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <Separator />
 
@@ -1891,7 +1955,8 @@ export function BidPackageDetailClientNew({
                         const submission = submissionByInviteId.get(invite.id)
                         const statusInfo = getVendorStatusInfo(invite, submission)
                         const accessInfo = getInviteAccessSummary(invite)
-                        const isAwarded = submission?.is_current && current.status === "awarded"
+                        const benchmarkInfo = getBenchmarkSummary(submission)
+                        const isAwarded = submission?.is_awarded === true
 
                         return (
                           <TableRow key={invite.id} className={cn("group hover:bg-muted/40", isAwarded && "bg-amber-50/50")}>
@@ -1907,6 +1972,7 @@ export function BidPackageDetailClientNew({
                                   <p className="text-sm font-medium truncate">{invite.company?.name ?? "Unknown"}</p>
                                   <p className="text-xs text-muted-foreground truncate">{invite.contact?.full_name ?? invite.invite_email ?? ""}</p>
                                   <p className={cn("text-[11px] truncate", accessInfo.color)}>{accessInfo.label}</p>
+                                  {submission && <p className={cn("text-[11px] truncate", benchmarkInfo.color)}>{benchmarkInfo.label}</p>}
                                   {(invite.linked_account_count ?? 0) > 0 && (
                                     <p className="text-[11px] text-muted-foreground truncate">
                                       {invite.linked_active_account_count ?? 0} active account{(invite.linked_active_account_count ?? 0) === 1 ? "" : "s"}

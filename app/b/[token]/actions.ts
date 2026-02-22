@@ -3,7 +3,9 @@
 import { bidPortalPinSchema, bidPortalSubmissionInputSchema } from "@/lib/validation/bid-portal"
 import { portalRfiInputSchema, rfiResponseInputSchema } from "@/lib/validation/rfis"
 import {
+  assertBidPortalActionAccess,
   acknowledgeBidAddendum,
+  markBidPortalPinVerified,
   submitBidFromPortal,
   validateBidPortalPin,
   validateBidPortalToken,
@@ -24,7 +26,17 @@ export async function verifyBidPortalPinAction({
   if (!parsed.success) {
     return { valid: false }
   }
-  return validateBidPortalPin({ token, pin: parsed.data })
+
+  const access = await validateBidPortalToken(token)
+  if (!access) {
+    return { valid: false }
+  }
+
+  const result = await validateBidPortalPin({ token, pin: parsed.data })
+  if (result.valid) {
+    await markBidPortalPinVerified(token)
+  }
+  return result
 }
 
 export interface SubmitBidResult {
@@ -47,10 +59,7 @@ export async function submitBidAction({
       return { success: false, error: firstError?.message ?? "Invalid input" }
     }
 
-    const access = await validateBidPortalToken(token)
-    if (!access) {
-      return { success: false, error: "Invalid or expired bid link" }
-    }
+    const access = await assertBidPortalActionAccess(token)
 
     const submission = await submitBidFromPortal({ access, input: parsed.data })
 
@@ -70,12 +79,8 @@ export async function acknowledgeBidAddendumAction({
   token: string
   addendumId: string
 }) {
-  const access = await validateBidPortalToken(token)
-  if (!access) {
-    return { success: false, error: "Invalid or expired bid link" }
-  }
-
   try {
+    const access = await assertBidPortalActionAccess(token)
     const result = await acknowledgeBidAddendum({ access, addendumId })
     return { success: true, acknowledged_at: result.acknowledged_at }
   } catch (err) {
@@ -114,10 +119,7 @@ export async function uploadBidFileAction({
   formData: FormData
 }): Promise<UploadBidFileResult> {
   try {
-    const access = await validateBidPortalToken(token)
-    if (!access) {
-      return { success: false, error: "Invalid or expired bid link" }
-    }
+    const access = await assertBidPortalActionAccess(token)
 
     const file = formData.get("file") as File
     if (!file) {
@@ -198,15 +200,13 @@ export async function uploadBidFileAction({
 }
 
 export async function createBidPortalRfiAction({ token, input }: { token: string; input: unknown }) {
-  const access = await validateBidPortalToken(token)
-  if (!access) return { success: false, error: "Invalid or expired bid link" as const }
-
   const parsed = portalRfiInputSchema.safeParse(input)
   if (!parsed.success) {
     return { success: false, error: parsed.error.errors[0]?.message ?? "Invalid input" as const }
   }
 
   try {
+    const access = await assertBidPortalActionAccess(token)
     const created = await createPortalRfi({
       orgId: access.org_id,
       projectId: access.project.id,
@@ -224,8 +224,7 @@ export async function createBidPortalRfiAction({ token, input }: { token: string
 }
 
 export async function listBidPortalRfiResponsesAction({ token, rfiId }: { token: string; rfiId: string }) {
-  const access = await validateBidPortalToken(token)
-  if (!access) throw new Error("Invalid or expired bid link")
+  const access = await assertBidPortalActionAccess(token)
 
   const supabase = createServiceSupabaseClient()
   const { data: rfi } = await supabase
@@ -245,15 +244,13 @@ export async function listBidPortalRfiResponsesAction({ token, rfiId }: { token:
 }
 
 export async function addBidPortalRfiResponseAction({ token, input }: { token: string; input: unknown }) {
-  const access = await validateBidPortalToken(token)
-  if (!access) return { success: false, error: "Invalid or expired bid link" as const }
-
   const parsed = rfiResponseInputSchema.safeParse(input)
   if (!parsed.success) {
     return { success: false, error: parsed.error.errors[0]?.message ?? "Invalid input" as const }
   }
 
   try {
+    const access = await assertBidPortalActionAccess(token)
     const supabase = createServiceSupabaseClient()
     const { data: rfi } = await supabase
       .from("rfis")

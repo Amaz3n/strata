@@ -56,13 +56,6 @@ export interface Company {
   website?: string
   address?: Address
   license_number?: string
-  license_expiry?: string
-  license_verified?: boolean
-  insurance_expiry?: string
-  insurance_provider?: string
-  insurance_document_id?: string
-  w9_on_file?: boolean
-  w9_file_id?: string
   prequalified?: boolean
   prequalified_at?: string
   rating?: number
@@ -77,9 +70,6 @@ export interface Company {
 }
 
 export type ComplianceRules = {
-  require_w9?: boolean
-  require_insurance?: boolean
-  require_license?: boolean
   require_lien_waiver?: boolean
   block_payment_on_missing_docs?: boolean
 }
@@ -88,6 +78,9 @@ export type ComplianceRequirementTemplateItem = {
   document_type_id: string
   is_required?: boolean
   min_coverage_cents?: number
+  requires_additional_insured?: boolean
+  requires_primary_noncontributory?: boolean
+  requires_waiver_of_subrogation?: boolean
   notes?: string
 }
 
@@ -1152,9 +1145,6 @@ export interface SubPortalData {
     id: string
     name: string
     trade?: string | null
-    insurance_expiry?: string | null
-    license_expiry?: string | null
-    w9_on_file?: boolean | null
   }
   projectManager?: PortalProjectManager
   commitments: SubPortalCommitment[]
@@ -1194,6 +1184,9 @@ export interface ComplianceRequirement {
   document_type?: ComplianceDocumentType
   is_required: boolean
   min_coverage_cents?: number | null
+  requires_additional_insured: boolean
+  requires_primary_noncontributory: boolean
+  requires_waiver_of_subrogation: boolean
   notes?: string | null
   created_at: string
   created_by?: string | null
@@ -1214,6 +1207,9 @@ export interface ComplianceDocument {
   policy_number?: string | null
   coverage_amount_cents?: number | null
   carrier_name?: string | null
+  additional_insured: boolean
+  primary_noncontributory: boolean
+  waiver_of_subrogation: boolean
   reviewed_by?: string | null
   reviewed_at?: string | null
   review_notes?: string | null
@@ -1224,11 +1220,21 @@ export interface ComplianceDocument {
   updated_at: string
 }
 
+export interface ComplianceRequirementDeficiency {
+  requirement_id: string
+  document_type_id: string
+  document_type_name?: string
+  document_id?: string
+  codes: Array<"min_coverage" | "additional_insured" | "primary_noncontributory" | "waiver_of_subrogation">
+  message: string
+}
+
 export interface ComplianceStatusSummary {
   company_id: string
   requirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
   missing: ComplianceDocumentType[]
+  deficiencies: ComplianceRequirementDeficiency[]
   expiring_soon: ComplianceDocument[]  // within 30 days
   expired: ComplianceDocument[]
   pending_review: ComplianceDocument[]

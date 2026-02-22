@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+
 @custom-variant dark (&:is(.dark *));
 
 /* Arc — Deep Blue theme */
@@ -667,6 +668,79 @@
     }
     100% {
       left: 100%;
+    }
+  }
+
+
+  /* ===== AI Glow — ethereal aura from dialog edges ===== */
+
+  @keyframes ai-breathe {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 0.85; }
+  }
+
+  @keyframes ai-drift {
+    0%, 100% { filter: blur(24px) hue-rotate(0deg); }
+    50%      { filter: blur(28px) hue-rotate(14deg); }
+  }
+
+  /* Allow the ::before pseudo to overflow the dialog box */
+  [data-slot="dialog-content"].ai-glow-active {
+    overflow: visible !important;
+    border-color: oklch(0.55 0.10 220 / 0.25) !important;
+    transition: border-color 0.8s ease-out;
+  }
+
+  /* Single pseudo-element glow source */
+  [data-slot="dialog-content"].ai-glow-active::before {
+    content: "";
+    position: absolute;
+    inset: -28px;
+    z-index: -1;
+    border-radius: 4px;
+    pointer-events: none;
+
+    /* Radial gradient — transparent center, glow concentrated at edges */
+    background: radial-gradient(
+      ellipse 100% 100% at 50% 50%,
+      oklch(0.55 0.10 220 / 0.03) 30%,
+      oklch(0.55 0.14 225 / 0.22) 65%,
+      oklch(0.52 0.16 235 / 0.10) 82%,
+      transparent 100%
+    );
+
+    /* Extra diffusion that fades far out */
+    box-shadow: 0 0 80px 24px oklch(0.52 0.12 225 / 0.08);
+
+    /* Slow, subtle breathe + hue drift on separate properties */
+    animation:
+      ai-breathe 8s ease-in-out infinite,
+      ai-drift  18s ease-in-out infinite;
+  }
+
+  /* Focus-within: gently intensify (dialog always has focus when input is active) */
+  [data-slot="dialog-content"].ai-glow-active:focus-within::before {
+    animation:
+      ai-breathe-focus 8s ease-in-out infinite,
+      ai-drift-focus  18s ease-in-out infinite;
+  }
+
+  @keyframes ai-breathe-focus {
+    0%, 100% { opacity: 0.65; }
+    50%      { opacity: 0.95; }
+  }
+
+  @keyframes ai-drift-focus {
+    0%, 100% { filter: blur(20px) hue-rotate(0deg); }
+    50%      { filter: blur(24px) hue-rotate(10deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-slot="dialog-content"].ai-glow-active::before,
+    [data-slot="dialog-content"].ai-glow-active:focus-within::before {
+      animation: none;
+      opacity: 0.7;
+      filter: blur(24px);
     }
   }
 

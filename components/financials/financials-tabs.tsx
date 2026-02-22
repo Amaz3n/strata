@@ -107,9 +107,6 @@ export function FinancialsTabs({
 
   const [vendorBills, setVendorBills] = useState<VendorBillSummary[]>([])
   const [complianceRules, setComplianceRules] = useState<ComplianceRules>({
-    require_insurance: false,
-    require_w9: false,
-    require_license: false,
     require_lien_waiver: false,
     block_payment_on_missing_docs: false,
   })

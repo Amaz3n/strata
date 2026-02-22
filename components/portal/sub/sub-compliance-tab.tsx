@@ -11,6 +11,7 @@ import type {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -97,12 +98,18 @@ function UploadDialog({
   const [policyNumber, setPolicyNumber] = useState("")
   const [carrierName, setCarrierName] = useState("")
   const [coverageAmount, setCoverageAmount] = useState("")
+  const [additionalInsured, setAdditionalInsured] = useState(false)
+  const [primaryNonContributory, setPrimaryNonContributory] = useState(false)
+  const [waiverOfSubrogation, setWaiverOfSubrogation] = useState(false)
   const [file, setFile] = useState<File | null>(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   const selectedType = documentTypes.find((dt) => dt.id === selectedTypeId)
-  const isInsurance = selectedType?.code.includes("coi") || selectedType?.code.includes("insurance")
+  const isInsurance =
+    selectedType?.code.includes("coi") ||
+    selectedType?.code.includes("insurance") ||
+    selectedType?.code.includes("umbrella")
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -112,6 +119,9 @@ function UploadDialog({
     setPolicyNumber("")
     setCarrierName("")
     setCoverageAmount("")
+    setAdditionalInsured(false)
+    setPrimaryNonContributory(false)
+    setWaiverOfSubrogation(false)
     setFile(null)
     setUploadProgress(0)
     setError(null)
@@ -180,6 +190,9 @@ function UploadDialog({
             coverage_amount_cents: coverageAmount
               ? Math.round(Number.parseFloat(coverageAmount) * 100)
               : undefined,
+            additional_insured: additionalInsured,
+            primary_noncontributory: primaryNonContributory,
+            waiver_of_subrogation: waiverOfSubrogation,
           }),
         })
 
@@ -275,6 +288,21 @@ function UploadDialog({
                   value={coverageAmount}
                   onChange={(e) => setCoverageAmount(e.target.value)}
                 />
+              </div>
+              <div className="space-y-2 rounded-md border p-3 text-sm">
+                <p className="font-medium">Policy Endorsements</p>
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={additionalInsured} onCheckedChange={(checked) => setAdditionalInsured(checked === true)} />
+                  <span>Includes additional insured endorsement</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={primaryNonContributory} onCheckedChange={(checked) => setPrimaryNonContributory(checked === true)} />
+                  <span>Includes primary & non-contributory wording</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={waiverOfSubrogation} onCheckedChange={(checked) => setWaiverOfSubrogation(checked === true)} />
+                  <span>Includes waiver of subrogation endorsement</span>
+                </label>
               </div>
             </>
           )}
@@ -372,7 +400,13 @@ export function SubComplianceTab({
 
   const missingCount = complianceStatus.missing.length
   const expiredCount = complianceStatus.expired.length
-  const pendingCount = complianceStatus.pending_review.length
+  const deficiencyCount = complianceStatus.deficiencies.length
+  const deficienciesByRequirementId = complianceStatus.deficiencies.reduce((acc, deficiency) => {
+    const current = acc.get(deficiency.requirement_id) ?? []
+    current.push(deficiency.message)
+    acc.set(deficiency.requirement_id, current)
+    return acc
+  }, new Map<string, string[]>())
 
   return (
     <div className="space-y-6">
@@ -401,8 +435,10 @@ export function SubComplianceTab({
               {!complianceStatus.is_compliant && (
                 <p className="text-sm text-muted-foreground">
                   {missingCount > 0 && `${missingCount} missing`}
-                  {missingCount > 0 && expiredCount > 0 && ", "}
+                  {missingCount > 0 && (expiredCount > 0 || deficiencyCount > 0) && ", "}
                   {expiredCount > 0 && `${expiredCount} expired`}
+                  {(missingCount > 0 || expiredCount > 0) && deficiencyCount > 0 && ", "}
+                  {deficiencyCount > 0 && `${deficiencyCount} need updates`}
                 </p>
               )}
             </div>
@@ -449,6 +485,7 @@ export function SubComplianceTab({
                     d.document_type_id === req.document_type_id &&
                     d.status === "rejected"
                 )
+                const deficiencyMessages = deficienciesByRequirementId.get(req.id) ?? []
 
                 return (
                   <div
@@ -462,10 +499,15 @@ export function SubComplianceTab({
                         {req.notes && (
                           <p className="text-xs text-muted-foreground">{req.notes}</p>
                         )}
+                        {deficiencyMessages.map((message) => (
+                          <p key={`${req.id}-${message}`} className="text-xs text-orange-700">
+                            {message}
+                          </p>
+                        ))}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {approvedDoc ? (
+                      {approvedDoc && deficiencyMessages.length === 0 ? (
                         <Badge
                           variant="secondary"
                           className="gap-1 bg-green-100 text-green-800"
@@ -477,6 +519,11 @@ export function SubComplianceTab({
                               (exp {formatDate(approvedDoc.expiry_date)})
                             </span>
                           )}
+                        </Badge>
+                      ) : approvedDoc && deficiencyMessages.length > 0 ? (
+                        <Badge variant="outline" className="gap-1 text-orange-700">
+                          <AlertCircle className="h-3 w-3" />
+                          Needs update
                         </Badge>
                       ) : pendingDoc ? (
                         <Badge variant="secondary" className="gap-1">

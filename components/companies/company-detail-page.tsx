@@ -184,6 +184,10 @@ export function CompanyDetailPage({
                   <span className="text-muted-foreground">Expired</span>
                   <span className="font-medium text-foreground">{complianceStatus?.expired.length ?? "—"}</span>
                 </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Needs updates</span>
+                  <span className="font-medium text-foreground">{complianceStatus?.deficiencies.length ?? "—"}</span>
+                </div>
                 <div className="pt-2">
                   <Button variant="outline" size="sm" onClick={() => setTab("compliance")}>
                     Review in Compliance tab

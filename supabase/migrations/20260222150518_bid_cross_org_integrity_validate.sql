@@ -1,0 +1,13 @@
+-- Validate org-scoped bid integrity constraints so existing rows are fully checked.
+
+alter table bid_packages validate constraint bid_packages_org_project_fk;
+alter table bid_invites validate constraint bid_invites_org_package_fk;
+alter table bid_invites validate constraint bid_invites_org_company_fk;
+alter table bid_invites validate constraint bid_invites_org_contact_fk;
+alter table bid_access_tokens validate constraint bid_access_tokens_org_invite_fk;
+alter table bid_submissions validate constraint bid_submissions_org_invite_fk;
+alter table bid_awards validate constraint bid_awards_org_package_fk;
+alter table bid_awards validate constraint bid_awards_org_submission_fk;
+alter table bid_addenda validate constraint bid_addenda_org_package_fk;
+alter table bid_addendum_acknowledgements validate constraint bid_addendum_ack_org_addendum_fk;
+alter table bid_addendum_acknowledgements validate constraint bid_addendum_ack_org_invite_fk;

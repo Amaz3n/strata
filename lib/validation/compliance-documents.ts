@@ -18,6 +18,9 @@ export const complianceRequirementInputSchema = z.object({
   document_type_id: z.string().uuid(),
   is_required: z.boolean().default(true),
   min_coverage_cents: z.number().int().positive().optional(),
+  requires_additional_insured: z.boolean().default(false),
+  requires_primary_noncontributory: z.boolean().default(false),
+  requires_waiver_of_subrogation: z.boolean().default(false),
   notes: z.string().max(1000).optional(),
 })
 
@@ -36,6 +39,9 @@ export const complianceDocumentUploadSchema = z.object({
   policy_number: z.string().max(100).optional(),
   coverage_amount_cents: z.number().int().positive().optional(),
   carrier_name: z.string().max(200).optional(),
+  additional_insured: z.boolean().optional(),
+  primary_noncontributory: z.boolean().optional(),
+  waiver_of_subrogation: z.boolean().optional(),
 })
 
 // Review schemas

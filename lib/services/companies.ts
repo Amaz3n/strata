@@ -24,13 +24,6 @@ function mapCompany(row: any): Company {
     website: row.website ?? undefined,
     address: row.address ?? metadata.address ?? undefined,
     license_number: row.license_number ?? metadata.license_number ?? undefined,
-    license_expiry: row.license_expiry ?? metadata.license_expiry ?? undefined,
-    license_verified: row.license_verified ?? metadata.license_verified ?? undefined,
-    insurance_expiry: row.insurance_expiry ?? metadata.insurance_expiry ?? undefined,
-    insurance_provider: row.insurance_provider ?? metadata.insurance_provider ?? undefined,
-    insurance_document_id: row.insurance_document_id ?? metadata.insurance_document_id ?? undefined,
-    w9_on_file: row.w9_on_file ?? metadata.w9_on_file ?? undefined,
-    w9_file_id: row.w9_file_id ?? metadata.w9_file_id ?? undefined,
     prequalified: row.prequalified ?? metadata.prequalified ?? undefined,
     prequalified_at: row.prequalified_at ?? metadata.prequalified_at ?? undefined,
     rating: row.rating ?? metadata.rating ?? undefined,
@@ -97,8 +90,7 @@ export async function listCompaniesWithClient(
     .select(
       `
       id, org_id, name, company_type, phone, email, website, address,
-      license_number, license_expiry, license_verified, insurance_expiry, insurance_provider, insurance_document_id,
-      w9_on_file, w9_file_id, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
+      license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
       metadata, created_at, updated_at,
       contact_company_links(count)
     `,
@@ -134,8 +126,7 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     .select(
       `
       id, org_id, name, company_type, phone, email, website, address,
-      license_number, license_expiry, license_verified, insurance_expiry, insurance_provider, insurance_document_id,
-      w9_on_file, w9_file_id, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
+      license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
       metadata, created_at, updated_at,
       contact_company_links (
         id, relationship, created_at,
@@ -199,13 +190,6 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     website: input.website ?? null,
     address: input.address ?? null,
     license_number: input.license_number ?? null,
-    license_expiry: input.license_expiry ?? null,
-    license_verified: input.license_verified ?? false,
-    insurance_expiry: input.insurance_expiry ?? null,
-    insurance_provider: input.insurance_provider ?? null,
-    insurance_document_id: input.insurance_document_id ?? null,
-    w9_on_file: input.w9_on_file ?? false,
-    w9_file_id: input.w9_file_id ?? null,
     prequalified: input.prequalified ?? false,
     prequalified_at: input.prequalified_at ?? null,
     rating: input.rating ?? null,
@@ -215,13 +199,6 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     metadata: {
       trade: input.trade,
       license_number: input.license_number,
-      license_expiry: input.license_expiry,
-      license_verified: input.license_verified,
-      insurance_expiry: input.insurance_expiry,
-      insurance_provider: input.insurance_provider,
-      insurance_document_id: input.insurance_document_id,
-      w9_on_file: input.w9_on_file,
-      w9_file_id: input.w9_file_id,
       prequalified: input.prequalified,
       prequalified_at: input.prequalified_at,
       rating: input.rating,
@@ -241,7 +218,7 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     .from("companies")
     .insert(buildCompanyInsert(parsed, resolvedOrgId))
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, license_expiry, license_verified, insurance_expiry, insurance_provider, insurance_document_id, w9_on_file, w9_file_id, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .single()
 
@@ -276,6 +253,9 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
           document_type_id: d.document_type_id,
           is_required: true,
           min_coverage_cents: d.min_coverage_cents,
+          requires_additional_insured: d.requires_additional_insured ?? false,
+          requires_primary_noncontributory: d.requires_primary_noncontributory ?? false,
+          requires_waiver_of_subrogation: d.requires_waiver_of_subrogation ?? false,
           notes: d.notes,
         })),
         orgId: resolvedOrgId,
@@ -303,7 +283,7 @@ export async function updateCompany({
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
-    .select("id, org_id, name, company_type, phone, email, website, address, license_number, license_expiry, license_verified, insurance_expiry, insurance_provider, insurance_document_id, w9_on_file, w9_file_id, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at")
+    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -316,13 +296,6 @@ export async function updateCompany({
     ...(existing.metadata ?? {}),
     trade: parsed.trade ?? existing.metadata?.trade,
     license_number: parsed.license_number ?? existing.metadata?.license_number,
-    license_expiry: parsed.license_expiry ?? existing.metadata?.license_expiry,
-    license_verified: typeof parsed.license_verified === "boolean" ? parsed.license_verified : existing.metadata?.license_verified,
-    insurance_expiry: parsed.insurance_expiry ?? existing.metadata?.insurance_expiry,
-    insurance_provider: parsed.insurance_provider ?? existing.metadata?.insurance_provider,
-    insurance_document_id: parsed.insurance_document_id ?? existing.metadata?.insurance_document_id,
-    w9_on_file: typeof parsed.w9_on_file === "boolean" ? parsed.w9_on_file : existing.metadata?.w9_on_file,
-    w9_file_id: parsed.w9_file_id ?? existing.metadata?.w9_file_id,
     prequalified: typeof parsed.prequalified === "boolean" ? parsed.prequalified : existing.metadata?.prequalified,
     prequalified_at: parsed.prequalified_at ?? existing.metadata?.prequalified_at,
     rating: parsed.rating ?? existing.metadata?.rating,
@@ -345,13 +318,6 @@ export async function updateCompany({
       website: parsed.website ?? existing.website,
       address: parsed.address ?? existing.address,
       license_number: parsed.license_number ?? existing.license_number,
-      license_expiry: parsed.license_expiry ?? existing.license_expiry,
-      license_verified: typeof parsed.license_verified === "boolean" ? parsed.license_verified : existing.license_verified,
-      insurance_expiry: parsed.insurance_expiry ?? existing.insurance_expiry,
-      insurance_provider: parsed.insurance_provider ?? existing.insurance_provider,
-      insurance_document_id: parsed.insurance_document_id ?? existing.insurance_document_id,
-      w9_on_file: typeof parsed.w9_on_file === "boolean" ? parsed.w9_on_file : existing.w9_on_file,
-      w9_file_id: parsed.w9_file_id ?? existing.w9_file_id,
       prequalified: typeof parsed.prequalified === "boolean" ? parsed.prequalified : existing.prequalified,
       prequalified_at: parsed.prequalified_at ?? existing.prequalified_at,
       rating: parsed.rating ?? existing.rating,
@@ -363,7 +329,7 @@ export async function updateCompany({
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, license_expiry, license_verified, insurance_expiry, insurance_provider, insurance_document_id, w9_on_file, w9_file_id, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .maybeSingle()
 

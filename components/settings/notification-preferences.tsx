@@ -11,8 +11,13 @@ import { getNotificationPreferencesAction, updateNotificationPreferencesAction }
 
 export function NotificationPreferences() {
   const [emailEnabled, setEmailEnabled] = useState(true)
-  const [isLoading, setIsLoading] = useState(false)
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [weeklySnapshotEnabled, setWeeklySnapshotEnabled] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [initialPrefs, setInitialPrefs] = useState<{
+    emailEnabled: boolean
+    weeklySnapshotEnabled: boolean
+  } | null>(null)
   const { user } = useUser()
 
   // Load current preferences
@@ -20,36 +25,52 @@ export function NotificationPreferences() {
     if (!user) return
 
     const loadPreferences = async () => {
+      setIsLoading(true)
       try {
         const prefs = await getNotificationPreferencesAction()
-        setEmailEnabled(prefs.email_enabled)
+        const nextEmailEnabled = prefs.email_enabled !== false
+        const nextWeeklySnapshotEnabled = prefs.weekly_snapshot_enabled === true
+        setEmailEnabled(nextEmailEnabled)
+        setWeeklySnapshotEnabled(nextWeeklySnapshotEnabled)
+        setInitialPrefs({
+          emailEnabled: nextEmailEnabled,
+          weeklySnapshotEnabled: nextWeeklySnapshotEnabled,
+        })
       } catch (error) {
         console.error('Failed to load notification preferences:', error)
         toast.error('Failed to load preferences')
+      } finally {
+        setIsLoading(false)
       }
     }
 
     loadPreferences()
   }, [user])
 
-  // Track changes
-  useEffect(() => {
-    setHasUnsavedChanges(true)
-  }, [emailEnabled])
+  const hasUnsavedChanges = Boolean(
+    initialPrefs &&
+    (emailEnabled !== initialPrefs.emailEnabled || weeklySnapshotEnabled !== initialPrefs.weeklySnapshotEnabled),
+  )
 
   const handleSave = async () => {
     if (!user) return
 
-    setIsLoading(true)
+    setIsSaving(true)
     try {
-      await updateNotificationPreferencesAction(emailEnabled)
-      setHasUnsavedChanges(false)
+      await updateNotificationPreferencesAction({
+        emailEnabled,
+        weeklySnapshotEnabled,
+      })
+      setInitialPrefs({
+        emailEnabled,
+        weeklySnapshotEnabled,
+      })
       toast.success('Notification preferences saved')
     } catch (error) {
       console.error('Failed to save notification preferences:', error)
       toast.error('Failed to save preferences')
     } finally {
-      setIsLoading(false)
+      setIsSaving(false)
     }
   }
 
@@ -74,6 +95,25 @@ export function NotificationPreferences() {
             id="email-notifications"
             checked={emailEnabled}
             onCheckedChange={setEmailEnabled}
+            disabled={isLoading || isSaving}
+          />
+        </div>
+
+        {/* Weekly Snapshot */}
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label htmlFor="weekly-snapshot" className="text-base">
+              Weekly Executive Snapshot
+            </Label>
+            <p className="text-sm text-muted-foreground">
+              Receive the Friday financial and project health snapshot email with portfolio risk, cash exposure, and priority decisions.
+            </p>
+          </div>
+          <Switch
+            id="weekly-snapshot"
+            checked={weeklySnapshotEnabled}
+            onCheckedChange={setWeeklySnapshotEnabled}
+            disabled={isLoading || isSaving || !emailEnabled}
           />
         </div>
 
@@ -115,9 +155,9 @@ export function NotificationPreferences() {
         <div className="flex justify-end pt-4 border-t">
           <Button
             onClick={handleSave}
-            disabled={!hasUnsavedChanges || isLoading}
+            disabled={!hasUnsavedChanges || isLoading || isSaving}
           >
-            {isLoading ? 'Saving...' : 'Save Preferences'}
+            {isSaving ? 'Saving...' : 'Save Preferences'}
           </Button>
         </div>
       </CardContent>
