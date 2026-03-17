@@ -11,14 +11,11 @@ import { cn } from "@/lib/utils"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Separator } from "@/components/ui/separator"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
@@ -102,14 +99,20 @@ import {
   FolderOpen,
   Plus,
   Search,
+  Shield,
   Settings,
+  Sparkles,
   Trash2,
+  TrendingDown,
+  TrendingUp,
   Trophy,
   Upload,
+  Users,
   X,
 } from "lucide-react"
 
 const statusOptions: BidPackageStatus[] = ["draft", "sent", "open", "closed", "awarded", "cancelled"]
+const NO_TRADE_VALUE = "__none__"
 
 function normalizeTrade(value?: string | null): string {
   return value?.trim().toLowerCase() ?? ""
@@ -299,25 +302,132 @@ function getInviteAccessSummary(invite: BidInvite): { label: string; color: stri
   return { label: "No link generated", color: "text-muted-foreground" }
 }
 
-function getBenchmarkSummary(submission?: BidSubmission | null): {
+type PriceIntelligenceSignal = "pending" | "insufficient_data" | "in_range" | "below_range" | "above_range"
+
+function getPriceIntelligenceSummary(submission?: BidSubmission | null): {
+  signal: PriceIntelligenceSignal
   label: string
-  color: string
-  message?: string
+  compactLabel: string
+  textClass: string
+  badgeClass: string
+  message: string
 } {
   const benchmark = submission?.benchmark
   if (!benchmark) {
-    return { label: "Arc benchmark pending", color: "text-muted-foreground" }
+    return {
+      signal: "pending",
+      label: "Benchmark pending",
+      compactLabel: "Pending",
+      textClass: "text-muted-foreground",
+      badgeClass: "border-border bg-muted text-muted-foreground",
+      message: "Arc Intelligence is preparing a private market benchmark for this submission.",
+    }
   }
+
   if (!benchmark.has_benchmark || benchmark.signal === "insufficient_data") {
-    return { label: "Arc: insufficient market data", color: "text-muted-foreground", message: benchmark.message }
+    return {
+      signal: "insufficient_data",
+      label: "Insufficient market data",
+      compactLabel: "Insufficient data",
+      textClass: "text-muted-foreground",
+      badgeClass: "border-border bg-muted text-muted-foreground",
+      message: benchmark.message ?? "Not enough similar bids yet to produce a benchmark.",
+    }
   }
+
   if (benchmark.signal === "in_range") {
-    return { label: "Arc: in market range", color: "text-emerald-600", message: benchmark.message }
+    return {
+      signal: "in_range",
+      label: "In market range",
+      compactLabel: "In range",
+      textClass: "text-emerald-700 dark:text-emerald-400",
+      badgeClass: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+      message: benchmark.message ?? "This bid is within the typical market range.",
+    }
   }
+
   if (benchmark.signal === "below_range") {
-    return { label: "Arc: below market range", color: "text-amber-600", message: benchmark.message }
+    return {
+      signal: "below_range",
+      label: "Below market range",
+      compactLabel: "Below range",
+      textClass: "text-amber-700 dark:text-amber-400",
+      badgeClass: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+      message: benchmark.message ?? "This bid is below the typical market range.",
+    }
   }
-  return { label: "Arc: above market range", color: "text-rose-600", message: benchmark.message }
+
+  return {
+    signal: "above_range",
+    label: "Above market range",
+    compactLabel: "Above range",
+    textClass: "text-rose-700 dark:text-rose-400",
+    badgeClass: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300",
+    message: benchmark.message ?? "This bid is above the typical market range.",
+  }
+}
+
+function getMatchLevelLabel(matchLevel?: string | null): string {
+  switch (matchLevel) {
+    case "strict":
+      return "Strict match"
+    case "trade_type_size":
+      return "Trade + type + size"
+    case "trade_and_type":
+      return "Trade + type"
+    case "trade_type_family":
+      return "Trade + type family"
+    case "trade_only":
+      return "Trade only"
+    default:
+      return "No match level"
+  }
+}
+
+function getBenchmarkConfidence(benchmark?: BidSubmission["benchmark"]): { label: string; badgeClass: string } {
+  if (!benchmark || !benchmark.has_benchmark || benchmark.signal === "insufficient_data") {
+    return {
+      label: "Unavailable confidence",
+      badgeClass: "border-border bg-muted text-muted-foreground",
+    }
+  }
+
+  if (benchmark.match_level === "strict" || benchmark.match_level === "trade_type_size") {
+    return {
+      label: "High confidence",
+      badgeClass: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    }
+  }
+
+  if (benchmark.match_level === "trade_and_type" || benchmark.match_level === "trade_type_family") {
+    return {
+      label: "Medium confidence",
+      badgeClass: "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    }
+  }
+
+  return {
+    label: "Low confidence",
+    badgeClass: "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  }
+}
+
+function computeMedian(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  if (sorted.length % 2 === 0) {
+    return (sorted[middle - 1] + sorted[middle]) / 2
+  }
+  return sorted[middle]
+}
+
+function formatDeviationPercent(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "—"
+  const rounded = Number(value.toFixed(1))
+  if (rounded === 0) return "0%"
+  const sign = rounded > 0 ? "+" : ""
+  return `${sign}${rounded}%`
 }
 
 interface BidPackageDetailClientProps {
@@ -347,7 +457,7 @@ export function BidPackageDetailClientNew({
 
   // Edit form state
   const [title, setTitle] = useState(bidPackage.title)
-  const [trade, setTrade] = useState(bidPackage.trade ?? "")
+  const [trade, setTrade] = useState(bidPackage.trade?.trim() || NO_TRADE_VALUE)
   const [dueAt, setDueAt] = useState<Date | undefined>(
     bidPackage.due_at ? new Date(bidPackage.due_at) : undefined
   )
@@ -436,23 +546,27 @@ export function BidPackageDetailClientNew({
     return map
   }, [submissionList])
 
-  const availableTrades = useMemo(() => {
+  const tradeOptions = useMemo(() => {
     const tradeMap = new Map<string, string>()
     const addTrade = (tradeValue?: string | null) => {
-      const normalized = normalizeTrade(tradeValue)
+      const trimmed = tradeValue?.trim()
+      const normalized = normalizeTrade(trimmed)
       if (!normalized) return
-      if (!tradeMap.has(normalized) && tradeValue) {
-        tradeMap.set(normalized, tradeValue.trim())
+      if (!tradeMap.has(normalized) && trimmed) {
+        tradeMap.set(normalized, trimmed)
       }
     }
-    addTrade(bidPackage.trade)
+    addTrade(current.trade)
     for (const company of companies) {
       addTrade(company.trade)
     }
-    return Array.from(tradeMap.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label))
-  }, [bidPackage.trade, companies])
+    return Array.from(tradeMap.values()).sort((a, b) => a.localeCompare(b))
+  }, [current.trade, companies])
+
+  const availableTrades = useMemo(
+    () => tradeOptions.map((label) => ({ value: normalizeTrade(label), label })),
+    [tradeOptions],
+  )
 
   const filteredCompanies = useMemo(() => {
     const searchLower = companySearch.toLowerCase().trim()
@@ -791,7 +905,7 @@ export function BidPackageDetailClientNew({
       try {
         const updated = await updateBidPackageAction(bidPackage.id, projectId, {
           title: title.trim(),
-          trade: trade.trim() || null,
+          trade: trade === NO_TRADE_VALUE ? null : trade,
           due_at: dueAt ? dueAt.toISOString() : null,
           status,
           scope: scope.trim() || null,
@@ -799,7 +913,7 @@ export function BidPackageDetailClientNew({
         })
         setCurrent(updated)
         setTitle(updated.title)
-        setTrade(updated.trade ?? "")
+        setTrade(updated.trade?.trim() || NO_TRADE_VALUE)
         setDueAt(updated.due_at ? new Date(updated.due_at) : undefined)
         setStatus(updated.status)
         setScope(updated.scope ?? "")
@@ -1140,14 +1254,225 @@ export function BidPackageDetailClientNew({
     detailSubmission?.invite?.invite_email ??
     "—"
   const detailBenchmark = detailSubmission?.benchmark
-  const detailBenchmarkSummary = getBenchmarkSummary(detailSubmission)
+  const detailBenchmarkSummary = getPriceIntelligenceSummary(detailSubmission)
+  const detailBenchmarkConfidence = getBenchmarkConfidence(detailBenchmark)
   const showDetailNotes = Boolean(
     detailSubmission?.exclusions || detailSubmission?.clarifications || detailSubmission?.notes
   )
+  const marketSummary = useMemo(() => {
+    const counts: Record<PriceIntelligenceSignal, number> = {
+      pending: 0,
+      insufficient_data: 0,
+      in_range: 0,
+      below_range: 0,
+      above_range: 0,
+    }
+    const deviations: number[] = []
 
-  const dueRelativeLabel = dueDate ? `due ${formatDistanceToNow(dueDate, { addSuffix: true })}` : "no due date set"
-  const hasOverviewContent = current.title || current.scope || current.instructions || current.trade || dueDate
+    for (const submission of submissionByInviteId.values()) {
+      const intelligence = getPriceIntelligenceSummary(submission)
+      counts[intelligence.signal] += 1
+      const deviation = submission.benchmark?.deviation_pct
+      if (deviation != null && Number.isFinite(deviation)) {
+        deviations.push(Math.abs(deviation))
+      }
+    }
+
+    return {
+      counts,
+      submissionCount: submissionByInviteId.size,
+      medianSpreadPct: computeMedian(deviations),
+    }
+  }, [submissionByInviteId])
+
+  const dueRelativeLabel = dueDate ? `Due ${formatDistanceToNow(dueDate, { addSuffix: true })}` : "No due date"
   const hasDocumentTreeContent = attachmentsTree.children.length > 0 || attachmentsTree.files.length > 0
+
+  const bidStats = useMemo(() => {
+    const amounts = Array.from(submissionByInviteId.values())
+      .filter((s) => s.total_cents != null)
+      .map((s) => s.total_cents!)
+    return {
+      count: amounts.length,
+      lowest: amounts.length > 0 ? Math.min(...amounts) : null,
+      highest: amounts.length > 0 ? Math.max(...amounts) : null,
+    }
+  }, [submissionByInviteId])
+
+  const chartData = useMemo(() => {
+    const bids: Array<{
+      amount: number
+      company: string
+      signal: PriceIntelligenceSignal
+      isAwarded: boolean
+    }> = []
+    let refBenchmark: BidSubmission["benchmark"] | null = null
+    for (const submission of submissionByInviteId.values()) {
+      if (submission.total_cents != null) {
+        bids.push({
+          amount: submission.total_cents,
+          company: submission.invite?.company?.name ?? "Unknown",
+          signal: getPriceIntelligenceSummary(submission).signal,
+          isAwarded: submission.is_awarded === true,
+        })
+      }
+      if (
+        !refBenchmark &&
+        submission.benchmark?.has_benchmark &&
+        submission.benchmark.signal !== "insufficient_data"
+      ) {
+        refBenchmark = submission.benchmark
+      }
+    }
+    bids.sort((a, b) => a.amount - b.amount)
+    return { bids, benchmark: refBenchmark }
+  }, [submissionByInviteId])
+
+  const statusConfig: Record<string, { dot: string; label: string }> = {
+    draft: { dot: "bg-muted-foreground", label: "Draft" },
+    sent: { dot: "bg-blue-500", label: "Sent" },
+    open: { dot: "bg-emerald-500", label: "Open" },
+    closed: { dot: "bg-muted-foreground", label: "Closed" },
+    awarded: { dot: "bg-amber-500", label: "Awarded" },
+    cancelled: { dot: "bg-rose-500", label: "Cancelled" },
+  }
+  const currentStatusConfig = statusConfig[current.status] ?? statusConfig.draft
+
+  const signalDotColor = (signal: PriceIntelligenceSignal) => {
+    switch (signal) {
+      case "in_range": return "bg-emerald-500"
+      case "below_range": return "bg-amber-500"
+      case "above_range": return "bg-rose-500"
+      default: return "bg-muted-foreground/60"
+    }
+  }
+
+  const renderPriceRangeChart = () => {
+    if (chartData.bids.length === 0) return null
+    const allValues = [
+      ...chartData.bids.map((b) => b.amount),
+      ...(chartData.benchmark
+        ? ([chartData.benchmark.p25_cents, chartData.benchmark.p75_cents, chartData.benchmark.median_cents].filter(
+            (v) => v != null
+          ) as number[])
+        : []),
+    ]
+    const dataMin = Math.min(...allValues)
+    const dataMax = Math.max(...allValues)
+    const padding = (dataMax - dataMin) * 0.18 || dataMin * 0.1 || 1000
+    const scaleMin = dataMin - padding
+    const scaleMax = dataMax + padding
+    const range = scaleMax - scaleMin || 1
+    const toPercent = (value: number) => Math.max(2, Math.min(98, ((value - scaleMin) / range) * 100))
+
+    return (
+      <div className="space-y-1.5">
+        <div className="relative h-14 rounded-lg bg-muted/30 border">
+          {chartData.benchmark?.p25_cents != null && chartData.benchmark?.p75_cents != null && (
+            <div
+              className="absolute top-1.5 bottom-1.5 rounded bg-emerald-500/[0.08] border border-emerald-500/20"
+              style={{
+                left: `${toPercent(chartData.benchmark.p25_cents)}%`,
+                width: `${toPercent(chartData.benchmark.p75_cents) - toPercent(chartData.benchmark.p25_cents)}%`,
+              }}
+            />
+          )}
+          {chartData.benchmark?.median_cents != null && (
+            <div
+              className="absolute top-1 bottom-1 w-px bg-emerald-500/40"
+              style={{ left: `${toPercent(chartData.benchmark.median_cents)}%` }}
+            />
+          )}
+          {chartData.bids.map((bid, i) => (
+            <Tooltip key={i}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 group/dot z-10"
+                  style={{ left: `${toPercent(bid.amount)}%` }}
+                >
+                  <div
+                    className={cn(
+                      "h-4 w-4 rounded-full border-2 border-background shadow-sm transition-transform group-hover/dot:scale-[1.35]",
+                      signalDotColor(bid.signal),
+                      bid.isAwarded && "ring-2 ring-amber-400 ring-offset-1 ring-offset-background"
+                    )}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-center">
+                <p className="font-medium text-xs">{bid.company}</p>
+                <p className="text-[11px] tabular-nums">{formatCurrency(bid.amount)}</p>
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums px-0.5">
+          <span>{formatCurrency(Math.round(scaleMin / 100) * 100)}</span>
+          {chartData.benchmark?.median_cents != null && (
+            <span className="text-emerald-600 font-medium">
+              Median {formatCurrency(chartData.benchmark.median_cents)}
+            </span>
+          )}
+          <span>{formatCurrency(Math.round(scaleMax / 100) * 100)}</span>
+        </div>
+      </div>
+    )
+  }
+
+  const renderSingleBidPosition = (submission: BidSubmission) => {
+    const benchmark = submission.benchmark
+    if (!benchmark?.has_benchmark || benchmark.signal === "insufficient_data" || submission.total_cents == null) {
+      return null
+    }
+    const allValues = [
+      submission.total_cents,
+      benchmark.p25_cents,
+      benchmark.p75_cents,
+      benchmark.median_cents,
+    ].filter((v) => v != null) as number[]
+    const dataMin = Math.min(...allValues)
+    const dataMax = Math.max(...allValues)
+    const padding = (dataMax - dataMin) * 0.2 || dataMin * 0.1 || 1000
+    const scaleMin = dataMin - padding
+    const scaleMax = dataMax + padding
+    const range = scaleMax - scaleMin || 1
+    const toPercent = (v: number) => Math.max(2, Math.min(98, ((v - scaleMin) / range) * 100))
+    const intel = getPriceIntelligenceSummary(submission)
+
+    return (
+      <div className="space-y-1">
+        <div className="relative h-3 rounded-full bg-muted/40">
+          {benchmark.p25_cents != null && benchmark.p75_cents != null && (
+            <div
+              className="absolute top-0 bottom-0 rounded-full bg-emerald-500/15"
+              style={{
+                left: `${toPercent(benchmark.p25_cents)}%`,
+                width: `${toPercent(benchmark.p75_cents) - toPercent(benchmark.p25_cents)}%`,
+              }}
+            />
+          )}
+          {benchmark.median_cents != null && (
+            <div
+              className="absolute top-0 bottom-0 w-px bg-emerald-500/40"
+              style={{ left: `${toPercent(benchmark.median_cents)}%` }}
+            />
+          )}
+          <div
+            className={cn(
+              "absolute top-1/2 -translate-y-1/2 -translate-x-1/2 h-3.5 w-3.5 rounded-full border-2 border-background shadow-sm",
+              signalDotColor(intel.signal)
+            )}
+            style={{ left: `${toPercent(submission.total_cents)}%` }}
+          />
+        </div>
+        <div className="flex justify-between text-[10px] text-muted-foreground tabular-nums">
+          <span>{formatCurrency(benchmark.p25_cents)}</span>
+          <span>{formatCurrency(benchmark.p75_cents)}</span>
+        </div>
+      </div>
+    )
+  }
 
   const renderDocumentAttachmentRow = (attachment: BidPackageAttachment, nested = false) => (
     <div
@@ -1227,12 +1552,19 @@ export function BidPackageDetailClientNew({
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="trade">Trade</Label>
-                  <Input
-                    id="trade"
-                    value={trade}
-                    onChange={(e) => setTrade(e.target.value)}
-                    placeholder="e.g. Electrical, Plumbing"
-                  />
+                  <Select value={trade} onValueChange={setTrade}>
+                    <SelectTrigger id="trade" className="w-full">
+                      <SelectValue placeholder="Select trade" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_TRADE_VALUE}>No trade</SelectItem>
+                      {tradeOptions.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {option}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
@@ -1331,145 +1663,189 @@ export function BidPackageDetailClientNew({
           >
             {detailSubmission ? (
               <>
-                <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-5 w-5 text-primary" />
-                    <SheetTitle>Bid submission</SheetTitle>
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "capitalize",
-                        detailSubmission.status === "submitted" && "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
-                        detailSubmission.status === "revised" && "bg-blue-500/15 text-blue-600 border-blue-500/30"
-                      )}
-                    >
-                      {detailSubmission.status}
-                    </Badge>
-                    {detailSubmission.is_awarded && (
-                      <Badge className="bg-amber-500/15 text-amber-600 border-amber-500/30">
-                        <Trophy className="mr-1 h-3 w-3" />
-                        Awarded
-                      </Badge>
-                    )}
-                  </div>
-                  <SheetDescription className="text-left">
-                    {detailCompanyName} · Version {detailSubmission.version}
-                  </SheetDescription>
-                </SheetHeader>
-                <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="rounded-lg border bg-card p-4 space-y-2">
-                      <p className="text-xs font-semibold uppercase text-muted-foreground">Vendor</p>
-                      <p className="text-sm font-medium">{detailCompanyName}</p>
-                      <p className="text-xs text-muted-foreground">{detailContactName}</p>
-                      <p className="text-xs text-muted-foreground">{detailContactEmail}</p>
+                <SheetHeader className="px-6 pt-6 pb-4 border-b">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className={cn(
+                        "flex h-9 w-9 items-center justify-center rounded-lg",
+                        detailSubmission.is_awarded ? "bg-amber-500/15" : "bg-primary/10"
+                      )}>
+                        {detailSubmission.is_awarded
+                          ? <Trophy className="h-4.5 w-4.5 text-amber-600" />
+                          : <FileText className="h-4.5 w-4.5 text-primary" />}
+                      </div>
+                      <div>
+                        <SheetTitle className="text-base">{detailCompanyName}</SheetTitle>
+                        <SheetDescription className="text-left text-xs">
+                          v{detailSubmission.version} · {formatDateValue(detailSubmission.submitted_at, "MMM d, yyyy")}
+                        </SheetDescription>
+                      </div>
                     </div>
-                    <div className="rounded-lg border bg-card p-4 space-y-2">
-                      <p className="text-xs font-semibold uppercase text-muted-foreground">Submission</p>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Amount</span>
-                        <span className="font-medium">{formatCurrency(detailSubmission.total_cents)}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Submitted</span>
-                        <span className="font-medium">
-                          {formatDateValue(detailSubmission.submitted_at, "MMM d, yyyy 'at' h:mm a")}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Valid until</span>
-                        <span className="font-medium">
-                          {formatDateValue(detailSubmission.valid_until)}
-                        </span>
-                      </div>
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "capitalize text-xs",
+                          detailSubmission.status === "submitted" && "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
+                          detailSubmission.status === "revised" && "bg-blue-500/15 text-blue-600 border-blue-500/30"
+                        )}
+                      >
+                        {detailSubmission.status}
+                      </Badge>
+                      {detailSubmission.is_awarded && (
+                        <Badge className="bg-amber-500/15 text-amber-600 border-amber-500/30 text-xs">Awarded</Badge>
+                      )}
+                    </div>
+                  </div>
+                </SheetHeader>
+
+                <div className="flex-1 overflow-y-auto">
+                  {/* Amount hero */}
+                  <div className="px-6 py-5 border-b bg-muted/20">
+                    <p className="text-xs text-muted-foreground mb-1">Bid Amount</p>
+                    <p className="text-3xl font-bold tabular-nums tracking-tight">
+                      {formatCurrency(detailSubmission.total_cents)}
+                    </p>
+                    <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                      <span>Valid until {formatDateValue(detailSubmission.valid_until)}</span>
+                      {detailSubmission.lead_time_days && (
+                        <span>{detailSubmission.lead_time_days}d lead time</span>
+                      )}
+                      {detailSubmission.duration_days && (
+                        <span>{detailSubmission.duration_days}d duration</span>
+                      )}
                     </div>
                   </div>
 
-                  {detailBenchmark && (
-                    <div className="rounded-lg border bg-card p-4 space-y-2">
-                      <p className="text-xs font-semibold uppercase text-muted-foreground">Arc Benchmark</p>
-                      <p className={cn("text-sm font-medium", detailBenchmarkSummary.color)}>
-                        {detailBenchmarkSummary.label}
-                      </p>
-                      <p className="text-sm text-muted-foreground">{detailBenchmarkSummary.message ?? detailBenchmark.message}</p>
-                      {detailBenchmark.has_benchmark && (
-                        <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                          <div>
-                            Typical range: {formatCurrency(detailBenchmark.p25_cents)} to {formatCurrency(detailBenchmark.p75_cents)}
+                  <div className="px-6 py-5 space-y-5">
+                    {/* Price Intelligence - Premium */}
+                    <div className="rounded-lg border border-primary/15 bg-gradient-to-b from-primary/[0.03] to-transparent p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="h-3.5 w-3.5 text-primary" />
+                          <span className="text-xs font-semibold">Arc Intelligence</span>
+                        </div>
+                        <Badge variant="outline" className={cn("text-[10px] font-medium", detailBenchmarkConfidence.badgeClass)}>
+                          {detailBenchmarkConfidence.label}
+                        </Badge>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className={cn("text-xs font-medium", detailBenchmarkSummary.badgeClass)}>
+                          {detailBenchmarkSummary.label}
+                        </Badge>
+                        {detailBenchmark?.deviation_pct != null && (
+                          <span className={cn("text-xs font-medium tabular-nums", detailBenchmarkSummary.textClass)}>
+                            {formatDeviationPercent(detailBenchmark.deviation_pct)} vs median
+                          </span>
+                        )}
+                      </div>
+
+                      {renderSingleBidPosition(detailSubmission)}
+
+                      {detailBenchmark?.has_benchmark && detailBenchmark.signal !== "insufficient_data" ? (
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div className="rounded-md border bg-background/60 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">Range</p>
+                            <p className="text-xs font-semibold tabular-nums">
+                              {formatCurrency(detailBenchmark.p25_cents)} – {formatCurrency(detailBenchmark.p75_cents)}
+                            </p>
                           </div>
-                          <div>
-                            Median: {formatCurrency(detailBenchmark.median_cents)}
+                          <div className="rounded-md border bg-background/60 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">Comparables</p>
+                            <p className="text-xs font-semibold">{detailBenchmark.sample_size} bids · {detailBenchmark.org_count} orgs</p>
                           </div>
-                          <div>
-                            Comparable bids: {detailBenchmark.sample_size}
-                          </div>
-                          <div>
-                            Distinct builders: {detailBenchmark.org_count}
+                          <div className="rounded-md border bg-background/60 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">Match</p>
+                            <p className="text-xs font-semibold">{getMatchLevelLabel(detailBenchmark.match_level)}</p>
                           </div>
                         </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          {detailBenchmarkSummary.message}
+                        </p>
+                      )}
+
+                      <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground pt-1 border-t">
+                        <Shield className="h-3 w-3 shrink-0" />
+                        Aggregated signals only. No source bid details exposed.
+                      </p>
+                    </div>
+
+                    {/* Contact */}
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">Contact</p>
+                      <div className="text-sm">
+                        <p className="font-medium">{detailContactName}</p>
+                        <p className="text-muted-foreground">{detailContactEmail}</p>
+                      </div>
+                    </div>
+
+                    {/* Notes & Clarifications */}
+                    {showDetailNotes && (
+                      <div className="space-y-3">
+                        <p className="text-xs font-medium text-muted-foreground">Notes & Clarifications</p>
+                        <div className="space-y-2.5 text-sm">
+                          {detailSubmission.exclusions && (
+                            <div className="rounded-md border bg-rose-500/[0.03] p-3">
+                              <p className="text-[10px] font-semibold uppercase text-rose-600 mb-1">Exclusions</p>
+                              <p className="whitespace-pre-wrap text-foreground/90">{detailSubmission.exclusions}</p>
+                            </div>
+                          )}
+                          {detailSubmission.clarifications && (
+                            <div className="rounded-md border bg-amber-500/[0.03] p-3">
+                              <p className="text-[10px] font-semibold uppercase text-amber-600 mb-1">Clarifications</p>
+                              <p className="whitespace-pre-wrap text-foreground/90">{detailSubmission.clarifications}</p>
+                            </div>
+                          )}
+                          {detailSubmission.notes && (
+                            <div className="rounded-md border bg-muted/30 p-3">
+                              <p className="text-[10px] font-semibold uppercase text-muted-foreground mb-1">Notes</p>
+                              <p className="whitespace-pre-wrap text-foreground/90">{detailSubmission.notes}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Attachments */}
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">Attachments</p>
+                      {isLoadingSubmissionAttachments && detailAttachments.length === 0 ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading...
+                        </div>
+                      ) : (
+                        <EntityAttachments
+                          entityType="bid_submission"
+                          entityId={detailSubmission.id}
+                          projectId={projectId}
+                          attachments={detailAttachments}
+                          onAttach={async () => {}}
+                          onDetach={async () => {}}
+                          readOnly
+                        />
                       )}
                     </div>
-                  )}
-
-                  <Separator />
-
-                  <div className="space-y-3">
-                    <h4 className="text-sm font-semibold">Notes & clarifications</h4>
-                    {showDetailNotes ? (
-                      <div className="space-y-3 text-sm">
-                        {detailSubmission.exclusions && (
-                          <div>
-                            <p className="text-xs font-semibold uppercase text-muted-foreground">Exclusions</p>
-                            <p className="mt-1 whitespace-pre-wrap">{detailSubmission.exclusions}</p>
-                          </div>
-                        )}
-                        {detailSubmission.clarifications && (
-                          <div>
-                            <p className="text-xs font-semibold uppercase text-muted-foreground">Clarifications</p>
-                            <p className="mt-1 whitespace-pre-wrap">{detailSubmission.clarifications}</p>
-                          </div>
-                        )}
-                        {detailSubmission.notes && (
-                          <div>
-                            <p className="text-xs font-semibold uppercase text-muted-foreground">Notes</p>
-                            <p className="mt-1 whitespace-pre-wrap">{detailSubmission.notes}</p>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">
-                        No exclusions, clarifications, or notes provided.
-                      </p>
-                    )}
-                  </div>
-
-                  <Separator />
-
-                  <div className="space-y-3">
-                    <div>
-                      <h4 className="text-sm font-semibold">Attachments</h4>
-                      <p className="text-xs text-muted-foreground">
-                        Documents submitted with the bid.
-                      </p>
-                    </div>
-                    {isLoadingSubmissionAttachments && detailAttachments.length === 0 ? (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Loading attachments...
-                      </div>
-                    ) : (
-                      <EntityAttachments
-                        entityType="bid_submission"
-                        entityId={detailSubmission.id}
-                        projectId={projectId}
-                        attachments={detailAttachments}
-                        onAttach={async () => {}}
-                        onDetach={async () => {}}
-                        readOnly
-                      />
-                    )}
                   </div>
                 </div>
+
+                {/* Sheet footer with award action */}
+                {!detailSubmission.is_awarded &&
+                  current.status !== "awarded" &&
+                  detailSubmission.is_current &&
+                  detailSubmission.total_cents != null && (
+                    <div className="border-t px-6 py-3 bg-background/80">
+                      <Button
+                        className="w-full"
+                        onClick={() => openAwardDialog(detailSubmission)}
+                      >
+                        <Trophy className="mr-2 h-4 w-4" />
+                        Award this bid
+                      </Button>
+                    </div>
+                  )}
               </>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -1621,152 +1997,219 @@ export function BidPackageDetailClientNew({
           </SheetContent>
         </Sheet>
 
-        {/* Package Overview Card */}
-        {hasOverviewContent && (
-          <Card className="relative overflow-hidden border bg-card shadow-sm">
-            <div className="pointer-events-none absolute inset-0 opacity-[0.08] [background-image:linear-gradient(rgba(120,120,120,0.45)_1px,transparent_1px),linear-gradient(90deg,rgba(120,120,120,0.45)_1px,transparent_1px)] [background-size:20px_20px]" />
-            <CardContent className="relative p-0">
-              <div className="border-y bg-muted/30">
-                <div className="px-4 py-4 sm:px-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1.5">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-                        Bid Package
-                        <span className="mx-1.5 text-muted-foreground/70">·</span>
-                        <span className="normal-case tracking-normal text-muted-foreground">{dueRelativeLabel}</span>
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-xl font-semibold leading-tight tracking-tight sm:text-2xl">{current.title}</h2>
-                        {current.status === "awarded" && (
-                          <Badge
-                            variant="outline"
-                            className="rounded-full border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300"
-                          >
-                            Awarded
-                          </Badge>
-                        )}
-                        {isOverdue && current.status !== "awarded" && (
-                          <Badge
-                            variant="outline"
-                            className="rounded-full border-rose-300 bg-rose-100 px-2.5 py-0.5 text-xs font-semibold text-rose-700"
-                          >
-                            Overdue
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-foreground/90">
-                        <span className="inline-flex items-center rounded-full border border-border bg-background/80 px-2.5 py-1">
-                          <Building2 className="mr-1.5 h-3.5 w-3.5" />
-                          {current.trade || "Unassigned trade"}
-                        </span>
-                        <span className="inline-flex items-center rounded-full border border-border bg-background/80 px-2.5 py-1">
-                          <CalendarDays className="mr-1.5 h-3.5 w-3.5" />
-                          {dueDate ? format(dueDate, "EEE, MMM d · h:mm a") : "No due date"}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={() => setEditSheetOpen(true)}
-                      >
-                        <Edit className="mr-1.5 h-3.5 w-3.5" />
-                        Edit
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={() => setAddendumDialogOpen(true)}
-                      >
-                        <Plus className="mr-1.5 h-3.5 w-3.5" />
-                        Addendum
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {(current.scope || current.instructions) && (
-                <div className="grid gap-3 bg-muted/20 p-3 sm:p-4 md:grid-cols-2">
-                    {current.scope && (
-                      <div className="rounded-xl border bg-background/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-                        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Scope of Work</p>
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">{current.scope}</p>
-                      </div>
-                    )}
-                    {current.instructions && (
-                      <div className="rounded-xl border bg-background/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-                        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bid Instructions</p>
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">{current.instructions}</p>
-                      </div>
-                    )}
+        {/* === HEADER === */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className={cn("h-2.5 w-2.5 rounded-full shrink-0", currentStatusConfig.dot)} />
+              <h2 className="text-2xl font-semibold tracking-tight">{current.title}</h2>
+              <Badge variant="outline" className="text-[11px] capitalize">{currentStatusConfig.label}</Badge>
+              {current.status === "awarded" && (
+                <Badge variant="outline" className="border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[11px]">
+                  <Trophy className="mr-1 h-3 w-3" />Awarded
+                </Badge>
+              )}
+              {isOverdue && current.status !== "awarded" && (
+                <Badge variant="outline" className="border-rose-500/30 bg-rose-500/10 text-rose-600 text-[11px]">Overdue</Badge>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <Building2 className="h-3.5 w-3.5" />
+                {current.trade || "No trade"}
+              </span>
+              <span className="text-border">|</span>
+              <span className="inline-flex items-center gap-1.5">
+                <CalendarDays className="h-3.5 w-3.5" />
+                {dueDate ? format(dueDate, "EEE, MMM d, yyyy") : "No due date"}
+              </span>
+              <span className="text-border">|</span>
+              <span className={cn(isOverdue && "text-rose-600 font-medium")}>{dueRelativeLabel}</span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setEditSheetOpen(true)}>
+              <Edit className="mr-1.5 h-3.5 w-3.5" />Edit
+            </Button>
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setAddendumDialogOpen(true)}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" />Addendum
+            </Button>
+          </div>
+        </div>
+
+        {/* === STATS STRIP === */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-lg border bg-card px-4 py-3">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Users className="h-3.5 w-3.5" />
+              <p className="text-xs font-medium">Invited</p>
+            </div>
+            <p className="text-2xl font-bold tabular-nums">{inviteList.length}</p>
+          </div>
+          <div className="rounded-lg border bg-card px-4 py-3">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <FileText className="h-3.5 w-3.5" />
+              <p className="text-xs font-medium">Submitted</p>
+            </div>
+            <p className="text-2xl font-bold tabular-nums">{bidStats.count}</p>
+          </div>
+          <div className="rounded-lg border bg-card px-4 py-3">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <TrendingDown className="h-3.5 w-3.5" />
+              <p className="text-xs font-medium">Lowest</p>
+            </div>
+            <p className="text-2xl font-bold tabular-nums">{bidStats.lowest != null ? formatCurrency(bidStats.lowest) : "—"}</p>
+          </div>
+          <div className="rounded-lg border bg-card px-4 py-3">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <TrendingUp className="h-3.5 w-3.5" />
+              <p className="text-xs font-medium">Highest</p>
+            </div>
+            <p className="text-2xl font-bold tabular-nums">{bidStats.highest != null ? formatCurrency(bidStats.highest) : "—"}</p>
+          </div>
+        </div>
+
+        {/* === SCOPE & INSTRUCTIONS (collapsible) === */}
+        {(current.scope || current.instructions) && (
+          <details className="group rounded-lg border bg-card">
+            <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/30 transition-colors [&::-webkit-details-marker]:hidden list-none">
+              <span>Scope & Instructions</span>
+              <svg className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div className="grid gap-3 border-t p-4 md:grid-cols-2">
+              {current.scope && (
+                <div className="rounded-md border bg-muted/20 p-3">
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Scope of Work</p>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{current.scope}</p>
                 </div>
               )}
-            </CardContent>
-          </Card>
+              {current.instructions && (
+                <div className="rounded-md border bg-muted/20 p-3">
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Bid Instructions</p>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{current.instructions}</p>
+                </div>
+              )}
+            </div>
+          </details>
         )}
 
-        {/* Addenda - Only shown if there are addenda */}
+        {/* === ADDENDA (compact timeline) === */}
         {addendumList.length > 0 && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-muted-foreground">
-                {addendumList.length} Addend{addendumList.length === 1 ? "um" : "a"}
-              </h3>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          <details className="group rounded-lg border bg-card" open>
+            <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/30 transition-colors [&::-webkit-details-marker]:hidden list-none">
+              <span>{addendumList.length} Addend{addendumList.length === 1 ? "um" : "a"}</span>
+              <svg className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div className="border-t divide-y">
               {addendumList.map((addendum) => (
-                <div
-                  key={addendum.id}
-                  className="rounded-lg border bg-card p-4"
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-amber-500/10">
-                      <FileText className="h-4 w-4 text-amber-600" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium">
-                        Addendum {addendum.number}
-                        {addendum.title && <span className="font-normal text-muted-foreground"> · {addendum.title}</span>}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {addendum.issued_at && format(new Date(addendum.issued_at), "MMM d, yyyy")}
-                      </p>
-                      {addendum.message && (
-                        <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{addendum.message}</p>
-                      )}
-                    </div>
+                <div key={addendum.id} className="flex gap-3 px-4 py-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/10 mt-0.5">
+                    <span className="text-xs font-bold text-amber-600">{addendum.number}</span>
                   </div>
-                  {(addendumAttachments[addendum.id]?.length > 0) && (
-                    <div className="mt-3 pt-3 border-t">
-                      <EntityAttachments
-                        entityType="bid_addendum"
-                        entityId={addendum.id}
-                        projectId={projectId}
-                        attachments={addendumAttachments[addendum.id] ?? []}
-                        onAttach={(files) => handleAddendumAttach(files, addendum.id)}
-                        onDetach={handleAddendumDetach}
-                        compact
-                      />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium">{addendum.title || `Addendum ${addendum.number}`}</p>
+                      <span className="text-xs text-muted-foreground">
+                        {addendum.issued_at && format(new Date(addendum.issued_at), "MMM d, yyyy")}
+                      </span>
                     </div>
-                  )}
+                    {addendum.message && (
+                      <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">{addendum.message}</p>
+                    )}
+                    {(addendumAttachments[addendum.id]?.length > 0) && (
+                      <div className="mt-2">
+                        <EntityAttachments
+                          entityType="bid_addendum"
+                          entityId={addendum.id}
+                          projectId={projectId}
+                          attachments={addendumAttachments[addendum.id] ?? []}
+                          onAttach={(files) => handleAddendumAttach(files, addendum.id)}
+                          onDetach={handleAddendumDetach}
+                          compact
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
+          </details>
+        )}
+
+        {/* === MARKET INTELLIGENCE (premium) === */}
+        {chartData.bids.length > 0 && (
+          <div className="rounded-lg border border-primary/15 bg-gradient-to-b from-primary/[0.03] to-transparent p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold leading-none">Arc Intelligence</h3>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">Private market benchmark</p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {marketSummary.counts.in_range > 0 && (
+                  <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-[10px]">
+                    {marketSummary.counts.in_range} in range
+                  </Badge>
+                )}
+                {marketSummary.counts.below_range > 0 && (
+                  <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px]">
+                    {marketSummary.counts.below_range} below
+                  </Badge>
+                )}
+                {marketSummary.counts.above_range > 0 && (
+                  <Badge variant="outline" className="border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300 text-[10px]">
+                    {marketSummary.counts.above_range} above
+                  </Badge>
+                )}
+              </div>
+            </div>
+
+            {renderPriceRangeChart()}
+
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-4 pt-1">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Submissions</p>
+                <p className="font-semibold tabular-nums">{marketSummary.submissionCount}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Median Spread</p>
+                <p className="font-semibold tabular-nums">
+                  {marketSummary.medianSpreadPct != null ? `${marketSummary.medianSpreadPct.toFixed(1)}%` : "—"}
+                </p>
+              </div>
+              {chartData.benchmark && (
+                <>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Comparables</p>
+                    <p className="font-semibold tabular-nums">{chartData.benchmark.sample_size} bids</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Builders</p>
+                    <p className="font-semibold tabular-nums">{chartData.benchmark.org_count} orgs</p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground border-t pt-3">
+              <Shield className="h-3 w-3 shrink-0" />
+              Arc Intelligence uses aggregated signals only. No source bid details are exposed.
+            </p>
           </div>
         )}
 
-        {/* Main Content: Vendors + Documents side by side */}
-        <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,4fr)_minmax(0,1.4fr)]">
-          {/* Vendors Table */}
-          <Card className="flex min-h-[420px] flex-col overflow-hidden lg:h-full">
-            <CardHeader className="flex flex-row items-center justify-between border-b pb-4">
-              <div>
-                <CardTitle className="text-base">Vendors</CardTitle>
-                <CardDescription>Invited vendors and their bid submissions</CardDescription>
-              </div>
+        {/* === MAIN CONTENT: Vendors + Documents === */}
+        <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,340px)]">
+          {/* Vendors */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                Vendors ({inviteList.length})
+              </h3>
               <Dialog open={inviteDialogOpen} onOpenChange={(open) => {
                 setInviteDialogOpen(open)
                 if (!open) {
@@ -1775,21 +2218,18 @@ export function BidPackageDetailClientNew({
                   setEmailInvites([])
                   setNewEmailInput("")
                   setNewCompanyNameInput("")
-                  setTradeFilter(normalizeTrade(bidPackage.trade) || "all")
+                  setTradeFilter(normalizeTrade(current.trade) || "all")
                 }
               }}>
                 <DialogTrigger asChild>
-                  <Button size="sm">
-                    <Plus className="mr-2 h-4 w-4" />
-                    Invite
+                  <Button size="sm" className="h-8">
+                    <Plus className="mr-1.5 h-3.5 w-3.5" />Invite
                   </Button>
                 </DialogTrigger>
                 <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
                     <DialogTitle>Invite vendors</DialogTitle>
-                    <DialogDescription>
-                      Select companies to invite or add new vendors by email.
-                    </DialogDescription>
+                    <DialogDescription>Select companies to invite or add new vendors by email.</DialogDescription>
                   </DialogHeader>
                   <div className="grid gap-4 py-4">
                     <div className="flex gap-2">
@@ -1799,41 +2239,27 @@ export function BidPackageDetailClientNew({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All trades</SelectItem>
-                          {availableTrades.map((trade) => (
-                            <SelectItem key={trade.value} value={trade.value}>
-                              {trade.label}
-                            </SelectItem>
+                          {availableTrades.map((t) => (
+                            <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                       <div className="relative flex-1">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                        <Input
-                          value={companySearch}
-                          onChange={(e) => setCompanySearch(e.target.value)}
-                          placeholder="Search companies..."
-                          className="pl-9"
-                        />
+                        <Input value={companySearch} onChange={(e) => setCompanySearch(e.target.value)} placeholder="Search companies..." className="pl-9" />
                       </div>
                     </div>
-
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">
-                        {selectedCompanyIds.size} selected
-                        {emailInvites.length > 0 && ` + ${emailInvites.length} by email`}
+                        {selectedCompanyIds.size} selected{emailInvites.length > 0 && ` + ${emailInvites.length} by email`}
                       </span>
                       <div className="flex gap-2">
-                        <Button type="button" variant="ghost" size="sm" onClick={selectAllFiltered} className="h-7 text-xs">
-                          Select all
-                        </Button>
+                        <Button type="button" variant="ghost" size="sm" onClick={selectAllFiltered} className="h-7 text-xs">Select all</Button>
                         {(selectedCompanyIds.size > 0 || emailInvites.length > 0) && (
-                          <Button type="button" variant="ghost" size="sm" onClick={clearSelection} className="h-7 text-xs">
-                            Clear
-                          </Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={clearSelection} className="h-7 text-xs">Clear</Button>
                         )}
                       </div>
                     </div>
-
                     <ScrollArea className="h-[280px] rounded-md border">
                       <div className="p-2">
                         {filteredCompanies.length === 0 ? (
@@ -1846,20 +2272,9 @@ export function BidPackageDetailClientNew({
                               const isVendor = vendorCompanyIds.has(company.id)
                               const contact = getCompanyContactInfo(company.id)
                               const hasEmail = !!(contact?.email || company.email)
-
                               return (
-                                <label
-                                  key={company.id}
-                                  className={cn(
-                                    "flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer transition-colors",
-                                    isAlreadyInvited ? "opacity-50 cursor-not-allowed bg-muted/50" : isSelected ? "bg-accent" : "hover:bg-muted/50"
-                                  )}
-                                >
-                                  <Checkbox
-                                    checked={isSelected}
-                                    disabled={isAlreadyInvited}
-                                    onCheckedChange={() => { if (!isAlreadyInvited) toggleCompanySelection(company.id) }}
-                                  />
+                                <label key={company.id} className={cn("flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer transition-colors", isAlreadyInvited ? "opacity-50 cursor-not-allowed bg-muted/50" : isSelected ? "bg-accent" : "hover:bg-muted/50")}>
+                                  <Checkbox checked={isSelected} disabled={isAlreadyInvited} onCheckedChange={() => { if (!isAlreadyInvited) toggleCompanySelection(company.id) }} />
                                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
                                     <Building2 className="h-4 w-4 text-muted-foreground" />
                                   </div>
@@ -1883,7 +2298,6 @@ export function BidPackageDetailClientNew({
                         )}
                       </div>
                     </ScrollArea>
-
                     <div className="space-y-3 rounded-md border p-3">
                       <p className="text-sm font-medium">Invite by email</p>
                       <div className="flex gap-2">
@@ -1906,7 +2320,6 @@ export function BidPackageDetailClientNew({
                         </div>
                       )}
                     </div>
-
                     <label className="flex items-center gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/50">
                       <Checkbox checked={sendEmails} onCheckedChange={(checked) => setSendEmails(checked === true)} />
                       <div className="flex-1">
@@ -1924,154 +2337,140 @@ export function BidPackageDetailClientNew({
                   </DialogFooter>
                 </DialogContent>
               </Dialog>
-            </CardHeader>
-            <CardContent className="flex-1 overflow-hidden p-0">
-              {inviteList.length === 0 ? (
-                <div className="flex h-full items-center justify-center p-8 text-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                      <Building2 className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <p className="font-medium">No vendors invited yet</p>
-                      <p className="text-sm text-muted-foreground">Invite vendors to receive bids.</p>
-                    </div>
+            </div>
+
+            {inviteList.length === 0 ? (
+              <div className="flex items-center justify-center rounded-lg border border-dashed p-12 text-center">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                    <Building2 className="h-6 w-6 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <p className="font-medium">No vendors invited yet</p>
+                    <p className="text-sm text-muted-foreground">Invite vendors to start receiving bids.</p>
                   </div>
                 </div>
-              ) : (
-                <div className="h-full overflow-auto">
-                  <Table className="border-collapse">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="px-4 py-3 border-r">Company</TableHead>
-                        <TableHead className="px-4 py-3 hidden sm:table-cell border-r">Status</TableHead>
-                        <TableHead className="px-4 py-3 hidden lg:table-cell border-r">Last activity</TableHead>
-                        <TableHead className="px-4 py-3 text-right border-r">Bid amount</TableHead>
-                        <TableHead className="px-4 py-3 w-[80px]"><span className="sr-only">Actions</span></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {inviteList.map((invite) => {
-                        const submission = submissionByInviteId.get(invite.id)
-                        const statusInfo = getVendorStatusInfo(invite, submission)
-                        const accessInfo = getInviteAccessSummary(invite)
-                        const benchmarkInfo = getBenchmarkSummary(submission)
-                        const isAwarded = submission?.is_awarded === true
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {inviteList.map((invite) => {
+                  const submission = submissionByInviteId.get(invite.id)
+                  const statusInfo = getVendorStatusInfo(invite, submission)
+                  const accessInfo = getInviteAccessSummary(invite)
+                  const intelligenceInfo = getPriceIntelligenceSummary(submission)
+                  const isAwarded = submission?.is_awarded === true
 
-                        return (
-                          <TableRow key={invite.id} className={cn("group hover:bg-muted/40", isAwarded && "bg-amber-50/50")}>
-                            <TableCell className="px-4 py-3 border-r">
-                              <div className="flex items-center gap-3">
-                                <div className={cn(
-                                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                                  isAwarded ? "bg-amber-100" : submission ? "bg-emerald-500/15" : invite.status === "viewed" ? "bg-violet-500/15" : invite.status === "declined" ? "bg-rose-500/15" : "bg-muted"
-                                )}>
-                                  {isAwarded ? <Trophy className="h-4 w-4 text-amber-600" /> : <Building2 className={cn("h-4 w-4", submission ? "text-emerald-600" : invite.status === "viewed" ? "text-violet-600" : invite.status === "declined" ? "text-rose-600" : "text-muted-foreground")} />}
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium truncate">{invite.company?.name ?? "Unknown"}</p>
-                                  <p className="text-xs text-muted-foreground truncate">{invite.contact?.full_name ?? invite.invite_email ?? ""}</p>
-                                  <p className={cn("text-[11px] truncate", accessInfo.color)}>{accessInfo.label}</p>
-                                  {submission && <p className={cn("text-[11px] truncate", benchmarkInfo.color)}>{benchmarkInfo.label}</p>}
-                                  {(invite.linked_account_count ?? 0) > 0 && (
-                                    <p className="text-[11px] text-muted-foreground truncate">
-                                      {invite.linked_active_account_count ?? 0} active account{(invite.linked_active_account_count ?? 0) === 1 ? "" : "s"}
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                            </TableCell>
-                            <TableCell className="px-4 py-3 hidden sm:table-cell border-r">
-                              <Badge variant="outline" className={cn("capitalize text-xs", statusInfo.color)}>
-                                {isAwarded ? "Awarded" : statusInfo.status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="px-4 py-3 hidden lg:table-cell border-r">
-                              <span className="text-sm text-muted-foreground">{statusInfo.activity}</span>
-                            </TableCell>
-                            <TableCell className="px-4 py-3 text-right border-r">
-                              {submission ? (
-                                <button type="button" className="text-sm font-semibold tabular-nums hover:underline" onClick={() => openSubmissionSheet(submission)}>
-                                  {formatCurrency(submission.total_cents)}
-                                </button>
-                              ) : (
-                                <span className="text-sm text-muted-foreground">—</span>
-                              )}
-                            </TableCell>
-                            <TableCell className="px-4 py-3">
-                              <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {submission && current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
-                                  <Button size="sm" variant="outline" onClick={() => openAwardDialog(submission)} className="h-7 text-xs">
-                                    Award
-                                  </Button>
-                                )}
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    {submission && <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}><Eye className="mr-2 h-4 w-4" />View submission</DropdownMenuItem>}
-                                    <DropdownMenuItem onClick={() => handleGenerateLink(invite)}><Copy className="mr-2 h-4 w-4" />Copy link</DropdownMenuItem>
-                                    {(invite.invite_email || invite.contact?.email) && <DropdownMenuItem><Mail className="mr-2 h-4 w-4" />Resend</DropdownMenuItem>}
-                                    <DropdownMenuSeparator />
-                                    {(invite.active_access_count ?? 0) > 0 && (
-                                      <DropdownMenuItem onClick={() => handlePauseInviteAccess(invite)}>
-                                        <Ban className="mr-2 h-4 w-4" />Pause access
-                                      </DropdownMenuItem>
-                                    )}
-                                    {(invite.paused_access_count ?? 0) > 0 && (
-                                      <DropdownMenuItem onClick={() => handleResumeInviteAccess(invite)}>
-                                        <CheckCircle2 className="mr-2 h-4 w-4" />Resume access
-                                      </DropdownMenuItem>
-                                    )}
-                                    {(invite.access_total ?? 0) > 0 && (
-                                      <DropdownMenuItem
-                                        className="text-destructive focus:text-destructive"
-                                        onClick={() => handleRevokeInviteAccess(invite)}
-                                      >
-                                        <Trash2 className="mr-2 h-4 w-4" />Revoke all links
-                                      </DropdownMenuItem>
-                                    )}
-                                    {(invite.access_total ?? 0) > 0 && (
-                                      <DropdownMenuItem
-                                        onClick={() => handleSetInviteRequireAccount(invite, !(invite.require_account_enforced ?? false))}
-                                      >
-                                        <Settings className="mr-2 h-4 w-4" />
-                                        {invite.require_account_enforced ? "Allow link-only access" : "Require account access"}
-                                      </DropdownMenuItem>
-                                    )}
-                                    {(invite.linked_account_count ?? 0) > 0 && <DropdownMenuSeparator />}
-                                    {(invite.linked_active_account_count ?? 0) > 0 && (
-                                      <DropdownMenuItem onClick={() => handlePauseInviteAccounts(invite)}>
-                                        <Ban className="mr-2 h-4 w-4" />Pause linked accounts
-                                      </DropdownMenuItem>
-                                    )}
-                                    {(invite.linked_paused_account_count ?? 0) > 0 && (
-                                      <DropdownMenuItem onClick={() => handleResumeInviteAccounts(invite)}>
-                                        <CheckCircle2 className="mr-2 h-4 w-4" />Resume linked accounts
-                                      </DropdownMenuItem>
-                                    )}
-                                    {(invite.linked_account_count ?? 0) > 0 && (
-                                      <DropdownMenuItem
-                                        className="text-destructive focus:text-destructive"
-                                        onClick={() => handleRevokeInviteAccounts(invite)}
-                                      >
-                                        <Trash2 className="mr-2 h-4 w-4" />Revoke linked accounts
-                                      </DropdownMenuItem>
-                                    )}
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                  return (
+                    <div
+                      key={invite.id}
+                      className={cn(
+                        "group flex items-center gap-4 rounded-lg border bg-card px-4 py-3 transition-colors hover:bg-muted/30",
+                        isAwarded && "border-amber-500/30 bg-amber-500/[0.03]"
+                      )}
+                    >
+                      {/* Status dot */}
+                      <div className={cn(
+                        "h-2.5 w-2.5 rounded-full shrink-0",
+                        isAwarded ? "bg-amber-500" : submission ? "bg-emerald-500" : invite.status === "viewed" ? "bg-violet-500" : invite.status === "declined" ? "bg-rose-500" : invite.status === "sent" ? "bg-blue-500" : "bg-muted-foreground/40"
+                      )} />
+
+                      {/* Company info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium truncate">{invite.company?.name ?? "Unknown"}</p>
+                          {isAwarded && (
+                            <Badge variant="outline" className="border-amber-500/30 bg-amber-500/15 text-amber-600 text-[10px] px-1.5 py-0">
+                              <Trophy className="mr-0.5 h-2.5 w-2.5" />Awarded
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {invite.contact?.full_name ?? invite.invite_email ?? "No contact"}
+                          <span className="mx-1 text-border">·</span>
+                          <span className={accessInfo.color}>{accessInfo.label}</span>
+                        </p>
+                      </div>
+
+                      {/* Status + activity */}
+                      <div className="hidden sm:block w-28 shrink-0">
+                        <Badge variant="outline" className={cn("capitalize text-[10px]", statusInfo.color)}>
+                          {statusInfo.status}
+                        </Badge>
+                        <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{statusInfo.activity}</p>
+                      </div>
+
+                      {/* Amount + market signal */}
+                      <div className="text-right w-28 shrink-0">
+                        {submission ? (
+                          <>
+                            <button
+                              type="button"
+                              className="text-sm font-semibold tabular-nums hover:underline"
+                              onClick={() => openSubmissionSheet(submission)}
+                            >
+                              {formatCurrency(submission.total_cents)}
+                            </button>
+                            <div className="flex items-center justify-end gap-1.5 mt-0.5">
+                              <div className={cn("h-1.5 w-1.5 rounded-full", signalDotColor(intelligenceInfo.signal))} />
+                              <span className="text-[11px] text-muted-foreground">{intelligenceInfo.compactLabel}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">—</span>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {submission && current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
+                          <Button size="sm" variant="outline" onClick={() => openAwardDialog(submission)} className="h-7 text-xs">Award</Button>
+                        )}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            {submission && <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}><Eye className="mr-2 h-4 w-4" />View submission</DropdownMenuItem>}
+                            <DropdownMenuItem onClick={() => handleGenerateLink(invite)}><Copy className="mr-2 h-4 w-4" />Copy link</DropdownMenuItem>
+                            {(invite.invite_email || invite.contact?.email) && <DropdownMenuItem><Mail className="mr-2 h-4 w-4" />Resend</DropdownMenuItem>}
+                            <DropdownMenuSeparator />
+                            {(invite.active_access_count ?? 0) > 0 && (
+                              <DropdownMenuItem onClick={() => handlePauseInviteAccess(invite)}><Ban className="mr-2 h-4 w-4" />Pause access</DropdownMenuItem>
+                            )}
+                            {(invite.paused_access_count ?? 0) > 0 && (
+                              <DropdownMenuItem onClick={() => handleResumeInviteAccess(invite)}><CheckCircle2 className="mr-2 h-4 w-4" />Resume access</DropdownMenuItem>
+                            )}
+                            {(invite.access_total ?? 0) > 0 && (
+                              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleRevokeInviteAccess(invite)}>
+                                <Trash2 className="mr-2 h-4 w-4" />Revoke all links
+                              </DropdownMenuItem>
+                            )}
+                            {(invite.access_total ?? 0) > 0 && (
+                              <DropdownMenuItem onClick={() => handleSetInviteRequireAccount(invite, !(invite.require_account_enforced ?? false))}>
+                                <Settings className="mr-2 h-4 w-4" />{invite.require_account_enforced ? "Allow link-only access" : "Require account access"}
+                              </DropdownMenuItem>
+                            )}
+                            {(invite.linked_account_count ?? 0) > 0 && <DropdownMenuSeparator />}
+                            {(invite.linked_active_account_count ?? 0) > 0 && (
+                              <DropdownMenuItem onClick={() => handlePauseInviteAccounts(invite)}><Ban className="mr-2 h-4 w-4" />Pause linked accounts</DropdownMenuItem>
+                            )}
+                            {(invite.linked_paused_account_count ?? 0) > 0 && (
+                              <DropdownMenuItem onClick={() => handleResumeInviteAccounts(invite)}><CheckCircle2 className="mr-2 h-4 w-4" />Resume linked accounts</DropdownMenuItem>
+                            )}
+                            {(invite.linked_account_count ?? 0) > 0 && (
+                              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleRevokeInviteAccounts(invite)}>
+                                <Trash2 className="mr-2 h-4 w-4" />Revoke linked accounts
+                              </DropdownMenuItem>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Documents Sidebar */}
           <div
@@ -2089,12 +2488,9 @@ export function BidPackageDetailClientNew({
               onChange={handleFileInputChange}
               accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.dwg,.dxf,.txt,.csv,.zip"
             />
-            <Card className="flex min-h-[420px] flex-col overflow-hidden lg:h-full">
-              <CardHeader className="flex flex-row items-center justify-between border-b pb-4">
-                <div>
-                  <CardTitle className="text-base">Documents</CardTitle>
-                  <CardDescription>Package files and plans</CardDescription>
-                </div>
+            <div className="rounded-lg border bg-card flex flex-col min-h-[300px] lg:h-full">
+              <div className="flex items-center justify-between border-b px-4 py-3">
+                <h3 className="text-sm font-medium">Documents</h3>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="h-7 w-7" disabled={isUploading}>
@@ -2103,53 +2499,45 @@ export function BidPackageDetailClientNew({
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
-                      <Upload className="mr-2 h-4 w-4" />
-                      Upload new file
+                      <Upload className="mr-2 h-4 w-4" />Upload new file
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onSelect={() => setProjectFilesSheetOpen(true)}>
-                      <FolderOpen className="mr-2 h-4 w-4" />
-                      Add from project files
+                      <FolderOpen className="mr-2 h-4 w-4" />Add from project files
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </CardHeader>
-              <CardContent className="flex-1 overflow-y-auto p-3">
+              </div>
+              <div className="flex-1 overflow-y-auto p-3">
                 {packageAttachments.length === 0 ? (
                   <div
                     className={cn(
-                      "flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-colors",
+                      "flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-colors h-full min-h-[120px]",
                       isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-primary/50"
                     )}
                     onClick={() => fileInputRef.current?.click()}
                   >
-                    <Upload className="h-6 w-6 text-muted-foreground mb-2" />
-                    <p className="text-xs text-muted-foreground">
-                      {isDragging ? "Drop files" : "Drop files or click"}
-                    </p>
+                    <Upload className="h-5 w-5 text-muted-foreground mb-1.5" />
+                    <p className="text-xs text-muted-foreground">{isDragging ? "Drop files here" : "Drop files or click to upload"}</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     {attachmentsTree.children.map((node) => renderFolderNode(node))}
                     {attachmentsTree.files.length > 0 && (
                       <div className="rounded-md border bg-background/60">
-                        <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          Unsorted
-                        </div>
+                        <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unsorted</div>
                         <div className="p-1">
                           {attachmentsTree.files.map((attachment) => renderDocumentAttachmentRow(attachment))}
                         </div>
                       </div>
                     )}
                     {!hasDocumentTreeContent && (
-                      <p className="py-4 text-center text-sm text-muted-foreground">
-                        No linked files to show.
-                      </p>
+                      <p className="py-4 text-center text-sm text-muted-foreground">No linked files to show.</p>
                     )}
                   </div>
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </div>
         </div>
 

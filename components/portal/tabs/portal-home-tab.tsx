@@ -1,18 +1,25 @@
 "use client"
 
 import { format, addDays, isWithinInterval, parseISO, differenceInDays, isAfter, isBefore } from "date-fns"
+import { motion } from "framer-motion"
+import { ArrowRight, Calendar, Clock, DollarSign, AlertCircle, Camera, HardHat, Milestone } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
-import { PortalFinancialSummaryCard } from "@/components/portal/portal-financial-summary"
 import type { ClientPortalData } from "@/lib/types"
 
 interface PortalHomeTabProps {
   data: ClientPortalData
 }
 
+function formatCurrency(cents: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(cents / 100)
+}
+
 function calculateProjectProgress(data: ClientPortalData): { percent: number; label: string } {
-  // Method 1: Use schedule items progress if available
   const scheduleItems = data.schedule ?? []
   if (scheduleItems.length > 0) {
     const totalProgress = scheduleItems.reduce((sum, item) => sum + (item.progress ?? 0), 0)
@@ -20,7 +27,6 @@ function calculateProjectProgress(data: ClientPortalData): { percent: number; la
     return { percent: avgProgress, label: "based on schedule" }
   }
 
-  // Method 2: Use time-based progress if we have dates
   if (data.project.start_date && data.project.end_date) {
     const start = parseISO(data.project.start_date)
     const end = parseISO(data.project.end_date)
@@ -94,6 +100,70 @@ function getNextInvoice(data: ClientPortalData) {
   return openInvoices[0]
 }
 
+// --- SVG Progress Ring ---
+function ProgressRing({ percent, size = 180, strokeWidth = 10 }: { percent: number; size?: number; strokeWidth?: number }) {
+  const radius = (size - strokeWidth) / 2
+  const circumference = 2 * Math.PI * radius
+  const strokeDashoffset = circumference - (percent / 100) * circumference
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        {/* Background track */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="var(--border)"
+          strokeWidth={strokeWidth}
+        />
+        {/* Progress arc */}
+        <motion.circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="var(--primary)"
+          strokeWidth={strokeWidth}
+          strokeLinecap="butt"
+          strokeDasharray={circumference}
+          initial={{ strokeDashoffset: circumference }}
+          animate={{ strokeDashoffset }}
+          transition={{ duration: 1.2, ease: [0.34, 1.56, 0.64, 1] }}
+        />
+      </svg>
+      {/* Center text */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <motion.span
+          className="text-4xl font-bold tracking-tight text-foreground"
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.6, delay: 0.4 }}
+        >
+          {percent}%
+        </motion.span>
+        <span className="text-[11px] uppercase tracking-widest text-muted-foreground mt-0.5">complete</span>
+      </div>
+    </div>
+  )
+}
+
+// --- Stagger animation container ---
+const stagger = {
+  hidden: {},
+  show: {
+    transition: {
+      staggerChildren: 0.07,
+    },
+  },
+}
+
+const fadeUp = {
+  hidden: { opacity: 0, y: 16 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.25, 0.46, 0.45, 0.94] } },
+}
+
 export function PortalHomeTab({ data }: PortalHomeTabProps) {
   const pendingCount = data.pendingChangeOrders.length + data.pendingSelections.length
   const progress = calculateProjectProgress(data)
@@ -101,171 +171,318 @@ export function PortalHomeTab({ data }: PortalHomeTabProps) {
   const nextMilestone = getNextMilestoneOrInspection(data)
   const nextInvoice = getNextInvoice(data)
   const latestPhotoWeek = data.photos?.[0]
-  const latestPhotos = latestPhotoWeek?.photos?.slice(0, 3) ?? []
+  const latestPhotos = latestPhotoWeek?.photos?.slice(0, 4) ?? []
+
+  const daysRemaining = data.project.end_date
+    ? Math.max(0, differenceInDays(parseISO(data.project.end_date), new Date()))
+    : null
 
   return (
-    <div className="space-y-4">
-      {/* Progress Gauge */}
-      <Card>
-        <CardContent className="p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Project Progress</span>
-            <span className="text-2xl font-semibold">{progress.percent}%</span>
-          </div>
-          <Progress value={progress.percent} className="h-3" />
-          {progress.label && (
-            <p className="text-xs text-muted-foreground text-right">{progress.label}</p>
-          )}
-          {data.project.start_date && data.project.end_date && (
-            <div className="flex justify-between text-xs text-muted-foreground pt-1">
-              <span>Started {format(parseISO(data.project.start_date), "MMM d, yyyy")}</span>
-              <span>Target {format(parseISO(data.project.end_date), "MMM d, yyyy")}</span>
+    <motion.div
+      variants={stagger}
+      initial="hidden"
+      animate="show"
+      className="space-y-5"
+    >
+      {/* ============ HERO: Progress + Key Stats ============ */}
+      <motion.div variants={fadeUp} className="relative overflow-hidden border border-border bg-card">
+        {/* Subtle blueprint-style grid background */}
+        <div
+          className="pointer-events-none absolute inset-0 opacity-[0.03]"
+          style={{
+            backgroundImage: `
+              linear-gradient(var(--primary) 1px, transparent 1px),
+              linear-gradient(90deg, var(--primary) 1px, transparent 1px)
+            `,
+            backgroundSize: "24px 24px",
+          }}
+        />
+        <div className="relative flex flex-col sm:flex-row items-center gap-6 p-6">
+          <ProgressRing percent={progress.percent} />
+          <div className="flex-1 min-w-0 text-center sm:text-left space-y-4">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground mb-1">Project Progress</p>
+              {progress.label && (
+                <p className="text-sm text-muted-foreground">{progress.label}</p>
+              )}
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {data.financialSummary && (
-        <PortalFinancialSummaryCard summary={data.financialSummary} />
-      )}
-
-      {(nextMilestone || nextInvoice) && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Next up</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {nextMilestone && (
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{nextMilestone.name}</p>
-                  {nextMilestone.start_date && (
-                    <p className="text-xs text-muted-foreground">
-                      {nextMilestone.item_type === "inspection" ? "Inspection" : "Milestone"} · {format(parseISO(nextMilestone.start_date), "EEE, MMM d")}
-                    </p>
-                  )}
-                </div>
-                <Badge variant="outline" className="capitalize text-xs shrink-0">
-                  {nextMilestone.status.replaceAll("_", " ")}
-                </Badge>
-              </div>
-            )}
-            {nextInvoice && (
-              <div className="flex items-start justify-between gap-3 border-t pt-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{nextInvoice.title || nextInvoice.invoice_number}</p>
-                  {nextInvoice.due_date && (
-                    <p className="text-xs text-muted-foreground">
-                      Due {format(new Date(nextInvoice.due_date), "MMM d, yyyy")}
-                    </p>
-                  )}
-                </div>
-                <div className="text-right shrink-0">
-                  <Badge variant="outline" className="capitalize text-xs mb-1">
-                    {nextInvoice.status}
-                  </Badge>
-                  {(nextInvoice.balance_due_cents ?? nextInvoice.total_cents) != null && (
-                    <p className="text-sm font-semibold">
-                      ${(((nextInvoice.balance_due_cents ?? nextInvoice.total_cents) ?? 0) / 100).toLocaleString()}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {pendingCount > 0 && (
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Items needing your attention</span>
-              <Badge variant="destructive">{pendingCount}</Badge>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {(data.recentLogs.length > 0 || latestPhotos.length > 0) && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Recent updates</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {latestPhotos.length > 0 && (
+            {/* Timeline bar */}
+            {data.project.start_date && data.project.end_date && (
               <div className="space-y-2">
-                {latestPhotoWeek?.week_start && latestPhotoWeek?.week_end && (
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>{format(parseISO(data.project.start_date), "MMM d, yyyy")}</span>
+                  <span>{format(parseISO(data.project.end_date), "MMM d, yyyy")}</span>
+                </div>
+                <div className="h-1.5 w-full bg-border overflow-hidden">
+                  <motion.div
+                    className="h-full bg-primary"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${progress.percent}%` }}
+                    transition={{ duration: 1, ease: "easeOut", delay: 0.3 }}
+                  />
+                </div>
+              </div>
+            )}
+            {/* Quick stat pills */}
+            <div className="flex flex-wrap justify-center sm:justify-start gap-2">
+              {daysRemaining !== null && (
+                <div className="flex items-center gap-1.5 bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground">
+                  <Clock className="h-3.5 w-3.5" />
+                  {daysRemaining} days remaining
+                </div>
+              )}
+              {(data.schedule ?? []).filter(s => s.status === "in_progress").length > 0 && (
+                <div className="flex items-center gap-1.5 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
+                  <HardHat className="h-3.5 w-3.5" />
+                  {(data.schedule ?? []).filter(s => s.status === "in_progress").length} active tasks
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* ============ PENDING ACTIONS BANNER ============ */}
+      {pendingCount > 0 && (
+        <motion.div
+          variants={fadeUp}
+          className="flex items-center gap-3 border border-destructive/30 bg-destructive/5 p-4"
+        >
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center bg-destructive text-destructive-foreground">
+            <AlertCircle className="h-4.5 w-4.5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-foreground">{pendingCount} item{pendingCount > 1 ? "s" : ""} need your attention</p>
+            <p className="text-xs text-muted-foreground">
+              {data.pendingChangeOrders.length > 0 && `${data.pendingChangeOrders.length} change order${data.pendingChangeOrders.length > 1 ? "s" : ""}`}
+              {data.pendingChangeOrders.length > 0 && data.pendingSelections.length > 0 && " · "}
+              {data.pendingSelections.length > 0 && `${data.pendingSelections.length} selection${data.pendingSelections.length > 1 ? "s" : ""}`}
+            </p>
+          </div>
+          <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+        </motion.div>
+      )}
+
+      {/* ============ BENTO GRID: Financial + Next Up ============ */}
+      <div className={`grid gap-4 ${data.financialSummary && (nextMilestone || nextInvoice) ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+        {/* Financial Summary */}
+        {data.financialSummary && (
+          <motion.div variants={fadeUp} className="border border-border bg-card p-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs uppercase tracking-widest text-muted-foreground font-medium">Financials</span>
+            </div>
+            <div>
+              <p className="text-3xl font-bold tracking-tight text-foreground">
+                {formatCurrency(data.financialSummary.contractTotal)}
+              </p>
+              <p className="text-sm text-muted-foreground mt-0.5">contract total</p>
+            </div>
+            {/* Paid progress */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Paid</span>
+                <span className="font-medium text-foreground">
+                  {formatCurrency(data.financialSummary.totalPaid)}
+                </span>
+              </div>
+              <div className="h-2 w-full bg-border overflow-hidden">
+                <motion.div
+                  className="h-full bg-success"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${data.financialSummary.contractTotal > 0 ? Math.round((data.financialSummary.totalPaid / data.financialSummary.contractTotal) * 100) : 0}%` }}
+                  transition={{ duration: 0.8, ease: "easeOut", delay: 0.5 }}
+                />
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Remaining</span>
+                <span className="font-medium text-foreground">
+                  {formatCurrency(data.financialSummary.balanceRemaining)}
+                </span>
+              </div>
+            </div>
+            {data.financialSummary.nextDraw && (
+              <div className="border-t border-border pt-3">
+                <p className="text-xs text-muted-foreground">Next Draw</p>
+                <p className="text-sm font-semibold mt-0.5">{formatCurrency(data.financialSummary.nextDraw.amount_cents)}</p>
+                {data.financialSummary.nextDraw.due_date && (
                   <p className="text-xs text-muted-foreground">
-                    Photos · Week of {format(new Date(latestPhotoWeek.week_start), "MMM d")} – {format(new Date(latestPhotoWeek.week_end), "MMM d")}
+                    Due {format(new Date(data.financialSummary.nextDraw.due_date), "MMM d, yyyy")}
                   </p>
                 )}
-                <div className="grid grid-cols-3 gap-2">
-                  {latestPhotos.map((photo) => (
-                    <div key={photo.id} className="aspect-square rounded-md overflow-hidden bg-muted">
-                      <img src={photo.url} alt="" className="h-full w-full object-cover" />
-                    </div>
-                  ))}
-                </div>
               </div>
             )}
-            {data.recentLogs.length > 0 && (
-              <div className={latestPhotos.length > 0 ? "border-t pt-3" : ""}>
-                <p className="text-xs text-muted-foreground mb-2">Recent logs</p>
-                <div className="space-y-2">
-                  {data.recentLogs.slice(0, 3).map((log) => (
-                    <div key={log.id} className="text-sm">
-                      <p className="font-medium">
-                        {format(parseISO(log.date), "MMM d, yyyy")}
+          </motion.div>
+        )}
+
+        {/* Next Up */}
+        {(nextMilestone || nextInvoice) && (
+          <motion.div variants={fadeUp} className="border border-border bg-card p-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs uppercase tracking-widest text-muted-foreground font-medium">Coming Up</span>
+            </div>
+            <div className="space-y-4">
+              {nextMilestone && (
+                <div className="flex gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center bg-primary/10">
+                    <Milestone className="h-4.5 w-4.5 text-primary" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate">{nextMilestone.name}</p>
+                    {nextMilestone.start_date && (
+                      <p className="text-xs text-muted-foreground">
+                        {nextMilestone.item_type === "inspection" ? "Inspection" : "Milestone"} · {format(parseISO(nextMilestone.start_date), "EEE, MMM d")}
                       </p>
-                      {log.notes && <p className="text-xs text-muted-foreground line-clamp-2">{log.notes}</p>}
-                    </div>
-                  ))}
+                    )}
+                    <Badge variant="outline" className="capitalize text-[10px] mt-1.5 px-2 py-0">
+                      {nextMilestone.status.replaceAll("_", " ")}
+                    </Badge>
+                  </div>
                 </div>
-              </div>
+              )}
+              {nextInvoice && (
+                <div className={nextMilestone ? "border-t border-border pt-4" : ""}>
+                  <div className="flex gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center bg-chart-3/10">
+                      <DollarSign className="h-4.5 w-4.5 text-chart-3" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">{nextInvoice.title || nextInvoice.invoice_number}</p>
+                      {nextInvoice.due_date && (
+                        <p className="text-xs text-muted-foreground">
+                          Due {format(new Date(nextInvoice.due_date), "MMM d, yyyy")}
+                        </p>
+                      )}
+                      {(nextInvoice.balance_due_cents ?? nextInvoice.total_cents) != null && (
+                        <p className="text-lg font-bold mt-1">
+                          {formatCurrency((nextInvoice.balance_due_cents ?? nextInvoice.total_cents) ?? 0)}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </div>
+
+      {/* ============ PHOTOS ============ */}
+      {latestPhotos.length > 0 && (
+        <motion.div variants={fadeUp} className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Camera className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs uppercase tracking-widest text-muted-foreground font-medium">Latest Photos</span>
+            </div>
+            {latestPhotoWeek?.week_start && latestPhotoWeek?.week_end && (
+              <span className="text-xs text-muted-foreground">
+                Week of {format(new Date(latestPhotoWeek.week_start), "MMM d")} – {format(new Date(latestPhotoWeek.week_end), "MMM d")}
+              </span>
             )}
-          </CardContent>
-        </Card>
+          </div>
+          <div className={`grid gap-1 ${latestPhotos.length >= 3 ? "grid-cols-2 sm:grid-cols-4" : latestPhotos.length === 2 ? "grid-cols-2" : "grid-cols-1 max-w-sm"}`}>
+            {latestPhotos.map((photo, i) => (
+              <motion.div
+                key={photo.id}
+                className={`relative overflow-hidden bg-muted ${i === 0 && latestPhotos.length >= 3 ? "col-span-2 row-span-2 aspect-[4/3]" : "aspect-square"}`}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.4, delay: 0.2 + i * 0.08 }}
+              >
+                <img src={photo.url} alt="" className="h-full w-full object-cover transition-transform duration-500 hover:scale-105" />
+              </motion.div>
+            ))}
+          </div>
+        </motion.div>
       )}
 
-      {/* 2-Week Look-ahead */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">2-Week Look-ahead</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {lookahead.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No scheduled work in the next 2 weeks</p>
-          ) : (
-            lookahead.map((item) => (
-              <div key={item.id} className="flex items-center justify-between py-2 border-b last:border-0">
+      {/* ============ RECENT LOGS ============ */}
+      {data.recentLogs.length > 0 && (
+        <motion.div variants={fadeUp} className="border border-border bg-card p-5">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground font-medium mb-4">Recent Updates</p>
+          <div className="space-y-0">
+            {data.recentLogs.slice(0, 3).map((log, i) => (
+              <div key={log.id} className={`flex gap-4 py-3 ${i > 0 ? "border-t border-border" : ""}`}>
+                <div className="shrink-0 text-right" style={{ minWidth: 56 }}>
+                  <p className="text-lg font-bold leading-none text-foreground">
+                    {format(parseISO(log.date), "d")}
+                  </p>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">
+                    {format(parseISO(log.date), "MMM")}
+                  </p>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground">
+                    {format(parseISO(log.date), "EEEE")}
+                  </p>
+                  {log.notes && <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{log.notes}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
+
+      {/* ============ 2-WEEK LOOKAHEAD ============ */}
+      <motion.div variants={fadeUp} className="border border-border bg-card p-5">
+        <p className="text-xs uppercase tracking-widest text-muted-foreground font-medium mb-4">2-Week Look-ahead</p>
+        {lookahead.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">No scheduled work in the next 2 weeks</p>
+        ) : (
+          <div className="space-y-0">
+            {lookahead.map((item, i) => (
+              <div
+                key={item.id}
+                className={`flex items-center gap-4 py-3 ${i > 0 ? "border-t border-border" : ""}`}
+              >
+                {/* Status indicator */}
+                <div
+                  className="h-8 w-1 shrink-0"
+                  style={{
+                    backgroundColor: item.status === "completed"
+                      ? "var(--success)"
+                      : item.status === "in_progress"
+                        ? "var(--primary)"
+                        : "var(--border)",
+                  }}
+                />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{item.name}</p>
                   {item.start_date && (
                     <p className="text-xs text-muted-foreground">
                       {format(parseISO(item.start_date), "EEE, MMM d")}
                       {item.end_date && item.end_date !== item.start_date && (
-                        <> - {format(parseISO(item.end_date), "MMM d")}</>
+                        <> – {format(parseISO(item.end_date), "MMM d")}</>
                       )}
                     </p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 ml-2">
+                <div className="flex items-center gap-2 shrink-0">
                   {typeof item.progress === "number" && item.progress > 0 && (
-                    <span className="text-xs text-muted-foreground">{item.progress}%</span>
+                    <div className="flex items-center gap-1.5">
+                      <div className="h-1 w-12 bg-border overflow-hidden">
+                        <div
+                          className="h-full bg-primary transition-all"
+                          style={{ width: `${item.progress}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] font-medium text-muted-foreground w-7 text-right">{item.progress}%</span>
+                    </div>
                   )}
                   <Badge
                     variant={item.status === "in_progress" ? "default" : "secondary"}
-                    className="capitalize text-xs"
+                    className="capitalize text-[10px] px-2 py-0"
                   >
                     {item.status.replaceAll("_", " ")}
                   </Badge>
                 </div>
               </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-    </div>
+            ))}
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
   )
 }

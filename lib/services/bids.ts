@@ -1194,29 +1194,29 @@ export async function listBidSubmissions(bidPackageId: string, orgId?: string): 
   }))
 
   const serviceSupabase = createServiceSupabaseClient()
-  const benchmarkPairs = await Promise.all(
-    rows.map(async (row) => {
-      try {
-        const { data: benchmarkData, error: benchmarkError } = await serviceSupabase.rpc(
-          "record_bid_submission_benchmark",
-          { p_bid_submission_id: row.id },
-        )
-        if (benchmarkError) {
-          throw benchmarkError
-        }
-        const benchmarkRow = Array.isArray(benchmarkData) ? benchmarkData[0] : benchmarkData
-        return [row.id, benchmarkRow ? mapBidSubmissionBenchmark(benchmarkRow) : undefined] as const
-      } catch (benchmarkError) {
-        console.warn("Failed to load bid benchmark signal", {
-          submissionId: row.id,
-          error: (benchmarkError as Error)?.message,
-        })
-        return [row.id, undefined] as const
-      }
-    }),
-  )
+  const benchmarkBySubmissionId = new Map<string, BidSubmissionBenchmark | undefined>()
 
-  const benchmarkBySubmissionId = new Map<string, BidSubmissionBenchmark | undefined>(benchmarkPairs)
+  try {
+    const { data: benchmarkRows, error: benchmarkError } = await serviceSupabase.rpc(
+      "record_bid_submission_benchmarks",
+      { p_bid_submission_ids: rows.map((row) => row.id) },
+    )
+    if (benchmarkError) {
+      throw benchmarkError
+    }
+
+    for (const row of benchmarkRows ?? []) {
+      const submissionId = (row as any)?.bid_submission_id as string | undefined
+      if (!submissionId) continue
+      benchmarkBySubmissionId.set(submissionId, mapBidSubmissionBenchmark(row))
+    }
+  } catch (benchmarkError) {
+    console.warn("Failed to load bid benchmark signals", {
+      submissionIds: rows.map((row) => row.id),
+      error: (benchmarkError as Error)?.message,
+    })
+  }
+
   return rows.map((row) => ({
     ...row,
     benchmark: benchmarkBySubmissionId.get(row.id),

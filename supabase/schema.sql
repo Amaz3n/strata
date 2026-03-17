@@ -875,3 +875,216 @@ CREATE POLICY variance_alerts_access ON public.variance_alerts FOR ALL USING ((a
 CREATE POLICY vendor_bills_access ON public.vendor_bills FOR ALL USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id)) WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
 CREATE POLICY workflow_runs_access ON public.workflow_runs FOR ALL USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id)) WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
 CREATE POLICY workflows_access ON public.workflows FOR ALL USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id)) WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
+
+-- Incremental module tables added after the 2025-12 reconciliation snapshot.
+-- Source migrations:
+-- - 20260201_opportunities_bids_foundation.sql
+-- - 20260305120000_ai_search_overhaul_foundation.sql
+-- - 20260306102000_ai_search_actions_queue.sql
+-- - 20260307110000_ai_search_action_status_running.sql
+
+CREATE TABLE IF NOT EXISTS public.bid_packages (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  project_id uuid NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  trade text,
+  scope text,
+  instructions text,
+  due_at timestamp with time zone,
+  status text NOT NULL DEFAULT 'draft'::text
+    CHECK (status = ANY (ARRAY['draft'::text, 'sent'::text, 'open'::text, 'closed'::text, 'awarded'::text, 'cancelled'::text])),
+  created_by uuid REFERENCES public.app_users(id) ON DELETE SET NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS bid_packages_org_project_status_idx
+  ON public.bid_packages (org_id, project_id, status);
+
+CREATE INDEX IF NOT EXISTS bid_packages_project_due_idx
+  ON public.bid_packages (project_id, due_at);
+
+CREATE TABLE IF NOT EXISTS public.bid_invites (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  bid_package_id uuid NOT NULL REFERENCES public.bid_packages(id) ON DELETE CASCADE,
+  company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  contact_id uuid REFERENCES public.contacts(id) ON DELETE SET NULL,
+  invite_email public.citext,
+  status text NOT NULL DEFAULT 'draft'::text
+    CHECK (status = ANY (ARRAY['draft'::text, 'sent'::text, 'viewed'::text, 'declined'::text, 'submitted'::text, 'withdrawn'::text])),
+  sent_at timestamp with time zone,
+  last_viewed_at timestamp with time zone,
+  submitted_at timestamp with time zone,
+  declined_at timestamp with time zone,
+  created_by uuid REFERENCES public.app_users(id) ON DELETE SET NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  UNIQUE (bid_package_id, company_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS bid_invites_package_contact_uidx
+  ON public.bid_invites (bid_package_id, contact_id)
+  WHERE contact_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS bid_invites_package_email_uidx
+  ON public.bid_invites (bid_package_id, invite_email)
+  WHERE invite_email IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS public.bid_submissions (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  bid_invite_id uuid NOT NULL REFERENCES public.bid_invites(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'submitted'::text
+    CHECK (status = ANY (ARRAY['draft'::text, 'submitted'::text, 'revised'::text, 'withdrawn'::text])),
+  version integer NOT NULL DEFAULT 1,
+  is_current boolean NOT NULL DEFAULT true,
+  total_cents integer,
+  currency text NOT NULL DEFAULT 'usd'::text,
+  valid_until date,
+  lead_time_days integer,
+  duration_days integer,
+  start_available_on date,
+  exclusions text,
+  clarifications text,
+  notes text,
+  submitted_by_name text,
+  submitted_by_email public.citext,
+  submitted_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS bid_submissions_current_uidx
+  ON public.bid_submissions (bid_invite_id)
+  WHERE is_current = true;
+
+CREATE TABLE IF NOT EXISTS public.ai_search_sessions (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  mode text NOT NULL DEFAULT 'org'::text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT ai_search_sessions_mode_check CHECK (mode = ANY (ARRAY['org'::text, 'general'::text]))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_search_sessions_org_user_updated
+  ON public.ai_search_sessions (org_id, user_id, updated_at DESC);
+
+DROP TRIGGER IF EXISTS ai_search_sessions_set_updated_at ON public.ai_search_sessions;
+CREATE TRIGGER ai_search_sessions_set_updated_at
+BEFORE UPDATE ON public.ai_search_sessions
+FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
+
+CREATE TABLE IF NOT EXISTS public.search_documents (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  entity_type text NOT NULL,
+  entity_id uuid NOT NULL,
+  project_id uuid REFERENCES public.projects(id) ON DELETE SET NULL,
+  title text NOT NULL DEFAULT ''::text,
+  body text NOT NULL DEFAULT ''::text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  search_vector tsvector GENERATED ALWAYS AS (
+    to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(body, ''::text)))
+  ) STORED,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_search_documents_entity
+  ON public.search_documents (org_id, entity_type, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_search_documents_project_updated
+  ON public.search_documents (org_id, project_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_search_documents_vector
+  ON public.search_documents USING gin (search_vector);
+
+DROP TRIGGER IF EXISTS search_documents_set_updated_at ON public.search_documents;
+CREATE TRIGGER search_documents_set_updated_at
+BEFORE UPDATE ON public.search_documents
+FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
+
+CREATE TABLE IF NOT EXISTS public.ai_search_action_requests (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  session_id uuid REFERENCES public.ai_search_sessions(id) ON DELETE SET NULL,
+  tool_key text NOT NULL,
+  title text NOT NULL,
+  summary text NOT NULL,
+  args jsonb NOT NULL DEFAULT '{}'::jsonb,
+  requires_approval boolean NOT NULL DEFAULT true,
+  status text NOT NULL DEFAULT 'proposed'::text,
+  result jsonb NOT NULL DEFAULT '{}'::jsonb,
+  error text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  executed_at timestamp with time zone,
+  expires_at timestamp with time zone NOT NULL DEFAULT (now() + '7 days'::interval),
+  CONSTRAINT ai_search_action_requests_status_check
+    CHECK (status = ANY (ARRAY['proposed'::text, 'running'::text, 'executed'::text, 'rejected'::text, 'failed'::text]))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_search_action_requests_org_user_created
+  ON public.ai_search_action_requests (org_id, user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ai_search_action_requests_status
+  ON public.ai_search_action_requests (org_id, user_id, status, created_at DESC);
+
+DROP TRIGGER IF EXISTS ai_search_action_requests_set_updated_at ON public.ai_search_action_requests;
+CREATE TRIGGER ai_search_action_requests_set_updated_at
+BEFORE UPDATE ON public.ai_search_action_requests
+FOR EACH ROW EXECUTE FUNCTION public.tg_set_updated_at();
+
+ALTER TABLE public.bid_packages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bid_invites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bid_submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ai_search_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.search_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ai_search_action_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS bid_packages_access ON public.bid_packages;
+CREATE POLICY bid_packages_access ON public.bid_packages FOR ALL
+USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id))
+WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
+
+DROP POLICY IF EXISTS bid_invites_access ON public.bid_invites;
+CREATE POLICY bid_invites_access ON public.bid_invites FOR ALL
+USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id))
+WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
+
+DROP POLICY IF EXISTS bid_submissions_access ON public.bid_submissions;
+CREATE POLICY bid_submissions_access ON public.bid_submissions FOR ALL
+USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id))
+WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
+
+DROP POLICY IF EXISTS ai_search_sessions_access ON public.ai_search_sessions;
+CREATE POLICY ai_search_sessions_access ON public.ai_search_sessions FOR ALL
+USING (
+  (auth.role() = 'service_role'::text)
+  OR (is_org_member(org_id) AND (auth.uid() = user_id))
+)
+WITH CHECK (
+  (auth.role() = 'service_role'::text)
+  OR (is_org_member(org_id) AND (auth.uid() = user_id))
+);
+
+DROP POLICY IF EXISTS search_documents_access ON public.search_documents;
+CREATE POLICY search_documents_access ON public.search_documents FOR ALL
+USING ((auth.role() = 'service_role'::text) OR is_org_member(org_id))
+WITH CHECK ((auth.role() = 'service_role'::text) OR is_org_member(org_id));
+
+DROP POLICY IF EXISTS ai_search_action_requests_access ON public.ai_search_action_requests;
+CREATE POLICY ai_search_action_requests_access ON public.ai_search_action_requests FOR ALL
+USING (
+  (auth.role() = 'service_role'::text)
+  OR (is_org_member(org_id) AND (auth.uid() = user_id))
+)
+WITH CHECK (
+  (auth.role() = 'service_role'::text)
+  OR (is_org_member(org_id) AND (auth.uid() = user_id))
+);

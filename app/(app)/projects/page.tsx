@@ -9,9 +9,7 @@ export default async function ProjectsPage() {
 
   return (
     <PageLayout title="Projects">
-      <div className="space-y-6">
-        <ProjectsClient projects={projects} />
-      </div>
+      <ProjectsClient projects={projects} />
     </PageLayout>
   )
 }

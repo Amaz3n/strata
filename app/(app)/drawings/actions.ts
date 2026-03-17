@@ -84,6 +84,7 @@ import type {
   MarkupType,
 } from "@/lib/validation/drawings"
 import { createFileRecord } from "@/lib/services/files"
+import { triggerDrawingsWorker } from "@/lib/services/drawings-worker"
 import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
@@ -253,6 +254,10 @@ export async function createDrawingSetFromUpload(input: {
       })
     } else {
       console.log(`[Upload] Successfully queued processing job for drawing set: ${drawingSet.id}`)
+      const trigger = await triggerDrawingsWorker({ reason: "drawing_set_uploaded" })
+      if (!trigger.triggered) {
+        console.warn("[Upload] Failed to trigger drawings worker:", trigger.error)
+      }
     }
   } catch (error) {
     console.error("Failed to queue processing job:", error)
@@ -362,6 +367,11 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
         status: "failed",
         error_message: "Failed to queue processing",
       })
+    } else {
+      const trigger = await triggerDrawingsWorker({ reason: "drawing_set_retry" })
+      if (!trigger.triggered) {
+        console.warn("[Retry] Failed to trigger drawings worker:", trigger.error)
+      }
     }
   } catch (error) {
     console.error("Failed to queue drawing processing:", error)
@@ -744,6 +754,16 @@ export async function queueTileGenerationForExistingSheetsAction(): Promise<{
 
   if (insertError) {
     throw new Error(`Failed to queue tile generation jobs: ${insertError.message}`)
+  }
+
+  const trigger = await triggerDrawingsWorker({
+    reason: "tile_backfill",
+    maxBatches: 50,
+    batchSize: 10,
+    timeoutMs: 10_000,
+  })
+  if (!trigger.triggered) {
+    console.warn("[TileBackfill] Failed to trigger drawings worker:", trigger.error)
   }
 
   revalidatePath("/drawings")

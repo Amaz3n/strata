@@ -60,7 +60,7 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
     >
       <div className="h-full flex flex-col">
         <div className="flex-1 overflow-y-auto">
-          <div className="space-y-4 p-4 lg:p-6 flex flex-col h-full">
+          <div className="space-y-3 p-2 sm:p-3 lg:space-y-4 lg:p-6 flex flex-col h-full">
             {/* Header Card: Project info + actions + setup checklist */}
             <ProjectOverviewActions
               project={project}
@@ -88,7 +88,7 @@ export default async function ProjectDetailPage({ params }: ProjectDetailPagePro
             />
 
             {/* Attention + Coming Up */}
-            <div className="grid gap-4 lg:grid-cols-2 flex-1 min-h-0">
+            <div className="grid gap-3 lg:gap-4 lg:grid-cols-2 flex-1 min-h-0">
               {attentionRequired.length > 0 && (
                 <ProjectOverviewAttention
                   items={attentionRequired}

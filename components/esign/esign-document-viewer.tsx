@@ -46,12 +46,12 @@ export type ESignFieldDraft = {
 }
 
 const FIELD_SIZES: Record<DocumentFieldType, { w: number; h: number; minW: number; minH: number }> = {
-  signature: { w: 200, h: 60, minW: 120, minH: 40 },
-  initials: { w: 80, h: 44, minW: 50, minH: 30 },
-  name: { w: 180, h: 32, minW: 100, minH: 24 },
-  text: { w: 200, h: 32, minW: 80, minH: 24 },
-  date: { w: 120, h: 32, minW: 80, minH: 24 },
-  checkbox: { w: 24, h: 24, minW: 18, minH: 18 },
+  signature: { w: 72, h: 36, minW: 56, minH: 28 },
+  initials: { w: 56, h: 36, minW: 44, minH: 28 },
+  name: { w: 140, h: 26, minW: 80, minH: 20 },
+  text: { w: 140, h: 26, minW: 60, minH: 20 },
+  date: { w: 100, h: 26, minW: 70, minH: 20 },
+  checkbox: { w: 18, h: 18, minW: 14, minH: 14 },
 }
 
 const FIELD_CONFIG: Record<DocumentFieldType, { label: string; icon: typeof PenLine; shortLabel: string }> = {
@@ -79,13 +79,13 @@ const FONT_FAMILIES = [
   { value: "mono", label: "Monospace" },
 ]
 
-// Color classes for signers - maps to CSS variables defined in globals.css
+// Color classes for signers - maps to CSS classes defined in globals.css
 const SIGNER_COLORS = [
-  "signer-color-1", // Blue (primary)
-  "signer-color-2", // Green
-  "signer-color-3", // Amber
-  "signer-color-4", // Purple
-  "signer-color-5", // Rose
+  "esign-field-signer-1", // Blue
+  "esign-field-signer-2", // Green
+  "esign-field-signer-3", // Amber
+  "esign-field-signer-4", // Purple
+  "esign-field-signer-5", // Rose
 ]
 
 export type SignerRoleOption = {
@@ -566,7 +566,7 @@ export function ESignDocumentViewer({
                         {signerRoles.map((role, index) => (
                           <SelectItem key={role.value} value={role.value}>
                             <div className="flex items-center gap-2">
-                              <div className={cn("w-2 h-2 rounded-full esign-field-dot", SIGNER_COLORS[index % SIGNER_COLORS.length])} />
+                              <div className={cn("w-2 h-2 rounded-full", SIGNER_COLORS[index % SIGNER_COLORS.length])} style={{ backgroundColor: "var(--esign-color)" }} />
                               <span>{role.label}</span>
                             </div>
                           </SelectItem>
@@ -722,7 +722,7 @@ export function ESignDocumentViewer({
                       {/* PDF Page with field overlay */}
                       <div
                         className={cn(
-                          "relative rounded-lg border bg-white shadow-sm overflow-hidden",
+                          "relative border bg-white shadow-sm overflow-hidden",
                           activeTool ? "cursor-crosshair" : "cursor-default",
                         )}
                         onClick={(event) => {
@@ -773,175 +773,107 @@ export function ESignDocumentViewer({
                                   startDragField(event, field)
                                 }}
                               >
-                                {/* Field visual based on type */}
-                                {field.field_type === "signature" && (
+                                {/* Field box */}
+                                {(field.field_type === "signature" || field.field_type === "initials") ? (
+                                  /* Signature/Initials — compact tag with baseline */
                                   <div
                                     className={cn(
-                                      "h-full rounded-lg border-2 border-dashed esign-field",
-                                      "text-zinc-800 dark:text-zinc-800",
-                                      "flex flex-col items-center justify-center gap-1",
-                                      "bg-gradient-to-br from-white/80 to-white/40",
-                                      isSelected && "ring-2 ring-primary ring-offset-1",
+                                      "h-full w-full border flex flex-col",
+                                      isSelected && "ring-2 ring-offset-1",
                                       colorClass,
                                     )}
+                                    style={{
+                                      backgroundColor: "var(--esign-bg)",
+                                      borderColor: "var(--esign-color)",
+                                      ...(isSelected ? { "--tw-ring-color": "var(--esign-color)" } as React.CSSProperties : {}),
+                                    }}
                                   >
-                                    <PenLine className="h-5 w-5 opacity-40" />
-                                    <span className="text-[10px] font-medium opacity-60">Sign here</span>
-                                    <span className="text-[9px] opacity-40">{signerLabel}</span>
+                                    <div className="flex-1 flex items-center justify-center gap-1.5 px-1">
+                                      <Icon className="h-3 w-3 flex-shrink-0" style={{ color: "var(--esign-color)" }} />
+                                      <span className="text-[9px] font-semibold leading-none" style={{ color: "var(--esign-color)" }}>
+                                        {field.field_type === "signature" ? "Sign" : "Initial"}
+                                      </span>
+                                    </div>
+                                    {/* Baseline — align this with the document's signature line */}
+                                    <div className="mx-1 mb-1" style={{ borderBottom: "1.5px solid var(--esign-color)", opacity: 0.4 }} />
+                                  </div>
+                                ) : field.field_type === "checkbox" ? (
+                                  /* Checkbox — small square */
+                                  <div
+                                    className={cn(
+                                      "h-full w-full border flex items-center justify-center",
+                                      isSelected && "ring-2 ring-offset-1",
+                                      colorClass,
+                                    )}
+                                    style={{
+                                      backgroundColor: "color-mix(in oklch, var(--esign-bg) 70%, transparent)",
+                                      borderColor: "var(--esign-color)",
+                                      ...(isSelected ? { "--tw-ring-color": "var(--esign-color)" } as React.CSSProperties : {}),
+                                    }}
+                                  >
+                                    <Check className="h-2.5 w-2.5" style={{ color: "var(--esign-color)", opacity: 0.5 }} />
+                                  </div>
+                                ) : (
+                                  /* Text/Name/Date — inline field with baseline */
+                                  <div
+                                    className={cn(
+                                      "h-full w-full border",
+                                      isSelected && "ring-2 ring-offset-1",
+                                      colorClass,
+                                    )}
+                                    style={{
+                                      backgroundColor: "color-mix(in oklch, var(--esign-bg) 70%, transparent)",
+                                      borderColor: "var(--esign-color)",
+                                      ...(isSelected ? { "--tw-ring-color": "var(--esign-color)" } as React.CSSProperties : {}),
+                                    }}
+                                  >
+                                    <div className="h-full w-full flex flex-col justify-between">
+                                      <div className="flex items-center gap-1 px-1.5 pt-0.5">
+                                        <Icon className="h-2.5 w-2.5 flex-shrink-0" style={{ color: "var(--esign-color)" }} />
+                                        <span className="text-[9px] font-medium leading-none truncate" style={{ color: "var(--esign-color)" }}>
+                                          {fieldConfig.label}
+                                        </span>
+                                      </div>
+                                      <div className="mx-1.5 mb-1" style={{ borderBottom: "1px dashed var(--esign-color)", opacity: 0.5 }} />
+                                    </div>
                                   </div>
                                 )}
 
-                                {field.field_type === "initials" && (
-                                  <div
-                                    className={cn(
-                                      "h-full rounded-lg border-2 border-dashed esign-field",
-                                      "text-zinc-800 dark:text-zinc-800",
-                                      "flex flex-col items-center justify-center",
-                                      "bg-gradient-to-br from-white/80 to-white/40",
-                                      isSelected && "ring-2 ring-primary ring-offset-1",
-                                      colorClass,
-                                    )}
-                                  >
-                                    <span className="text-xs font-semibold opacity-50">AB</span>
-                                    <span className="text-[8px] opacity-40">{signerLabel}</span>
-                                  </div>
-                                )}
-
-                                {field.field_type === "name" && (
-                                  <div
-                                    className={cn(
-                                      "h-full rounded border-2 esign-field",
-                                      "text-zinc-800 dark:text-zinc-800",
-                                      "flex items-center px-2 gap-1.5",
-                                      "bg-white/60",
-                                      isSelected && "ring-2 ring-primary ring-offset-1",
-                                      colorClass,
-                                    )}
-                                  >
-                                    <User className="h-3.5 w-3.5 opacity-40 flex-shrink-0" />
-                                    <div className="flex-1 border-b border-current/20" />
-                                    <span className="text-[8px] opacity-40 flex-shrink-0">{signerLabel}</span>
-                                  </div>
-                                )}
-
-                                {field.field_type === "text" && (
-                                  <div
-                                    className={cn(
-                                      "h-full rounded border-2 esign-field",
-                                      "text-zinc-800 dark:text-zinc-800",
-                                      "flex items-center px-2 gap-1.5",
-                                      "bg-white/60",
-                                      isSelected && "ring-2 ring-primary ring-offset-1",
-                                      colorClass,
-                                    )}
-                                  >
-                                    <Type className="h-3.5 w-3.5 opacity-40 flex-shrink-0" />
-                                    <div className="flex-1 border-b border-current/20" />
-                                    <span className="text-[8px] opacity-40 flex-shrink-0">{signerLabel}</span>
-                                  </div>
-                                )}
-
-                                {field.field_type === "date" && (
-                                  <div
-                                    className={cn(
-                                      "h-full rounded border-2 esign-field",
-                                      "text-zinc-800 dark:text-zinc-800",
-                                      "flex items-center px-2 gap-1.5",
-                                      "bg-white/60",
-                                      isSelected && "ring-2 ring-primary ring-offset-1",
-                                      colorClass,
-                                    )}
-                                  >
-                                    <Calendar className="h-3.5 w-3.5 opacity-40 flex-shrink-0" />
-                                    <span className="text-[10px] opacity-40">MM/DD/YYYY</span>
-                                    <span className="text-[8px] opacity-40 flex-shrink-0 ml-auto">{signerLabel}</span>
-                                  </div>
-                                )}
-
-                                {field.field_type === "checkbox" && (
-                                  <div
-                                    className={cn(
-                                      "h-full rounded border-2 esign-field",
-                                      "text-zinc-800 dark:text-zinc-800",
-                                      "flex items-center justify-center",
-                                      "bg-white/60",
-                                      isSelected && "ring-2 ring-primary ring-offset-1",
-                                      colorClass,
-                                    )}
-                                  >
-                                    <Check className="h-3 w-3 opacity-30" />
-                                  </div>
-                                )}
-
-                                {/* Resize handles - show on hover or selection */}
-                                {(isSelected || field.field_type !== "checkbox") && (
+                                {/* Resize handles */}
+                                {isSelected && (
                                   <>
                                     <div
-                                      data-resize="se"
-                                      className={cn(
-                                        "absolute -bottom-1.5 -right-1.5 h-3 w-3 rounded-full bg-primary border-2 border-white",
-                                        "cursor-se-resize opacity-0 group-hover:opacity-100 transition-opacity shadow-sm",
-                                        isSelected && "opacity-100",
-                                      )}
-                                      onMouseDown={(e) => startResizeField(e, field, "se")}
-                                    />
-                                    {isSelected && (
-                                      <>
-                                        <div
-                                          data-resize="sw"
-                                          className="absolute -bottom-1.5 -left-1.5 h-3 w-3 rounded-full bg-primary border-2 border-white cursor-sw-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "sw")}
-                                        />
-                                        <div
-                                          data-resize="ne"
-                                          className="absolute -top-1.5 -right-1.5 h-3 w-3 rounded-full bg-primary border-2 border-white cursor-ne-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "ne")}
-                                        />
-                                        <div
-                                          data-resize="nw"
-                                          className="absolute -top-1.5 -left-1.5 h-3 w-3 rounded-full bg-primary border-2 border-white cursor-nw-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "nw")}
-                                        />
-                                        <div
-                                          data-resize="e"
-                                          className="absolute top-1/2 -right-1.5 h-4 w-2 -translate-y-1/2 rounded-full bg-primary border-2 border-white cursor-e-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "e")}
-                                        />
-                                        <div
-                                          data-resize="w"
-                                          className="absolute top-1/2 -left-1.5 h-4 w-2 -translate-y-1/2 rounded-full bg-primary border-2 border-white cursor-w-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "w")}
-                                        />
-                                        <div
-                                          data-resize="n"
-                                          className="absolute -top-1.5 left-1/2 h-2 w-4 -translate-x-1/2 rounded-full bg-primary border-2 border-white cursor-n-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "n")}
-                                        />
-                                        <div
-                                          data-resize="s"
-                                          className="absolute -bottom-1.5 left-1/2 h-2 w-4 -translate-x-1/2 rounded-full bg-primary border-2 border-white cursor-s-resize shadow-sm"
-                                          onMouseDown={(e) => startResizeField(e, field, "s")}
-                                        />
-                                      </>
-                                    )}
+                                      data-resize="e"
+                                      className="absolute top-0 -right-1 h-full w-2 cursor-e-resize flex items-center justify-center"
+                                      onMouseDown={(e) => startResizeField(e, field, "e")}
+                                    >
+                                      <div className="h-3 w-1 shadow-sm" style={{ backgroundColor: "var(--esign-color)", border: "1px solid white" }} />
+                                    </div>
+                                    <div
+                                      data-resize="w"
+                                      className="absolute top-0 -left-1 h-full w-2 cursor-w-resize flex items-center justify-center"
+                                      onMouseDown={(e) => startResizeField(e, field, "w")}
+                                    >
+                                      <div className="h-3 w-1 shadow-sm" style={{ backgroundColor: "var(--esign-color)", border: "1px solid white" }} />
+                                    </div>
                                   </>
                                 )}
 
-                                {/* Delete button - appears on hover */}
+                                {/* Delete button */}
                                 <button
                                   type="button"
                                   className={cn(
-                                    "absolute -top-2 -right-2 h-5 w-5 rounded-full bg-destructive text-destructive-foreground",
+                                    "absolute -top-2 -right-2 h-4 w-4 bg-destructive text-destructive-foreground",
                                     "flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity",
                                     "shadow-sm hover:bg-destructive/90 z-10",
-                                    isSelected && "opacity-100 -top-3 -right-3",
+                                    isSelected && "opacity-100",
                                   )}
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleRemoveField(field.id)
                                   }}
                                 >
-                                  <Trash2 className="h-3 w-3" />
+                                  <X className="h-2.5 w-2.5" />
                                 </button>
                               </div>
                             )

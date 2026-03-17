@@ -4,7 +4,7 @@ A Cloud Run worker for processing PDF drawing sets into tiled images.
 
 ## Overview
 
-This worker polls the Supabase `outbox` table for drawing-related jobs and processes them asynchronously, removing the need for heavy PDF processing in Next.js routes.
+This worker processes drawing jobs on demand. The app enqueues jobs in Supabase `outbox` and then calls the worker's `/process` endpoint to run batches immediately.
 
 ## Supported Job Types
 
@@ -26,6 +26,10 @@ This worker polls the Supabase `outbox` table for drawing-related jobs and proce
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+DRAWINGS_WORKER_SECRET=shared-secret-used-by-app-and-worker
+DRAWINGS_WORKER_PROCESS_PATH=/process
+DRAWINGS_WORKER_BATCH_SIZE=5
+DRAWINGS_WORKER_MAX_BATCHES=20
 
 # R2 (required when DRAWINGS_TILES_STORAGE=r2)
 DRAWINGS_TILES_STORAGE=r2
@@ -37,6 +41,17 @@ R2_SECRET_ACCESS_KEY=your-r2-secret-key
 R2_REGION=auto
 R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
 R2_FORCE_PATH_STYLE=true
+```
+
+App-side environment variables (Next.js server):
+
+```bash
+DRAWINGS_WORKER_URL=https://drawings-worker-<hash>-uc.a.run.app
+DRAWINGS_WORKER_SECRET=shared-secret-used-by-app-and-worker
+DRAWINGS_WORKER_PROCESS_PATH=/process
+DRAWINGS_WORKER_TIMEOUT_MS=4000
+DRAWINGS_WORKER_BATCH_SIZE=5
+DRAWINGS_WORKER_MAX_BATCHES=20
 ```
 
 ## Development
@@ -77,12 +92,23 @@ gcloud run deploy drawings-worker \
   --allow-unauthenticated \
   --set-env-vars SUPABASE_URL=$SUPABASE_URL \
   --set-secrets SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest \
-  --min-instances 1 \
+  --set-env-vars DRAWINGS_WORKER_SECRET=$DRAWINGS_WORKER_SECRET \
+  --min-instances 0 \
   --max-instances 5 \
   --cpu 2 \
   --memory 2Gi \
+  --cpu-throttling \
   --timeout 3600
 ```
+
+## Endpoints
+
+- `GET /health` - Health check.
+- `POST /process` - Claims and processes queued drawing jobs.
+  - Requires `Authorization: Bearer $DRAWINGS_WORKER_SECRET` in production.
+  - Optional JSON body:
+    - `batchSize` (number)
+    - `maxBatches` (number)
 
 ## Architecture
 

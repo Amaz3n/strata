@@ -2,7 +2,6 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
 
 // Search result types
 export interface SearchResult {
@@ -62,10 +61,10 @@ export interface SearchOptions {
   offset?: number
   sortBy?: 'relevance' | 'created_at' | 'updated_at'
   sortOrder?: 'asc' | 'desc'
+  preferFast?: boolean
 }
 
-// Entity search configurations
-const SEARCH_CONFIGS: Record<SearchEntityType, {
+type SearchEntityConfig = {
   table: string
   titleField: string
   subtitleFields?: string[]
@@ -74,7 +73,196 @@ const SEARCH_CONFIGS: Record<SearchEntityType, {
   hrefTemplate: string
   filters?: Record<string, any>
   joins?: string[]
-}> = {
+}
+
+const DEFAULT_SEARCH_LIMIT = 50
+const UNIFIED_INDEX_SHORT_CIRCUIT_RATIO = 0.6
+const UNIFIED_INDEX_SHORT_CIRCUIT_MIN = 8
+const ENTITY_QUERY_MIN_LIMIT = 6
+const ENTITY_QUERY_MAX_LIMIT = 20
+const SEARCH_DOCUMENT_BACKFILL_TTL_MS = 1000 * 60 * 10
+const SEARCH_DOCUMENT_BACKFILL_MAX_BATCH = 12
+
+const searchDocumentBackfillSeenAt = new Map<string, number>()
+
+function sanitizeSearchTerm(query: string) {
+  return query
+    .replace(/[,%()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function shouldForceEntityFanout(filters: SearchFilters) {
+  return Boolean(
+    filters.projectId ||
+      (filters.status && filters.status.length > 0) ||
+      filters.dateFrom ||
+      filters.dateTo ||
+      filters.amountMin !== undefined ||
+      filters.amountMax !== undefined ||
+      filters.createdBy,
+  )
+}
+
+function shouldShortCircuitUnifiedIndex(indexedCount: number, limit: number, filters: SearchFilters, preferFast = false) {
+  if (shouldForceEntityFanout(filters)) return false
+  if (preferFast) {
+    const fastTarget = Math.min(limit, Math.max(1, Math.ceil(limit * 0.25)))
+    return indexedCount >= fastTarget
+  }
+  const target = Math.min(limit, Math.max(UNIFIED_INDEX_SHORT_CIRCUIT_MIN, Math.ceil(limit * UNIFIED_INDEX_SHORT_CIRCUIT_RATIO)))
+  return indexedCount >= target
+}
+
+function pruneSearchDocumentBackfillCache(now = Date.now()) {
+  if (searchDocumentBackfillSeenAt.size === 0) return
+  for (const [key, seenAt] of searchDocumentBackfillSeenAt.entries()) {
+    if (now - seenAt > SEARCH_DOCUMENT_BACKFILL_TTL_MS) {
+      searchDocumentBackfillSeenAt.delete(key)
+    }
+  }
+}
+
+function buildSearchDocumentBackfillKey(orgId: string, result: SearchResult) {
+  return `${orgId}:${result.type}:${result.id}:${result.updated_at ?? result.created_at ?? ""}`
+}
+
+function buildEntitySelectClause(entityType: SearchEntityType, config: SearchEntityConfig, includeProject: boolean) {
+  const fields = new Set<string>(["id", "created_at", "updated_at", config.titleField])
+  if (entityType !== "project") fields.add("project_id")
+  for (const field of config.subtitleFields ?? []) fields.add(field)
+  for (const field of config.descriptionFields ?? []) fields.add(field)
+
+  const baseSelect = Array.from(fields).join(",")
+  return includeProject && entityType !== "project" ? `${baseSelect},projects(name)` : baseSelect
+}
+
+function isSearchEntityType(value: unknown): value is SearchEntityType {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(SEARCH_CONFIGS, value)
+}
+
+async function searchViaUnifiedIndex(
+  supabase: SupabaseClient,
+  orgId: string,
+  query: string,
+  entityTypes: SearchEntityType[],
+  limit: number,
+): Promise<SearchResult[]> {
+  const cleaned = sanitizeSearchTerm(query)
+  if (!cleaned) return []
+
+  const { data, error } = await supabase
+    .from("search_documents")
+    .select("entity_type,entity_id,title,project_id,metadata,updated_at,created_at")
+    .eq("org_id", orgId)
+    .textSearch("search_vector", cleaned, {
+      type: "websearch",
+      config: "english",
+    })
+    .limit(Math.max(limit, 50))
+
+  if (error || !Array.isArray(data)) {
+    return []
+  }
+
+  const allowedTypes = new Set<SearchEntityType>(entityTypes)
+  const rows = data
+    .map((entry) => {
+      const row = entry as Record<string, unknown>
+      const type = isSearchEntityType(row.entity_type) ? row.entity_type : null
+      if (!type) return null
+      if (allowedTypes.size > 0 && !allowedTypes.has(type)) return null
+
+      const id = typeof row.entity_id === "string" ? row.entity_id : null
+      if (!id) return null
+
+      const metadata = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {}
+      const config = SEARCH_CONFIGS[type]
+      const href =
+        typeof metadata.href === "string" && metadata.href.length > 0
+          ? metadata.href
+          : config.hrefTemplate.replace("{id}", id)
+
+      const normalized: SearchResult = {
+        id,
+        type,
+        title:
+          typeof row.title === "string" && row.title.trim().length > 0
+            ? row.title
+            : (typeof metadata.title === "string" ? metadata.title : `Untitled ${type}`),
+        href,
+      }
+
+      if (typeof metadata.subtitle === "string") normalized.subtitle = metadata.subtitle
+      if (typeof metadata.description === "string") normalized.description = metadata.description
+      if (typeof row.project_id === "string") {
+        normalized.project_id = row.project_id
+      } else if (typeof metadata.project_id === "string") {
+        normalized.project_id = metadata.project_id
+      }
+      if (typeof metadata.project_name === "string") normalized.project_name = metadata.project_name
+      if (typeof row.created_at === "string") normalized.created_at = row.created_at
+      if (typeof row.updated_at === "string") normalized.updated_at = row.updated_at
+
+      return normalized
+    })
+    .filter((item): item is SearchResult => item !== null)
+
+  return rows.slice(0, limit)
+}
+
+async function upsertSearchDocumentsFromResults(
+  supabase: SupabaseClient,
+  orgId: string,
+  results: SearchResult[],
+) {
+  if (results.length === 0) return
+
+  const now = Date.now()
+  pruneSearchDocumentBackfillCache(now)
+
+  const candidates = results.filter((item) => {
+    const key = buildSearchDocumentBackfillKey(orgId, item)
+    const seenAt = searchDocumentBackfillSeenAt.get(key)
+    if (seenAt && now - seenAt < SEARCH_DOCUMENT_BACKFILL_TTL_MS) {
+      return false
+    }
+    searchDocumentBackfillSeenAt.set(key, now)
+    return true
+  })
+
+  if (candidates.length === 0) return
+
+  const payload = candidates.slice(0, SEARCH_DOCUMENT_BACKFILL_MAX_BATCH).map((item) => ({
+    org_id: orgId,
+    entity_type: item.type,
+    entity_id: item.id,
+    project_id: item.project_id ?? null,
+    title: item.title ?? "",
+    body: [item.subtitle, item.description].filter((part): part is string => Boolean(part && part.length > 0)).join(" "),
+    metadata: {
+      href: item.href,
+      subtitle: item.subtitle ?? null,
+      description: item.description ?? null,
+      project_id: item.project_id ?? null,
+      project_name: item.project_name ?? null,
+      title: item.title ?? null,
+    },
+    updated_at: item.updated_at ?? item.created_at ?? new Date().toISOString(),
+  }))
+
+  const { error } = await supabase.from("search_documents").upsert(payload, {
+    onConflict: "org_id,entity_type,entity_id",
+  })
+
+  if (error) {
+    // Keep search serving resilient if search_documents is unavailable.
+    return
+  }
+}
+
+// Entity search configurations
+const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
   project: {
     table: 'projects',
     titleField: 'name',
@@ -407,32 +595,62 @@ export async function searchEntities(
   orgId?: string,
   context?: OrgServiceContext
 ): Promise<SearchResult[]> {
-  console.log('🔍 searchEntities called with:', { query, entityTypes, filters, options })
-
   const { supabase, orgId: resolvedOrgId } = context || await requireOrgContext(orgId)
-  console.log('🔍 Using orgId:', resolvedOrgId)
+  const targetLimit = Math.max(1, options.limit || DEFAULT_SEARCH_LIMIT)
+  const preferFast = options.preferFast === true
+  const trimmedQuery = query.trim()
+
+  if (preferFast && trimmedQuery.length < 2) {
+    return []
+  }
 
   // Default to key entity types if none specified
   const typesToSearch = entityTypes.length > 0 ? entityTypes : [
-    'project', 'task', 'file', 'contact', 'company'
+    ...(preferFast ? ['project', 'task', 'file'] : ['project', 'task', 'file', 'contact', 'company'])
   ] as SearchEntityType[]
-  console.log('🔍 Searching entity types:', typesToSearch)
 
   const results: SearchResult[] = []
   const promises: Promise<void>[] = []
+  const canUseUnifiedIndex = !shouldForceEntityFanout(filters)
+
+  if (trimmedQuery && canUseUnifiedIndex) {
+    const indexed = await searchViaUnifiedIndex(
+      supabase,
+      resolvedOrgId,
+      trimmedQuery,
+      typesToSearch,
+      targetLimit,
+    )
+    if (indexed.length > 0) {
+      results.push(...indexed)
+      if (shouldShortCircuitUnifiedIndex(indexed.length, targetLimit, filters, preferFast)) {
+        return indexed.slice(0, targetLimit)
+      }
+    }
+  }
+
+  const perEntityLimit = preferFast
+    ? Math.max(
+        ENTITY_QUERY_MIN_LIMIT,
+        Math.min(10, Math.ceil((targetLimit * 1.1) / Math.max(1, typesToSearch.length))),
+      )
+    : Math.max(
+        ENTITY_QUERY_MIN_LIMIT,
+        Math.min(ENTITY_QUERY_MAX_LIMIT, Math.ceil((targetLimit * 1.4) / Math.max(1, typesToSearch.length))),
+      )
 
   // Search each entity type in parallel
   for (const entityType of typesToSearch) {
     promises.push(
       (async () => {
         try {
-          console.log(`🔍 Searching ${entityType}...`)
-          const config = SEARCH_CONFIGS[entityType]
-          const result = await searchSingleEntity(supabase, resolvedOrgId, entityType, query, filters, options)
-          console.log(`🔍 ${entityType} returned ${result.length} results`)
+          const result = await searchSingleEntity(supabase, resolvedOrgId, entityType, query, filters, {
+            ...options,
+            limit: perEntityLimit,
+          })
           results.push(...result)
         } catch (error) {
-          console.error(`❌ Failed to search ${entityType}:`, error)
+          console.error(`Failed to search ${entityType}:`, error)
         }
       })()
     )
@@ -440,19 +658,53 @@ export async function searchEntities(
 
   await Promise.all(promises)
 
-  // Sort results by relevance (simple implementation - could be enhanced)
-  results.sort((a, b) => {
-    // Projects first, then by creation date
-    if (a.type === 'project' && b.type !== 'project') return -1
-    if (b.type === 'project' && a.type !== 'project') return 1
+  const deduped: SearchResult[] = []
+  const seen = new Set<string>()
+  for (const item of results) {
+    const key = `${item.type}:${item.id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(item)
+  }
 
-    // Sort by updated_at desc
+  const normalizedQuery = query.trim().toLowerCase()
+  const queryTokens = normalizedQuery
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 1)
+
+  const relevanceScore = (item: SearchResult) => {
+    if (!normalizedQuery) return 0
+    const title = (item.title ?? "").toLowerCase()
+    const subtitle = (item.subtitle ?? "").toLowerCase()
+    const description = (item.description ?? "").toLowerCase()
+
+    let score = 0
+    if (title === normalizedQuery) score += 240
+    if (title.includes(normalizedQuery)) score += 130
+    if (subtitle.includes(normalizedQuery)) score += 60
+    if (description.includes(normalizedQuery)) score += 40
+
+    for (const token of queryTokens) {
+      if (title.includes(token)) score += 25
+      if (subtitle.includes(token)) score += 10
+      if (description.includes(token)) score += 8
+    }
+
+    return score
+  }
+
+  // Sort results by relevance, with recency as tiebreaker.
+  deduped.sort((a, b) => {
+    const scoreDelta = relevanceScore(b) - relevanceScore(a)
+    if (scoreDelta !== 0) return scoreDelta
+
     const aTime = new Date(a.updated_at || a.created_at || 0).getTime()
     const bTime = new Date(b.updated_at || b.created_at || 0).getTime()
     return bTime - aTime
   })
 
-  return results.slice(0, options.limit || 50)
+  return deduped.slice(0, targetLimit)
 }
 
 // Search a single entity type
@@ -469,30 +721,24 @@ async function searchSingleEntity(
 
   // Determine if this entity has projects
   const hasProject = ['project', 'task', 'file', 'invoice', 'payment', 'budget', 'estimate', 'commitment', 'change_order', 'contract', 'proposal', 'conversation', 'message', 'rfi', 'submittal', 'drawing_set', 'drawing_sheet', 'daily_log', 'punch_item', 'schedule_item', 'photo', 'portal_access'].includes(entityType)
+  const includeProject = hasProject && entityType !== 'project'
+  const selectClause = buildEntitySelectClause(entityType, config, includeProject)
 
-  // Build query builder with simple select first
+  // Build query builder with only fields needed for search rendering.
   let queryBuilder = supabase
     .from(config.table)
-    .select('*')
+    .select(selectClause)
     .eq('org_id', orgId)
     .limit(limit)
 
-  // Add project join if needed
-  if (hasProject && entityType !== 'project') {
-    queryBuilder = supabase
-      .from(config.table)
-      .select('*, projects!inner(name)')
-      .eq('org_id', orgId)
-      .limit(limit)
-  }
-
   // Add search filter
   if (query.trim()) {
-    // Use ILIKE for simple text search (we'll enhance this with FTS later)
-    const searchConditions = config.searchableFields.map(field => `${field}.ilike.%${query}%`)
-    const orCondition = searchConditions.join(',')
-    console.log(`🔍 ${entityType} search condition:`, orCondition)
-    queryBuilder = queryBuilder.or(orCondition)
+    const searchTerm = sanitizeSearchTerm(query)
+    if (searchTerm && config.searchableFields.length > 0) {
+      const searchConditions = config.searchableFields.map(field => `${field}.ilike.%${searchTerm}%`)
+      const orCondition = searchConditions.join(',')
+      queryBuilder = queryBuilder.or(orCondition)
+    }
   }
 
   // Add filters
@@ -516,20 +762,26 @@ async function searchSingleEntity(
     queryBuilder = queryBuilder.eq('created_by', filters.createdBy)
   }
 
-  // Execute query
-  console.log(`🔍 ${entityType} executing query...`)
   const { data, error } = await queryBuilder
-  console.log(`🔍 ${entityType} query result:`, { dataLength: data?.length || 0, error })
 
   if (error) {
-    console.error(`❌ Search error for ${entityType}:`, error)
+    console.error(`Search error for ${entityType}:`, error)
     return []
   }
 
-  if (!data) return []
+  if (!Array.isArray(data) || data.length === 0) return []
+  const normalizedRows = data as Array<Record<string, any>>
 
   // Transform results
-  return data.map(row => {
+  const mappedResults = normalizedRows.map((row) => {
+    const projectRelation = row.projects
+    const projectName =
+      typeof projectRelation?.name === "string"
+        ? projectRelation.name
+        : Array.isArray(projectRelation) && typeof projectRelation[0]?.name === "string"
+          ? projectRelation[0].name
+          : undefined
+
     const result: SearchResult = {
       id: row.id,
       type: entityType,
@@ -538,7 +790,7 @@ async function searchSingleEntity(
       created_at: row.created_at,
       updated_at: row.updated_at,
       project_id: row.project_id,
-      project_name: row.projects?.name,
+      project_name: projectName,
     }
 
     // Build subtitle from subtitle fields
@@ -579,6 +831,11 @@ async function searchSingleEntity(
 
     return result
   })
+
+  if (query.trim().length > 0) {
+    void upsertSearchDocumentsFromResults(supabase, orgId, mappedResults)
+  }
+  return mappedResults
 }
 
 // Simple search function for backward compatibility

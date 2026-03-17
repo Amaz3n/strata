@@ -984,12 +984,7 @@ export function EnvelopeWizard({
           maxWidth: prepareStep === "fields" ? "min(84rem, calc(100vw - 2rem))" : "42rem",
         }}
       >
-        <SheetHeader
-          className={cn(
-            "px-6 pt-6 border-b bg-muted/30",
-            prepareStep === "fields" ? "pb-0" : "pb-4",
-          )}
-        >
+        <SheetHeader className="px-6 py-5 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5" />
             {prepareStep === "fields" ? viewerDocument?.title || "Document" : sheetTitle}

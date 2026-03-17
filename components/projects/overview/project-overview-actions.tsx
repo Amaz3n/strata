@@ -317,7 +317,7 @@ export function ProjectOverviewActions({
     <>
       <Card className="overflow-hidden py-0 gap-0">
         {/* Header Section */}
-        <div className="px-4 pt-3.5 pb-2.5 sm:px-5 sm:pt-4 sm:pb-3">
+        <div className="px-3 pt-3 pb-2 sm:px-5 sm:pt-4 sm:pb-3">
           <div className="flex items-center gap-3">
             {/* Project Avatar */}
             <ProjectAvatar projectId={project.id} size="xl" />
@@ -490,7 +490,7 @@ export function ProjectOverviewActions({
           <div className="border-t border-border/50 bg-muted/30">
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-border/50">
               {/* Address */}
-              <div className="px-4 py-3 sm:px-5">
+              <div className="px-3 py-2.5 sm:px-5 sm:py-3">
                 <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
                   <MapPin className="h-3 w-3" />
                   <span className="text-[11px] font-medium uppercase tracking-wider">Address</span>
@@ -511,7 +511,7 @@ export function ProjectOverviewActions({
 
               {/* Timeline */}
               {hasTimeline && (
-                <div className="px-4 py-3 sm:px-5">
+                <div className="px-3 py-2.5 sm:px-5 sm:py-3">
                   <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
                     <CalendarDays className="h-3 w-3" />
                     <span className="text-[11px] font-medium uppercase tracking-wider">Timeline</span>
@@ -524,7 +524,7 @@ export function ProjectOverviewActions({
 
               {/* Value */}
               {hasValue && (
-                <div className="px-4 py-3 sm:px-5">
+                <div className="px-3 py-2.5 sm:px-5 sm:py-3">
                   <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
                     <DollarSign className="h-3 w-3" />
                     <span className="text-[11px] font-medium uppercase tracking-wider">Value</span>
@@ -537,7 +537,7 @@ export function ProjectOverviewActions({
 
               {/* Type */}
               {hasType && (
-                <div className="px-4 py-3 sm:px-5">
+                <div className="px-3 py-2.5 sm:px-5 sm:py-3">
                   <div className="flex items-center gap-1.5 text-muted-foreground mb-0.5">
                     <Building2 className="h-3 w-3" />
                     <span className="text-[11px] font-medium uppercase tracking-wider">Type</span>
@@ -558,7 +558,7 @@ export function ProjectOverviewActions({
 
         {/* Description */}
         {project.description && (
-          <div className="border-t border-border/50 px-4 py-3 sm:px-5">
+          <div className="border-t border-border/50 px-3 py-2.5 sm:px-5 sm:py-3">
             <p className="text-sm text-muted-foreground leading-relaxed pl-3 border-l-2 border-border/60 italic">
               {project.description}
             </p>

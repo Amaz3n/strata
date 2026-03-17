@@ -35,8 +35,9 @@ export async function searchAction(query: string, filters?: any, options?: any) 
 
     // Use the enhanced search service
     const results = await searchAll(query, filters, {
-      limit: options?.limit || 50,
+      limit: options?.limit || 20,
       sortBy: 'relevance',
+      preferFast: true,
       ...options
     })
 

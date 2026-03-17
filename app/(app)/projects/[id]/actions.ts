@@ -29,7 +29,7 @@ import { updateProject } from "@/lib/services/projects"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { addProjectVendor, listProjectVendors, removeProjectVendor, updateProjectVendor } from "@/lib/services/project-vendors"
 import { createContact } from "@/lib/services/contacts"
-import { createCompany } from "@/lib/services/companies"
+import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
 import { requireOrgContext } from "@/lib/services/context"
 import { createInitialVersion } from "@/lib/services/file-versions"
@@ -195,20 +195,13 @@ export async function getClientContactsAction(): Promise<Contact[]> {
 }
 
 export async function getOrgCompaniesAction(): Promise<Company[]> {
-  const { supabase, orgId } = await requireOrgContext()
-
-  const { data, error } = await supabase
-    .from("companies")
-    .select("id, name, company_type, phone, email")
-    .eq("org_id", orgId)
-    .order("name", { ascending: true })
-
-  if (error) {
-    console.error("Failed to load companies", error.message)
+  try {
+    const companies = await listCompanies()
+    return companies.sort((a, b) => a.name.localeCompare(b.name))
+  } catch (error: any) {
+    console.error("Failed to load companies", error?.message ?? error)
     return []
   }
-
-  return data as Company[]
 }
 
 export async function getProjectVendorsAction(projectId: string): Promise<ProjectVendor[]> {

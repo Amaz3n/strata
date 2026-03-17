@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
-import { getProjectAction } from "../actions"
+import { getOrgCompaniesAction, getProjectAction } from "../actions"
 import { listBidPackagesAction } from "./actions"
 import { BidPackagesClient } from "@/components/bids/bid-packages-client"
 
@@ -11,14 +11,26 @@ interface ProjectBidsPageProps {
 export default async function ProjectBidsPage({ params }: ProjectBidsPageProps) {
   const { id } = await params
 
-  const [project, packages] = await Promise.all([
+  const [project, packages, companies] = await Promise.all([
     getProjectAction(id),
     listBidPackagesAction(id),
+    getOrgCompaniesAction(),
   ])
 
   if (!project) {
     notFound()
   }
+
+  const tradeMap = new Map<string, string>()
+  for (const company of companies) {
+    const trimmedTrade = company.trade?.trim()
+    if (!trimmedTrade) continue
+    const normalizedTrade = trimmedTrade.toLowerCase()
+    if (!tradeMap.has(normalizedTrade)) {
+      tradeMap.set(normalizedTrade, trimmedTrade)
+    }
+  }
+  const tradeOptions = Array.from(tradeMap.values()).sort((a, b) => a.localeCompare(b))
 
   return (
     <PageLayout
@@ -28,7 +40,7 @@ export default async function ProjectBidsPage({ params }: ProjectBidsPageProps) 
         { label: "Bids" },
       ]}
     >
-      <BidPackagesClient projectId={project.id} packages={packages} />
+      <BidPackagesClient projectId={project.id} packages={packages} tradeOptions={tradeOptions} />
     </PageLayout>
   )
 }

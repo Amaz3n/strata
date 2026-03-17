@@ -5,6 +5,7 @@
   "scripts": {
     "build": "next build",
     "dev": "NEXT_DISABLE_TURBOPACK=1 next dev",
+    "db:schema:check": "bash ./scripts/check-schema-sync.sh",
     "lint": "eslint .",
     "start": "next start"
   },

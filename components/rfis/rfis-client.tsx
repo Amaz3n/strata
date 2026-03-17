@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 import { useMemo, useState, useTransition, useCallback } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -112,7 +111,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
   }, [projects])
 
   return (
-    <div className="space-y-4">
+    <>
       <RfiForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
@@ -134,209 +133,208 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
         contacts={contacts}
       />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-1 flex-col sm:flex-row items-stretch sm:items-center gap-2">
-          <Input
-            placeholder="Search RFIs..."
-            className="w-full sm:w-72"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <div className="hidden sm:flex items-center gap-2">
-            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="Project" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All projects</SelectItem>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>
-                    {project.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
-              <SelectTrigger className="w-36">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                {(["draft", "open", "answered", "closed"] as StatusKey[]).map((status) => (
-                  <SelectItem key={status} value={status}>
-                    {statusLabels[status]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <div className="flex w-full sm:w-auto gap-2">
-          <Button asChild variant="outline" className="w-full sm:w-auto">
-            <Link href="/emails/preview?template=rfi-notification">Preview Emails</Link>
-          </Button>
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="mr-2 h-4 w-4" />
-            New RFI
-          </Button>
-        </div>
-      </div>
-
-      {/* Mobile: Card layout */}
-      <div className="md:hidden space-y-3">
-        {filtered.map((rfi) => (
-          <button
-            key={rfi.id}
-            type="button"
-            onClick={() => handleRfiClick(rfi)}
-            className="block w-full text-left rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-medium text-muted-foreground">#{rfi.rfi_number}</span>
-                  <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[rfi.status] ?? ""}`}>
-                    {statusLabels[rfi.status] ?? rfi.status}
-                  </Badge>
-                </div>
-                <p className="font-semibold mt-1 line-clamp-2">{rfi.subject}</p>
-                {sentStatusLabel(rfi) && (
-                  <p className="text-xs text-muted-foreground mt-1">{sentStatusLabel(rfi)}</p>
-                )}
-                {rfi.due_date && (
-                  <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                    <Calendar className="h-3 w-3" />
-                    Due {format(new Date(rfi.due_date), "MMM d")}
-                  </p>
-                )}
-              </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                    <MoreHorizontal className="h-4 w-4" />
-                    <span className="sr-only">Actions</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => handleRfiClick(rfi)}>
-                    View details
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </button>
-        ))}
-        {filtered.length === 0 && (
-          <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
-            <div className="flex flex-col items-center gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                <FileText className="h-6 w-6" />
-              </div>
-              <div>
-                <p className="font-medium">No RFIs yet</p>
-                <p className="text-sm">Create your first RFI to get started.</p>
-              </div>
-              <Button onClick={() => setSheetOpen(true)}>
-                <Plus className="mr-2 h-4 w-4" />
-                Create RFI
-              </Button>
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="hidden flex-1 items-center gap-2 sm:flex">
+            <Input
+              placeholder="Search RFIs..."
+              className="w-72"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="Project" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All projects</SelectItem>
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
+                <SelectTrigger className="w-36">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  {(["draft", "open", "answered", "closed"] as StatusKey[]).map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {statusLabels[status]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
-        )}
-      </div>
+          <div className="flex w-full sm:w-auto gap-2">
+            <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+              <Plus className="mr-2 h-4 w-4" />
+              New RFI
+            </Button>
+          </div>
+        </div>
 
-      {/* Desktop: Table layout */}
-      <div className="hidden md:block rounded-lg border overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="divide-x">
-              <TableHead className="px-4 py-4">RFI Number</TableHead>
-              <TableHead className="px-4 py-4">Subject</TableHead>
-              <TableHead className="px-4 py-4">Project</TableHead>
-              <TableHead className="px-4 py-4 text-center">Status</TableHead>
-              <TableHead className="px-4 py-4 text-center">Due Date</TableHead>
-              <TableHead className="px-4 py-4 text-center">Priority</TableHead>
-              <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.map((rfi) => (
-              <TableRow key={rfi.id} className="divide-x">
-                <TableCell className="px-4 py-4">
-                  <div className="font-semibold">{rfi.rfi_number}</div>
-                </TableCell>
-                <TableCell className="px-4 py-4">
-                  <button
-                    type="button"
-                    onClick={() => handleRfiClick(rfi)}
-                    className="font-semibold text-left hover:text-primary transition-colors"
-                    aria-label={`View RFI ${rfi.rfi_number ?? rfi.subject ?? ""}`}
-                  >
-                    {rfi.subject}
-                  </button>
-                </TableCell>
-                <TableCell className="px-4 py-4 text-muted-foreground">
-                  {projects.find((p) => p.id === rfi.project_id)?.name ?? "Unknown project"}
-                </TableCell>
-                <TableCell className="px-4 py-4 text-center">
-                  <div className="space-y-1">
-                    <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
+        {/* Mobile: Card layout */}
+        <div className="md:hidden space-y-3">
+          {filtered.map((rfi) => (
+            <button
+              key={rfi.id}
+              type="button"
+              onClick={() => handleRfiClick(rfi)}
+              className="block w-full text-left rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-medium text-muted-foreground">#{rfi.rfi_number}</span>
+                    <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[rfi.status] ?? ""}`}>
                       {statusLabels[rfi.status] ?? rfi.status}
                     </Badge>
-                    {sentStatusLabel(rfi) && (
-                      <div className="text-[11px] text-muted-foreground">{sentStatusLabel(rfi)}</div>
-                    )}
                   </div>
-                </TableCell>
-                <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                  {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
-                </TableCell>
-                <TableCell className="px-4 py-4 text-center">
-                  <Badge variant="outline" className="text-[11px] capitalize">
-                    {rfi.priority ?? "normal"}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-center w-12 px-4 py-4">
-                  <div className="flex justify-center">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreHorizontal className="h-4 w-4" />
-                          <span className="sr-only">RFI actions</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => handleRfiClick(rfi)}>
-                          View details
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-            {filtered.length === 0 && (
-              <TableRow className="divide-x">
-                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                      <FileText className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <p className="font-medium">No RFIs yet</p>
-                      <p className="text-sm">Create your first RFI to get started.</p>
-                    </div>
-                    <Button onClick={() => setSheetOpen(true)}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Create RFI
+                  <p className="font-semibold mt-1 line-clamp-2">{rfi.subject}</p>
+                  {sentStatusLabel(rfi) && (
+                    <p className="text-xs text-muted-foreground mt-1">{sentStatusLabel(rfi)}</p>
+                  )}
+                  {rfi.due_date && (
+                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                      <Calendar className="h-3 w-3" />
+                      Due {format(new Date(rfi.due_date), "MMM d")}
+                    </p>
+                  )}
+                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                      <MoreHorizontal className="h-4 w-4" />
+                      <span className="sr-only">Actions</span>
                     </Button>
-                  </div>
-                </TableCell>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => handleRfiClick(rfi)}>
+                      View details
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </button>
+          ))}
+          {filtered.length === 0 && (
+            <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
+              <div className="flex flex-col items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                  <FileText className="h-6 w-6" />
+                </div>
+                <div>
+                  <p className="font-medium">No RFIs yet</p>
+                  <p className="text-sm">Create your first RFI to get started.</p>
+                </div>
+                <Button onClick={() => setSheetOpen(true)}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Create RFI
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Desktop: Table layout */}
+        <div className="hidden md:block rounded-lg border overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow className="divide-x">
+                <TableHead className="px-4 py-4">RFI Number</TableHead>
+                <TableHead className="px-4 py-4">Subject</TableHead>
+                <TableHead className="px-4 py-4">Project</TableHead>
+                <TableHead className="px-4 py-4 text-center">Status</TableHead>
+                <TableHead className="px-4 py-4 text-center">Due Date</TableHead>
+                <TableHead className="px-4 py-4 text-center">Priority</TableHead>
+                <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
               </TableRow>
-            )}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((rfi) => (
+                <TableRow key={rfi.id} className="divide-x">
+                  <TableCell className="px-4 py-4">
+                    <div className="font-semibold">{rfi.rfi_number}</div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4">
+                    <button
+                      type="button"
+                      onClick={() => handleRfiClick(rfi)}
+                      className="font-semibold text-left hover:text-primary transition-colors"
+                      aria-label={`View RFI ${rfi.rfi_number ?? rfi.subject ?? ""}`}
+                    >
+                      {rfi.subject}
+                    </button>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground">
+                    {projects.find((p) => p.id === rfi.project_id)?.name ?? "Unknown project"}
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    <div className="space-y-1">
+                      <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
+                        {statusLabels[rfi.status] ?? rfi.status}
+                      </Badge>
+                      {sentStatusLabel(rfi) && (
+                        <div className="text-[11px] text-muted-foreground">{sentStatusLabel(rfi)}</div>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
+                    {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    <Badge variant="outline" className="text-[11px] capitalize">
+                      {rfi.priority ?? "normal"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-center w-12 px-4 py-4">
+                    <div className="flex justify-center">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreHorizontal className="h-4 w-4" />
+                            <span className="sr-only">RFI actions</span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleRfiClick(rfi)}>
+                            View details
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {filtered.length === 0 && (
+                <TableRow className="divide-x">
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                        <FileText className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <p className="font-medium">No RFIs yet</p>
+                        <p className="text-sm">Create your first RFI to get started.</p>
+                      </div>
+                      <Button onClick={() => setSheetOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Create RFI
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </div>
-    </div>
+    </>
   )
 }

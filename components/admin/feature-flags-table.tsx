@@ -167,6 +167,12 @@ function getFeatureDescription(flagKey: string): string {
     'multi_org': 'Support for multiple organizations per user',
     'premium_support': 'Priority support and dedicated account manager',
     'unlimited_projects': 'Remove project limits for this organization',
+    'ai_search_planner_v2': 'Enable AI search planner v2 orchestration path',
+    'ai_search_hybrid_retrieval': 'Enable lexical + semantic hybrid retrieval in AI search',
+    'ai_search_memory': 'Persist and reuse conversation memory in AI search sessions',
+    'ai_search_multistep_planner_v2': 'Allow multi-step cross-domain AI search plans',
+    'ai_search_general_assistant': 'Allow non-grounded general assistant mode in command bar',
+    'ai_search_eval_harness': 'Enable AI search evaluation harness endpoint',
   }
 
   return descriptions[flagKey] || 'Custom feature flag'

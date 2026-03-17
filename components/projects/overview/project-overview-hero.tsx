@@ -312,10 +312,10 @@ export function ProjectOverviewHero({
         </div>
 
         {/* Main Content */}
-        <div className="p-4 lg:p-6">
-          <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+        <div className="p-3 sm:p-4 lg:p-6">
+          <div className="flex flex-col lg:flex-row gap-4 sm:gap-5 lg:gap-8">
             {/* Left: Progress Visualization */}
-            <div className="flex flex-col items-center gap-4 lg:min-w-[220px]">
+            <div className="flex flex-col items-center gap-3 sm:gap-4 lg:min-w-[220px]">
               <ProgressArc
                 scheduleProgress={scheduleProgress}
                 timeElapsedPercent={timeElapsedPercent}
@@ -355,7 +355,7 @@ export function ProjectOverviewHero({
             </div>
 
             {/* Right: Financial + Health Grid */}
-            <div className="flex-1 flex flex-col gap-4">
+            <div className="flex-1 flex flex-col gap-3 sm:gap-4">
               {/* Financial Summary Bar */}
               {contractValue > 0 && (
                 <div className="rounded-lg border bg-muted/30 p-3">

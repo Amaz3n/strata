@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
@@ -31,7 +32,10 @@ import { BidStatusBadge } from "@/components/bids/bid-status-badge"
 interface BidPackagesClientProps {
   projectId: string
   packages: BidPackage[]
+  tradeOptions: string[]
 }
+
+const NO_TRADE_VALUE = "__none__"
 
 function combineDateAndTime(date: Date, time: string): Date {
   const [hoursRaw, minutesRaw] = time.split(":")
@@ -43,14 +47,14 @@ function combineDateAndTime(date: Date, time: string): Date {
   return next
 }
 
-export function BidPackagesClient({ projectId, packages }: BidPackagesClientProps) {
+export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPackagesClientProps) {
   const [items, setItems] = useState(packages)
   const [search, setSearch] = useState("")
   const [createOpen, setCreateOpen] = useState(false)
   const [isCreating, startCreating] = useTransition()
 
   const [title, setTitle] = useState("")
-  const [trade, setTrade] = useState("")
+  const [trade, setTrade] = useState(NO_TRADE_VALUE)
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
   const [dueTime, setDueTime] = useState("17:00")
   const [scope, setScope] = useState("")
@@ -66,7 +70,7 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
 
   const resetForm = () => {
     setTitle("")
-    setTrade("")
+    setTrade(NO_TRADE_VALUE)
     setDueDate(undefined)
     setDueTime("17:00")
     setScope("")
@@ -82,7 +86,7 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
       try {
         const payload = {
           title: title.trim(),
-          trade: trade.trim() || null,
+          trade: trade === NO_TRADE_VALUE ? null : trade,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
           due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
@@ -124,7 +128,19 @@ export function BidPackagesClient({ projectId, packages }: BidPackagesClientProp
             </div>
             <div className="space-y-2">
               <Label>Trade</Label>
-              <Input value={trade} onChange={(e) => setTrade(e.target.value)} placeholder="Electrical" />
+              <Select value={trade} onValueChange={setTrade}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select trade" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_TRADE_VALUE}>No trade</SelectItem>
+                  {tradeOptions.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">

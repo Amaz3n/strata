@@ -34,9 +34,7 @@ export default async function ProjectRfisPage({ params }: ProjectRfisPageProps) 
         { label: "RFIs" },
       ]}
     >
-      <div className="space-y-6">
-        <RfisClient rfis={rfis} projects={[project]} companies={companies} contacts={contacts} />
-      </div>
+      <RfisClient rfis={rfis} projects={[project]} companies={companies} contacts={contacts} />
     </PageLayout>
   )
 }
