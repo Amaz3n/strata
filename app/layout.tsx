@@ -17,6 +17,10 @@ export const metadata: Metadata = {
   description:
     "A fast, mobile-first operating system for local builders to run projects, schedules, docs, field logs, change orders, and job costing.",
   generator: "v0.app",
+  icons: {
+    icon: "/logo.svg",
+    apple: "/apple-icon.png",
+  },
 }
 
 export const viewport: Viewport = {

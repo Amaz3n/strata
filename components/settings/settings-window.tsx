@@ -65,7 +65,7 @@ const appInfo = {
   company: "Arc",
   version: packageJson.version ?? "0.1.0",
   termsUrl: "/terms",
-  logoUrl: "/icon.svg",
+  logoUrl: "/logo.svg",
 }
 
 type AiProvider = "openai" | "anthropic" | "google"
