@@ -1,7 +1,10 @@
+import Link from "next/link"
 import { redirect } from "next/navigation"
 import type { EmailOtpType } from "@supabase/supabase-js"
+import { ArrowLeft } from "lucide-react"
 
 import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { AlertCircle } from "@/components/icons"
 
 interface ConfirmPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
@@ -29,14 +32,27 @@ export default async function ConfirmPage({ searchParams }: ConfirmPageProps) {
 
   if (error) {
     return (
-      <div className="space-y-4">
-        <div>
-          <p className="text-sm uppercase tracking-[0.2em] text-white/60">Confirm access</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Invalid or expired link</h2>
-          <p className="text-sm text-white/60">Request a new invite or reset link to continue.</p>
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight">Invalid or expired link</h1>
+          <p className="text-sm text-muted-foreground text-balance">
+            Request a new invite or reset link to continue.
+          </p>
         </div>
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error.message}
+
+        <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          <span>{error.message}</span>
+        </div>
+
+        <div className="text-center">
+          <Link
+            href="/auth/signin"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground underline-offset-4 hover:underline"
+          >
+            <ArrowLeft className="size-3.5" />
+            Back to sign in
+          </Link>
         </div>
       </div>
     )

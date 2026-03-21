@@ -5,6 +5,7 @@ import {
   InvoiceEmail,
   InvoiceReminderEmail,
   InviteTeamMemberEmail,
+  PasswordResetEmail,
   RfiNotificationEmail,
   WeeklyExecutiveSnapshotEmail,
 } from "@/lib/emails"
@@ -19,6 +20,7 @@ type TemplateId =
   | "invoice"
   | "invoice-reminder"
   | "team-invite"
+  | "password-reset"
   | "compliance-uploaded"
   | "compliance-reviewed"
   | "weekly-executive-snapshot"
@@ -29,6 +31,7 @@ const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: stri
   { id: "invoice", label: "Invoice Sent", description: "Initial invoice email." },
   { id: "invoice-reminder", label: "Invoice Reminder", description: "Due or overdue reminders." },
   { id: "team-invite", label: "Team Invite", description: "Org invitation email." },
+  { id: "password-reset", label: "Password Reset", description: "Password recovery email via Arc." },
   { id: "compliance-uploaded", label: "Compliance Uploaded", description: "Internal alert for upload review." },
   { id: "compliance-reviewed", label: "Compliance Reviewed", description: "Approved or rejected result." },
   {
@@ -139,6 +142,7 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
       "Generated Feb 22, 2026 at 8:00 AM EST",
     ),
     inviteLink: params.get("inviteLink") ?? "https://app.arcnaples.com/auth/accept-invite?token=example",
+    resetLink: params.get("resetLink") ?? "https://app.arcnaples.com/auth/reset?token_hash=example&type=recovery",
     bidLink: params.get("bidLink") ?? "https://app.arcnaples.com/b/example-bid-token",
     invoiceLink: params.get("invoiceLink") ?? "https://app.arcnaples.com/i/example-invoice-token",
     payLink: params.get("payLink") ?? "https://app.arcnaples.com/i/example-invoice-token",
@@ -218,6 +222,13 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
             inviterEmail: sample.inviterEmail,
             inviteeEmail: sample.inviteeEmail,
             inviteLink: sample.inviteLink,
+          })
+        case "password-reset":
+          return PasswordResetEmail({
+            orgName: sample.orgName,
+            orgLogoUrl: sample.orgLogoUrl,
+            recipientEmail: sample.inviteeEmail,
+            resetLink: sample.resetLink,
           })
         case "compliance-uploaded":
           return ComplianceDocumentUploadedEmail({

@@ -4,6 +4,26 @@ import { createServerClient } from "@supabase/ssr"
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
 const PUBLIC_ROUTES = ["/proposal", "/i/", "/p/", "/s/", "/b/", "/d/"]
 const PUBLIC_API_ROUTES = ["/api/jobs/process-outbox", "/api/jobs/rbac-evidence"]
+const PUBLIC_FILE_EXTENSIONS = [
+  ".svg",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".txt",
+  ".xml",
+  ".json",
+  ".map",
+  ".css",
+  ".js",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+]
 
 export async function middleware(request: NextRequest) {
   const requestHeaders = new Headers(request.headers)
@@ -42,6 +62,11 @@ export async function middleware(request: NextRequest) {
   const isAuthRoute = pathname.startsWith("/auth")
   const isPublicRoute = PUBLIC_ROUTES.some(route => pathname.startsWith(route))
   const isPublicApiRoute = PUBLIC_API_ROUTES.some(route => pathname.startsWith(route))
+  const isPublicFile = PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension))
+
+  if (isPublicFile) {
+    return response
+  }
 
   // Basic authentication checks only - keep middleware lightweight
   if (!user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {

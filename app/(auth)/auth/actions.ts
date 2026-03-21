@@ -5,6 +5,7 @@ import { redirect } from "next/navigation"
 import { z } from "zod"
 
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
+import { sendPasswordResetEmail } from "@/lib/services/mailer"
 
 export interface AuthState {
   error?: string
@@ -178,16 +179,54 @@ export async function requestPasswordResetAction(_prevState: AuthState, formData
     return { error: "Enter a valid email address." }
   }
 
-  const supabase = await createServerSupabaseClient()
-  const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
-    redirectTo: `${getSiteUrl()}/auth/reset`,
-  })
+  const email = parsed.data.email.trim().toLowerCase()
+  const serviceClient = createServiceSupabaseClient()
+  const genericMessage = "If an account exists for that email, we sent a password reset link."
 
-  if (error) {
-    return { error: error.message }
+  try {
+    const { data, error } = await serviceClient.auth.admin.generateLink({
+      type: "recovery",
+      email,
+      options: {
+        redirectTo: `${getSiteUrl()}/auth/reset`,
+      },
+    })
+
+    if (error || !data?.properties) {
+      console.error("Failed to generate password recovery link", error)
+      return { message: genericMessage }
+    }
+
+    const tokenHash = data.properties.hashed_token
+    const actionLink = data.properties.action_link
+
+    const resetUrl = tokenHash
+      ? (() => {
+          const url = new URL("/auth/reset", getSiteUrl())
+          url.searchParams.set("token_hash", tokenHash)
+          url.searchParams.set("type", "recovery")
+          return url.toString()
+        })()
+      : actionLink
+
+    if (!resetUrl) {
+      console.error("Recovery link generation did not return a usable URL")
+      return { message: genericMessage }
+    }
+
+    const orgBrand = await resolveOrgBrandForEmail(serviceClient, email)
+
+    await sendPasswordResetEmail({
+      to: email,
+      resetLink: resetUrl,
+      orgName: orgBrand.name,
+      orgLogoUrl: orgBrand.logoUrl,
+    })
+  } catch (error) {
+    console.error("Failed to send password reset email", error)
   }
 
-  return { message: "Password reset email sent. Check your inbox for the link." }
+  return { message: genericMessage }
 }
 
 export async function updatePasswordAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
@@ -350,4 +389,51 @@ function getSiteUrl() {
 
   if (url.startsWith("http")) return url.replace(/\/$/, "")
   return `https://${url}`.replace(/\/$/, "")
+}
+
+async function resolveOrgBrandForEmail(serviceClient: ReturnType<typeof createServiceSupabaseClient>, email: string) {
+  const fallback = { name: "Arc" as string | null, logoUrl: null as string | null }
+
+  const { data: userRow, error: userError } = await serviceClient
+    .from("app_users")
+    .select("id")
+    .ilike("email", email)
+    .maybeSingle()
+
+  if (userError) {
+    console.error("Failed to resolve user for password reset brand", userError)
+    return fallback
+  }
+
+  if (!userRow?.id) {
+    return fallback
+  }
+
+  const { data: membershipRow, error: membershipError } = await serviceClient
+    .from("memberships")
+    .select("org:orgs(name, logo_url)")
+    .eq("user_id", userRow.id)
+    .in("status", ["active", "invited"])
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (membershipError) {
+    console.error("Failed to resolve org brand for password reset email", membershipError)
+    return fallback
+  }
+
+  const rawOrg = membershipRow?.org as
+    | { name?: string | null; logo_url?: string | null }
+    | Array<{ name?: string | null; logo_url?: string | null }>
+    | null
+  const org = Array.isArray(rawOrg) ? (rawOrg[0] ?? null) : rawOrg
+  if (!org) {
+    return fallback
+  }
+
+  return {
+    name: org.name ?? "Arc",
+    logoUrl: org.logo_url ?? null,
+  }
 }

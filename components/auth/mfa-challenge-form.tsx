@@ -5,8 +5,12 @@ import { useRouter } from "next/navigation"
 
 import { AlertCircle, Loader2, ShieldCheck } from "@/components/icons"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSlot,
+  InputOTPSeparator,
+} from "@/components/ui/input-otp"
 import { createClient } from "@/lib/supabase/client"
 
 export function MfaChallengeForm() {
@@ -101,28 +105,26 @@ export function MfaChallengeForm() {
 
   if (loading) {
     return (
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <CardTitle>Two-factor verification</CardTitle>
-          <CardDescription>Preparing your authenticator challenge...</CardDescription>
-        </CardHeader>
-        <CardContent className="flex justify-center">
-          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-        </CardContent>
-      </Card>
+      <div className="flex flex-col items-center gap-3 py-8">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Preparing authenticator challenge...</p>
+      </div>
     )
   }
 
   return (
-    <Card className="w-full max-w-sm">
-      <CardHeader className="text-center">
-        <div className="mx-auto mb-2 inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <ShieldCheck className="h-5 w-5" />
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <div className="flex size-12 items-center justify-center bg-primary/10 text-primary">
+          <ShieldCheck className="size-6" />
         </div>
-        <CardTitle>Two-factor verification</CardTitle>
-        <CardDescription>Enter the 6-digit code from your authenticator app.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Two-factor verification</h1>
+        <p className="text-sm text-muted-foreground text-balance">
+          Enter the 6-digit code from your authenticator app.
+        </p>
+      </div>
+
+      <div className="grid gap-4">
         <div className="flex justify-center">
           <InputOTP
             maxLength={6}
@@ -130,11 +132,15 @@ export function MfaChallengeForm() {
             onChange={setCode}
             onComplete={submit}
             disabled={isPending || !factorId}
+            autoFocus
           >
             <InputOTPGroup>
               <InputOTPSlot index={0} />
               <InputOTPSlot index={1} />
               <InputOTPSlot index={2} />
+            </InputOTPGroup>
+            <InputOTPSeparator />
+            <InputOTPGroup>
               <InputOTPSlot index={3} />
               <InputOTPSlot index={4} />
               <InputOTPSlot index={5} />
@@ -143,21 +149,28 @@ export function MfaChallengeForm() {
         </div>
 
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
-        <div className="flex gap-2">
-          <Button type="button" className="w-full" onClick={submit} disabled={!factorId || code.length !== 6 || isPending}>
-            {isPending ? "Verifying..." : "Verify code"}
+        <div className="grid grid-cols-[1fr_auto] gap-2">
+          <Button type="button" onClick={submit} disabled={!factorId || code.length !== 6 || isPending}>
+            {isPending ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                Verifying...
+              </>
+            ) : (
+              "Verify code"
+            )}
           </Button>
           <Button type="button" variant="outline" onClick={handleSignOut} disabled={isPending}>
             Sign out
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   )
 }

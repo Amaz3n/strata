@@ -121,7 +121,7 @@ export function AcceptInviteForm({ token, orgName, email }: AcceptInviteFormProp
           )}
         </Field>
         {state.error && (
-          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
             <span>{state.error}</span>
           </div>

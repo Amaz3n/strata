@@ -3,7 +3,6 @@
 import { useEffect, useState, Suspense } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { GalleryVerticalEnd } from "lucide-react"
 
 import { AcceptInviteForm } from "@/components/auth/accept-invite-form"
 import { Building2, Loader2, AlertCircle } from "@/components/icons"
@@ -46,75 +45,53 @@ function AcceptInviteContent() {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center gap-6 text-center">
-        <Link href="/" className="flex flex-col items-center gap-2 font-medium">
-          <div className="flex size-10 items-center justify-center rounded-md bg-primary">
-            <GalleryVerticalEnd className="size-6 text-primary-foreground" />
-          </div>
-        </Link>
-        <div className="space-y-2">
-          <h1 className="text-xl font-bold">Verifying your invitation</h1>
-          <p className="text-muted-foreground text-sm">Please wait while we verify your invitation link.</p>
-        </div>
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      <div className="flex flex-col items-center gap-3 py-8">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Verifying your invitation...</p>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center gap-6 text-center">
-        <Link href="/" className="flex flex-col items-center gap-2 font-medium">
-          <div className="flex size-10 items-center justify-center rounded-md bg-primary">
-            <GalleryVerticalEnd className="size-6 text-primary-foreground" />
-          </div>
-        </Link>
-        <div className="space-y-2">
-          <h1 className="text-xl font-bold">Invitation not found</h1>
-          <p className="text-muted-foreground text-sm max-w-xs">
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight">Invitation not found</h1>
+          <p className="text-sm text-muted-foreground text-balance">
             This invitation may have expired or already been used.
           </p>
         </div>
-        <div className="flex w-full items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive text-left">
+
+        <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <span>{error}</span>
         </div>
-        <div className="flex flex-col gap-3 w-full">
-          <Button asChild variant="outline" className="w-full">
-            <Link href="/auth/signin">Back to sign in</Link>
-          </Button>
-        </div>
+
+        <Button asChild variant="outline" className="w-full">
+          <Link href="/auth/signin">Back to sign in</Link>
+        </Button>
       </div>
     )
   }
 
-  if (!inviteDetails || !token) {
-    return null
-  }
+  if (!inviteDetails || !token) return null
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col items-center gap-4 text-center">
-        <Link href="/" className="flex flex-col items-center gap-2 font-medium">
-          <div className="flex size-10 items-center justify-center rounded-md bg-primary">
-            <GalleryVerticalEnd className="size-6 text-primary-foreground" />
-          </div>
-        </Link>
-        <div className="space-y-2">
-          <h1 className="text-xl font-bold">Welcome to Arc</h1>
-          <p className="text-muted-foreground text-sm">
-            You&apos;ve been invited to join a team
-          </p>
-        </div>
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="text-2xl font-semibold tracking-tight">Join your team</h1>
+        <p className="text-sm text-muted-foreground text-balance">
+          You&apos;ve been invited to collaborate on Arc.
+        </p>
       </div>
 
-      <div className="flex items-center gap-3 rounded-lg border bg-muted/30 px-4 py-3">
-        <div className="flex size-10 items-center justify-center rounded-md bg-primary/10">
+      <div className="flex items-center gap-3 border bg-muted/30 px-4 py-3">
+        <div className="flex size-10 items-center justify-center bg-primary/10">
           <Building2 className="size-5 text-primary" />
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="font-medium truncate">{inviteDetails.orgName}</p>
-          <p className="text-muted-foreground text-sm truncate">{inviteDetails.email}</p>
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium">{inviteDetails.orgName}</p>
+          <p className="truncate text-sm text-muted-foreground">{inviteDetails.email}</p>
         </div>
       </div>
 
@@ -125,21 +102,15 @@ function AcceptInviteContent() {
 
 export default function AcceptInvitePage() {
   return (
-    <div className="bg-background flex min-h-svh flex-col items-center justify-center gap-6 p-6 md:p-10">
-      <div className="w-full max-w-sm">
-        <Suspense
-          fallback={
-            <div className="flex flex-col items-center gap-6 text-center">
-              <div className="flex size-10 items-center justify-center rounded-md bg-primary">
-                <GalleryVerticalEnd className="size-6 text-primary-foreground" />
-              </div>
-              <Loader2 className="size-6 animate-spin text-muted-foreground" />
-            </div>
-          }
-        >
-          <AcceptInviteContent />
-        </Suspense>
-      </div>
-    </div>
+    <Suspense
+      fallback={
+        <div className="flex flex-col items-center gap-3 py-8">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        </div>
+      }
+    >
+      <AcceptInviteContent />
+    </Suspense>
   )
 }

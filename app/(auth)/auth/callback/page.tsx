@@ -4,6 +4,8 @@ import { useEffect, useState, Suspense } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import { createClient } from "@supabase/supabase-js"
 
+import { Loader2, AlertCircle } from "@/components/icons"
+
 function parseHashParams(hash: string) {
   const trimmed = hash.startsWith("#") ? hash.slice(1) : hash
   return new URLSearchParams(trimmed)
@@ -22,14 +24,10 @@ function AuthCallbackContent() {
     const refreshToken = params.get("refresh_token")
 
     if (!accessToken || !refreshToken) {
-      // It's possible the hash isn't available immediately or we are on server
-      // Wait for client side hash
       if (typeof window !== 'undefined' && !window.location.hash) {
          router.replace("/auth/signin")
          return
       }
-      // If hash exists but parsing failed or params missing, we continue or retry?
-      // For now, let the logic above proceed. If params.get returns null, checking if hash exists.
       if (!params.get("access_token")) return
     }
 
@@ -61,25 +59,37 @@ function AuthCallbackContent() {
   }, [searchParams, router])
 
   return (
-    <div className="bg-background flex min-h-svh flex-col items-center justify-center gap-4 p-6 md:p-10">
-      <div className="w-full max-w-sm space-y-4 text-center">
-        <h2 className="text-xl font-semibold">Finishing sign-in…</h2>
-        <p className="text-sm text-muted-foreground">
-          We are setting up your account and redirecting you.
-        </p>
-        {error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col items-center gap-3 py-4">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        <div className="text-center">
+          <h1 className="text-lg font-semibold">Finishing sign-in...</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Setting up your account and redirecting you.
+          </p>
+        </div>
       </div>
+
+      {error && (
+        <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
     </div>
   )
 }
 
 export default function AuthCallbackPage() {
   return (
-    <Suspense fallback={<div className="flex min-h-svh items-center justify-center">Loading...</div>}>
+    <Suspense
+      fallback={
+        <div className="flex flex-col items-center gap-3 py-8">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        </div>
+      }
+    >
       <AuthCallbackContent />
     </Suspense>
   )

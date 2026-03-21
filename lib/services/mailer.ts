@@ -3,6 +3,7 @@ import type { ReactElement } from "react"
 import { BidInviteEmail } from "@/lib/emails/bid-invite-email"
 import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
 import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
+import { PasswordResetEmail } from "@/lib/emails/password-reset-email"
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"
@@ -160,6 +161,30 @@ export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void
   })
 }
 
+export interface PasswordResetEmailPayload {
+  to: string
+  resetLink: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
+}
+
+export async function sendPasswordResetEmail(payload: PasswordResetEmailPayload): Promise<void> {
+  const html = await renderEmailTemplate(
+    PasswordResetEmail({
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
+      recipientEmail: payload.to,
+      resetLink: payload.resetLink,
+    }),
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: `Reset your ${payload.orgName ?? "Arc"} password`,
+    html,
+  })
+}
+
 export interface ReminderSMSPayload {
   to: string
   message: string
@@ -221,6 +246,5 @@ export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promis
     html,
   })
 }
-
 
 
