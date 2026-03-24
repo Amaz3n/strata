@@ -77,6 +77,7 @@ export function TiledDrawingViewer({
   onTransformChange,
   thumbnailUrl,
 }: TiledDrawingViewerProps) {
+  const secureTilesEnabled = process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
   const containerRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<any | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
@@ -140,6 +141,19 @@ export function TiledDrawingViewer({
     []
   )
 
+  const ensureTilesCookie = useCallback(async () => {
+    if (!secureTilesEnabled) return
+
+    const response = await fetch("/api/drawings/tiles-cookie", {
+      method: "POST",
+      credentials: "include",
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to set tiles cookie: HTTP ${response.status}`)
+    }
+  }, [secureTilesEnabled])
+
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return
 
@@ -153,10 +167,15 @@ export function TiledDrawingViewer({
       const OSD: OpenSeadragonNS = mod?.default ?? mod
       if (disposed || !containerRef.current) return
 
+      await ensureTilesCookie()
+      if (disposed || !containerRef.current) return
+
       viewer = OSD({
         element: containerRef.current,
         tileSources: [buildTileSource(tileBaseUrl, tileManifest)],
-        crossOriginPolicy: "Anonymous",
+        // Secure tiles are cookie-protected on a sibling subdomain.
+        // Avoid `anonymous` here because it strips credentials from image requests.
+        crossOriginPolicy: secureTilesEnabled ? false : "Anonymous",
         // Interaction
         gestureSettingsMouse: {
           clickToZoom: false,
@@ -229,7 +248,7 @@ export function TiledDrawingViewer({
       viewerRef.current = null
       onReadyRef.current?.(null)
     }
-  }, [buildTileSource, tileBaseUrl, tileManifest])
+  }, [buildTileSource, ensureTilesCookie, secureTilesEnabled, tileBaseUrl, tileManifest])
 
   useEffect(() => {
     if (!viewerRef.current) return
