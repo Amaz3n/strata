@@ -42,6 +42,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ProjectAvatar } from "@/components/ui/project-avatar"
 
 import { PortalLinkCreator } from "@/components/sharing/portal-link-creator"
+import { PortalInvitePanel } from "@/components/sharing/portal-invite-panel"
 import { AccessTokenList } from "@/components/sharing/access-token-list"
 import { PortalAccountList } from "@/components/sharing/portal-account-list"
 import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
@@ -162,9 +163,16 @@ export function ProjectOverviewActions({
   }, [project.id])
 
   function handleTokenCreated(token: PortalAccessToken) {
-    setPortalTokensState((prev) => [token, ...prev])
+    setPortalTokensState((prev) => {
+      const existingIndex = prev.findIndex((item) => item.id === token.id)
+      if (existingIndex >= 0) {
+        const next = [...prev]
+        next[existingIndex] = token
+        return next
+      }
+      return [token, ...prev]
+    })
     setSharingInitialized(true)
-    toast.success("Link created", { description: "Share it with your client or sub." })
   }
 
   async function handleTokenRevoke(tokenId: string) {
@@ -368,9 +376,9 @@ export function ProjectOverviewActions({
                                 <Link2 className="h-4 w-4 text-primary" />
                               </div>
                               <div>
-                                <SheetTitle className="text-base font-semibold">Share access</SheetTitle>
+                                <SheetTitle className="text-base font-semibold">Invite people into the project</SheetTitle>
                                 <SheetDescription className="text-xs text-muted-foreground">
-                                  Create a portal link for clients or subs
+                                  Email a secure project invite first. Direct links remain available below when you need them.
                                 </SheetDescription>
                               </div>
                             </div>
@@ -380,6 +388,24 @@ export function ProjectOverviewActions({
                         <ScrollArea className="flex-1 min-h-0 overflow-x-hidden">
                           <div className="space-y-4 p-4 sm:p-5 overflow-hidden">
                             <div className="border bg-card p-4 rounded-lg">
+                              <PortalInvitePanel
+                                project={project}
+                                contacts={contacts}
+                                projectVendors={projectVendors}
+                                onInviteSent={handleTokenCreated}
+                              />
+                            </div>
+
+                            <div className="border bg-card p-4 rounded-lg">
+                              <div className="mb-4 flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-medium">Direct links</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Secondary path for manual sharing, troubleshooting, or special cases.
+                                  </p>
+                                </div>
+                                <Badge variant="outline">Advanced</Badge>
+                              </div>
                               <PortalLinkCreator
                                 projectId={project.id}
                                 onCreated={handleTokenCreated}

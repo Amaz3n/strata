@@ -7,6 +7,7 @@ import {
   updateOpportunity,
   getOpportunity,
   startEstimating,
+  activateOpportunityProject,
 } from "@/lib/services/opportunities"
 import {
   createOpportunityInputSchema,
@@ -31,6 +32,7 @@ export async function updateOpportunityAction(opportunityId: string, input: unkn
   const parsed = updateOpportunityInputSchema.parse(input)
   const opportunity = await updateOpportunity({ opportunityId, input: parsed })
   revalidateOpportunityPaths(opportunity.id)
+  revalidatePath("/projects")
   return opportunity
 }
 
@@ -43,5 +45,12 @@ export async function startEstimatingAction(opportunityId: string) {
   revalidatePath("/pipeline")
   revalidatePath("/projects")
   revalidatePath("/estimates")
+  return result
+}
+
+export async function activateOpportunityProjectAction(opportunityId: string) {
+  const result = await activateOpportunityProject({ opportunityId })
+  revalidatePath("/pipeline")
+  revalidatePath("/projects")
   return result
 }

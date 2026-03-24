@@ -90,6 +90,7 @@ export async function createPortalAccessToken({
   scopedRfiId,
   permissions,
   expiresAt,
+  requireAccount,
   orgId,
 }: {
   projectId: string
@@ -99,6 +100,7 @@ export async function createPortalAccessToken({
   scopedRfiId?: string | null
   permissions?: Partial<PortalPermissions>
   expiresAt?: string | null
+  requireAccount?: boolean
   orgId?: string
 }): Promise<PortalAccessToken> {
   const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
@@ -113,6 +115,7 @@ export async function createPortalAccessToken({
     company_id: companyId ?? null,
     scoped_rfi_id: scopedRfiId ?? null,
     expires_at: expiresAt ?? null,
+    require_account: requireAccount ?? false,
     created_by: userId,
     ...permissionsToColumns(permissions),
   }
@@ -128,6 +131,52 @@ export async function createPortalAccessToken({
   }
 
   return mapAccessToken(data)
+}
+
+export async function findReusablePortalAccessToken({
+  projectId,
+  portalType,
+  contactId,
+  companyId,
+  orgId,
+}: {
+  projectId: string
+  portalType: "client" | "sub"
+  contactId?: string
+  companyId?: string
+  orgId?: string
+}): Promise<PortalAccessToken | null> {
+  const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+
+  let query = serviceClient
+    .from("portal_access_tokens")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("portal_type", portalType)
+    .is("revoked_at", null)
+    .is("paused_at", null)
+    .order("created_at", { ascending: false })
+
+  query = contactId ? query.eq("contact_id", contactId) : query.is("contact_id", null)
+  query = companyId ? query.eq("company_id", companyId) : query.is("company_id", null)
+
+  const { data, error } = await query
+
+  if (error) {
+    throw new Error(`Failed to find reusable portal access token: ${error.message}`)
+  }
+
+  const now = new Date()
+  const reusable = (data ?? []).find((row: any) => {
+    if (row.expires_at && new Date(row.expires_at) <= now) return false
+    if (row.max_access_count && row.access_count >= row.max_access_count) return false
+    return true
+  })
+
+  return reusable ? mapAccessToken(reusable) : null
 }
 
 export async function validatePortalToken(token: string) {

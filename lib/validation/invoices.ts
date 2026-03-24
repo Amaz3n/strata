@@ -5,7 +5,9 @@ export const invoiceLineInputSchema = z.object({
   description: z.string().min(1, "Description is required"),
   quantity: z.number({ invalid_type_error: "Quantity is required" }).min(0.01, "Quantity must be greater than zero"),
   unit: z.string().max(20).optional().default("unit"),
-  unit_cost: z.number({ invalid_type_error: "Unit cost is required" }).min(0, "Unit cost must be positive"),
+  unit_cost: z.number({ invalid_type_error: "Unit cost is required" }).refine((value) => Number.isFinite(value), {
+    message: "Unit cost is required",
+  }),
   taxable: z.boolean().default(true),
   qbo_income_account_id: z.string().min(1).optional().nullable(),
   qbo_income_account_name: z.string().max(255).optional().nullable(),

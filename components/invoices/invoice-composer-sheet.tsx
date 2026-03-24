@@ -856,8 +856,7 @@ export function InvoiceComposerSheet({
         !line.description ||
         !Number.isFinite(line.quantity) ||
         line.quantity <= 0 ||
-        !Number.isFinite(line.unit_cost) ||
-        line.unit_cost < 0,
+        !Number.isFinite(line.unit_cost),
     )
 
     if (hasInvalidLine) {

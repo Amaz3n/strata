@@ -14,6 +14,45 @@ export interface NextInvoiceNumber {
   reservation_id?: string
 }
 
+function extractInvoiceSequenceValue(current: string, settings?: QBOSettings | null): number {
+  const normalized = String(current ?? "").trim()
+  if (!normalized) return 0
+
+  const explicitPrefix = settings?.invoice_number_pattern === "prefix" ? settings.invoice_number_prefix ?? "" : ""
+  if (explicitPrefix && normalized.startsWith(explicitPrefix)) {
+    const numericPortion = normalized.slice(explicitPrefix.length).replace(/\D/g, "")
+    if (numericPortion) return Number.parseInt(numericPortion, 10)
+  }
+
+  const yearMatch = normalized.match(/^(\d{4}-)(\d+)$/)
+  if (yearMatch) {
+    return Number.parseInt(yearMatch[2], 10)
+  }
+
+  const suffixMatch = normalized.match(/(\d+)(?!.*\d)/)
+  if (suffixMatch) {
+    return Number.parseInt(suffixMatch[1], 10)
+  }
+
+  return 0
+}
+
+export function compareInvoiceNumbers(a: string, b: string, settings?: QBOSettings | null): number {
+  const aSeq = extractInvoiceSequenceValue(a, settings)
+  const bSeq = extractInvoiceSequenceValue(b, settings)
+  if (aSeq !== bSeq) return aSeq - bSeq
+  return String(a ?? "").localeCompare(String(b ?? ""))
+}
+
+function pickLatestInvoiceNumber(candidates: Array<string | null | undefined>, settings?: QBOSettings | null) {
+  return candidates
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .reduce<string | null>((latest, candidate) => {
+      if (!latest) return candidate.trim()
+      return compareInvoiceNumbers(candidate, latest, settings) > 0 ? candidate.trim() : latest
+    }, null)
+}
+
 export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceNumber> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const serviceSupabase = createServiceSupabaseClient()
@@ -26,30 +65,70 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
     const client = await QBOClient.forOrg(resolvedOrgId)
     if (client) {
       try {
-        const lastNumber =
-          connection.settings.last_known_invoice_number ?? (await client.getLastInvoiceNumber()) ?? "0"
-        const nextNumber = incrementInvoiceNumber(lastNumber, connection.settings)
+        const [qboLastNumber, lastInvoice, latestReservation] = await Promise.all([
+          client.getLastInvoiceNumber().catch(() => null),
+          supabase
+            .from("invoices")
+            .select("invoice_number")
+            .eq("org_id", resolvedOrgId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          serviceSupabase
+            .from("qbo_invoice_reservations")
+            .select("reserved_number")
+            .eq("org_id", resolvedOrgId)
+            .order("reserved_at", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ])
 
-        const { data, error } = await serviceSupabase
-          .from("qbo_invoice_reservations")
-          .insert({
-            org_id: resolvedOrgId,
-            reserved_number: nextNumber,
-            reserved_by: userId,
-            expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-          })
-          .select("id")
-          .single()
+        let cursor =
+          pickLatestInvoiceNumber(
+            [
+              connection.settings.last_known_invoice_number ?? null,
+              qboLastNumber,
+              lastInvoice.data?.invoice_number ?? null,
+              latestReservation.data?.reserved_number ?? null,
+            ],
+            connection.settings,
+          ) ?? "0"
 
-        if (error) {
-          throw error
+        for (let attempt = 0; attempt < 25; attempt += 1) {
+          const nextNumber = incrementInvoiceNumber(cursor, connection.settings)
+          const { data, error } = await serviceSupabase
+            .from("qbo_invoice_reservations")
+            .insert({
+              org_id: resolvedOrgId,
+              reserved_number: nextNumber,
+              reserved_by: userId,
+              expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+            })
+            .select("id")
+            .single()
+
+          if (!error && data?.id) {
+            await rememberQBOInvoiceNumberCursor(resolvedOrgId, nextNumber)
+            return {
+              number: nextNumber,
+              source: "qbo",
+              reservation_id: data.id,
+            }
+          }
+
+          const errorText = String(error?.message ?? "").toLowerCase()
+          const duplicateReservation =
+            error?.code === "23505" ||
+            errorText.includes("duplicate") ||
+            errorText.includes("unique")
+
+          if (!duplicateReservation) {
+            throw error
+          }
+
+          cursor = nextNumber
         }
-
-        return {
-          number: nextNumber,
-          source: "qbo",
-          reservation_id: data?.id,
-        }
+        throw new Error("Unable to reserve a unique QuickBooks invoice number.")
       } catch (err) {
         console.warn("Failed to reserve QBO invoice number, falling back to local sequence", err)
       }
@@ -168,4 +247,34 @@ export async function cleanupExpiredReservations(orgId?: string) {
   }
 
   await query
+}
+
+export async function rememberQBOInvoiceNumberCursor(orgId: string, invoiceNumber: string) {
+  if (!orgId || !invoiceNumber) return
+  const supabase = createServiceSupabaseClient()
+  const { data: connection } = await supabase
+    .from("qbo_connections")
+    .select("id, settings")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .maybeSingle()
+
+  if (!connection) return
+
+  const settings = (connection.settings as QBOSettings & { last_known_invoice_number?: string | null }) ?? {}
+  const current = settings.last_known_invoice_number
+  if (current && compareInvoiceNumbers(invoiceNumber, current, settings) < 0) {
+    return
+  }
+
+  await supabase
+    .from("qbo_connections")
+    .update({
+      settings: {
+        ...settings,
+        last_known_invoice_number: invoiceNumber,
+      },
+    })
+    .eq("id", connection.id)
+    .eq("status", "active")
 }

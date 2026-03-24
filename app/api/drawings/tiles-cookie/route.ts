@@ -6,7 +6,7 @@ import { requireOrgMembership } from "@/lib/auth/context"
 const COOKIE_NAME = process.env.DRAWINGS_TILES_COOKIE_NAME ?? "arc_tiles"
 const COOKIE_SECRET = process.env.DRAWINGS_TILES_COOKIE_SECRET
 const COOKIE_DOMAIN = process.env.DRAWINGS_TILES_COOKIE_DOMAIN ?? ".arcnaples.com"
-const COOKIE_PATH = process.env.DRAWINGS_TILES_COOKIE_PATH ?? "/drawing-tiles/"
+const COOKIE_PATH = process.env.DRAWINGS_TILES_COOKIE_PATH ?? "/drawings-tiles/"
 const COOKIE_TTL_SECONDS = Number(process.env.DRAWINGS_TILES_COOKIE_TTL_SECONDS ?? "3600")
 
 function base64UrlEncode(value: string) {

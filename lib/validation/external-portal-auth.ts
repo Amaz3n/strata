@@ -11,6 +11,11 @@ export const authenticateExternalPortalAccountSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 })
 
+export const signInExternalPortalAccountSchema = z.object({
+  email: z.string().trim().email(),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+})
+
 export const setExternalPortalAccountStatusSchema = z.object({
   account_id: z.string().uuid(),
   project_id: z.string().uuid(),
@@ -18,4 +23,5 @@ export const setExternalPortalAccountStatusSchema = z.object({
 })
 
 export type AuthenticateExternalPortalAccountInput = z.infer<typeof authenticateExternalPortalAccountSchema>
+export type SignInExternalPortalAccountInput = z.infer<typeof signInExternalPortalAccountSchema>
 export type SetExternalPortalAccountStatusInput = z.infer<typeof setExternalPortalAccountStatusSchema>

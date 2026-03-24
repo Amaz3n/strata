@@ -13,15 +13,17 @@ import { BidRfisTab } from "@/components/bid-portal/tabs/bid-rfis-tab"
 import { BidPortalPinGate } from "@/components/bid-portal/bid-portal-pin-gate"
 import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import type { BidPortalAccess, BidPortalData, BidPortalSubmission, BidPortalAddendum } from "@/lib/services/bid-portal"
+import type { ExternalPortalWorkspaceContext } from "@/lib/types"
 
 interface BidPortalClientNewProps {
   token: string
   access: BidPortalAccess
   data: BidPortalData
   pinRequired?: boolean
+  workspace?: ExternalPortalWorkspaceContext | null
 }
 
-export function BidPortalClientNew({ token, access, data, pinRequired = false }: BidPortalClientNewProps) {
+export function BidPortalClientNew({ token, access, data, pinRequired = false, workspace = null }: BidPortalClientNewProps) {
   const router = useRouter()
   const [pinVerified, setPinVerified] = useState(!pinRequired)
   const [activeTab, setActiveTab] = useState<BidPortalTab>("home")
@@ -96,6 +98,7 @@ export function BidPortalClientNew({ token, access, data, pinRequired = false }:
     <ExternalPortalShell
       orgName={access.org.name}
       project={project}
+      workspace={workspace}
       isMobile={isMobile}
       activeTab={activeTab}
       onTabChange={setActiveTab}

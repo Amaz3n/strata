@@ -4,12 +4,11 @@ import { useState } from "react"
 import Link from "next/link"
 import type { ReactNode } from "react"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
 import type { TeamMember } from "@/lib/types"
-import type { Prospect, CrmDashboardStats, CrmActivity } from "@/lib/services/crm"
-import { LeadStatusBadge, LeadPriorityBadge } from "./lead-status-badge"
+import type { Prospect, CrmActivity } from "@/lib/services/crm"
+import { LeadStatusBadge } from "./lead-status-badge"
 import { ProspectDetailSheet } from "./prospect-detail-sheet"
 import { AddTouchDialog } from "./add-touch-dialog"
 import { FollowUpDialog } from "./follow-up-dialog"
@@ -31,19 +30,22 @@ import {
   UserPlus,
   Mail,
   Phone,
-  ExternalLink,
   MessageSquare,
 } from "@/components/icons"
 import { formatDistanceToNow, format, isPast, isToday, isYesterday } from "date-fns"
 import { cn } from "@/lib/utils"
 
 interface PipelineDashboardProps {
-  stats: CrmDashboardStats
-  pipelineCounts: {
+  opportunityCounts: {
     new: number
     contacted: number
     qualified: number
     estimating: number
+    proposed: number
+    won: number
+    lost: number
+  }
+  closedThisMonth: {
     won: number
     lost: number
   }
@@ -62,11 +64,12 @@ const PIPELINE_STAGES = [
   { key: "contacted", label: "Contacted", color: "bg-slate-400" },
   { key: "qualified", label: "Qualified", color: "bg-purple-500" },
   { key: "estimating", label: "Estimating", color: "bg-amber-500" },
+  { key: "proposed", label: "Proposed", color: "bg-emerald-500" },
 ] as const
 
 export function PipelineDashboard({
-  stats,
-  pipelineCounts,
+  opportunityCounts,
+  closedThisMonth,
   winRate,
   followUpsDue,
   newInquiries,
@@ -96,8 +99,7 @@ export function PipelineDashboard({
   }
 
   // Calculate max for pipeline chart scaling
-  const maxCount = Math.max(...Object.values(pipelineCounts).filter((_, i) => i < 4), 1)
-  const activePipelineTotal = pipelineCounts.new + pipelineCounts.contacted + pipelineCounts.qualified + pipelineCounts.estimating
+  const activePipelineTotal = PIPELINE_STAGES.reduce((sum, stage) => sum + opportunityCounts[stage.key], 0)
 
   return (
     <div className="space-y-6">
@@ -127,7 +129,7 @@ export function PipelineDashboard({
                 Active Pipeline
               </CardTitle>
               <span className="text-xs text-muted-foreground">
-                {activePipelineTotal} active · {pipelineCounts.won + pipelineCounts.lost} closed
+                {activePipelineTotal} active opportunities · {closedThisMonth.won + closedThisMonth.lost} closed this month
               </span>
             </div>
           </CardHeader>
@@ -135,10 +137,10 @@ export function PipelineDashboard({
             {/* Funnel stages - horizontal on desktop, vertical on mobile */}
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-0">
               {PIPELINE_STAGES.map((stage, index) => {
-                const count = pipelineCounts[stage.key as keyof typeof pipelineCounts]
+                const count = opportunityCounts[stage.key]
                 const pctOfTotal = activePipelineTotal > 0 ? Math.round((count / activePipelineTotal) * 100) : 0
 
-                const stageStyles: Record<string, { gradient: string; border: string; text: string }> = {
+                const stageStyles: Record<(typeof PIPELINE_STAGES)[number]["key"], { gradient: string; border: string; text: string }> = {
                   new: {
                     gradient: "from-blue-500/10 to-blue-600/5 dark:from-blue-500/20 dark:to-blue-600/10",
                     border: "border-blue-500/30",
@@ -159,6 +161,11 @@ export function PipelineDashboard({
                     border: "border-amber-500/30",
                     text: "text-amber-600 dark:text-amber-400",
                   },
+                  proposed: {
+                    gradient: "from-emerald-500/10 to-teal-600/5 dark:from-emerald-500/20 dark:to-teal-600/10",
+                    border: "border-emerald-500/30",
+                    text: "text-emerald-600 dark:text-emerald-400",
+                  },
                 }
 
                 const style = stageStyles[stage.key]
@@ -166,7 +173,7 @@ export function PipelineDashboard({
                 return (
                   <div key={stage.key} className="flex-1 flex items-center">
                     <Link
-                      href={`/pipeline?view=prospects&status=${stage.key}`}
+                      href={`/pipeline?view=opportunities&status=${stage.key}`}
                       className={cn(
                         "group relative flex-1 p-4 rounded-xl border transition-all",
                         "hover:shadow-md hover:scale-[1.02] active:scale-[0.98]",
@@ -204,7 +211,7 @@ export function PipelineDashboard({
             {/* Outcomes: Won & Lost */}
             <div className="flex gap-3 mt-4 pt-4 border-t">
               <Link
-                href="/pipeline?view=prospects&status=won"
+                href="/pipeline?view=opportunities&status=won"
                 className="flex-1 group flex items-center gap-3 p-3 rounded-lg bg-green-500/10 dark:bg-green-500/20 border border-green-500/20 hover:border-green-500/40 hover:shadow-sm transition-all"
               >
                 <div className="h-10 w-10 rounded-lg bg-green-500 flex items-center justify-center shrink-0">
@@ -212,7 +219,7 @@ export function PipelineDashboard({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="text-xl font-bold text-green-600 dark:text-green-400 tabular-nums">
-                    {pipelineCounts.won}
+                    {closedThisMonth.won}
                   </div>
                   <div className="text-xs text-muted-foreground">Won this month</div>
                 </div>
@@ -220,7 +227,7 @@ export function PipelineDashboard({
               </Link>
 
               <Link
-                href="/pipeline?view=prospects&status=lost"
+                href="/pipeline?view=opportunities&status=lost"
                 className="flex-1 group flex items-center gap-3 p-3 rounded-lg bg-red-500/5 dark:bg-red-500/10 border border-red-500/15 hover:border-red-500/30 hover:shadow-sm transition-all"
               >
                 <div className="h-10 w-10 rounded-lg bg-red-500 flex items-center justify-center shrink-0">
@@ -228,7 +235,7 @@ export function PipelineDashboard({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="text-xl font-bold text-red-600 dark:text-red-400 tabular-nums">
-                    {pipelineCounts.lost}
+                    {closedThisMonth.lost}
                   </div>
                   <div className="text-xs text-muted-foreground">Lost this month</div>
                 </div>
@@ -237,7 +244,7 @@ export function PipelineDashboard({
             </div>
 
             {/* Win rate indicator */}
-            {(pipelineCounts.won > 0 || pipelineCounts.lost > 0) && (
+            {(closedThisMonth.won > 0 || closedThisMonth.lost > 0) && (
               <div className="mt-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
                 <Target className="h-3.5 w-3.5" />
                 <span>

@@ -40,6 +40,13 @@ type InvoiceRow = {
   sent_to_emails?: string[] | null
 }
 
+type SourceBillingContext = {
+  contractId?: string | null
+  retainagePercent: number
+  retainageAmountCents: number
+  metadata: Record<string, any>
+}
+
 function toCents(value: number): number {
   if (!Number.isFinite(value)) return 0
   // If a very large number is passed (likely already in cents), avoid double-multiplying.
@@ -62,14 +69,12 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
   }))
 }
 
-function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals {
-  const normalized = normalizeLines(lines)
-
-  const subtotal_cents = normalized.reduce((sum, line) => {
+function calculateNormalizedTotals(lines: InvoiceLine[], taxRate = 0): InvoiceTotals {
+  const subtotal_cents = lines.reduce((sum, line) => {
     return sum + Math.round(line.quantity * line.unit_cost_cents)
   }, 0)
 
-  const taxableBase = normalized.reduce((sum, line) => {
+  const taxableBase = lines.reduce((sum, line) => {
     const lineSubtotal = Math.round(line.quantity * line.unit_cost_cents)
     return line.taxable === false ? sum : sum + lineSubtotal
   }, 0)
@@ -84,6 +89,223 @@ function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals 
     balance_due_cents: total_cents,
     tax_rate: taxRate,
   }
+}
+
+function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals {
+  return calculateNormalizedTotals(normalizeLines(lines), taxRate)
+}
+
+function isSystemGeneratedRetainageLine(line: Pick<InvoiceLine, "description" | "unit">) {
+  const normalizedUnit = String(line.unit ?? "").toLowerCase()
+  const normalizedDescription = String(line.description ?? "").toLowerCase()
+  return normalizedUnit === "retainage" || normalizedDescription.startsWith("retainage held")
+}
+
+function stripSystemGeneratedBillingLines(lines: InvoiceLine[]) {
+  return lines.filter((line) => !isSystemGeneratedRetainageLine(line))
+}
+
+async function resolveInvoiceSourceBillingContext(params: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId?: string | null
+  sourceType?: string
+  sourceDrawId?: string | null
+  sourceChangeOrderId?: string | null
+  baseLines: InvoiceLine[]
+}) {
+  const { supabase, orgId, projectId, sourceType, sourceDrawId, sourceChangeOrderId, baseLines } = params
+
+  if (sourceType !== "draw" && sourceType !== "change_order") {
+    return null
+  }
+
+  let contractId: string | null = null
+  let sourceMetadata: Record<string, any> = {}
+
+  if (sourceType === "draw" && sourceDrawId) {
+    const { data: draw, error: drawError } = await supabase
+      .from("draw_schedules")
+      .select("id, project_id, contract_id, draw_number, title, amount_cents, percent_of_contract, status")
+      .eq("org_id", orgId)
+      .eq("id", sourceDrawId)
+      .maybeSingle()
+
+    if (drawError) {
+      throw new Error(`Failed to load draw context: ${drawError.message}`)
+    }
+
+    if (!draw) {
+      throw new Error("Selected draw no longer exists.")
+    }
+
+    contractId = (draw as any).contract_id ?? null
+
+    const { data: priorDraws } = await supabase
+      .from("draw_schedules")
+      .select("amount_cents")
+      .eq("org_id", orgId)
+      .eq("project_id", draw.project_id)
+      .neq("id", draw.id)
+      .in("status", ["invoiced", "partial", "paid"])
+
+    const priorBilledCents = (priorDraws ?? []).reduce((sum, row: any) => sum + Number(row.amount_cents ?? 0), 0)
+    sourceMetadata = {
+      draw_id: draw.id,
+      draw_number: draw.draw_number,
+      draw_title: draw.title,
+      draw_amount_cents: draw.amount_cents,
+      draw_percent_of_contract: draw.percent_of_contract,
+      draw_status: draw.status,
+      prior_billed_cents: priorBilledCents,
+    }
+  }
+
+  if (sourceType === "change_order" && sourceChangeOrderId) {
+    const { data: changeOrder, error: changeOrderError } = await supabase
+      .from("change_orders")
+      .select("id, project_id, contract_id, title, total_cents, status, approved_at")
+      .eq("org_id", orgId)
+      .eq("id", sourceChangeOrderId)
+      .maybeSingle()
+
+    if (changeOrderError) {
+      throw new Error(`Failed to load change order context: ${changeOrderError.message}`)
+    }
+
+    if (!changeOrder) {
+      throw new Error("Selected change order no longer exists.")
+    }
+
+    contractId = (changeOrder as any).contract_id ?? null
+    sourceMetadata = {
+      change_order_id: changeOrder.id,
+      change_order_title: changeOrder.title,
+      change_order_total_cents: changeOrder.total_cents,
+      change_order_status: changeOrder.status,
+      change_order_approved_at: changeOrder.approved_at,
+    }
+  }
+
+  const contractProjectId = projectId ?? null
+  let contract: any = null
+
+  if (contractId) {
+    const { data: linkedContract, error: contractError } = await supabase
+      .from("contracts")
+      .select("id, project_id, total_cents, retainage_percent, snapshot, status")
+      .eq("org_id", orgId)
+      .eq("id", contractId)
+      .maybeSingle()
+
+    if (contractError) {
+      throw new Error(`Failed to load billing contract: ${contractError.message}`)
+    }
+    contract = linkedContract
+  } else if (contractProjectId) {
+    const { data: activeContract, error: contractError } = await supabase
+      .from("contracts")
+      .select("id, project_id, total_cents, retainage_percent, snapshot, status")
+      .eq("org_id", orgId)
+      .eq("project_id", contractProjectId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (contractError) {
+      throw new Error(`Failed to load active billing contract: ${contractError.message}`)
+    }
+    contract = activeContract
+    contractId = activeContract?.id ?? null
+  }
+
+  const retainagePercent = Number(contract?.retainage_percent ?? 0)
+  const effectiveBaseLines = stripSystemGeneratedBillingLines(baseLines)
+  const grossAmountCents = effectiveBaseLines.reduce(
+    (sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents),
+    0,
+  )
+  const retainageAmountCents =
+    retainagePercent > 0 ? Math.round(Math.max(grossAmountCents, 0) * (retainagePercent / 100)) : 0
+
+  return {
+    contractId,
+    retainagePercent,
+    retainageAmountCents,
+    metadata: {
+      ...sourceMetadata,
+      contract_id: contractId,
+      contract_total_cents: contract?.total_cents ?? null,
+      approved_change_orders_cents: contract?.snapshot?.approved_change_orders_cents ?? null,
+      revised_contract_total_cents: contract?.snapshot?.revised_total_cents ?? contract?.total_cents ?? null,
+      retainage_percent: retainagePercent > 0 ? retainagePercent : null,
+      retainage_amount_cents: retainageAmountCents > 0 ? retainageAmountCents : null,
+      gross_amount_cents: grossAmountCents,
+    },
+  } satisfies SourceBillingContext
+}
+
+function applySourceDerivedBillingLines(lines: InvoiceLine[], sourceContext: SourceBillingContext | null) {
+  const nextLines = stripSystemGeneratedBillingLines(lines)
+  if (!sourceContext || sourceContext.retainageAmountCents <= 0) {
+    return nextLines
+  }
+
+  return [
+    ...nextLines,
+    {
+      description: `Retainage held (${sourceContext.retainagePercent}%)`,
+      quantity: 1,
+      unit: "retainage",
+      unit_cost_cents: -Math.abs(sourceContext.retainageAmountCents),
+      taxable: false,
+      qbo_income_account_id: null,
+      qbo_income_account_name: null,
+    },
+  ]
+}
+
+async function upsertRetainageForInvoice(params: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId?: string | null
+  invoiceId: string
+  sourceContext: SourceBillingContext | null
+}) {
+  const { supabase, orgId, projectId, invoiceId, sourceContext } = params
+  if (!projectId || !sourceContext?.contractId || sourceContext.retainageAmountCents <= 0) return
+
+  const { data: existing } = await supabase
+    .from("retainage")
+    .select("id, status")
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+    .maybeSingle()
+
+  if (existing?.id) {
+    if (existing.status === "paid") return
+
+    await supabase
+      .from("retainage")
+      .update({
+        project_id: projectId,
+        contract_id: sourceContext.contractId,
+        amount_cents: sourceContext.retainageAmountCents,
+      })
+      .eq("org_id", orgId)
+      .eq("id", existing.id)
+    return
+  }
+
+  await supabase.from("retainage").insert({
+    org_id: orgId,
+    project_id: projectId,
+    contract_id: sourceContext.contractId,
+    invoice_id: invoiceId,
+    amount_cents: sourceContext.retainageAmountCents,
+    status: "held",
+  })
 }
 
 function shouldQueueQboSync(status?: string | null, clientVisible?: boolean | null) {
@@ -294,13 +516,22 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     .eq("id", resolvedOrgId)
     .maybeSingle()
 
-  const lines = normalizeLines(input.lines)
-  const totals = calculateTotals(input.lines, input.tax_rate)
-  const shouldGenerateToken = input.client_visible === true || input.status === "sent"
-  const token = shouldGenerateToken ? randomUUID() : null
   const sourceType = input.source_type ?? "manual"
   const sourceDrawId = input.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? null
+  const sourceContext = await resolveInvoiceSourceBillingContext({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id ?? null,
+    sourceType,
+    sourceDrawId,
+    sourceChangeOrderId,
+    baseLines: normalizeLines(input.lines),
+  })
+  const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
+  const totals = calculateNormalizedTotals(lines, input.tax_rate)
+  const shouldGenerateToken = input.client_visible === true || input.status === "sent"
+  const token = shouldGenerateToken ? randomUUID() : null
 
   await assertSourceNotAlreadyBilled({
     supabase,
@@ -341,6 +572,10 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
+      source_contract_id: sourceContext?.contractId ?? null,
+      billing_context: sourceContext?.metadata ?? null,
+      retainage_percent: sourceContext?.retainagePercent ?? null,
+      retainage_amount_cents: sourceContext?.retainageAmountCents ?? null,
       qbo_income_account_id: input.qbo_income_account_id ?? null,
       qbo_income_account_name: input.qbo_income_account_name ?? null,
       // Store org info for invoice display
@@ -379,6 +614,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
         taxable: line.taxable ?? true,
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
+        system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
       },
     })),
   )
@@ -399,6 +635,14 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       invoiceId: data.id,
     })
   }
+
+  await upsertRetainageForInvoice({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id ?? null,
+    invoiceId: data.id,
+    sourceContext,
+  })
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -461,7 +705,7 @@ export async function updateInvoice({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error: existingError } = await supabase
     .from("invoices")
-    .select("id, org_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata, qbo_id")
+    .select("id, org_id, project_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata, qbo_id")
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -470,8 +714,20 @@ export async function updateInvoice({
     throw new Error(existingError?.message ?? "Invoice not found")
   }
 
-  const lines = normalizeLines(input.lines)
-  const totals = calculateTotals(input.lines, input.tax_rate)
+  const sourceType = input.source_type ?? (existing.metadata as any)?.source_type ?? "manual"
+  const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
+  const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
+  const sourceContext = await resolveInvoiceSourceBillingContext({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id ?? existing.project_id ?? null,
+    sourceType,
+    sourceDrawId,
+    sourceChangeOrderId,
+    baseLines: normalizeLines(input.lines),
+  })
+  const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
+  const totals = calculateNormalizedTotals(lines, input.tax_rate)
   const shouldGenerateToken =
     existing.token != null || existing.client_visible === true || input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? existing.token ?? randomUUID() : existing.token ?? null
@@ -479,9 +735,6 @@ export async function updateInvoice({
   const isFirstSend = shouldGenerateToken && !existing.sent_at
   const sentTo =
     input.sent_to_emails && input.sent_to_emails.length > 0 ? input.sent_to_emails : existing.sent_to_emails ?? null
-  const sourceType = input.source_type ?? (existing.metadata as any)?.source_type ?? "manual"
-  const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
-  const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
 
   await assertSourceNotAlreadyBilled({
     supabase,
@@ -522,6 +775,10 @@ export async function updateInvoice({
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
+      source_contract_id: sourceContext?.contractId ?? (existing.metadata as any)?.source_contract_id ?? null,
+      billing_context: sourceContext?.metadata ?? (existing.metadata as any)?.billing_context ?? null,
+      retainage_percent: sourceContext?.retainagePercent ?? (existing.metadata as any)?.retainage_percent ?? null,
+      retainage_amount_cents: sourceContext?.retainageAmountCents ?? (existing.metadata as any)?.retainage_amount_cents ?? null,
       qbo_income_account_id: input.qbo_income_account_id ?? (existing.metadata as any)?.qbo_income_account_id ?? null,
       qbo_income_account_name: input.qbo_income_account_name ?? (existing.metadata as any)?.qbo_income_account_name ?? null,
     },
@@ -558,6 +815,7 @@ export async function updateInvoice({
         taxable: line.taxable ?? true,
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
+        system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
       },
     })),
   )
@@ -574,6 +832,14 @@ export async function updateInvoice({
       invoiceId,
     })
   }
+
+  await upsertRetainageForInvoice({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id ?? existing.project_id ?? null,
+    invoiceId,
+    sourceContext,
+  })
 
   await recalcInvoiceBalanceAndStatus({ supabase, orgId: resolvedOrgId, invoiceId })
 

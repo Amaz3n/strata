@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { ReactNode } from "react"
@@ -18,7 +18,7 @@ import { OpportunityDetailSheet } from "@/components/opportunities/opportunity-d
 import { OpportunityStatusBadge } from "@/components/opportunities/opportunity-status-badge"
 import { MoreHorizontal, Plus } from "@/components/icons"
 import { cn } from "@/lib/utils"
-import { startEstimatingAction } from "@/app/(app)/pipeline/opportunity-actions"
+import { activateOpportunityProjectAction, startEstimatingAction } from "@/app/(app)/pipeline/opportunity-actions"
 
 const statusOptions: OpportunityStatus[] = [
   "new",
@@ -57,8 +57,10 @@ interface OpportunitiesClientProps {
   opportunities: Opportunity[]
   teamMembers: TeamMember[]
   clients: Contact[]
+  initialStatusFilter?: OpportunityStatus
   canCreate?: boolean
   canEdit?: boolean
+  canManageProjects?: boolean
   headerLeft?: ReactNode
 }
 
@@ -66,23 +68,28 @@ export function OpportunitiesClient({
   opportunities,
   teamMembers,
   clients,
+  initialStatusFilter,
   canCreate = false,
   canEdit = false,
+  canManageProjects = false,
   headerLeft,
 }: OpportunitiesClientProps) {
   const router = useRouter()
-  const [items] = useState(opportunities)
   const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<"all" | OpportunityStatus>("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | OpportunityStatus>(initialStatusFilter ?? "all")
   const [ownerFilter, setOwnerFilter] = useState("all")
   const [createOpen, setCreateOpen] = useState(false)
   const [detailId, setDetailId] = useState<string | undefined>()
   const [detailOpen, setDetailOpen] = useState(false)
-  const [startingId, setStartingId] = useState<string | null>(null)
+  const [pendingOpportunityId, setPendingOpportunityId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setStatusFilter(initialStatusFilter ?? "all")
+  }, [initialStatusFilter])
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
-    return items.filter((opportunity) => {
+    return opportunities.filter((opportunity) => {
       const matchesStatus = statusFilter === "all" || opportunity.status === statusFilter
       const matchesOwner =
         ownerFilter === "all" ||
@@ -101,7 +108,7 @@ export function OpportunitiesClient({
       const matchesSearch = !term || haystack.includes(term)
       return matchesStatus && matchesOwner && matchesSearch
     })
-  }, [items, statusFilter, ownerFilter, search])
+  }, [opportunities, statusFilter, ownerFilter, search])
 
   const openDetail = (opportunityId: string) => {
     setDetailId(opportunityId)
@@ -113,10 +120,15 @@ export function OpportunitiesClient({
     return teamMembers.find((m) => m.user.id === userId)?.user.full_name ?? "Unknown"
   }
 
-  const handleStartEstimating = async (opportunity: Opportunity) => {
+  const navigateToEstimateWorkspace = async (opportunity: Opportunity) => {
     try {
-      setStartingId(opportunity.id)
-      const result = await startEstimatingAction(opportunity.id)
+      setPendingOpportunityId(opportunity.id)
+      const result = opportunity.project
+        ? {
+            project_id: opportunity.project.id,
+            client_contact_id: opportunity.client_contact_id,
+          }
+        : await startEstimatingAction(opportunity.id)
       const params = new URLSearchParams()
       params.set("project", result.project_id)
       if (result.client_contact_id) {
@@ -126,14 +138,68 @@ export function OpportunitiesClient({
     } catch (error) {
       toast.error("Unable to start estimating", { description: (error as Error).message })
     } finally {
-      setStartingId(null)
+      setPendingOpportunityId(null)
+    }
+  }
+
+  const activateAndOpenProject = async (opportunity: Opportunity) => {
+    try {
+      setPendingOpportunityId(opportunity.id)
+      const result = await activateOpportunityProjectAction(opportunity.id)
+      router.push(`/projects/${result.project_id}`)
+    } catch (error) {
+      toast.error("Unable to open project", { description: (error as Error).message })
+    } finally {
+      setPendingOpportunityId(null)
+    }
+  }
+
+  const getPrimaryAction = (opportunity: Opportunity) => {
+    switch (opportunity.status) {
+      case "new":
+      case "contacted":
+        return null
+      case "qualified":
+        return {
+          label: opportunity.project ? "Open estimate workspace" : "Create estimate workspace",
+          onSelect: () => navigateToEstimateWorkspace(opportunity),
+          requiresProjectManage: true,
+        }
+      case "estimating":
+        return {
+          label: opportunity.project ? "Continue estimating" : "Create estimate workspace",
+          onSelect: () => navigateToEstimateWorkspace(opportunity),
+          requiresProjectManage: true,
+        }
+      case "proposed":
+        return {
+          label: opportunity.project ? "Open precon workspace" : "Create precon workspace",
+          onSelect: () => navigateToEstimateWorkspace(opportunity),
+          requiresProjectManage: true,
+        }
+      case "won":
+        return {
+          label: "Open active project",
+          onSelect: () => activateAndOpenProject(opportunity),
+          requiresProjectManage: true,
+        }
+      case "lost":
+        return null
+      default:
+        return null
     }
   }
 
   return (
     <div className="space-y-4">
       <AddOpportunityDialog open={createOpen} onOpenChange={setCreateOpen} teamMembers={teamMembers} clients={clients} />
-      <OpportunityDetailSheet opportunityId={detailId} open={detailOpen} onOpenChange={setDetailOpen} teamMembers={teamMembers} />
+      <OpportunityDetailSheet
+        opportunityId={detailId}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        teamMembers={teamMembers}
+        canManageProjects={canManageProjects}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>{headerLeft}</div>
@@ -202,8 +268,11 @@ export function OpportunitiesClient({
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((opportunity) => (
-                <TableRow key={opportunity.id} className={cn("divide-x", "hover:bg-muted/40 cursor-pointer")}>
+              filtered.map((opportunity) => {
+                const primaryAction = getPrimaryAction(opportunity)
+
+                return (
+                  <TableRow key={opportunity.id} className={cn("divide-x", "hover:bg-muted/40 cursor-pointer")}>
                   <TableCell className="px-4 py-4" onClick={() => openDetail(opportunity.id)}>
                     <div className="font-medium">{opportunity.name}</div>
                     {opportunity.project?.status && (
@@ -239,22 +308,39 @@ export function OpportunitiesClient({
                         <DropdownMenuItem onClick={() => openDetail(opportunity.id)}>
                           View details
                         </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => handleStartEstimating(opportunity)}
-                          disabled={startingId === opportunity.id}
-                        >
-                          {startingId === opportunity.id ? "Starting..." : "Start estimating"}
-                        </DropdownMenuItem>
+                        {opportunity.project && opportunity.status !== "won" && (
+                          <DropdownMenuItem onClick={() => router.push(`/projects/${opportunity.project?.id}`)}>
+                            Open project
+                          </DropdownMenuItem>
+                        )}
+                        {primaryAction && (
+                          <DropdownMenuItem
+                            onClick={primaryAction.onSelect}
+                            disabled={
+                              pendingOpportunityId === opportunity.id ||
+                              !canEdit ||
+                              (primaryAction.requiresProjectManage && !canManageProjects)
+                            }
+                          >
+                            {pendingOpportunityId === opportunity.id ? "Working..." : primaryAction.label}
+                          </DropdownMenuItem>
+                        )}
                         {!canEdit && (
                           <DropdownMenuItem disabled>
                             You do not have edit access
                           </DropdownMenuItem>
                         )}
+                        {!canManageProjects && primaryAction?.requiresProjectManage && (
+                          <DropdownMenuItem disabled>
+                            Project access required
+                          </DropdownMenuItem>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
-                </TableRow>
-              ))
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>

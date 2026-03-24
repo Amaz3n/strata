@@ -1,11 +1,12 @@
 import { PageLayout } from "@/components/layout/page-layout"
 import { PipelineWorkspaceClient } from "@/components/pipeline/pipeline-workspace-client"
-import { listProspects, getCrmDashboardStats, getRecentActivity } from "@/lib/services/crm"
+import { listProspects, getRecentActivity } from "@/lib/services/crm"
 import { listOpportunities } from "@/lib/services/opportunities"
 import { listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listContacts } from "@/lib/services/contacts"
 import { leadStatusEnum, type LeadStatus } from "@/lib/validation/crm"
+import { opportunityStatusEnum, type OpportunityStatus } from "@/lib/validation/opportunities"
 
 export const dynamic = "force-dynamic"
 
@@ -29,15 +30,21 @@ function resolveLeadStatus(status?: string): LeadStatus | undefined {
   return parsed.success ? parsed.data : undefined
 }
 
+function resolveOpportunityStatus(status?: string): OpportunityStatus | undefined {
+  if (!status) return undefined
+  const parsed = opportunityStatusEnum.safeParse(status)
+  return parsed.success ? parsed.data : undefined
+}
+
 export default async function PipelinePage({ searchParams }: PipelinePageProps) {
   const resolvedSearchParams = await searchParams
   const initialView = resolvePipelineView(resolvedSearchParams?.view)
   const initialProspectStatus = resolveLeadStatus(resolvedSearchParams?.status)
+  const initialOpportunityStatus = resolveOpportunityStatus(resolvedSearchParams?.status)
 
-  const [prospects, opportunities, stats, teamMembers, permissionResult, recentActivity, clients] = await Promise.all([
+  const [prospects, opportunities, teamMembers, permissionResult, recentActivity, clients] = await Promise.all([
     listProspects(),
     listOpportunities(),
-    getCrmDashboardStats(),
     listTeamMembers(),
     getCurrentUserPermissions(),
     getRecentActivity(undefined, 10),
@@ -47,8 +54,10 @@ export default async function PipelinePage({ searchParams }: PipelinePageProps) 
   const permissions = permissionResult?.permissions ?? []
   const canEdit = permissions.includes("org.member")
   const canCreate = permissions.includes("org.member")
+  const canManageProjects = permissions.includes("project.manage")
 
   const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
 
   const followUpsDue = prospects
     .filter((p) => {
@@ -64,25 +73,32 @@ export default async function PipelinePage({ searchParams }: PipelinePageProps) 
     .filter((p) => p.lead_status === "new" || !p.lead_status)
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
 
-  const pipelineCounts = {
-    new: prospects.filter((p) => p.lead_status === "new" || !p.lead_status).length,
-    contacted: prospects.filter((p) => p.lead_status === "contacted").length,
-    qualified: prospects.filter((p) => p.lead_status === "qualified").length,
-    estimating: prospects.filter((p) => p.lead_status === "estimating").length,
-    won: prospects.filter((p) => p.lead_status === "won").length,
-    lost: prospects.filter((p) => p.lead_status === "lost").length,
+  const opportunityCounts = {
+    new: opportunities.filter((opportunity) => opportunity.status === "new").length,
+    contacted: opportunities.filter((opportunity) => opportunity.status === "contacted").length,
+    qualified: opportunities.filter((opportunity) => opportunity.status === "qualified").length,
+    estimating: opportunities.filter((opportunity) => opportunity.status === "estimating").length,
+    proposed: opportunities.filter((opportunity) => opportunity.status === "proposed").length,
+    won: opportunities.filter((opportunity) => opportunity.status === "won").length,
+    lost: opportunities.filter((opportunity) => opportunity.status === "lost").length,
   }
 
-  const totalClosed = stats.wonThisMonth + stats.lostThisMonth
-  const winRate = totalClosed > 0 ? Math.round((stats.wonThisMonth / totalClosed) * 100) : null
+  const closedThisMonth = {
+    won: opportunities.filter((opportunity) => opportunity.status === "won" && (opportunity.updated_at ?? opportunity.created_at) >= monthStart).length,
+    lost: opportunities.filter((opportunity) => opportunity.status === "lost" && (opportunity.updated_at ?? opportunity.created_at) >= monthStart).length,
+  }
+
+  const totalClosed = closedThisMonth.won + closedThisMonth.lost
+  const winRate = totalClosed > 0 ? Math.round((closedThisMonth.won / totalClosed) * 100) : null
 
   return (
     <PageLayout title="Pipeline">
       <PipelineWorkspaceClient
         initialView={initialView}
         initialProspectStatus={initialProspectStatus}
-        stats={stats}
-        pipelineCounts={pipelineCounts}
+        initialOpportunityStatus={initialOpportunityStatus}
+        opportunityCounts={opportunityCounts}
+        closedThisMonth={closedThisMonth}
         winRate={winRate}
         followUpsDue={followUpsDue}
         newInquiries={newInquiries}
@@ -93,6 +109,7 @@ export default async function PipelinePage({ searchParams }: PipelinePageProps) 
         clients={clients}
         canCreate={canCreate}
         canEdit={canEdit}
+        canManageProjects={canManageProjects}
       />
     </PageLayout>
   )

@@ -1070,7 +1070,7 @@ export function ProjectSetupWizardSheet({
                         <CardHeader>
                           <CardTitle className="text-base">Invite client to portal</CardTitle>
                           <CardDescription>
-                            Create or reuse the client portal link, then copy it or email it directly to the client.
+                            Create or reuse the client portal access, then email the project invite directly to the client.
                           </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">

@@ -878,7 +878,11 @@ const GENERAL_KNOWLEDGE_HINT_RE =
   /\b(weather|temperature|recipe|translate|capital of|exchange rate|stock price|crypto price|nba|nfl|mlb|epl|movie|song lyrics|history of|meaning of|define|who is|what is|when is|where is|explain|tell me about)\b/i
 const SOCIAL_GREETING_RE = /^(hi|hello|hey|yo|sup|hola|good (morning|afternoon|evening)|what's up)\b/i
 const SMALL_TALK_RE = /\b(how are you|who are you|what can you do|thanks|thank you|goodbye|bye)\b/i
-const GENERAL_QUESTION_START_RE = /^(what|who|when|where|why|how|explain|define|tell me about)\b/i
+const ASSISTANT_META_HINT_RE =
+  /\b(model|llm|chat|assistant|system prompt|provider|engine|powering this chat|running locally|lm studio|openai-compatible)\b/i
+const ASSISTANT_RUNTIME_INFO_RE =
+  /\b(what|which)\b.*\b(model|llm|provider|engine)\b|\b(model|llm|provider|engine)\b.*\b(power|powering|powers|running|using|backing)\b|\bwhat\b.*\b(chat|assistant)\b.*\b(using|running|powered)\b/i
+const GENERAL_QUESTION_START_RE = /^(what|which|who|when|where|why|how|explain|define|tell me about)\b/i
 const ANALYTICS_INTENT_HINT_RE =
   /\b(by status|status breakdown|by project|per project|over time|trend|monthly|by month|month over month|breakdown|break down|distribution|average|avg|sum of|total amount|total value)\b/
 const ANALYTICS_GROUP_BY_STATUS_RE = /\b(by status|status breakdown|status distribution|per status)\b/
@@ -2375,43 +2379,41 @@ async function resolveAssistantMode(
     return "org"
   }
 
-  if (requestedMode === "general" && flags.generalAssistant) {
+  if (requestedMode === "general") {
     return "general"
   }
 
   // Auto mode: keep org-grounded behavior unless the prompt is clearly general.
-  if (flags.generalAssistant) {
-    if (isGreetingOrSmallTalkQuery(query)) {
-      return "general"
-    }
+  if (isGreetingOrSmallTalkQuery(query)) {
+    return "general"
+  }
 
-    const hasEntityMentions = detectEntityMentions(query).length > 0
-    const hasOrgContextHint = ORG_CONTEXT_HINT_RE.test(query)
-    const hasBusinessMetricHint = ORG_BUSINESS_METRIC_HINT_RE.test(query)
-    const hasSubjectHint = ORG_SUBJECT_HINT_RE.test(query)
-    const hasRelativeTimeHint = CLARIFICATION_TIME_RANGE_RE.test(query)
+  const hasEntityMentions = detectEntityMentions(query).length > 0
+  const hasOrgContextHint = ORG_CONTEXT_HINT_RE.test(query)
+  const hasBusinessMetricHint = ORG_BUSINESS_METRIC_HINT_RE.test(query)
+  const hasSubjectHint = ORG_SUBJECT_HINT_RE.test(query)
+  const hasRelativeTimeHint = CLARIFICATION_TIME_RANGE_RE.test(query)
 
-    if (hasEntityMentions || hasOrgContextHint) {
-      return "org"
-    }
-    if (hasBusinessMetricHint && (hasSubjectHint || hasRelativeTimeHint)) {
-      return "org"
-    }
+  if (hasEntityMentions || hasOrgContextHint) {
+    return "org"
+  }
+  if (hasBusinessMetricHint && (hasSubjectHint || hasRelativeTimeHint)) {
+    return "org"
+  }
 
-    const classified = await classifyQueryDomainWithLlm(query, provider, model)
-    if (classified?.domain === "org") {
-      return "org"
-    }
-    if (classified?.domain === "general" || classified?.domain === "social") {
-      return "general"
-    }
+  const classified = await classifyQueryDomainWithLlm(query, provider, model)
+  if (classified?.domain === "org") {
+    return "org"
+  }
+  if (classified?.domain === "general" || classified?.domain === "social") {
+    return "general"
+  }
 
-    if (GENERAL_KNOWLEDGE_HINT_RE.test(query)) {
-      return "general"
-    }
-    if (isLikelyGeneralNonOrgQuery(query)) {
-      return "general"
-    }
+  if (GENERAL_KNOWLEDGE_HINT_RE.test(query)) {
+    return "general"
+  }
+  if (isLikelyGeneralNonOrgQuery(query)) {
+    return "general"
   }
 
   return "org"
@@ -2465,6 +2467,7 @@ function isLikelyGeneralNonOrgQuery(query: string) {
   const normalized = query.trim().toLowerCase()
   if (!normalized) return false
   if (isGreetingOrSmallTalkQuery(normalized)) return true
+  if (ASSISTANT_META_HINT_RE.test(normalized) && !ORG_CONTEXT_HINT_RE.test(normalized)) return true
   if (detectEntityMentions(normalized).length > 0) return false
   if (ORG_CONTEXT_HINT_RE.test(normalized)) return false
   if (ORG_BUSINESS_METRIC_HINT_RE.test(normalized) && (ORG_SUBJECT_HINT_RE.test(normalized) || CLARIFICATION_TIME_RANGE_RE.test(normalized))) {
@@ -2474,6 +2477,13 @@ function isLikelyGeneralNonOrgQuery(query: string) {
   if (GENERAL_QUESTION_START_RE.test(normalized)) return true
   if (normalized.endsWith("?") && normalized.split(/\s+/).length <= 10) return true
   return false
+}
+
+function isAssistantRuntimeInfoQuery(query: string) {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return false
+  if (!ASSISTANT_META_HINT_RE.test(normalized)) return false
+  return ASSISTANT_RUNTIME_INFO_RE.test(normalized)
 }
 
 function buildGreetingResponse(query: string) {
@@ -5382,13 +5392,10 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     getOrgAiSearchConfigFromContext(context),
     getAiSearchRuntimeFlags(context),
   ])
-  const assistantMode = await resolveAssistantMode(
-    options.mode,
-    runtimeFlags,
-    normalizedQuery,
-    aiConfig.provider,
-    aiConfig.model,
-  )
+  const assistantRuntimeInfoQuery = isAssistantRuntimeInfoQuery(normalizedQuery)
+  const assistantMode = assistantRuntimeInfoQuery
+    ? "general"
+    : await resolveAssistantMode(options.mode, runtimeFlags, normalizedQuery, aiConfig.provider, aiConfig.model)
   const limit = clampLimit(options.limit)
   const sessionId = await ensureAiSearchSession(context, assistantMode, options.sessionId)
   const sessionContext = runtimeFlags.conversationMemory ? await loadAiSearchSessionContext(context, sessionId) : ""
@@ -5596,33 +5603,45 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     )
   }
 
-  if (assistantMode === "org" && !runtimeFlags.generalAssistant && isLikelyGeneralNonOrgQuery(normalizedQuery)) {
+  if (assistantRuntimeInfoQuery) {
+    const openAiBaseUrl = aiConfig.provider === "openai" ? getOpenAiBaseUrl() : undefined
+    const endpointNote = openAiBaseUrl
+      ? ` via the OpenAI-compatible endpoint at ${openAiBaseUrl}`
+      : ""
+    const sourceNote =
+      aiConfig.source === "org"
+        ? "This setting is coming from your org override."
+        : aiConfig.source === "platform"
+          ? "This setting is coming from the platform default."
+          : aiConfig.source === "env"
+            ? "This setting is coming from local environment defaults."
+            : "This is the built-in default configuration."
+
     await emitTrace(options, {
-      id: "general-intent-disabled",
-      status: "warning",
-      label: "General intent detected",
-      detail: "This appears to be a non-org question, but non-org responses are currently disabled.",
-      thought: "Detected a general question, but this workspace is configured for company data only.",
+      id: "assistant-runtime-info",
+      status: "completed",
+      label: "Resolved assistant runtime",
+      detail: "Answered directly from the active AI configuration without querying org data.",
+      thought: "This is a question about the assistant itself, so I can answer from config immediately.",
     })
 
     return finalizeResponse(
       {
-        answer:
-          "That looks like a general question, not a company-data query. General responses are currently disabled here, so ask me about your company records instead.",
+        answer: `This chat is currently configured to use the ${aiConfig.provider} provider with the model "${aiConfig.model}"${endpointNote}. ${sourceNote}`,
         citations: [],
         relatedResults: [],
         generatedAt: nowIso,
-        assistantMode,
+        assistantMode: "general",
         mode: "fallback",
         provider: aiConfig.provider,
         model: aiConfig.model,
         configSource: aiConfig.source,
-        confidence: "medium",
-        missingData: ["General response mode is disabled for this org."],
+        confidence: "high",
+        missingData: ["This answer is based on runtime configuration, not org records."],
       },
       {
-        plan: { general_intent_blocked: true },
-        metrics: { general_intent_blocked: true },
+        plan: { mode: "general", runtime_info: true },
+        metrics: { runtime_info: true },
       },
     )
   }
@@ -5989,10 +6008,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
           }))
 
         if (
-          assistantMode === "org" &&
-          runtimeFlags.generalAssistant &&
-          toolExecution.rows === 0 &&
-          isLikelyGeneralNonOrgQuery(normalizedQuery)
+          assistantMode === "org" && toolExecution.rows === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)
         ) {
           await emitTrace(options, {
             id: "general-rescue",
@@ -6195,10 +6211,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
       .join("\n")
 
     if (
-      assistantMode === "org" &&
-      runtimeFlags.generalAssistant &&
-      relatedResults.length === 0 &&
-      isLikelyGeneralNonOrgQuery(normalizedQuery)
+      assistantMode === "org" && relatedResults.length === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)
     ) {
       await emitTrace(options, {
         id: "general-rescue",
@@ -6395,10 +6408,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     }))
 
   if (
-    assistantMode === "org" &&
-    runtimeFlags.generalAssistant &&
-    relatedResults.length === 0 &&
-    isLikelyGeneralNonOrgQuery(normalizedQuery)
+    assistantMode === "org" && relatedResults.length === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)
   ) {
     await emitTrace(options, {
       id: "general-rescue",

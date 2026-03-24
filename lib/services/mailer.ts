@@ -2,6 +2,7 @@ import { render } from "@react-email/components"
 import type { ReactElement } from "react"
 import { BidInviteEmail } from "@/lib/emails/bid-invite-email"
 import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
+import { ProjectPortalInviteEmail } from "@/lib/emails/project-portal-invite-email"
 import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
 import { PasswordResetEmail } from "@/lib/emails/password-reset-email"
 
@@ -247,4 +248,32 @@ export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promis
   })
 }
 
+export interface ProjectPortalInviteEmailPayload {
+  to: string
+  recipientName?: string | null
+  projectName: string
+  portalType: "client" | "sub"
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  portalLink: string
+}
+
+export async function sendProjectPortalInviteEmail(payload: ProjectPortalInviteEmailPayload): Promise<boolean> {
+  const html = await renderEmailTemplate(
+    ProjectPortalInviteEmail({
+      recipientName: payload.recipientName,
+      projectName: payload.projectName,
+      portalType: payload.portalType,
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
+      portalLink: payload.portalLink,
+    }),
+  )
+
+  return sendEmail({
+    to: [payload.to],
+    subject: `${payload.projectName} is ready in Arc`,
+    html,
+  })
+}
 

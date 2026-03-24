@@ -28,8 +28,11 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
     if (!contact?.id || !projectId) return
     startTransition(async () => {
       try {
-        await sendPortalInviteAction({ contactId: contact.id, projectId, portalType })
-        toast({ title: "Portal invite sent" })
+        const result = await sendPortalInviteAction({ contactId: contact.id, projectId, portalType })
+        toast({
+          title: result.email_sent ? "Portal invite sent" : "Invite created, but email was not sent",
+          description: result.email_sent ? `Sent to ${result.sent_to}` : "Check email configuration before relying on this invite.",
+        })
         onOpenChange(false)
         setProjectId("")
       } catch (error) {
@@ -90,7 +93,6 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
     </Dialog>
   )
 }
-
 
 
 

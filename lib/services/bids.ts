@@ -900,6 +900,7 @@ export async function bulkCreateBidInvites({
         org_id: resolvedOrgId,
         bid_invite_id: invite.id,
         token_hash: tokenHash,
+        require_account: true,
         created_by: userId,
       })
       if (tokenError) {
@@ -1014,6 +1015,7 @@ export async function generateBidInviteLink(
       org_id: resolvedOrgId,
       bid_invite_id: inviteId,
       token_hash: tokenHash,
+      require_account: true,
       created_by: userId,
     })
 

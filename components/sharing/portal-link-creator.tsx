@@ -178,7 +178,7 @@ export function PortalLinkCreator({ projectId, onCreated, enabled = true }: Port
       setLastCreated(token)
       onCreated(token)
       setPin("")
-      toast.success("Link created", { description: "Copy it and send it to your client or subcontractor." })
+      toast.success("Direct link created", { description: "Use it when you need to share access manually." })
     } catch (error) {
       console.error("Failed to create portal token", error)
       toast.error("Could not create link")

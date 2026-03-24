@@ -782,51 +782,53 @@ export function SettingsWindow({
       <div
         className={cn(
           containerHeight,
-          "relative overflow-hidden border border-border/80 bg-background/95 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)] backdrop-blur supports-[backdrop-filter]:bg-background/85",
+          "relative min-h-0 overflow-hidden border border-border/80 bg-background/95 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)] backdrop-blur supports-[backdrop-filter]:bg-background/85",
         )}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-primary/[0.07] to-transparent" />
         {!isMobile && (
-          <div className="w-80 border-r border-border/70 bg-muted/20 p-4">
-            <div className="flex items-center gap-3 border border-border/70 bg-background/80 px-4 py-3 shadow-sm">
-              <Avatar className="h-12 w-12">
-                <AvatarImage src={user?.avatar_url || "/placeholder.svg"} alt={user?.full_name} />
-                <AvatarFallback className="text-base font-semibold">{initials}</AvatarFallback>
-              </Avatar>
-              <div className="text-sm">
-                <p className="font-semibold leading-tight">{user?.full_name ?? "Account"}</p>
-                <p className="text-muted-foreground text-xs">{user?.email ?? "—"}</p>
+          <div className="flex min-h-0 w-80 flex-col border-r border-border/70 bg-muted/20 p-4">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
+              <div className="flex items-center gap-3 border border-border/70 bg-background/80 px-4 py-3 shadow-sm">
+                <Avatar className="h-12 w-12">
+                  <AvatarImage src={user?.avatar_url || "/placeholder.svg"} alt={user?.full_name} />
+                  <AvatarFallback className="text-base font-semibold">{initials}</AvatarFallback>
+                </Avatar>
+                <div className="text-sm">
+                  <p className="font-semibold leading-tight">{user?.full_name ?? "Account"}</p>
+                  <p className="text-muted-foreground text-xs">{user?.email ?? "—"}</p>
+                </div>
               </div>
-            </div>
 
-            <div className="mt-5">
-              <p className="mb-3 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Workspace settings
-              </p>
-              <TabsPrimitive.List className="flex w-full flex-col gap-1.5 bg-transparent p-0">
-                {sections.map((section) => (
-                  <TabsPrimitive.Trigger
-                    key={section.value}
-                    value={section.value}
-                    className="group w-full min-h-[64px] justify-start gap-3 border border-transparent bg-background/40 px-3.5 py-3 text-left transition-all hover:border-border/80 hover:bg-background/85 data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center border border-border/70 bg-background/70 text-muted-foreground transition-colors group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary">
-                        <section.icon className="h-4 w-4" />
+              <div className="mt-5">
+                <p className="mb-3 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Workspace settings
+                </p>
+                <TabsPrimitive.List className="flex w-full flex-col gap-1.5 bg-transparent p-0">
+                  {sections.map((section) => (
+                    <TabsPrimitive.Trigger
+                      key={section.value}
+                      value={section.value}
+                      className="group w-full min-h-[64px] justify-start gap-3 border border-transparent bg-background/40 px-3.5 py-3 text-left transition-all hover:border-border/80 hover:bg-background/85 data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center border border-border/70 bg-background/70 text-muted-foreground transition-colors group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary">
+                          <section.icon className="h-4 w-4" />
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-sm font-medium leading-tight">{section.label}</p>
+                          <p className="text-xs leading-tight text-muted-foreground">{section.description}</p>
+                        </div>
                       </div>
-                      <div className="space-y-0.5">
-                        <p className="text-sm font-medium leading-tight">{section.label}</p>
-                        <p className="text-xs leading-tight text-muted-foreground">{section.description}</p>
-                      </div>
-                    </div>
-                  </TabsPrimitive.Trigger>
-                ))}
-              </TabsPrimitive.List>
+                    </TabsPrimitive.Trigger>
+                  ))}
+                </TabsPrimitive.List>
+              </div>
             </div>
           </div>
         )}
 
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="border-b border-border/70 bg-background/90 px-4 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 lg:px-6">
             <div className="mb-4 flex items-center gap-3">
               <div className="flex size-9 items-center justify-center border border-primary/30 bg-primary/5 text-primary">

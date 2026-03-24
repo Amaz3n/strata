@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react"
 
 import type { Contact, TeamMember } from "@/lib/types"
-import type { Prospect, CrmActivity, CrmDashboardStats } from "@/lib/services/crm"
+import type { Prospect, CrmActivity } from "@/lib/services/crm"
 import type { Opportunity } from "@/lib/services/opportunities"
 import type { LeadStatus } from "@/lib/validation/crm"
+import type { OpportunityStatus } from "@/lib/validation/opportunities"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PipelineDashboard } from "@/components/pipeline/pipeline-dashboard"
 import { ProspectsClient } from "@/components/prospects/prospects-client"
@@ -16,12 +17,17 @@ type PipelineView = "overview" | "opportunities" | "prospects"
 interface PipelineWorkspaceClientProps {
   initialView: PipelineView
   initialProspectStatus?: LeadStatus
-  stats: CrmDashboardStats
-  pipelineCounts: {
+  initialOpportunityStatus?: OpportunityStatus
+  opportunityCounts: {
     new: number
     contacted: number
     qualified: number
     estimating: number
+    proposed: number
+    won: number
+    lost: number
+  }
+  closedThisMonth: {
     won: number
     lost: number
   }
@@ -35,13 +41,15 @@ interface PipelineWorkspaceClientProps {
   clients: Contact[]
   canCreate?: boolean
   canEdit?: boolean
+  canManageProjects?: boolean
 }
 
 export function PipelineWorkspaceClient({
   initialView,
   initialProspectStatus,
-  stats,
-  pipelineCounts,
+  initialOpportunityStatus,
+  opportunityCounts,
+  closedThisMonth,
   winRate,
   followUpsDue,
   newInquiries,
@@ -52,6 +60,7 @@ export function PipelineWorkspaceClient({
   clients,
   canCreate = false,
   canEdit = false,
+  canManageProjects = false,
 }: PipelineWorkspaceClientProps) {
   const [view, setView] = useState<PipelineView>(initialView)
 
@@ -72,8 +81,8 @@ export function PipelineWorkspaceClient({
       <TabsContent value="overview" className="space-y-6">
         <PipelineDashboard
           headerLeft={renderTabSwitcher()}
-          stats={stats}
-          pipelineCounts={pipelineCounts}
+          opportunityCounts={opportunityCounts}
+          closedThisMonth={closedThisMonth}
           winRate={winRate}
           followUpsDue={followUpsDue}
           newInquiries={newInquiries}
@@ -90,8 +99,10 @@ export function PipelineWorkspaceClient({
           opportunities={opportunities}
           teamMembers={teamMembers}
           clients={clients}
+          initialStatusFilter={initialOpportunityStatus}
           canCreate={canCreate}
           canEdit={canEdit}
+          canManageProjects={canManageProjects}
         />
       </TabsContent>
 

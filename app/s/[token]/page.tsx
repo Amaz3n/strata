@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation"
 
 import { validatePortalToken, loadSubPortalData, recordPortalAccess } from "@/lib/services/portal-access"
-import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
@@ -30,12 +30,18 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       tokenType: "portal",
     })
     if (!hasAccountAccess) {
+      const gateContext = await getExternalPortalGateContext({ token, tokenType: "portal" })
       return (
         <PortalAccountGate
           token={token}
           tokenType="portal"
-          orgName="the builder"
-          projectName="this project"
+          orgName={gateContext?.orgName ?? "the builder"}
+          projectName={gateContext?.projectName ?? "this project"}
+          defaultMode={gateContext?.defaultMode}
+          initialEmail={gateContext?.expectedEmail ?? ""}
+          suggestedFullName={gateContext?.suggestedFullName ?? ""}
+          emailLocked={gateContext?.emailLocked}
+          hasExistingAccount={gateContext?.hasExistingAccount}
         />
       )
     }
@@ -93,6 +99,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
   )
 
   await recordPortalAccess(access.id)
+  const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
 
   return (
     <SubPortalClient
@@ -104,6 +111,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       canUploadComplianceDocs={access.permissions.can_upload_compliance_docs ?? true}
       pinRequired={access.pin_required}
       complianceDocumentTypes={complianceDocumentTypes}
+      workspace={workspace}
     />
   )
 }

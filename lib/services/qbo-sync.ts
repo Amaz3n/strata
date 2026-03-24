@@ -1,9 +1,10 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { QBOClient, QBOError } from "@/lib/integrations/accounting/qbo-api"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
-import { incrementInvoiceNumber } from "@/lib/services/invoice-numbers"
+import { incrementInvoiceNumber, rememberQBOInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 import { recordEvent } from "@/lib/services/events"
 import { logQBO } from "@/lib/services/qbo-logger"
+import { downloadFilesObject } from "@/lib/storage/files-storage"
 
 interface InvoiceLineRow {
   description: string
@@ -126,6 +127,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     qboInvoice = {
       Id: existingSync.data?.qbo_id,
       SyncToken: existingSync.data?.qbo_sync_token,
+      Sparse: existingSync.data?.qbo_id ? true : undefined,
       DocNumber: typedInvoice.invoice_number,
       TxnDate: typedInvoice.issue_date ?? new Date().toISOString().split("T")[0],
       DueDate: typedInvoice.due_date ?? undefined,
@@ -155,6 +157,14 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       })
       .eq("id", invoiceId)
 
+    await rememberQBOInvoiceNumberCursor(orgId, result.DocNumber ?? typedInvoice.invoice_number)
+    await syncInvoicePdfAttachmentToQBO({
+      client,
+      supabase,
+      orgId,
+      invoiceId,
+      qboInvoiceId: result.Id!,
+    })
     await markConnectionHealthy(orgId)
     logQBO("info", "invoice_sync_success", { orgId, invoiceId, qboId: result.Id })
 
@@ -163,7 +173,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     if (err instanceof QBOError && isDuplicateDocNumber(err)) {
       try {
         const lastNumber = await client.getLastInvoiceNumber()
-        const nextNumber = incrementInvoiceNumber(lastNumber, null)
+        const nextNumber = incrementInvoiceNumber(lastNumber, (connection?.settings as any) ?? null)
 
         await supabase
           .from("invoices")
@@ -204,6 +214,14 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
           })
           .eq("id", invoiceId)
 
+        await rememberQBOInvoiceNumberCursor(orgId, retryResult.DocNumber ?? nextNumber)
+        await syncInvoicePdfAttachmentToQBO({
+          client,
+          supabase,
+          orgId,
+          invoiceId,
+          qboInvoiceId: retryResult.Id!,
+        })
         await markConnectionHealthy(orgId)
         logQBO("warn", "invoice_sync_docnumber_adjusted", {
           orgId,
@@ -521,6 +539,76 @@ async function markSyncRecordError(orgId: string, entityType: string, entityId: 
     .eq("org_id", orgId)
     .eq("entity_type", entityType)
     .eq("entity_id", entityId)
+}
+
+async function syncInvoicePdfAttachmentToQBO(params: {
+  client: QBOClient
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  invoiceId: string
+  qboInvoiceId: string
+}) {
+  const { data: invoice } = await params.supabase
+    .from("invoices")
+    .select("project_id, invoice_number, metadata")
+    .eq("org_id", params.orgId)
+    .eq("id", params.invoiceId)
+    .maybeSingle()
+
+  const metadata = (invoice?.metadata as Record<string, any> | null) ?? {}
+  const latestPdfFileId = typeof metadata.latest_pdf_file_id === "string" ? metadata.latest_pdf_file_id : null
+  const syncedPdfFileId = typeof metadata.qbo_pdf_synced_file_id === "string" ? metadata.qbo_pdf_synced_file_id : null
+  const syncedQboInvoiceId = typeof metadata.qbo_pdf_synced_invoice_id === "string" ? metadata.qbo_pdf_synced_invoice_id : null
+
+  if (!latestPdfFileId) return
+  if (syncedPdfFileId === latestPdfFileId && syncedQboInvoiceId === params.qboInvoiceId) return
+
+  const { data: file } = await params.supabase
+    .from("files")
+    .select("id, storage_path, file_name, mime_type")
+    .eq("org_id", params.orgId)
+    .eq("id", latestPdfFileId)
+    .maybeSingle()
+
+  if (!file?.storage_path || !file?.file_name) return
+
+  try {
+    const bytes = await downloadFilesObject({
+      supabase: params.supabase,
+      orgId: params.orgId,
+      path: file.storage_path,
+    })
+
+    const attachment = await params.client.uploadAttachmentForInvoice({
+      invoiceId: params.qboInvoiceId,
+      fileName: file.file_name,
+      contentType: file.mime_type ?? "application/pdf",
+      content: bytes,
+      note: `Arc invoice PDF ${invoice?.invoice_number ?? params.invoiceId}`,
+    })
+
+    await params.supabase
+      .from("invoices")
+      .update({
+        metadata: {
+          ...metadata,
+          qbo_pdf_attachment_id: attachment.id,
+          qbo_pdf_attached_at: new Date().toISOString(),
+          qbo_pdf_synced_file_id: latestPdfFileId,
+          qbo_pdf_synced_invoice_id: params.qboInvoiceId,
+        },
+      })
+      .eq("org_id", params.orgId)
+      .eq("id", params.invoiceId)
+  } catch (error: any) {
+    logQBO("warn", "invoice_pdf_attachment_sync_failed", {
+      orgId: params.orgId,
+      invoiceId: params.invoiceId,
+      qboInvoiceId: params.qboInvoiceId,
+      fileId: latestPdfFileId,
+      error: error?.message ?? String(error),
+    })
+  }
 }
 
 async function markConnectionHealthy(orgId: string) {

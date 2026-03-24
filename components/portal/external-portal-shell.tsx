@@ -5,7 +5,7 @@ import { type LucideIcon } from "lucide-react"
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PortalHeader } from "@/components/portal/portal-header"
-import type { Project } from "@/lib/types"
+import type { ExternalPortalWorkspaceContext, Project } from "@/lib/types"
 
 export interface ExternalPortalTab<TTab extends string> {
   id: TTab
@@ -17,6 +17,7 @@ export interface ExternalPortalTab<TTab extends string> {
 interface ExternalPortalShellProps<TTab extends string> {
   orgName: string
   project: Project
+  workspace?: ExternalPortalWorkspaceContext | null
   isMobile: boolean
   activeTab: TTab
   onTabChange: (tab: TTab) => void
@@ -31,6 +32,7 @@ interface ExternalPortalShellProps<TTab extends string> {
 export function ExternalPortalShell<TTab extends string>({
   orgName,
   project,
+  workspace = null,
   isMobile,
   activeTab,
   onTabChange,
@@ -56,7 +58,7 @@ export function ExternalPortalShell<TTab extends string>({
 
   return (
     <div className="min-h-screen flex flex-col bg-background font-sans">
-      <PortalHeader orgName={orgName} project={project} />
+      <PortalHeader orgName={orgName} project={project} workspace={workspace} />
 
       {isMobile ? (
         <>

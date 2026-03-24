@@ -713,6 +713,41 @@ export async function generateInvoicePdfAction(
     .eq("org_id", orgId)
     .eq("id", invoice.id)
 
+  if (invoice.qbo_id) {
+    try {
+      const qboClient = await QBOClient.forOrg(orgId)
+      if (qboClient) {
+        const attachment = await qboClient.uploadAttachmentForInvoice({
+          invoiceId: invoice.qbo_id,
+          fileName,
+          contentType: "application/pdf",
+          content: pdfBuffer,
+          note: `Arc invoice PDF ${invoice.invoice_number}`,
+        })
+
+        await supabase
+          .from("invoices")
+          .update({
+            metadata: {
+              ...metadata,
+              latest_pdf_file_id: fileRecord.id,
+              latest_pdf_invoice_updated_at: invoice.updated_at ?? null,
+              latest_pdf_generated_at: new Date().toISOString(),
+              latest_pdf_template_version: INVOICE_PDF_TEMPLATE_VERSION,
+              qbo_pdf_attachment_id: attachment.id,
+              qbo_pdf_attached_at: new Date().toISOString(),
+              qbo_pdf_synced_file_id: fileRecord.id,
+              qbo_pdf_synced_invoice_id: invoice.qbo_id,
+            },
+          })
+          .eq("org_id", orgId)
+          .eq("id", invoice.id)
+      }
+    } catch (error) {
+      console.warn("Failed to attach invoice PDF to QuickBooks", error)
+    }
+  }
+
   revalidatePath("/invoices")
   if (invoice.project_id) {
     revalidatePath(`/projects/${invoice.project_id}/financials`)

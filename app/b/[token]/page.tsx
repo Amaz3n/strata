@@ -4,7 +4,7 @@ import {
   recordBidPortalAccess,
   validateBidPortalToken,
 } from "@/lib/services/bid-portal"
-import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 import { BidPortalClientNew } from "@/components/bid-portal/bid-portal-client-new"
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { createHmac } from "crypto"
@@ -101,12 +101,18 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
       tokenType: "bid",
     })
     if (!hasAccountAccess) {
+      const gateContext = await getExternalPortalGateContext({ token, tokenType: "bid" })
       return (
         <PortalAccountGate
           token={token}
           tokenType="bid"
-          orgName={access.org.name}
-          projectName={access.project.name}
+          orgName={gateContext?.orgName ?? access.org.name}
+          projectName={gateContext?.projectName ?? access.project.name}
+          defaultMode={gateContext?.defaultMode}
+          initialEmail={gateContext?.expectedEmail ?? ""}
+          suggestedFullName={gateContext?.suggestedFullName ?? ""}
+          emailLocked={gateContext?.emailLocked}
+          hasExistingAccount={gateContext?.hasExistingAccount}
         />
       )
     }
@@ -114,11 +120,13 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
 
   const hasPinAccess = access.pin_required ? await isBidPortalPinVerified(token) : true
   if (!hasPinAccess) {
-    return <BidPortalClientNew token={token} access={access} data={EMPTY_BID_PORTAL_DATA} pinRequired />
+    const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
+    return <BidPortalClientNew token={token} access={access} data={EMPTY_BID_PORTAL_DATA} pinRequired workspace={workspace} />
   }
 
   const data = await loadBidPortalData(access)
   await recordBidPortalAccess(access.id, access.bid_invite_id, access.org_id)
+  const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
 
-  return <BidPortalClientNew token={token} access={access} data={data} pinRequired={false} />
+  return <BidPortalClientNew token={token} access={access} data={data} pinRequired={false} workspace={workspace} />
 }

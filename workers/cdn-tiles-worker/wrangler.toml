@@ -1,4 +1,4 @@
-name = "arc-drawings-tiles"
+name = "arc-drawing-tiles"
 main = "worker.ts"
 compatibility_date = "2026-01-29"
 

@@ -15,7 +15,12 @@ import {
 import { SubRfisTab } from "./sub-rfis-tab"
 import { SubSubmittalsTab } from "./sub-submittals-tab"
 import { SubMessagesTab } from "./sub-messages-tab"
-import type { ComplianceDocumentType, ComplianceStatusSummary, SubPortalData } from "@/lib/types"
+import type {
+  ComplianceDocumentType,
+  ComplianceStatusSummary,
+  ExternalPortalWorkspaceContext,
+  SubPortalData,
+} from "@/lib/types"
 
 interface SubPortalClientProps {
   data: SubPortalData
@@ -26,6 +31,7 @@ interface SubPortalClientProps {
   canUploadComplianceDocs?: boolean
   pinRequired?: boolean
   complianceDocumentTypes?: ComplianceDocumentType[]
+  workspace?: ExternalPortalWorkspaceContext | null
 }
 
 export function SubPortalClient({
@@ -37,6 +43,7 @@ export function SubPortalClient({
   canUploadComplianceDocs = true,
   pinRequired = false,
   complianceDocumentTypes = [],
+  workspace = null,
 }: SubPortalClientProps) {
   const [activeTab, setActiveTab] = useState<SubPortalTab>("dashboard")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
@@ -134,6 +141,7 @@ export function SubPortalClient({
     <ExternalPortalShell
       orgName={data.org.name}
       project={data.project}
+      workspace={workspace}
       isMobile={isMobile}
       activeTab={activeTab}
       onTabChange={setActiveTab}

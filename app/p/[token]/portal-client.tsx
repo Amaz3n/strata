@@ -12,7 +12,7 @@ import { PortalDocumentsTab } from "@/components/portal/tabs/portal-documents-ta
 import { PortalActionsTab } from "@/components/portal/tabs/portal-actions-tab"
 import { PortalMessagesTab } from "@/components/portal/tabs/portal-messages-tab"
 import { PortalAboutTab } from "@/components/portal/tabs/portal-about-tab"
-import type { ClientPortalData } from "@/lib/types"
+import type { ClientPortalData, ExternalPortalWorkspaceContext } from "@/lib/types"
 
 interface PortalPublicClientProps {
   data: ClientPortalData
@@ -20,6 +20,7 @@ interface PortalPublicClientProps {
   portalType?: "client" | "sub"
   pinRequired?: boolean
   canMessage?: boolean
+  workspace?: ExternalPortalWorkspaceContext | null
 }
 
 export function PortalPublicClient({
@@ -28,6 +29,7 @@ export function PortalPublicClient({
   portalType = "client",
   pinRequired = false,
   canMessage = false,
+  workspace = null,
 }: PortalPublicClientProps) {
   const [activeTab, setActiveTab] = useState<PortalTab>("home")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
@@ -79,6 +81,7 @@ export function PortalPublicClient({
     <ExternalPortalShell
       orgName={data.org.name}
       project={data.project}
+      workspace={workspace}
       isMobile={isMobile}
       activeTab={activeTab}
       onTabChange={setActiveTab}

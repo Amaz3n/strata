@@ -5,12 +5,27 @@ import { cookies } from "next/headers"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import type { FileMetadata, Rfi } from "@/lib/types"
-import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { getCurrentExternalPortalSession, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
 const BID_PORTAL_PIN_COOKIE_PREFIX = "bid_portal_pin"
 const BID_PORTAL_PIN_COOKIE_TTL_SECONDS = 60 * 60 * 12
+const BID_PORTAL_GRANT_ACCESS_PREFIX = "grant_"
+
+const BID_PORTAL_ACCESS_SELECT = `
+  id, org_id, bid_invite_id, expires_at, max_access_count, access_count, last_accessed_at,
+  pin_required, require_account, pin_locked_until, paused_at, revoked_at,
+  bid_invite:bid_invites!bid_access_tokens_org_invite_fk(
+    id, bid_package_id, status, invite_email, sent_at, last_viewed_at, submitted_at,
+    company:companies!bid_invites_org_company_fk(id, name, email, phone),
+    contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
+  )
+`
+
+const BID_PORTAL_PIN_SELECT = `
+  id, org_id, bid_invite_id, pin_hash, pin_attempts, pin_locked_until, revoked_at, paused_at
+`
 
 export interface BidPortalPackage {
   id: string
@@ -116,20 +131,70 @@ function hashBidToken(token: string) {
   return createHmac("sha256", getBidPortalSecret()).update(token).digest("hex")
 }
 
-function getBidPortalPinCookieName(tokenHash: string) {
-  return `${BID_PORTAL_PIN_COOKIE_PREFIX}_${tokenHash.slice(0, 16)}`
+function getBidPortalGrantId(token: string) {
+  return token.startsWith(BID_PORTAL_GRANT_ACCESS_PREFIX)
+    ? token.slice(BID_PORTAL_GRANT_ACCESS_PREFIX.length)
+    : null
 }
 
-function signBidPortalPinCookie(tokenHash: string) {
-  return createHmac("sha256", getBidPortalSecret()).update(`pin:${tokenHash}`).digest("hex")
+function resolveBidPortalPinScope(token: string) {
+  const grantId = getBidPortalGrantId(token)
+  return grantId ? `grant:${grantId}` : `token:${hashBidToken(token)}`
+}
+
+function getBidPortalPinCookieName(scope: string) {
+  const scopeHash = createHmac("sha256", getBidPortalSecret()).update(scope).digest("hex")
+  return `${BID_PORTAL_PIN_COOKIE_PREFIX}_${scopeHash.slice(0, 16)}`
+}
+
+function signBidPortalPinCookie(scope: string) {
+  return createHmac("sha256", getBidPortalSecret()).update(`pin:${scope}`).digest("hex")
+}
+
+function resolveRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null
+  return value ?? null
+}
+
+async function loadBidPortalTokenRecord<T>(token: string, selectClause: string): Promise<T | null> {
+  const supabase = createServiceSupabaseClient()
+  const grantId = getBidPortalGrantId(token)
+
+  if (grantId) {
+    const session = await getCurrentExternalPortalSession()
+    if (!session) return null
+
+    const { data } = await supabase
+      .from("external_portal_account_grants")
+      .select(`token:bid_access_tokens!inner(${selectClause})`)
+      .eq("id", grantId)
+      .eq("org_id", session.org_id)
+      .eq("account_id", session.account.id)
+      .eq("status", "active")
+      .is("paused_at", null)
+      .is("revoked_at", null)
+      .not("bid_access_token_id", "is", null)
+      .maybeSingle()
+
+    return resolveRelation<T>((data as any)?.token)
+  }
+
+  const tokenHash = hashBidToken(token)
+  const { data } = await supabase
+    .from("bid_access_tokens")
+    .select(selectClause)
+    .eq("token_hash", tokenHash)
+    .maybeSingle()
+
+  return (data as T | null) ?? null
 }
 
 export async function markBidPortalPinVerified(token: string) {
-  const tokenHash = hashBidToken(token)
+  const scope = resolveBidPortalPinScope(token)
   const store = await cookies()
   store.set({
-    name: getBidPortalPinCookieName(tokenHash),
-    value: signBidPortalPinCookie(tokenHash),
+    name: getBidPortalPinCookieName(scope),
+    value: signBidPortalPinCookie(scope),
     path: "/",
     httpOnly: true,
     sameSite: "lax",
@@ -139,10 +204,10 @@ export async function markBidPortalPinVerified(token: string) {
 }
 
 export async function clearBidPortalPinVerification(token: string) {
-  const tokenHash = hashBidToken(token)
+  const scope = resolveBidPortalPinScope(token)
   const store = await cookies()
   store.set({
-    name: getBidPortalPinCookieName(tokenHash),
+    name: getBidPortalPinCookieName(scope),
     value: "",
     path: "/",
     httpOnly: true,
@@ -153,11 +218,11 @@ export async function clearBidPortalPinVerification(token: string) {
 }
 
 export async function isBidPortalPinVerified(token: string): Promise<boolean> {
-  const tokenHash = hashBidToken(token)
+  const scope = resolveBidPortalPinScope(token)
   const store = await cookies()
-  const cookieValue = store.get(getBidPortalPinCookieName(tokenHash))?.value
+  const cookieValue = store.get(getBidPortalPinCookieName(scope))?.value
   if (!cookieValue) return false
-  return cookieValue === signBidPortalPinCookie(tokenHash)
+  return cookieValue === signBidPortalPinCookie(scope)
 }
 
 export async function assertBidPortalActionAccess(token: string): Promise<BidPortalAccess> {
@@ -213,31 +278,13 @@ function mapFile(file: any, orgId: string): FileMetadata {
 
 export async function validateBidPortalToken(token: string): Promise<BidPortalAccess | null> {
   const supabase = createServiceSupabaseClient()
-  const tokenHash = hashBidToken(token)
+  const tokenRow = await loadBidPortalTokenRecord<any>(token, BID_PORTAL_ACCESS_SELECT)
 
-  const { data: tokenRow, error } = await supabase
-    .from("bid_access_tokens")
-    .select(
-      `
-      id, org_id, bid_invite_id, expires_at, max_access_count, access_count, last_accessed_at,
-      pin_required, require_account, pin_locked_until, paused_at, revoked_at,
-      bid_invite:bid_invites!bid_access_tokens_org_invite_fk(
-        id, bid_package_id, status, invite_email, sent_at, last_viewed_at, submitted_at,
-        company:companies!bid_invites_org_company_fk(id, name, email, phone),
-        contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
-      )
-    `,
-    )
-    .eq("token_hash", tokenHash)
-    .is("revoked_at", null)
-    .maybeSingle()
-
-  if (error || !tokenRow || !tokenRow.bid_invite) {
+  if (!tokenRow || !tokenRow.bid_invite) {
     console.warn("Bid portal token validation failed", {
+      accessKeyPrefix: token.slice(0, 12),
+      hasGrantAccessKey: !!getBidPortalGrantId(token),
       hasSecret: !!process.env.BID_PORTAL_SECRET,
-      tokenPrefix: token.slice(0, 6),
-      tokenHashPrefix: tokenHash.slice(0, 10),
-      error: error?.message,
       found: !!tokenRow,
     })
     return null
@@ -406,16 +453,9 @@ export async function validateBidPortalPin({
   pin: string
 }): Promise<{ valid: boolean; attemptsRemaining?: number; lockedUntil?: string }> {
   const supabase = createServiceSupabaseClient()
-  const tokenHash = hashBidToken(token)
+  const data = await loadBidPortalTokenRecord<any>(token, BID_PORTAL_PIN_SELECT)
 
-  const { data, error } = await supabase
-    .from("bid_access_tokens")
-    .select("id, pin_hash, pin_attempts, pin_locked_until")
-    .eq("token_hash", tokenHash)
-    .is("revoked_at", null)
-    .maybeSingle()
-
-  if (error || !data || !data.pin_hash) {
+  if (!data || !data.pin_hash || data.revoked_at || data.paused_at) {
     return { valid: false }
   }
 

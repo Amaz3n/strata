@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation"
 
 import { validatePortalToken, loadClientPortalData, recordPortalAccess } from "@/lib/services/portal-access"
-import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { PortalPublicClient } from "./portal-client"
 
@@ -26,12 +26,18 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
       tokenType: "portal",
     })
     if (!hasAccountAccess) {
+      const gateContext = await getExternalPortalGateContext({ token, tokenType: "portal" })
       return (
         <PortalAccountGate
           token={token}
           tokenType="portal"
-          orgName="the builder"
-          projectName="this project"
+          orgName={gateContext?.orgName ?? "the builder"}
+          projectName={gateContext?.projectName ?? "this project"}
+          defaultMode={gateContext?.defaultMode}
+          initialEmail={gateContext?.expectedEmail ?? ""}
+          suggestedFullName={gateContext?.suggestedFullName ?? ""}
+          emailLocked={gateContext?.emailLocked}
+          hasExistingAccount={gateContext?.hasExistingAccount}
         />
       )
     }
@@ -47,6 +53,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
   })
 
   await recordPortalAccess(access.id)
+  const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
 
   return (
     <PortalPublicClient
@@ -55,6 +62,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
       portalType="client"
       pinRequired={access.pin_required}
       canMessage={access.permissions.can_message}
+      workspace={workspace}
     />
   )
 }

@@ -106,6 +106,18 @@ interface QBOItem {
   Name?: string
 }
 
+interface QBOInvoiceLineSnapshot {
+  DetailType?: "SalesItemLineDetail" | "DescriptionOnly" | string
+  Amount?: number
+  Description?: string
+  SalesItemLineDetail?: {
+    ItemRef?: { value?: string; name?: string }
+    Qty?: number
+    UnitPrice?: number
+    TaxCodeRef?: { value?: string; name?: string }
+  }
+}
+
 export interface QBOInvoiceSnapshot {
   Id?: string
   SyncToken?: string
@@ -114,6 +126,11 @@ export interface QBOInvoiceSnapshot {
   DueDate?: string
   TotalAmt?: number
   Balance?: number
+  PrivateNote?: string
+  Line?: QBOInvoiceLineSnapshot[]
+  TxnTaxDetail?: {
+    TotalTax?: number | string
+  }
 }
 
 export interface QBOPaymentSnapshot {
@@ -150,13 +167,29 @@ export class QBOClient {
     return new QBOClient(auth.token, auth.realmId)
   }
 
-  private async request<T>(method: "GET" | "POST", endpoint: string, body?: any): Promise<T> {
+  private async fetchEndpoint(
+    method: "GET" | "POST",
+    endpoint: string,
+    init?: {
+      body?: BodyInit
+      headers?: Record<string, string>
+    },
+  ): Promise<Response> {
     const url = `${qboCompanyBaseUrl}/${this.realmId}/${endpoint}`
-    const response = await fetch(url, {
+    return fetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${this.token}`,
         Accept: "application/json",
+        ...(init?.headers ?? {}),
+      },
+      body: init?.body,
+    })
+  }
+
+  private async request<T>(method: "GET" | "POST", endpoint: string, body?: any): Promise<T> {
+    const response = await this.fetchEndpoint(method, endpoint, {
+      headers: {
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -412,6 +445,62 @@ export class QBOClient {
     } catch (error) {
       if (error instanceof QBOError && error.status === 404) return null
       throw error
+    }
+  }
+
+  async uploadAttachmentForInvoice(params: {
+    invoiceId: string
+    fileName: string
+    contentType: string
+    content: Uint8Array | Buffer
+    note?: string | null
+  }): Promise<{ id: string; fileName?: string; tempDownloadUri?: string | null }> {
+    const metadata = {
+      AttachableRef: [
+        {
+          EntityRef: {
+            type: "Invoice",
+            value: params.invoiceId,
+          },
+        },
+      ],
+      FileName: params.fileName,
+      ContentType: params.contentType,
+      Note: params.note ?? undefined,
+    }
+
+    const form = new FormData()
+    const fileBytes = Buffer.isBuffer(params.content) ? params.content : Buffer.from(params.content)
+    const fileArrayBuffer = fileBytes.buffer.slice(
+      fileBytes.byteOffset,
+      fileBytes.byteOffset + fileBytes.byteLength,
+    ) as ArrayBuffer
+    form.append("file_metadata_01", new Blob([JSON.stringify(metadata)], { type: "application/json" }))
+    form.append("file_content_01", new Blob([fileArrayBuffer], { type: params.contentType }), params.fileName)
+
+    const response = await this.fetchEndpoint("POST", "upload", {
+      body: form,
+    })
+
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}))
+      throw new QBOError(response.status, errorPayload)
+    }
+
+    const payload = await response.json().catch(() => ({} as any))
+    const attachable =
+      payload?.AttachableResponse?.[0]?.Attachable ??
+      payload?.Attachable ??
+      null
+
+    if (!attachable?.Id) {
+      throw new Error("QuickBooks did not return an attachment id.")
+    }
+
+    return {
+      id: String(attachable.Id),
+      fileName: typeof attachable.FileName === "string" ? attachable.FileName : undefined,
+      tempDownloadUri: typeof attachable.TempDownloadUri === "string" ? attachable.TempDownloadUri : null,
     }
   }
 }

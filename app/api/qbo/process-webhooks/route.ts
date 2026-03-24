@@ -4,6 +4,7 @@ import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accountin
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo-api"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { logQBO } from "@/lib/services/qbo-logger"
+import { rememberQBOInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const BATCH_SIZE = 50
@@ -55,6 +56,37 @@ function normalizeDate(value: unknown): string | null {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return null
   return parsed.toISOString().split("T")[0]
+}
+
+function deriveInvoiceLinesFromQbo(qboInvoice: Awaited<ReturnType<QBOClient["getInvoiceById"]>>) {
+  const lines = (qboInvoice?.Line ?? [])
+    .filter((line) => line && typeof line === "object" && line.DetailType === "SalesItemLineDetail")
+    .map((line) => {
+      const qty = Number(line.SalesItemLineDetail?.Qty ?? 1)
+      const normalizedQty = Number.isFinite(qty) && qty !== 0 ? qty : 1
+      const rawLineAmount = Number(line.Amount ?? 0)
+      const rawUnitPrice =
+        line.SalesItemLineDetail?.UnitPrice != null
+          ? Number(line.SalesItemLineDetail.UnitPrice)
+          : rawLineAmount / normalizedQty
+      const unitPrice = Number.isFinite(rawUnitPrice) ? rawUnitPrice : 0
+      const normalizedUnitPrice = Number.isFinite(unitPrice) ? unitPrice : 0
+      const taxCode = String(line.SalesItemLineDetail?.TaxCodeRef?.value ?? "").toUpperCase()
+
+      return {
+        description: String(line.Description ?? ""),
+        quantity: normalizedQty,
+        unit: "ea",
+        unit_price_cents: Math.round(normalizedUnitPrice * 100),
+        metadata: {
+          taxable: taxCode !== "NON",
+          qbo_item_id: line.SalesItemLineDetail?.ItemRef?.value ?? null,
+          qbo_item_name: line.SalesItemLineDetail?.ItemRef?.name ?? null,
+        },
+      }
+    })
+
+  return lines.filter((line) => line.description.length > 0 || line.unit_price_cents !== 0)
 }
 
 function isPastDue(dateIso: string | null) {
@@ -185,8 +217,14 @@ async function reconcileInvoiceFromQbo(params: {
 
   const totalCents = toCents(qboInvoice.TotalAmt)
   const balanceCents = toCents(qboInvoice.Balance)
+  const taxCents = toCents(qboInvoice.TxnTaxDetail?.TotalTax ?? 0) ?? 0
   const dueDate = normalizeDate(qboInvoice.DueDate)
   const issueDate = normalizeDate(qboInvoice.TxnDate)
+  const nextLines = deriveInvoiceLinesFromQbo(qboInvoice)
+  const subtotalCents =
+    totalCents !== null
+      ? Math.max(totalCents - taxCents, 0)
+      : nextLines.reduce((sum, line) => sum + Math.round(line.quantity * line.unit_price_cents), 0)
   const nextStatus = deriveInvoiceStatusFromQbo({
     operation: params.operation,
     totalCents,
@@ -199,6 +237,8 @@ async function reconcileInvoiceFromQbo(params: {
     qbo_sync_status: "synced",
     qbo_synced_at: nowIso,
     status: nextStatus,
+    subtotal_cents: subtotalCents,
+    tax_cents: taxCents,
   }
 
   if (typeof qboInvoice.DocNumber === "string" && qboInvoice.DocNumber.trim().length > 0) {
@@ -206,6 +246,7 @@ async function reconcileInvoiceFromQbo(params: {
   }
   if (issueDate) invoiceUpdate.issue_date = issueDate
   if (dueDate) invoiceUpdate.due_date = dueDate
+  if (typeof qboInvoice.PrivateNote === "string") invoiceUpdate.notes = qboInvoice.PrivateNote
   if (totalCents !== null) invoiceUpdate.total_cents = totalCents
   if (balanceCents !== null) invoiceUpdate.balance_due_cents = Math.max(balanceCents, 0)
 
@@ -217,6 +258,38 @@ async function reconcileInvoiceFromQbo(params: {
 
   if (updateError) {
     return { reconciled: false as const, reason: updateError.message }
+  }
+
+  if (nextLines.length > 0) {
+    const { error: deleteError } = await params.supabase
+      .from("invoice_lines")
+      .delete()
+      .eq("org_id", params.orgId)
+      .eq("invoice_id", invoiceId)
+
+    if (deleteError) {
+      return { reconciled: false as const, reason: deleteError.message }
+    }
+
+    const { error: insertError } = await params.supabase.from("invoice_lines").insert(
+      nextLines.map((line) => ({
+        org_id: params.orgId,
+        invoice_id: invoiceId,
+        description: line.description,
+        quantity: line.quantity,
+        unit: line.unit,
+        unit_price_cents: line.unit_price_cents,
+        metadata: line.metadata,
+      })),
+    )
+
+    if (insertError) {
+      return { reconciled: false as const, reason: insertError.message }
+    }
+  }
+
+  if (typeof qboInvoice.DocNumber === "string" && qboInvoice.DocNumber.trim().length > 0) {
+    await rememberQBOInvoiceNumberCursor(params.orgId, qboInvoice.DocNumber.trim())
   }
 
   await upsertInvoiceSyncRecord({
@@ -271,6 +344,21 @@ export async function POST(request: NextRequest) {
 
   for (const row of rows) {
     try {
+      const { data: claimed } = await supabase
+        .from("qbo_webhook_events")
+        .update({
+          process_status: "processing",
+          process_error: null,
+        })
+        .eq("id", row.id)
+        .eq("process_status", "pending")
+        .select("id")
+        .maybeSingle()
+
+      if (!claimed?.id) {
+        continue
+      }
+
       if (!row.realm_id || !row.entity_name || !row.entity_qbo_id) {
         await markEventProcessed(supabase, row.id, "ignored", "Missing webhook context")
         processed += 1

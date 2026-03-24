@@ -48,7 +48,7 @@ import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule } from "@/lib/services/draws"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
 import { AuthorizationError } from "@/lib/services/authorization"
-import { sendEmail } from "@/lib/services/mailer"
+import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 import { z } from "zod"
 
 export interface ProjectStats {
@@ -449,7 +449,7 @@ export async function sendClientPortalInviteAction(input: {
       .maybeSingle(),
     supabase
       .from("orgs")
-      .select("id, name")
+      .select("id, name, logo_url")
       .eq("id", orgId)
       .maybeSingle(),
   ])
@@ -465,20 +465,14 @@ export async function sendClientPortalInviteAction(input: {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
   const portalUrl = appUrl ? `${appUrl}/p/${tokenRow.token}` : `/p/${tokenRow.token}`
   const projectName = projectRow?.name ?? "your project"
-  const orgName = orgRow?.name ?? "Arc"
-  const recipientName = contactRow.full_name?.trim() || "there"
-
-  await sendEmail({
-    to: [contactRow.email],
-    subject: `Your project portal is ready: ${projectName}`,
-    html: `
-      <p>Hi ${recipientName},</p>
-      <p>Your builder shared your project portal for <strong>${projectName}</strong>.</p>
-      <p><a href="${portalUrl}">Open your portal</a></p>
-      <p>If the button does not work, copy this link into your browser:</p>
-      <p>${portalUrl}</p>
-      <p>Sent from ${orgName} via Arc.</p>
-    `,
+  await sendProjectPortalInviteEmail({
+    to: contactRow.email,
+    recipientName: contactRow.full_name?.trim() || null,
+    projectName,
+    portalType: "client",
+    orgName: orgRow?.name ?? "Arc",
+    orgLogoUrl: (orgRow as any)?.logo_url ?? null,
+    portalLink: portalUrl,
   })
 
   return {

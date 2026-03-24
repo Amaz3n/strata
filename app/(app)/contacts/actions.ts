@@ -19,8 +19,13 @@ import {
   contactInputSchema,
   contactUpdateSchema,
 } from "@/lib/validation/contacts"
-import { createPortalAccessToken } from "@/lib/services/portal-access"
+import {
+  createPortalAccessToken,
+  findReusablePortalAccessToken,
+  setPortalTokenRequireAccount,
+} from "@/lib/services/portal-access"
 import { requireOrgContext } from "@/lib/services/context"
+import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 
 function parseCsvLine(line: string): string[] {
   const result: string[] = []
@@ -129,13 +134,86 @@ export async function sendPortalInviteAction({
   projectId: string
   portalType?: "client" | "sub"
 }) {
-  const token = await createPortalAccessToken({
-    projectId,
+  const contact = await getContact(contactId)
+  if (!contact.email) {
+    throw new Error("This contact needs an email before you can send a portal invite")
+  }
+
+  const resolvedCompanyId =
+    portalType === "sub"
+      ? (contact.primary_company_id ?? contact.company_details[0]?.id ?? undefined)
+      : undefined
+
+  if (portalType === "sub" && !resolvedCompanyId) {
+    throw new Error("This subcontractor contact needs a company before you can send a sub portal invite")
+  }
+
+  const { supabase, orgId } = await requireOrgContext()
+
+  let token =
+    await findReusablePortalAccessToken({
+      projectId,
+      portalType,
+      contactId,
+      companyId: resolvedCompanyId,
+      orgId,
+    }) ??
+    await createPortalAccessToken({
+      projectId,
+      portalType,
+      contactId,
+      companyId: resolvedCompanyId,
+      permissions: {},
+      requireAccount: true,
+      orgId,
+    })
+
+  if (!token.require_account) {
+    await setPortalTokenRequireAccount({
+      tokenId: token.id,
+      requireAccount: true,
+      orgId,
+    })
+    token = { ...token, require_account: true }
+  }
+
+  const [{ data: projectRow }, { data: orgRow }] = await Promise.all([
+    supabase
+      .from("projects")
+      .select("id, name")
+      .eq("org_id", orgId)
+      .eq("id", projectId)
+      .maybeSingle(),
+    supabase
+      .from("orgs")
+      .select("id, name, logo_url")
+      .eq("id", orgId)
+      .maybeSingle(),
+  ])
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
+  const portalPath = `/${portalType === "sub" ? "s" : "p"}/${token.token}`
+  const portalUrl = appUrl ? `${appUrl}${portalPath}` : portalPath
+  const emailSent = await sendProjectPortalInviteEmail({
+    to: contact.email,
+    recipientName: contact.full_name?.trim() || null,
+    projectName: projectRow?.name ?? "your project",
     portalType,
-    contactId,
-    permissions: {},
+    orgName: orgRow?.name ?? "Arc",
+    orgLogoUrl: (orgRow as any)?.logo_url ?? null,
+    portalLink: portalUrl,
   })
-  return token
+
+  revalidatePath(`/projects/${projectId}`)
+  revalidatePath("/contacts")
+  revalidatePath("/directory")
+
+  return {
+    token,
+    portal_url: portalUrl,
+    sent_to: contact.email,
+    email_sent: emailSent,
+  }
 }
 
 export async function importContactsCsvAction(csvText: string) {

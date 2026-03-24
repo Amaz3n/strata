@@ -530,6 +530,33 @@ export interface ExternalPortalAccount {
   grant_count?: number
 }
 
+export type ExternalPortalWorkspaceKind = "client" | "sub" | "bid"
+
+export interface ExternalPortalWorkspaceItem {
+  id: string
+  token_id: string
+  href: string
+  kind: ExternalPortalWorkspaceKind
+  label: string
+  subtitle: string
+  org_id: string
+  org_name: string
+  project_id: string
+  project_name: string
+  project_status: ProjectStatus
+  project_address?: string | null
+  company_name?: string | null
+  contact_name?: string | null
+  due_at?: string | null
+  last_accessed_at?: string | null
+}
+
+export interface ExternalPortalWorkspaceContext {
+  account: Pick<ExternalPortalAccount, "id" | "email" | "full_name" | "last_login_at">
+  org: { id: string; name: string }
+  items: ExternalPortalWorkspaceItem[]
+}
+
 export interface PhotoTimelineEntry {
   week_start: string
   week_end: string

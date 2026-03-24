@@ -102,7 +102,7 @@ export function AccessTokenList({
           </div>
           <p className="text-sm font-medium text-foreground">No active links</p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Create a link above to share access
+            Send an invite above or create a direct link when needed
           </p>
         </div>
       )}

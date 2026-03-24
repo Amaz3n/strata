@@ -5,7 +5,7 @@ export interface Env {
 }
 
 const DEFAULT_COOKIE_NAME = "arc_tiles"
-const PATH_PREFIX = "/drawing-tiles/"
+const PATH_PREFIXES = ["/drawings-tiles/", "/drawing-tiles/"]
 
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null
@@ -70,7 +70,8 @@ async function validateCookie(token: string, secret: string) {
 const worker = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
-    if (!url.pathname.startsWith(PATH_PREFIX)) {
+    const matchedPrefix = PATH_PREFIXES.find((prefix) => url.pathname.startsWith(prefix))
+    if (!matchedPrefix) {
       return new Response("Not found", { status: 404 })
     }
 
@@ -85,7 +86,7 @@ const worker = {
       return new Response("Unauthorized", { status: 401 })
     }
 
-    const objectKey = url.pathname.slice(PATH_PREFIX.length)
+    const objectKey = url.pathname.slice(matchedPrefix.length)
     if (!objectKey) {
       return new Response("Not found", { status: 404 })
     }
