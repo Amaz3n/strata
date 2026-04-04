@@ -13,7 +13,7 @@ export default async function ProposalsPage() {
   return (
     <PageLayout title="Proposals">
       <div className="space-y-6">
-        <ProposalsClient proposals={proposals} projects={projects} allowNoProject />
+        <ProposalsClient proposals={proposals} projects={projects} allowNoProject={false} />
       </div>
     </PageLayout>
   )

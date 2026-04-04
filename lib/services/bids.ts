@@ -12,7 +12,7 @@ import {
   bulkCreateBidInvitesInputSchema,
   type BidPackageStatus,
 } from "@/lib/validation/bids"
-import { createCommitment } from "@/lib/services/commitments"
+import { runBidAwardConversion } from "@/lib/services/conversions"
 import { sendBidInviteEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -1292,120 +1292,15 @@ export async function awardBidSubmission({
     throw new Error("This bid package has already been awarded")
   }
 
-  const { data: awardPlaceholder, error: awardError } = await supabase
-    .from("bid_awards")
-    .insert({
-      org_id: resolvedOrgId,
-      bid_package_id: bidPackage.id,
-      awarded_submission_id: submission.id,
-      awarded_commitment_id: null,
-      awarded_by: userId,
-      notes: parsed.notes ?? null,
-    })
-    .select("id, org_id, bid_package_id, awarded_submission_id, awarded_commitment_id, awarded_by, awarded_at, notes")
-    .single()
-
-  if (awardError || !awardPlaceholder) {
-    if ((awardError as any)?.code === "23505") {
-      throw new Error("This bid package has already been awarded")
-    }
-    throw new Error(`Failed to create bid award: ${awardError?.message}`)
-  }
-
-  const awardId = awardPlaceholder.id as string
-  let commitmentId: string | null = null
-
-  try {
-    const commitment = await createCommitment({
-      input: {
-        project_id: bidPackage.project_id,
-        company_id: invite.company_id,
-        title: `${bidPackage.title} - Award`,
-        total_cents: submission.total_cents,
-        status: "draft",
-      },
-      orgId: resolvedOrgId,
-    })
-    commitmentId = commitment.id
-  } catch (commitmentError) {
-    await supabase
-      .from("bid_awards")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("id", awardId)
-      .is("awarded_commitment_id", null)
-    throw commitmentError
-  }
-
-  const { data: award, error: linkAwardError } = await supabase
-    .from("bid_awards")
-    .update({ awarded_commitment_id: commitmentId })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", awardId)
-    .select("id, org_id, bid_package_id, awarded_submission_id, awarded_commitment_id, awarded_by, awarded_at, notes")
-    .single()
-
-  if (linkAwardError || !award) {
-    await supabase
-      .from("commitments")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("id", commitmentId)
-      .eq("status", "draft")
-    await supabase
-      .from("bid_awards")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("id", awardId)
-      .is("awarded_commitment_id", null)
-    throw new Error(`Failed to finalize bid award: ${linkAwardError?.message}`)
-  }
-
-  const { error: packageStatusError } = await supabase
-    .from("bid_packages")
-    .update({ status: "awarded", updated_at: new Date().toISOString() })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", bidPackage.id)
-
-  if (packageStatusError) {
-    await supabase
-      .from("bid_awards")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("id", awardId)
-      .eq("awarded_commitment_id", commitmentId)
-    await supabase
-      .from("commitments")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("id", commitmentId)
-      .eq("status", "draft")
-    throw new Error(`Failed to update bid package status: ${packageStatusError.message}`)
-  }
-
-  await recordEvent({
+  const result = await runBidAwardConversion({
     orgId: resolvedOrgId,
-    eventType: "bid_awarded",
-    entityType: "bid_package",
-    entityId: bidPackage.id,
-    payload: {
-      bid_package_id: bidPackage.id,
-      bid_submission_id: submission.id,
-      commitment_id: commitmentId,
-    },
-  })
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "bid_award",
-    entityId: award.id as string,
-    after: award,
+    bidSubmissionId: submission.id as string,
+    awardedBy: userId,
+    notes: parsed.notes ?? null,
   })
 
   return {
-    awardId: award.id as string,
-    commitmentId: commitmentId as string,
+    awardId: result.awardId,
+    commitmentId: result.commitmentId,
   }
 }

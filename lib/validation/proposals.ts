@@ -13,19 +13,29 @@ export const proposalLineInputSchema = z.object({
   notes: z.string().optional(),
 })
 
-export const proposalInputSchema = z.object({
-  project_id: z.string().uuid().optional().nullable(),
-  opportunity_id: z.string().uuid().optional().nullable(),
-  estimate_id: z.string().uuid().optional(),
-  recipient_contact_id: z.string().uuid().optional(),
-  title: z.string().min(1, "Title is required"),
-  summary: z.string().optional(),
-  terms: z.string().optional(),
-  valid_until: z.string().optional(),
-  lines: z.array(proposalLineInputSchema).min(1, "At least one line is required"),
-  markup_percent: z.number().optional(),
-  tax_rate: z.number().optional(),
-  signature_required: z.boolean().optional(),
-})
+export const proposalInputSchema = z
+  .object({
+    project_id: z.string().uuid().optional().nullable(),
+    opportunity_id: z.string().uuid().optional().nullable(),
+    estimate_id: z.string().uuid().optional(),
+    recipient_contact_id: z.string().uuid().optional(),
+    title: z.string().min(1, "Title is required"),
+    summary: z.string().optional(),
+    terms: z.string().optional(),
+    valid_until: z.string().optional(),
+    lines: z.array(proposalLineInputSchema).min(1, "At least one line is required"),
+    markup_percent: z.number().optional(),
+    tax_rate: z.number().optional(),
+    signature_required: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.project_id && !value.opportunity_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A proposal must be tied to a project or opportunity before it can be created.",
+        path: ["project_id"],
+      })
+    }
+  })
 
 export type ProposalInput = z.infer<typeof proposalInputSchema>

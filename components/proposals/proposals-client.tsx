@@ -146,7 +146,7 @@ function canPrepareProposalForSignature(proposal: ProposalListItem) {
 export function ProposalsClient({
   proposals,
   projects,
-  allowNoProject = true,
+  allowNoProject = false,
   hideAllProjectsFilter = false,
 }: ProposalsClientProps) {
   const [items, setItems] = useState<ProposalListItem[]>(proposals)
@@ -316,7 +316,6 @@ export function ProposalsClient({
         open={createOpen}
         onOpenChange={setCreateOpen}
         projects={projects}
-        allowNoProject={allowNoProject}
         onCreate={handleCreate}
         loading={creating}
       />

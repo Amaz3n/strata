@@ -118,6 +118,10 @@ function PaymentForm({
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
   const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
   const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
+  const businessName =
+    typeof (invoice.metadata as Record<string, any> | undefined)?.org_name === "string"
+      ? ((invoice.metadata as Record<string, any>).org_name as string)
+      : "Invoice payment"
 
   const handleSubmit = async () => {
     setError(null)
@@ -156,7 +160,7 @@ function PaymentForm({
       <PaymentElement
         options={{
           layout: "tabs",
-          business: { name: "Arc" },
+          business: { name: businessName },
         }}
       />
 

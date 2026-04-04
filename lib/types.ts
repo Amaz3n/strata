@@ -692,14 +692,20 @@ export interface Payment {
   invoice_id?: string | null
   bill_id?: string | null
   amount_cents: number
+  gross_cents?: number | null
   currency: string
   method?: PaymentMethodType | string | null
   provider?: string | null
   provider_payment_id?: string | null
+  provider_charge_id?: string | null
+  connected_account_id?: string | null
   status: PaymentStatus
   reference?: string | null
   fee_cents?: number | null
   net_cents?: number | null
+  processor_fee_cents?: number | null
+  platform_fee_cents?: number | null
+  application_fee_cents?: number | null
   metadata?: Record<string, any>
   received_at: string
   created_at?: string
@@ -713,10 +719,17 @@ export interface PaymentIntent {
   invoice_id?: string | null
   provider: string
   provider_intent_id?: string | null
+  provider_charge_id?: string | null
   status: string
   amount_cents: number
   currency: string
   client_secret?: string | null
+  connected_account_id?: string | null
+  charge_type?: string | null
+  application_fee_amount?: number | null
+  processor_fee_cents?: number | null
+  platform_fee_cents?: number | null
+  on_behalf_of_account_id?: string | null
   idempotency_key?: string | null
   expires_at?: string | null
   metadata?: Record<string, any>

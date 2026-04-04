@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { startEstimating } from "@/lib/services/opportunities"
 import { createProposal } from "@/lib/services/proposals"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -506,10 +507,26 @@ export async function convertEstimateToProposal({
     sort_order: item.sort_order ?? idx,
   })) ?? []
 
+  let projectId = (estimate.project_id as string | null) ?? null
+  let opportunityId = ((estimate as any).opportunity_id as string | null) ?? null
+
+  if (!projectId && opportunityId) {
+    const preconContext = await startEstimating({
+      opportunityId,
+      orgId: resolvedOrgId,
+    })
+    projectId = preconContext.project_id
+    opportunityId = preconContext.opportunity_id
+  }
+
+  if (!projectId) {
+    throw new Error("Estimate must be linked to an opportunity or preconstruction project before it can become a proposal")
+  }
+
   return await createProposal(
     {
-      project_id: estimate.project_id ?? undefined,
-      opportunity_id: (estimate as any).opportunity_id ?? undefined,
+      project_id: projectId,
+      opportunity_id: opportunityId ?? undefined,
       estimate_id: estimate.id,
       recipient_contact_id: recipient_contact_id ?? estimate.recipient_contact_id ?? undefined,
       title: title ?? estimate.title,
@@ -523,7 +540,6 @@ export async function convertEstimateToProposal({
     resolvedOrgId,
   )
 }
-
 
 
 

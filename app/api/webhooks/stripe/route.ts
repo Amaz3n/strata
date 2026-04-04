@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
+import Stripe from "stripe"
 
-import { constructWebhookEvent, mapStripeEventToDomain } from "@/lib/integrations/payments/stripe"
+import {
+  constructWebhookEvent,
+  mapStripeEventToDomain,
+  retrieveStripeChargeWithBalanceTransaction,
+} from "@/lib/integrations/payments/stripe"
 import { recordPayment } from "@/lib/services/payments"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { upsertSubscriptionFromStripe } from "@/lib/services/subscriptions"
 import { authorize } from "@/lib/services/authorization"
+import { syncStripeConnectedAccountFromStripeAccount } from "@/lib/services/stripe-connected-accounts"
 
 function resolveActorUserId(metadata: unknown): string | undefined {
   if (!metadata || typeof metadata !== "object") {
@@ -14,6 +20,20 @@ function resolveActorUserId(metadata: unknown): string | undefined {
   const candidate = metadata as Record<string, unknown>
   const value = candidate.actor_user_id ?? candidate.actorUserId ?? candidate.user_id ?? candidate.userId
   return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function resolveOrgIdFromEvent(event: Stripe.Event): string | null {
+  const object = event.data.object as Record<string, any> | null
+  if (!object) return null
+
+  const metadata = object.metadata as Record<string, unknown> | undefined
+  if (typeof metadata?.org_id === "string" && metadata.org_id.length > 0) {
+    return metadata.org_id
+  }
+  if (typeof object.org_id === "string" && object.org_id.length > 0) {
+    return object.org_id
+  }
+  return null
 }
 
 export async function POST(request: NextRequest) {
@@ -32,20 +52,63 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 })
   }
 
-  const domainEvent = mapStripeEventToDomain(event)
-  if (!domainEvent) {
-    return NextResponse.json({ received: true })
+  const supabase = createServiceSupabaseClient()
+  const orgId = resolveOrgIdFromEvent(event)
+
+  const { data: existingWebhookEvent } = await supabase
+    .from("webhook_events")
+    .select("id, processed_at, status")
+    .eq("provider", "stripe")
+    .eq("provider_event_id", event.id)
+    .maybeSingle()
+
+  if (existingWebhookEvent?.processed_at || existingWebhookEvent?.status === "processed") {
+    return NextResponse.json({ received: true, duplicate: true })
   }
 
-  const supabase = createServiceSupabaseClient()
+  if (!existingWebhookEvent) {
+    await supabase.from("webhook_events").insert({
+      org_id: orgId,
+      provider: "stripe",
+      provider_event_id: event.id,
+      event_type: event.type,
+      payload: event as unknown as Record<string, any>,
+    })
+  }
+
+  const domainEvent = mapStripeEventToDomain(event)
 
   try {
+    if (event.type === "account.updated") {
+      await syncStripeConnectedAccountFromStripeAccount(event.data.object as Stripe.Account)
+      await supabase
+        .from("webhook_events")
+        .update({ status: "processed", processed_at: new Date().toISOString() })
+        .eq("provider", "stripe")
+        .eq("provider_event_id", event.id)
+      return NextResponse.json({ received: true })
+    }
+
     if (
       event.type === "customer.subscription.created" ||
       event.type === "customer.subscription.updated" ||
       event.type === "customer.subscription.deleted"
     ) {
       await upsertSubscriptionFromStripe(event.data.object as any)
+      await supabase
+        .from("webhook_events")
+        .update({ status: "processed", processed_at: new Date().toISOString() })
+        .eq("provider", "stripe")
+        .eq("provider_event_id", event.id)
+      return NextResponse.json({ received: true })
+    }
+
+    if (!domainEvent) {
+      await supabase
+        .from("webhook_events")
+        .update({ status: "ignored", processed_at: new Date().toISOString() })
+        .eq("provider", "stripe")
+        .eq("provider_event_id", event.id)
       return NextResponse.json({ received: true })
     }
 
@@ -72,6 +135,11 @@ export async function POST(request: NextRequest) {
             invoiceId: domainEvent.invoice_id,
             reasonCode: decision.reasonCode,
           })
+          await supabase
+            .from("webhook_events")
+            .update({ status: "ignored", processed_at: new Date().toISOString() })
+            .eq("provider", "stripe")
+            .eq("provider_event_id", event.id)
           return NextResponse.json({ received: true, skipped: true })
         }
       }
@@ -107,13 +175,71 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (event.type === "charge.succeeded") {
+      const chargeEvent = event.data.object as Stripe.Charge
+      const charge = await retrieveStripeChargeWithBalanceTransaction(chargeEvent.id)
+      const balanceTransaction =
+        charge.balance_transaction && typeof charge.balance_transaction !== "string"
+          ? charge.balance_transaction
+          : null
+      const processorFeeCents = balanceTransaction?.fee ?? 0
+      const applicationFeeCents = charge.application_fee_amount ?? 0
+      const grossCents = charge.amount ?? 0
+      const totalFeeCents = processorFeeCents + applicationFeeCents
+      const netCents = grossCents - totalFeeCents
+      const paymentIntentId = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id
+      const transferId = typeof charge.transfer === "string" ? charge.transfer : null
+      const connectedAccountId =
+        typeof charge.transfer_data?.destination === "string" ? charge.transfer_data.destination : null
+
+      await supabase
+        .from("payment_intents")
+        .update({
+          provider_charge_id: charge.id,
+          provider_transfer_id: transferId,
+          connected_account_id: connectedAccountId,
+          processor_fee_cents: processorFeeCents,
+          platform_fee_cents: applicationFeeCents,
+          application_fee_amount: applicationFeeCents,
+          status: charge.status ?? undefined,
+        })
+        .eq("provider_intent_id", paymentIntentId)
+
+      await supabase
+        .from("payments")
+        .update({
+          provider_charge_id: charge.id,
+          provider_balance_transaction_id: balanceTransaction?.id ?? null,
+          provider_transfer_id: transferId,
+          connected_account_id: connectedAccountId,
+          gross_cents: grossCents,
+          fee_cents: totalFeeCents,
+          processor_fee_cents: processorFeeCents,
+          platform_fee_cents: applicationFeeCents,
+          application_fee_cents: applicationFeeCents,
+          net_cents: netCents,
+        })
+        .eq("provider_payment_id", paymentIntentId)
+    }
+
     if (domainEvent.type === "payment_failed") {
       await supabase.from("payment_intents").update({ status: "failed" }).eq("provider_intent_id", domainEvent.provider_payment_id)
     }
 
+    await supabase
+      .from("webhook_events")
+      .update({ status: "processed", processed_at: new Date().toISOString() })
+      .eq("provider", "stripe")
+      .eq("provider_event_id", event.id)
+
     return NextResponse.json({ received: true })
   } catch (error) {
     console.error("Webhook processing error:", error)
+    await supabase
+      .from("webhook_events")
+      .update({ status: "failed" })
+      .eq("provider", "stripe")
+      .eq("provider_event_id", event.id)
     return NextResponse.json({ error: "Processing failed" }, { status: 500 })
   }
 }

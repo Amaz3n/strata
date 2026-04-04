@@ -5,6 +5,12 @@ import { cookies } from "next/headers"
 
 import { getQBOAuthUrl } from "@/lib/integrations/accounting/qbo-auth"
 import { disconnectQBO, getQBOConnection, getQBODiagnostics, refreshQBOTokenNow, updateQBOSettings } from "@/lib/services/qbo-connection"
+import {
+  createStripeConnectedAccountDashboardLoginLink,
+  createStripeConnectedAccountOnboardingLink,
+  getStripeConnectedAccount,
+  syncStripeConnectedAccount,
+} from "@/lib/services/stripe-connected-accounts"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { retryFailedQBOSyncJobs } from "@/lib/services/qbo-sync"
@@ -47,6 +53,30 @@ export async function updateQBOSettingsAction(settings: Record<string, any>) {
 
 export async function getQBOConnectionAction() {
   return getQBOConnection()
+}
+
+export async function getStripeConnectedAccountAction() {
+  return getStripeConnectedAccount()
+}
+
+export async function createStripeConnectedAccountOnboardingLinkAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  const link = await createStripeConnectedAccountOnboardingLink(orgId)
+  return { url: link.url }
+}
+
+export async function refreshStripeConnectedAccountAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  return syncStripeConnectedAccount(orgId)
+}
+
+export async function createStripeDashboardLoginLinkAction() {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  const link = await createStripeConnectedAccountDashboardLoginLink(orgId)
+  return { url: link.url }
 }
 
 export async function getQBODiagnosticsAction() {

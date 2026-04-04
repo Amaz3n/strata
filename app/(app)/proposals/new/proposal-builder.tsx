@@ -20,7 +20,7 @@ const DEFAULT_LINE = { description: "", quantity: 1, unit_cost_cents: 0 }
 export function ProposalBuilder({ projects }: { projects: Project[] }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "none")
+  const [projectId, setProjectId] = useState(projects[0]?.id ?? "")
   const [title, setTitle] = useState("")
   const [summary, setSummary] = useState("")
   const [terms, setTerms] = useState("")
@@ -61,11 +61,13 @@ export function ProposalBuilder({ projects }: { projects: Project[] }) {
       toast.error("Add at least one line")
       return
     }
-
-    const resolvedProjectId = projectId === "none" ? undefined : projectId || undefined
+    if (!projectId) {
+      toast.error("Start estimating from an opportunity before creating a proposal")
+      return
+    }
 
     const payload: ProposalInput = {
-      project_id: resolvedProjectId,
+      project_id: projectId,
       title: title.trim(),
       summary: summary || undefined,
       terms: terms || undefined,
@@ -103,12 +105,11 @@ export function ProposalBuilder({ projects }: { projects: Project[] }) {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Project</Label>
-              <Select value={projectId} onValueChange={setProjectId}>
+              <Select value={projectId} onValueChange={setProjectId} disabled={!projects.length}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select project" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">No project yet</SelectItem>
                   {projects.map((project) => (
                     <SelectItem key={project.id} value={project.id}>
                       {project.name}
@@ -116,6 +117,11 @@ export function ProposalBuilder({ projects }: { projects: Project[] }) {
                   ))}
                 </SelectContent>
               </Select>
+              {!projects.length ? (
+                <p className="text-xs text-muted-foreground">
+                  Start estimating from an opportunity first so this proposal is tied to a preconstruction project.
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label>Valid until</Label>
@@ -210,7 +216,7 @@ export function ProposalBuilder({ projects }: { projects: Project[] }) {
         <Button variant="outline" onClick={() => router.push("/proposals")}>
           Cancel
         </Button>
-        <Button onClick={handleSubmit} disabled={isPending}>
+        <Button onClick={handleSubmit} disabled={isPending || !projects.length}>
           {isPending ? "Saving..." : "Create proposal"}
         </Button>
       </div>

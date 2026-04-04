@@ -24,7 +24,6 @@ interface ProposalCreateSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: { id: string; name: string }[]
-  allowNoProject?: boolean
   onCreate: (input: ProposalInput) => Promise<void> | void
   loading?: boolean
 }
@@ -33,11 +32,10 @@ export function ProposalCreateSheet({
   open,
   onOpenChange,
   projects,
-  allowNoProject = true,
   onCreate,
   loading,
 }: ProposalCreateSheetProps) {
-  const initialProjectId = allowNoProject ? "none" : (projects[0]?.id ?? "")
+  const initialProjectId = projects[0]?.id ?? ""
   const [projectId, setProjectId] = useState(initialProjectId)
   const [title, setTitle] = useState("")
   const [summary, setSummary] = useState("")
@@ -68,12 +66,10 @@ export function ProposalCreateSheet({
     if (!title.trim()) return
     const validLines = lines.filter((l) => l.description.trim())
     if (!validLines.length) return
-
-    const resolvedProjectId = allowNoProject && projectId === "none" ? undefined : projectId || undefined
-    if (!resolvedProjectId && !allowNoProject) return
+    if (!projectId) return
 
     const payload: ProposalInput = {
-      project_id: resolvedProjectId,
+      project_id: projectId,
       title: title.trim(),
       summary: summary || undefined,
       terms: terms || undefined,
@@ -134,14 +130,11 @@ export function ProposalCreateSheet({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2 min-w-0">
                   <Label>Project</Label>
-                  <Select value={projectId} onValueChange={setProjectId} disabled={!projects.length && !allowNoProject}>
+                  <Select value={projectId} onValueChange={setProjectId} disabled={!projects.length}>
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="Select project" />
                     </SelectTrigger>
                     <SelectContent>
-                      {allowNoProject && (
-                        <SelectItem value="none">No project yet</SelectItem>
-                      )}
                       {projects.map((project) => (
                         <SelectItem key={project.id} value={project.id}>
                           {project.name}
@@ -149,6 +142,11 @@ export function ProposalCreateSheet({
                       ))}
                     </SelectContent>
                   </Select>
+                  {!projects.length ? (
+                    <p className="text-xs text-muted-foreground">
+                      Start estimating from an opportunity first so this proposal is tied to a preconstruction project.
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label>Valid until</Label>
@@ -310,7 +308,7 @@ export function ProposalCreateSheet({
               </Button>
               <Button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !projects.length}
                 className="flex-1"
               >
                 {loading ? "Saving..." : "Create Proposal"}

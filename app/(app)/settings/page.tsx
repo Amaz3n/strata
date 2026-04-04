@@ -2,6 +2,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getQBOConnection } from "@/lib/services/qbo-connection"
+import { getStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getOrgBilling } from "@/lib/services/orgs"
@@ -25,10 +26,11 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
   const isLocked = accessState.locked
   const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
 
-  const [qboConnection, teamMembers, roleOptions] = isLocked
-    ? [null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
+  const [qboConnection, stripeConnection, teamMembers, roleOptions] = isLocked
+    ? [null, null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
     : await Promise.all([
         getQBOConnection(),
+        getStripeConnectedAccount(),
         initialTab === "team" ? listTeamMembers(undefined, { includeProjectCounts: false }) : Promise.resolve(undefined),
         initialTab === "team" ? listAssignableOrgRoles().catch(() => []) : Promise.resolve(undefined),
       ])
@@ -58,6 +60,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
         user={currentUser}
         initialTab={initialTab}
         initialQboConnection={qboConnection}
+        initialStripeConnection={stripeConnection}
         teamMembers={teamMembers}
         roleOptions={roleOptions}
         canManageMembers={canManageMembers}

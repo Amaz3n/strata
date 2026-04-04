@@ -19,6 +19,7 @@ import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { requireReadyStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 const PAY_PATH = `${APP_URL}/p/pay`
@@ -56,10 +57,16 @@ function mapPayment(row: any): Payment {
     method: row.method ?? undefined,
     provider: row.provider ?? undefined,
     provider_payment_id: row.provider_payment_id ?? undefined,
+    provider_charge_id: row.provider_charge_id ?? undefined,
     status: row.status ?? "pending",
     reference: row.reference ?? undefined,
     fee_cents: row.fee_cents ?? undefined,
     net_cents: row.net_cents ?? undefined,
+    gross_cents: row.gross_cents ?? undefined,
+    connected_account_id: row.connected_account_id ?? undefined,
+    processor_fee_cents: row.processor_fee_cents ?? undefined,
+    platform_fee_cents: row.platform_fee_cents ?? undefined,
+    application_fee_cents: row.application_fee_cents ?? undefined,
     metadata: row.metadata ?? undefined,
     received_at: row.received_at ?? row.created_at,
     created_at: row.created_at ?? undefined,
@@ -75,10 +82,17 @@ function mapPaymentIntent(row: any): PaymentIntent {
     invoice_id: row.invoice_id ?? undefined,
     provider: row.provider ?? "stripe",
     provider_intent_id: row.provider_intent_id ?? undefined,
+    provider_charge_id: row.provider_charge_id ?? undefined,
     status: row.status ?? "requires_payment_method",
     amount_cents: row.amount_cents,
     currency: row.currency ?? "usd",
     client_secret: row.client_secret ?? undefined,
+    connected_account_id: row.connected_account_id ?? undefined,
+    charge_type: row.charge_type ?? undefined,
+    application_fee_amount: row.application_fee_amount ?? undefined,
+    processor_fee_cents: row.processor_fee_cents ?? undefined,
+    platform_fee_cents: row.platform_fee_cents ?? undefined,
+    on_behalf_of_account_id: row.on_behalf_of_account_id ?? undefined,
     idempotency_key: row.idempotency_key ?? undefined,
     expires_at: row.expires_at ?? undefined,
     metadata: row.metadata ?? undefined,
@@ -397,6 +411,7 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
   const invoice = await getInvoiceTotals(supabase, parsed.invoice_id, resolvedOrgId)
   const amount = parsed.amount_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
   if (amount <= 0) throw new Error("Invoice has no outstanding balance")
+  const connectedAccount = await requireReadyStripeConnectedAccount(resolvedOrgId)
 
   const stripeIntent = await createStripePaymentIntent({
     amount_cents: amount,
@@ -405,6 +420,9 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     org_id: resolvedOrgId,
     project_id: invoice.project_id,
     description: `Invoice ${parsed.invoice_id}`,
+    connected_account_id: connectedAccount.stripe_account_id,
+    application_fee_amount: 0,
+    on_behalf_of_account_id: connectedAccount.stripe_account_id,
     metadata: parsed.metadata
       ? Object.fromEntries(Object.entries(parsed.metadata).map(([key, value]) => [key, String(value)]))
       : undefined,
@@ -420,6 +438,12 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     status: stripeIntent.status,
     client_secret: stripeIntent.client_secret,
     provider_intent_id: stripeIntent.provider_intent_id,
+    connected_account_id: connectedAccount.stripe_account_id,
+    charge_type: "destination",
+    application_fee_amount: 0,
+    processor_fee_cents: 0,
+    platform_fee_cents: 0,
+    on_behalf_of_account_id: connectedAccount.stripe_account_id,
     idempotency_key: stripeIntent.provider_intent_id,
     metadata: parsed.metadata ?? {},
   }
@@ -486,13 +510,21 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     project_id: invoice.project_id,
     invoice_id: invoiceId,
     amount_cents: parsed.amount_cents,
+    gross_cents: parsed.amount_cents,
     currency: parsed.currency ?? "usd",
     method: parsed.method ?? "ach",
     provider: parsed.provider ?? "stripe",
     provider_payment_id: parsed.provider_payment_id,
+    provider_charge_id: parsed.metadata?.provider_charge_id,
+    connected_account_id: parsed.metadata?.connected_account_id,
     status: parsed.status ?? "succeeded",
     reference: parsed.reference ?? null,
     fee_cents: parsed.fee_cents ?? 0,
+    processor_fee_cents: parsed.metadata?.processor_fee_cents ?? (parsed.fee_cents ?? 0),
+    platform_fee_cents: parsed.metadata?.platform_fee_cents ?? 0,
+    application_fee_cents: parsed.metadata?.application_fee_cents ?? 0,
+    provider_balance_transaction_id: parsed.metadata?.provider_balance_transaction_id,
+    provider_transfer_id: parsed.metadata?.provider_transfer_id,
     net_cents: parsed.amount_cents - (parsed.fee_cents ?? 0),
     metadata: parsed.metadata ?? {},
     idempotency_key: parsed.idempotency_key ?? null,

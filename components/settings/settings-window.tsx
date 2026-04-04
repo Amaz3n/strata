@@ -17,10 +17,11 @@ import { NotificationPreferences } from "@/components/settings/notification-pref
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
+import { StripeConnectionCard } from "@/components/integrations/stripe-connection-card"
 import { Spinner } from "@/components/ui/spinner"
 import { Bell, Building2, CreditCard, Link2, Settings, Tag, User as UserIcon, Users } from "@/components/icons"
 import { Info } from "lucide-react"
-import { getQBOConnectionAction } from "@/app/(app)/settings/integrations/actions"
+import { getQBOConnectionAction, getStripeConnectedAccountAction } from "@/app/(app)/settings/integrations/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
 import {
   createBillingPortalSessionAction,
@@ -33,6 +34,7 @@ import {
 } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
+import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import type { ComplianceRequirementTemplateItem, ComplianceRules, CostCode, OrgRoleOption, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
 import { MfaSettingsCard } from "@/components/settings/mfa-settings-card"
@@ -159,6 +161,7 @@ interface SettingsWindowProps {
   user: User | null
   initialTab?: string
   initialQboConnection?: QBOConnection | null
+  initialStripeConnection?: StripeConnectedAccount | null
   variant?: "page" | "dialog"
   teamMembers?: TeamMember[]
   roleOptions?: OrgRoleOption[]
@@ -185,6 +188,7 @@ export function SettingsWindow({
   user,
   initialTab = "profile",
   initialQboConnection = null,
+  initialStripeConnection = null,
   variant = "page",
   teamMembers: initialTeamMembers,
   roleOptions: initialRoleOptions,
@@ -202,7 +206,10 @@ export function SettingsWindow({
   const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
   const [tab, setTab] = useState<string>(defaultTab)
   const [qboConnection, setQboConnection] = useState<QBOConnection | null>(initialQboConnection)
-  const [hasFetchedIntegrations, setHasFetchedIntegrations] = useState<boolean>(Boolean(initialQboConnection))
+  const [stripeConnection, setStripeConnection] = useState<StripeConnectedAccount | null>(initialStripeConnection)
+  const [hasFetchedIntegrations, setHasFetchedIntegrations] = useState<boolean>(
+    Boolean(initialQboConnection) || Boolean(initialStripeConnection),
+  )
   const [loadingIntegrations, setLoadingIntegrations] = useState(false)
   const [billing, setBilling] = useState<BillingDetails>(initialBilling)
   const [hasFetchedBilling, setHasFetchedBilling] = useState<boolean>(Boolean(initialBilling))
@@ -308,8 +315,9 @@ export function SettingsWindow({
 
   useEffect(() => {
     setQboConnection(initialQboConnection ?? null)
-    setHasFetchedIntegrations(Boolean(initialQboConnection))
-  }, [initialQboConnection])
+    setStripeConnection(initialStripeConnection ?? null)
+    setHasFetchedIntegrations(Boolean(initialQboConnection) || Boolean(initialStripeConnection))
+  }, [initialQboConnection, initialStripeConnection])
 
   useEffect(() => {
     setBilling(initialBilling ?? null)
@@ -382,14 +390,15 @@ export function SettingsWindow({
 
     let isMounted = true
     setLoadingIntegrations(true)
-    getQBOConnectionAction()
-      .then((connection) => {
+    Promise.all([getQBOConnectionAction(), getStripeConnectedAccountAction()])
+      .then(([qbo, stripe]) => {
         if (!isMounted) return
-        setQboConnection(connection)
+        setQboConnection(qbo)
+        setStripeConnection(stripe)
         setHasFetchedIntegrations(true)
       })
       .catch((error) => {
-        console.error("Failed to load QuickBooks connection", error)
+        console.error("Failed to load integrations", error)
         setHasFetchedIntegrations(true)
       })
       .finally(() => {
@@ -1428,6 +1437,11 @@ export function SettingsWindow({
                       </div>
                     ) : (
                       <div className="grid gap-6">
+                        <StripeConnectionCard
+                          connection={stripeConnection}
+                          canManage={Boolean(organizationSettings?.canManageOrganization)}
+                          onConnectionChange={setStripeConnection}
+                        />
                         <QBOConnectionCard connection={qboConnection} onConnectionChange={setQboConnection} />
                       </div>
                     )}
