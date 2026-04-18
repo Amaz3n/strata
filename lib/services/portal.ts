@@ -37,7 +37,7 @@ export async function getPortalView({
     createdBy: context.userId,
   })
 
-  const [messages, scheduleItems, dailyLogs, files] = await Promise.all([
+  const [messages, scheduleItems, dailyLogs, filesResult] = await Promise.all([
     listConversationMessagesWithClient(context.supabase, context.orgId, conversation.id),
     listScheduleItemsWithClient(context.supabase, context.orgId),
     listDailyLogs(context.orgId),
@@ -51,7 +51,7 @@ export async function getPortalView({
     messages,
     schedule: scheduleItems.filter((item) => item.project_id === projectId).slice(0, 5),
     recentLogs: dailyLogs.filter((log) => log.project_id === projectId).slice(0, 3),
-    sharedFiles: files.filter((file) => file.project_id === projectId).slice(0, 5),
+    sharedFiles: filesResult.data.filter((file) => file.project_id === projectId).slice(0, 5),
   }
 }
 

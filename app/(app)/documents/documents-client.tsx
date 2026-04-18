@@ -60,7 +60,7 @@ import { FileDropOverlay } from "@/components/files/file-drop-overlay"
 import { FileViewer } from "@/components/files/file-viewer"
 import { FileGrid } from "@/components/files/file-grid"
 import { FileList } from "@/components/files/file-list"
-import { FileToolbar, type ViewMode } from "@/components/files/file-toolbar"
+import type { ViewMode } from "@/components/files/file-toolbar"
 import {
   type FileWithDetails,
   type FileCategory,
@@ -214,8 +214,8 @@ export function DocumentsCenterClient({
           offset,
         })
 
-        setFiles((prev) => (append ? [...prev, ...filesData] : filesData))
-        setHasMore(filesData.length === pageSize)
+        setFiles((prev) => (append ? [...prev, ...filesData.data] : filesData.data))
+        setHasMore(filesData.hasMore)
       } catch (error) {
         console.error("Failed to fetch files:", error)
         toast.error("Failed to load files")
@@ -797,9 +797,15 @@ export function DocumentsCenterClient({
     setSelectedIds(new Set())
   }, [])
 
+  const activeFilterCount =
+    (selectedCategory !== "all" ? 1 : 0) +
+    (selectedFolder !== "all" ? 1 : 0) +
+    (showImageOnly ? 1 : 0) +
+    (showArchived ? 1 : 0)
+
   return (
     <div
-      className="flex flex-col h-full relative"
+      className="flex flex-col h-full relative bg-background"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -818,269 +824,245 @@ export function DocumentsCenterClient({
       {/* Drop overlay */}
       <FileDropOverlay isVisible={isDraggingOver} />
 
-      {/* Header with filters */}
-      <div className="flex flex-col gap-4 mb-6">
-        {/* Top row: Project filter, Search, Upload */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-2 flex-1 flex-wrap">
-            {!lockProject && (
-              <Select
-                value={selectedProject ?? "all"}
-                onValueChange={(value) =>
-                  setSelectedProject(value === "all" ? undefined : value)
-                }
+      {/* Top bar */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b bg-background/95 backdrop-blur-sm sticky top-0 z-10">
+        <div className="flex items-center gap-2">
+          {/* Search */}
+          <div className="relative w-64">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search files..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 text-sm"
+            />
+            {searchQuery && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute right-0.5 top-1/2 -translate-y-1/2 h-6 w-6 p-0"
+                onClick={() => setSearchQuery("")}
               >
-                <SelectTrigger className="w-[200px]">
-                  <SelectValue placeholder="All Projects" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Projects</SelectItem>
-                  {projects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <X className="h-3 w-3" />
+              </Button>
             )}
-
-            <div className="relative flex-1 max-w-md min-w-[220px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search files, tags, folders..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
-              {searchQuery && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 p-0"
-                  onClick={() => setSearchQuery("")}
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              )}
-            </div>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-9">
-                  <SlidersHorizontal className="h-4 w-4 sm:mr-2" />
-                  <span className="hidden sm:inline">Filters</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel>View options</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuCheckboxItem
-                  checked={showImageOnly}
-                  onCheckedChange={(checked) => setShowImageOnly(checked === true)}
-                >
-                  Images only
-                </DropdownMenuCheckboxItem>
-                <DropdownMenuCheckboxItem
-                  checked={showArchived}
-                  onCheckedChange={(checked) => setShowArchived(checked === true)}
-                >
-                  Show archived files
-                </DropdownMenuCheckboxItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            <div className="flex items-center border rounded-md">
-              <Button
-                variant={viewMode === "grid" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-9 px-3 rounded-r-none"
-                onClick={() => setViewMode("grid")}
-              >
-                <Grid3X3 className="h-4 w-4" />
-              </Button>
-              <Button
-                variant={viewMode === "list" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-9 px-3 rounded-l-none"
-                onClick={() => setViewMode("list")}
-              >
-                <List className="h-4 w-4" />
-              </Button>
-            </div>
           </div>
 
-          <Button onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
-            <Upload className="mr-2 h-4 w-4" />
+          {/* Project filter */}
+          {!lockProject && (
+            <Select
+              value={selectedProject ?? "all"}
+              onValueChange={(value) =>
+                setSelectedProject(value === "all" ? undefined : value)
+              }
+            >
+              <SelectTrigger className="w-[160px] h-8 text-sm">
+                <SelectValue placeholder="All Projects" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Projects</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {/* Filters dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 text-sm">
+                <SlidersHorizontal className="h-3.5 w-3.5 mr-1.5" />
+                Filters
+                {activeFilterCount > 0 && (
+                  <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-[10px] rounded-full">
+                    {activeFilterCount}
+                  </Badge>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuLabel>Category</DropdownMenuLabel>
+              <DropdownMenuCheckboxItem
+                checked={selectedCategory === "all"}
+                onCheckedChange={() => setSelectedCategory("all")}
+              >
+                All categories
+              </DropdownMenuCheckboxItem>
+              {(Object.keys(FILE_CATEGORIES) as FileCategory[]).map((cat) => {
+                const { label, icon } = FILE_CATEGORIES[cat]
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={cat}
+                    checked={selectedCategory === cat}
+                    onCheckedChange={() => setSelectedCategory(cat)}
+                  >
+                    <span className="mr-1.5">{icon}</span>
+                    {label}
+                    {(counts[cat] ?? 0) > 0 && (
+                      <span className="ml-auto text-xs text-muted-foreground">{counts[cat]}</span>
+                    )}
+                  </DropdownMenuCheckboxItem>
+                )
+              })}
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Folder</DropdownMenuLabel>
+              <DropdownMenuCheckboxItem
+                checked={selectedFolder === "all"}
+                onCheckedChange={() => setSelectedFolder("all")}
+              >
+                All folders
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={selectedFolder === "unsorted"}
+                onCheckedChange={() => setSelectedFolder("unsorted")}
+              >
+                Unsorted
+              </DropdownMenuCheckboxItem>
+              {folderOptions.map((folder) => (
+                <DropdownMenuCheckboxItem
+                  key={folder}
+                  checked={selectedFolder === folder}
+                  onCheckedChange={() => setSelectedFolder(folder)}
+                >
+                  {folder}
+                </DropdownMenuCheckboxItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Options</DropdownMenuLabel>
+              <DropdownMenuCheckboxItem
+                checked={showImageOnly}
+                onCheckedChange={(checked) => setShowImageOnly(checked === true)}
+              >
+                Images only
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showArchived}
+                onCheckedChange={(checked) => setShowArchived(checked === true)}
+              >
+                Show archived
+              </DropdownMenuCheckboxItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* View toggle */}
+          <div className="flex items-center border rounded-md h-8">
+            <Button
+              variant={viewMode === "grid" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-full px-2 rounded-r-none border-0"
+              onClick={() => setViewMode("grid")}
+            >
+              <Grid3X3 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant={viewMode === "list" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-full px-2 rounded-l-none border-0"
+              onClick={() => setViewMode("list")}
+            >
+              <List className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Right side: file count + upload */}
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {mappedFiles.length} file{mappedFiles.length !== 1 ? "s" : ""}
+          </span>
+          <Button size="sm" className="h-8" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
             {isUploading ? "Uploading..." : "Upload"}
           </Button>
         </div>
-
-        {/* Folder controls */}
-        <div className="grid gap-2 lg:grid-cols-3">
-          <Select value={selectedFolder} onValueChange={setSelectedFolder}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Filter by folder" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All folders</SelectItem>
-              <SelectItem value="unsorted">Unsorted</SelectItem>
-              {folderOptions.map((folder) => (
-                <SelectItem key={folder} value={folder}>
-                  {folder}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={uploadFolderPath || "none"} onValueChange={(value) => setUploadFolderPath(value === "none" ? "" : value)}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Upload destination" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Upload to root</SelectItem>
-              {folderOptions.map((folder) => (
-                <SelectItem key={`upload-${folder}`} value={folder}>
-                  {folder}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Button
-            variant="outline"
-            className="w-full justify-start"
-            onClick={() => {
-              const seed =
-                uploadFolderPath ||
-                (selectedFolder !== "all" && selectedFolder !== "unsorted" ? selectedFolder : "")
-              setNewFolderPath(seed)
-              setNewFolderDialogOpen(true)
-            }}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Create folder path
-          </Button>
-        </div>
-
-        {/* Category tabs */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          <Button
-            variant={selectedCategory === "all" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-9 shrink-0"
-            onClick={() => setSelectedCategory("all")}
-          >
-            All Files
-            <span className="ml-2 text-xs text-muted-foreground">{counts.all ?? 0}</span>
-          </Button>
-          {(Object.keys(FILE_CATEGORIES) as FileCategory[]).map((cat) => {
-            const { label, icon } = FILE_CATEGORIES[cat]
-            const count = counts[cat] ?? 0
-            const isSelected = selectedCategory === cat
-            return (
-              <Button
-                key={cat}
-                variant={isSelected ? "secondary" : "ghost"}
-                size="sm"
-                className="h-9 shrink-0"
-                onClick={() => setSelectedCategory(cat)}
-              >
-                <span className="mr-2 text-base">{icon}</span>
-                {label}
-                {count > 0 && (
-                  <span className="ml-2 text-xs text-muted-foreground">{count}</span>
-                )}
-              </Button>
-            )
-          })}
-        </div>
-
-        {/* Toolbar */}
-        <FileToolbar
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          selectedCount={selectedIds.size}
-          onBulkDownload={handleBulkDownload}
-          onBulkMove={handleOpenBulkMove}
-          onBulkDelete={handleBulkDelete}
-          onClearSelection={handleClearSelection}
-          showImageOnly={showImageOnly}
-          onShowImageOnlyChange={setShowImageOnly}
-          showSearch={false}
-          showFilters={false}
-          showViewToggle={false}
-        />
-
-        {uploadQueue.length > 0 && (
-          <div className="rounded-md border bg-muted/30 p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium">Upload queue</p>
-              <Button variant="ghost" size="sm" onClick={() => setUploadQueue([])}>
-                Clear
-              </Button>
-            </div>
-            <div className="space-y-1.5 max-h-48 overflow-auto">
-              {uploadQueue.map((item) => {
-                const icon =
-                  item.status === "uploading" || item.status === "queued"
-                    ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                    : item.status === "success"
-                      ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                      : <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
-                const progressValue =
-                  item.status === "success" ? 100 : item.status === "uploading" ? 60 : item.status === "error" ? 100 : 20
-                return (
-                  <div key={item.id} className="rounded border bg-background p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0 flex items-center gap-2">
-                        {icon}
-                        <p className="truncate text-xs font-medium">{item.fileName}</p>
-                      </div>
-                      <Badge variant="outline" className="text-[10px]">
-                        {item.status}
-                      </Badge>
-                    </div>
-                    <Progress value={progressValue} className="mt-2 h-1.5" />
-                    {item.error && (
-                      <p className="mt-1 text-[10px] text-destructive line-clamp-1">{item.error}</p>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
       </div>
 
+      {/* Bulk actions bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b bg-muted/50">
+          <span className="text-sm font-medium">{selectedIds.size} selected</span>
+          <div className="flex items-center gap-1 ml-2">
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleBulkDownload}>
+              Download
+            </Button>
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleOpenBulkMove}>
+              Move
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs text-destructive hover:text-destructive"
+              onClick={handleBulkDelete}
+            >
+              Delete
+            </Button>
+          </div>
+          <Button variant="ghost" size="sm" className="h-7 text-xs ml-auto" onClick={handleClearSelection}>
+            Clear
+          </Button>
+        </div>
+      )}
+
+      {/* Upload queue */}
+      {uploadQueue.length > 0 && (
+        <div className="border-b bg-muted/30 px-4 py-2">
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="text-xs font-medium">Uploading</p>
+            <Button variant="ghost" size="sm" className="h-5 text-[10px] px-1.5" onClick={() => setUploadQueue([])}>
+              Clear
+            </Button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {uploadQueue.slice(0, 10).map((item) => {
+              const icon =
+                item.status === "uploading" || item.status === "queued"
+                  ? <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0" />
+                  : item.status === "success"
+                    ? <CheckCircle2 className="h-3 w-3 text-emerald-600 shrink-0" />
+                    : <AlertTriangle className="h-3 w-3 text-destructive shrink-0" />
+              return (
+                <div key={item.id} className="flex items-center gap-1.5 rounded bg-background px-2 py-1 border min-w-0">
+                  {icon}
+                  <span className="truncate text-[11px] max-w-[120px]">{item.fileName}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Main content */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 overflow-auto">
         {isLoading && mappedFiles.length === 0 ? (
-          <div className="space-y-4">
+          <div className="p-4">
             {viewMode === "grid" ? (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {Array.from({ length: 8 }).map((_, index) => (
-                  <div key={`file-skeleton-${index}`} className="rounded-lg border p-3 space-y-3">
-                    <Skeleton className="h-32 w-full animate-none skeleton-shimmer" />
-                    <Skeleton className="h-4 w-3/4 animate-none skeleton-shimmer" />
-                    <Skeleton className="h-3 w-1/2 animate-none skeleton-shimmer" />
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+                {Array.from({ length: 12 }).map((_, index) => (
+                  <div key={`file-skeleton-${index}`} className="rounded-lg border overflow-hidden">
+                    <Skeleton className="aspect-square w-full animate-none skeleton-shimmer" />
+                    <div className="p-2.5 space-y-1.5">
+                      <Skeleton className="h-3.5 w-3/4 animate-none skeleton-shimmer" />
+                      <Skeleton className="h-3 w-1/2 animate-none skeleton-shimmer" />
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-0">
                 {Array.from({ length: 8 }).map((_, index) => (
                   <div
                     key={`file-row-skeleton-${index}`}
-                    className="flex items-center gap-3 rounded-lg border p-3"
+                    className="flex items-center gap-3 px-4 py-3 border-b"
                   >
-                    <Skeleton className="h-10 w-10 rounded-md animate-none skeleton-shimmer" />
-                    <div className="flex-1 space-y-2">
-                      <Skeleton className="h-4 w-2/3 animate-none skeleton-shimmer" />
-                      <Skeleton className="h-3 w-1/3 animate-none skeleton-shimmer" />
+                    <Skeleton className="h-8 w-8 rounded animate-none skeleton-shimmer" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-3.5 w-2/5 animate-none skeleton-shimmer" />
+                      <Skeleton className="h-3 w-1/4 animate-none skeleton-shimmer" />
                     </div>
-                    <Skeleton className="h-8 w-20 animate-none skeleton-shimmer" />
+                    <Skeleton className="h-6 w-16 animate-none skeleton-shimmer" />
                   </div>
                 ))}
               </div>
@@ -1089,31 +1071,29 @@ export function DocumentsCenterClient({
         ) : mappedFiles.length === 0 ? (
           <div
             className={cn(
-              "flex flex-col items-center justify-center py-16 px-8 border-2 border-dashed rounded-lg transition-colors cursor-pointer",
-              isDraggingOver
-                ? "border-primary bg-primary/5"
-                : "border-muted-foreground/25 hover:border-primary/50"
+              "flex flex-col items-center justify-center h-full min-h-[400px] transition-colors cursor-pointer",
+              isDraggingOver ? "bg-primary/5" : ""
             )}
             onClick={() => fileInputRef.current?.click()}
           >
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
-              <FileText className="h-8 w-8 text-muted-foreground" />
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted mb-3">
+              <FileText className="h-7 w-7 text-muted-foreground" />
             </div>
-            <h3 className="font-semibold text-lg">No files yet</h3>
+            <h3 className="font-semibold text-base">No files yet</h3>
             <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
               {searchQuery || selectedCategory !== "all" || selectedFolder !== "all" || showImageOnly
-                ? "No files match your filters. Try adjusting your search or category."
-                : "Drag and drop files here, or click to browse. Upload plans, contracts, photos, and documents."}
+                ? "No files match your filters. Try adjusting your search or filters."
+                : "Drag and drop files here, or click to upload."}
             </p>
             {!searchQuery && selectedCategory === "all" && selectedFolder === "all" && (
-              <Button className="mt-4" variant="outline">
-                <Upload className="mr-2 h-4 w-4" />
+              <Button className="mt-3" variant="outline" size="sm">
+                <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Choose Files
               </Button>
             )}
           </div>
         ) : (
-          <>
+          <div className="p-4">
             {viewMode === "grid" ? (
               <FileGrid
                 files={mappedFiles}
@@ -1144,6 +1124,7 @@ export function DocumentsCenterClient({
               <div className="flex justify-center py-6">
                 <Button
                   variant="outline"
+                  size="sm"
                   onClick={() => fetchFiles({ offset: files.length, append: true })}
                   disabled={isLoadingMore}
                 >
@@ -1151,7 +1132,7 @@ export function DocumentsCenterClient({
                 </Button>
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
 
@@ -1178,7 +1159,7 @@ export function DocumentsCenterClient({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete file?</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{fileToDelete?.file_name}"? This action cannot
+              Are you sure you want to delete &ldquo;{fileToDelete?.file_name}&rdquo;? This action cannot
               be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

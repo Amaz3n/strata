@@ -7,7 +7,7 @@ import { toast } from "sonner"
 import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
 import { createProjectPunchItemAction, type ProjectPunchItem, updateProjectPunchItemAction } from "@/app/(app)/projects/[id]/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
-import { attachFileAction, detachFileLinkAction, listAttachmentsAction, uploadFileAction } from "@/app/(app)/files/actions"
+import { attachFileAction, detachFileLinkAction, listAttachmentsAction, uploadFileAction } from "@/app/(app)/documents/actions"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

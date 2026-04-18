@@ -17,9 +17,7 @@ export default async function RfisPage() {
 
   return (
     <PageLayout title="RFIs">
-      <div className="space-y-6">
-        <RfisClient rfis={rfis} projects={projects} companies={companies} contacts={contacts} />
-      </div>
+      <RfisClient rfis={rfis} projects={projects} companies={companies} contacts={contacts} />
     </PageLayout>
   )
 }

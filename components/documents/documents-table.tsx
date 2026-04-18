@@ -1,6 +1,7 @@
 "use client"
 
 import { memo } from "react"
+import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
   FileText,
@@ -19,6 +20,17 @@ import {
   FilePlus2,
   Upload,
   FolderOpenDot,
+  Globe,
+  HardHat,
+  Lock,
+  Users,
+  Eye,
+  FileSignature,
+  Clock,
+  CheckCircle2,
+  AlertCircle,
+  Info,
+  ShieldCheck,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -39,8 +51,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import type { FileWithUrls } from "@/app/(app)/files/actions"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import type { FileWithUrls } from "@/app/(app)/documents/actions"
 import type { DrawingSheet } from "@/app/(app)/drawings/actions"
+import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 
 // ---------------------------------------------------------------------------
 // Utility functions
@@ -94,6 +113,11 @@ export function formatDate(dateString?: string | null): string {
   })
 }
 
+function getCategoryLabel(category?: string | null): string {
+  if (!category) return "-"
+  return QUICK_FILTER_CONFIG[category as QuickFilter]?.label ?? category
+}
+
 function getDisplaySheetNumber(sheet: DrawingSheet): string {
   const rawNumber = (sheet.sheet_number ?? "").trim()
   if (rawNumber && !/^sheet\s*\d+$/i.test(rawNumber)) {
@@ -132,6 +156,9 @@ export interface DocumentsFileTableProps {
   onDeleteFile: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
+  onSendForSignature?: (fileId: string) => void
+  onSendForApproval?: (fileId: string) => void
+  onOpenProperties: (fileId: string) => void
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
   hasFilters?: boolean
@@ -167,12 +194,15 @@ export function DocumentsFileTable({
   onDeleteFile,
   onViewActivity,
   onShareFile,
+  onSendForSignature,
+  onSendForApproval,
+  onOpenProperties,
   onFileDragStart,
   onFileDragEnd,
   hasFilters,
 }: DocumentsFileTableProps) {
   if (isLoading && items.length === 0) {
-    return <TableSkeleton rows={8} cols={7} />
+    return <TableSkeleton rows={10} cols={8} />
   }
 
   if (items.length === 0) {
@@ -185,65 +215,64 @@ export function DocumentsFileTable({
   }
 
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="divide-x">
-              <TableHead className="w-10 px-3 py-3">
-                {visibleFileIds.length > 0 && (
-                  <Checkbox
-                    checked={allVisibleSelected}
-                    onCheckedChange={(value) =>
-                      onSelectAllVisibleFiles(visibleFileIds, Boolean(value))
-                    }
-                    aria-label="Select all visible files"
-                  />
-                )}
-              </TableHead>
-              <TableHead className="min-w-[240px] px-4 py-3">Name</TableHead>
-              <TableHead className="hidden sm:table-cell px-4 py-3">Category</TableHead>
-              <TableHead className="hidden md:table-cell px-4 py-3">Modified</TableHead>
-              <TableHead className="hidden lg:table-cell px-4 py-3">Uploaded by</TableHead>
-              <TableHead className="hidden lg:table-cell px-4 py-3 text-right">Size</TableHead>
-              <TableHead className="w-12 px-3 py-3" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {items.map((item) => {
-              if (item.type === "folder") {
-                return (
-                  <FolderRow
-                    key={item.path}
-                    item={item}
-                    onFolderClick={onFolderClick}
-                    onDropOnFolder={onDropOnFolder}
-                    onMoveFile={onMoveFile}
-                    onDeleteFile={onDeleteFile}
-                  />
-                )
-              }
-              return (
-                <FileRow
-                  key={item.data.id}
-                  file={item.data}
-                  isSelected={selectedFileIds.has(item.data.id)}
-                  onSelectionChange={onFileSelectionChange}
-                  onFileClick={onFileClick}
-                  onRenameFile={onRenameFile}
-                  onMoveFile={onMoveFile}
-                  onDeleteFile={onDeleteFile}
-                  onViewActivity={onViewActivity}
-                  onShareFile={onShareFile}
-                  onFileDragStart={onFileDragStart}
-                  onFileDragEnd={onFileDragEnd}
-                />
-              )
-            })}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
+    <Table className="table-fixed min-w-[960px]">
+      <TableHeader>
+        <TableRow className="bg-muted/40 hover:bg-muted/40">
+          <TableHead className="w-11 pl-4 pr-2">
+            {visibleFileIds.length > 0 && (
+              <Checkbox
+                checked={allVisibleSelected}
+                onCheckedChange={(value) =>
+                  onSelectAllVisibleFiles(visibleFileIds, Boolean(value))
+                }
+                aria-label="Select all visible files"
+                className="h-3.5 w-3.5"
+              />
+            )}
+          </TableHead>
+          <TableHead className="w-[40%] min-w-[320px]">Name</TableHead>
+          <TableHead className="hidden sm:table-cell w-[128px]">Category</TableHead>
+          <TableHead className="hidden md:table-cell w-[184px]">Status</TableHead>
+          <TableHead className="hidden lg:table-cell w-[128px]">Shared</TableHead>
+          <TableHead className="hidden md:table-cell w-[112px]">Modified</TableHead>
+          <TableHead className="hidden xl:table-cell w-[88px] text-right">Size</TableHead>
+          <TableHead className="w-[92px] pr-4" />
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {items.map((item) => {
+          if (item.type === "folder") {
+            return (
+              <FolderRow
+                key={item.path}
+                item={item}
+                onFolderClick={onFolderClick}
+                onDropOnFolder={onDropOnFolder}
+              />
+            )
+          }
+          return (
+            <FileRow
+              key={item.data.id}
+              file={item.data}
+              isSelected={selectedFileIds.has(item.data.id)}
+              onSelectionChange={onFileSelectionChange}
+              onFileClick={onFileClick}
+              onRenameFile={onRenameFile}
+              onMoveFile={onMoveFile}
+              onDeleteFile={onDeleteFile}
+              onViewActivity={onViewActivity}
+              onShareFile={onShareFile}
+              onSendForSignature={onSendForSignature}
+              onSendForApproval={onSendForApproval}
+              onOpenProperties={onOpenProperties}
+              onFileDragStart={onFileDragStart}
+              onFileDragEnd={onFileDragEnd}
+            />
+          )
+        })}
+      </TableBody>
+    </Table>
   )
 }
 
@@ -268,35 +297,31 @@ export function SheetsTable({
   }
 
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="divide-x">
-              <TableHead className="w-16 px-4 py-3">Preview</TableHead>
-              <TableHead className="min-w-[200px] px-4 py-3">Sheet</TableHead>
-              <TableHead className="hidden lg:table-cell px-4 py-3">Discipline</TableHead>
-              <TableHead className="hidden md:table-cell px-4 py-3">Modified</TableHead>
-              <TableHead className="hidden xl:table-cell px-4 py-3">Modified by</TableHead>
-              <TableHead className="hidden md:table-cell px-4 py-3">Revision</TableHead>
-              <TableHead className="w-12 px-3 py-3" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sheets.map((sheet) => (
-              <SheetRow
-                key={sheet.id}
-                sheet={sheet}
-                onOpen={onSheetClick}
-                onEdit={onEditSheet}
-                onDelete={onDeleteSheet}
-                onAddVersion={onAddVersion}
-              />
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
+    <Table>
+      <TableHeader>
+        <TableRow className="bg-muted/40 hover:bg-muted/40">
+          <TableHead className="w-[72px] pl-4">Preview</TableHead>
+          <TableHead className="min-w-[200px]">Sheet</TableHead>
+          <TableHead className="hidden lg:table-cell w-[100px]">Discipline</TableHead>
+          <TableHead className="hidden md:table-cell w-[100px]">Modified</TableHead>
+          <TableHead className="hidden xl:table-cell w-[140px]">Modified by</TableHead>
+          <TableHead className="hidden md:table-cell w-[80px]">Revision</TableHead>
+          <TableHead className="w-10 pr-4" />
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {sheets.map((sheet) => (
+          <SheetRow
+            key={sheet.id}
+            sheet={sheet}
+            onOpen={onSheetClick}
+            onEdit={onEditSheet}
+            onDelete={onDeleteSheet}
+            onAddVersion={onAddVersion}
+          />
+        ))}
+      </TableBody>
+    </Table>
   )
 }
 
@@ -308,52 +333,39 @@ const FolderRow = memo(function FolderRow({
   item,
   onFolderClick,
   onDropOnFolder,
-  onMoveFile: _onMoveFile,
-  onDeleteFile: _onDeleteFile,
 }: {
   item: Extract<DocumentTableItem, { type: "folder" }>
   onFolderClick: (path: string) => void
   onDropOnFolder: (path: string) => void
-  onMoveFile: (fileId: string) => void
-  onDeleteFile: (fileId: string) => void
 }) {
   return (
     <TableRow
-      className="divide-x cursor-pointer hover:bg-muted/50 transition-colors"
+      className="group cursor-pointer"
       onClick={() => onFolderClick(item.path)}
-      onDragOver={(event) => {
-        event.preventDefault()
-      }}
+      onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault()
         event.stopPropagation()
         onDropOnFolder(item.path)
       }}
     >
-      <TableCell className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-        <Checkbox
-          aria-label={`Select folder ${item.name}`}
-          disabled
-        />
-      </TableCell>
-      <TableCell className="px-4 py-3" colSpan={5}>
+      <TableCell className="w-11 pl-4 pr-2" />
+      <TableCell colSpan={5} className="min-w-0">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-amber-50 dark:bg-amber-950/30">
-            <FolderOpen className="h-4.5 w-4.5 text-amber-600 dark:text-amber-500" />
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-100/80 dark:bg-amber-950/30">
+            <FolderOpen className="h-4 w-4 text-amber-600 dark:text-amber-500" />
           </div>
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="font-medium">{item.name}</span>
-            <span className="text-sm text-muted-foreground">
-              {item.itemCount} {item.itemCount === 1 ? "item" : "items"}
-            </span>
-          </div>
+          <span className="text-sm font-medium">{item.name}</span>
+          <span className="text-xs text-muted-foreground">
+            {item.itemCount} {item.itemCount === 1 ? "item" : "items"}
+          </span>
         </div>
       </TableCell>
-      <TableCell className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="w-[92px] pr-4" onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <MoreHorizontal className="h-4 w-4" />
+            <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+              <MoreHorizontal className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
@@ -361,15 +373,8 @@ const FolderRow = memo(function FolderRow({
               <FolderOpenDot className="h-4 w-4 mr-2" />
               Open
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onDropOnFolder(item.path)}>
-              <FolderInput className="h-4 w-4 mr-2" />
-              Move files here
-            </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              disabled
-            >
+            <DropdownMenuItem className="text-destructive focus:text-destructive" disabled>
               <Trash2 className="h-4 w-4 mr-2" />
               Delete folder
             </DropdownMenuItem>
@@ -390,6 +395,9 @@ const FileRow = memo(function FileRow({
   onDeleteFile,
   onViewActivity,
   onShareFile,
+  onSendForSignature,
+  onSendForApproval,
+  onOpenProperties,
   onFileDragStart,
   onFileDragEnd,
 }: {
@@ -402,35 +410,39 @@ const FileRow = memo(function FileRow({
   onDeleteFile: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
+  onSendForSignature?: (fileId: string) => void
+  onSendForApproval?: (fileId: string) => void
+  onOpenProperties: (fileId: string) => void
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
 }) {
+  const router = useRouter()
   const Icon = getFileIcon(file.mime_type ?? undefined)
   const isImage = file.mime_type?.startsWith("image/")
   const thumbnailUrl = file.thumbnail_url ?? (isImage ? file.download_url : undefined)
 
+  const isShared = file.share_with_clients || file.share_with_subs
+  
   return (
     <TableRow
-      className={cn(
-        "divide-x cursor-pointer hover:bg-muted/50 transition-colors",
-        isSelected && "bg-primary/5",
-      )}
+      className={cn("group cursor-pointer", isSelected && "bg-primary/5")}
       data-state={isSelected ? "selected" : undefined}
       onClick={() => onFileClick(file.id)}
       draggable
       onDragStart={(event) => onFileDragStart(file.id, event as unknown as React.DragEvent<HTMLDivElement>)}
       onDragEnd={() => onFileDragEnd(file.id)}
     >
-      <TableCell className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="w-11 pl-4 pr-2" onClick={(e) => e.stopPropagation()}>
         <Checkbox
           checked={isSelected}
           onCheckedChange={(value) => onSelectionChange(file.id, Boolean(value))}
           aria-label={`Select ${file.file_name}`}
+          className="h-3.5 w-3.5"
         />
       </TableCell>
-      <TableCell className="px-4 py-3">
+      <TableCell className="min-w-0">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">
             {isImage && thumbnailUrl ? (
               <img
                 src={thumbnailUrl}
@@ -442,73 +454,243 @@ const FileRow = memo(function FileRow({
               <Icon className="h-4 w-4 text-muted-foreground" />
             )}
           </div>
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <span className="font-medium truncate">{file.file_name}</span>
-            <div className="flex items-center gap-1.5 sm:hidden">
+          <div className="min-w-0 flex-1">
+            <span className="text-sm font-medium truncate block">{file.file_name}</span>
+            <div className="flex items-center gap-1.5 sm:hidden mt-0.5">
               {file.category && (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-[18px]">
-                  {file.category}
-                </Badge>
+                <span className="text-[11px] text-muted-foreground capitalize">
+                  {getCategoryLabel(file.category)}
+                </span>
               )}
-              <span className="text-xs text-muted-foreground">{formatFileSize(file.size_bytes)}</span>
+              <span className="text-[11px] text-muted-foreground">{formatFileSize(file.size_bytes)}</span>
             </div>
           </div>
         </div>
       </TableCell>
-      <TableCell className="hidden sm:table-cell px-4 py-3">
+      <TableCell className="hidden sm:table-cell w-[128px]">
         {file.category ? (
-          <Badge variant="secondary" className="text-xs px-2 py-0.5 capitalize">
-            {file.category}
-          </Badge>
+          <div className="truncate text-xs text-muted-foreground">
+            {getCategoryLabel(file.category)}
+          </div>
         ) : (
-          <span className="text-sm text-muted-foreground">-</span>
+          <span className="text-xs text-muted-foreground">-</span>
         )}
       </TableCell>
-      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground">
+      <TableCell className="hidden md:table-cell w-[184px]">
+        <div className="flex flex-wrap items-center gap-1">
+          {file.status && file.status !== "draft" && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge 
+                    variant="outline" 
+                    className={cn(
+                      "text-[10px] px-1 py-0 h-4 font-normal",
+                      file.status === "approved" && "text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-900",
+                      file.status === "in_review" && "text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900",
+                      file.status === "submitted" && "text-amber-600 border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-900",
+                      (file.status === "rejected" || file.status === "resubmit_required") && "text-rose-600 border-rose-200 bg-rose-50 dark:bg-rose-950/30 dark:text-rose-400 dark:border-rose-900"
+                    )}
+                  >
+                    {file.status === "approved" && <CheckCircle2 className="h-2.5 w-2.5 mr-1" />}
+                    {file.status === "in_review" && <Eye className="h-2.5 w-2.5 mr-1" />}
+                    {file.status === "submitted" && <Upload className="h-2.5 w-2.5 mr-1" />}
+                    {(file.status === "rejected" || file.status === "resubmit_required") && <AlertCircle className="h-2.5 w-2.5 mr-1" />}
+                    <span className="capitalize">{file.status.replace("_", " ")}</span>
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="text-xs">Approval status: {file.status.replace("_", " ")}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          {file.signature_status && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge 
+                    variant="outline" 
+                    className={cn(
+                      "text-[10px] px-1 py-0 h-4 font-normal",
+                      file.signature_status === "signed" && "text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-900",
+                      file.signature_status === "sent" && "text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900",
+                      file.signature_status === "draft" && "text-amber-600 border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-900",
+                      (file.signature_status === "voided" || file.signature_status === "expired") && "text-muted-foreground border-muted-foreground/30 bg-muted/30"
+                    )}
+                  >
+                    {file.signature_status === "signed" && <CheckCircle2 className="h-2.5 w-2.5 mr-1" />}
+                    {file.signature_status === "sent" && <Clock className="h-2.5 w-2.5 mr-1" />}
+                    {file.signature_status === "draft" && <Pencil className="h-2.5 w-2.5 mr-1" />}
+                    {(file.signature_status === "voided" || file.signature_status === "expired") && <AlertCircle className="h-2.5 w-2.5 mr-1" />}
+                    <span className="capitalize">{file.signature_status}</span>
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="text-xs">Signature status: {file.signature_status}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          {file.version_number && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge 
+                    variant={file.is_current ? "outline" : "secondary"}
+                    className={cn(
+                      "text-[10px] px-1 py-0 h-4 font-normal",
+                      file.is_current ? "text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900" : "text-muted-foreground opacity-70"
+                    )}
+                  >
+                    {!file.is_current && <Clock className="h-2.5 w-2.5 mr-1" />}
+                    {file.is_current ? `v${file.version_number}` : "Superseded"}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="text-xs">
+                    {file.is_current ? `Latest version (v${file.version_number})` : `Old version (v${file.version_number})`}
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="hidden lg:table-cell w-[128px]">
+        <div className="flex min-w-0 items-center gap-1">
+          {!isShared ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="secondary" className="bg-muted text-muted-foreground hover:bg-muted text-[10px] px-1 py-0 h-4 font-normal">
+                    <Lock className="h-2.5 w-2.5 mr-1" />
+                    Private
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="text-xs">Only internal team members can see this</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              {file.share_with_clients && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900 text-[10px] px-1 py-0 h-4 font-normal">
+                        <Users className="h-2.5 w-2.5 mr-1" />
+                        Clients
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="text-xs">Visible in Client Portal</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              {file.share_with_subs && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="outline" className="text-indigo-600 border-indigo-200 bg-indigo-50 dark:bg-indigo-950/30 dark:text-indigo-400 dark:border-indigo-900 text-[10px] px-1 py-0 h-4 font-normal">
+                        <HardHat className="h-2.5 w-2.5 mr-1" />
+                        Subs
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="text-xs">Visible in Subcontractor Portal</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </div>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="hidden md:table-cell w-[112px] text-xs text-muted-foreground">
         {formatDate(file.updated_at ?? file.created_at)}
       </TableCell>
-      <TableCell className="hidden lg:table-cell px-4 py-3 text-sm text-muted-foreground">
-        <span className="truncate block max-w-[140px]">
-          {file.uploader_name ?? "Unknown"}
-        </span>
-      </TableCell>
-      <TableCell className="hidden lg:table-cell px-4 py-3 text-right text-sm text-muted-foreground tabular-nums">
+      <TableCell className="hidden xl:table-cell w-[88px] text-right text-xs text-muted-foreground tabular-nums">
         {formatFileSize(file.size_bytes)}
       </TableCell>
-      <TableCell className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuItem onClick={() => onViewActivity(file.id)}>
-              <Activity className="h-4 w-4 mr-2" />
-              Timeline
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onRenameFile(file.id)}>
-              <Pencil className="h-4 w-4 mr-2" />
-              Rename
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMoveFile(file.id)}>
-              <FolderInput className="h-4 w-4 mr-2" />
-              Move
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onShareFile(file.id)}>
-              <Share2 className="h-4 w-4 mr-2" />
-              Share
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onClick={() => onDeleteFile(file.id)}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+      <TableCell className="w-[92px] pr-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 sm:opacity-0 group-hover:opacity-100 transition-opacity"
+            onClick={() => onOpenProperties(file.id)}
+            title="Open properties"
+          >
+            <Info className="h-3.5 w-3.5" />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => onOpenProperties(file.id)}>
+                <Info className="h-4 w-4 mr-2" />
+                Properties
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onFileClick(file.id)}>
+                <Eye className="h-4 w-4 mr-2" />
+                Preview
+              </DropdownMenuItem>
+              {file.mime_type === "application/pdf" && (
+                <DropdownMenuItem onClick={() => onSendForSignature?.(file.id)}>
+                  <FileSignature className="h-4 w-4 mr-2" />
+                  Sign...
+                </DropdownMenuItem>
+              )}
+              {file.signature_status && (
+                <DropdownMenuItem onClick={() => router.push(`/projects/${file.project_id}/signatures?search=${file.id}`)}>
+                  <FileSignature className="h-4 w-4 mr-2" />
+                  View signature...
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={() => onSendForApproval?.(file.id)}>
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Submit for approval...
+              </DropdownMenuItem>
+              {file.status && file.status !== "draft" && (
+                <DropdownMenuItem onClick={() => {/* Stage 9 logic */}}>
+                  <ShieldCheck className="h-4 w-4 mr-2" />
+                  Approval workflow...
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => onViewActivity(file.id)}>
+                <Activity className="h-4 w-4 mr-2" />
+                Timeline
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onRenameFile(file.id)}>
+                <Pencil className="h-4 w-4 mr-2" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onMoveFile(file.id)}>
+                <FolderInput className="h-4 w-4 mr-2" />
+                Move
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onShareFile(file.id)}>
+                <Share2 className="h-4 w-4 mr-2" />
+                Share
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={() => onDeleteFile(file.id)}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </TableCell>
     </TableRow>
   )
@@ -536,11 +718,11 @@ const SheetRow = memo(function SheetRow({
 
   return (
     <TableRow
-      className={cn("divide-x hover:bg-muted/50 transition-colors", onOpen && "cursor-pointer")}
+      className={cn("group", onOpen && "cursor-pointer")}
       onClick={() => onOpen?.(sheet)}
     >
-      <TableCell className="px-4 py-3">
-        <div className="h-10 w-14 overflow-hidden rounded border bg-muted/40">
+      <TableCell className="pl-4">
+        <div className="h-9 w-14 overflow-hidden rounded border bg-muted/40">
           {thumbnail ? (
             <img
               src={thumbnail}
@@ -550,48 +732,44 @@ const SheetRow = memo(function SheetRow({
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-[9px] text-muted-foreground">
-              No thumb
+              -
             </div>
           )}
         </div>
       </TableCell>
-      <TableCell className="px-4 py-3">
-        <div className="flex flex-col gap-0.5">
-          <span className="font-semibold">{sheetNumber}</span>
-          <span className="text-sm text-muted-foreground truncate max-w-[280px]">
-            {sheet.sheet_title || "Untitled sheet"}
-          </span>
-        </div>
+      <TableCell>
+        <span className="text-sm font-semibold block">{sheetNumber}</span>
+        <span className="text-xs text-muted-foreground truncate block max-w-[280px] mt-0.5">
+          {sheet.sheet_title || "Untitled sheet"}
+        </span>
       </TableCell>
-      <TableCell className="hidden lg:table-cell px-4 py-3">
+      <TableCell className="hidden lg:table-cell">
         {sheet.discipline ? (
-          <Badge variant="secondary" className="text-xs px-2 py-0.5">
-            {sheet.discipline}
-          </Badge>
+          <span className="text-xs text-muted-foreground">{sheet.discipline}</span>
         ) : (
-          <span className="text-sm text-muted-foreground">-</span>
+          <span className="text-xs text-muted-foreground">-</span>
         )}
       </TableCell>
-      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground">
+      <TableCell className="hidden md:table-cell text-xs text-muted-foreground">
         {formatDate(sheet.updated_at)}
       </TableCell>
-      <TableCell className="hidden xl:table-cell px-4 py-3 text-sm text-muted-foreground">
-        <span className="truncate block max-w-[140px]">{lastModifiedBy}</span>
+      <TableCell className="hidden xl:table-cell">
+        <span className="text-xs text-muted-foreground truncate block max-w-[130px]">{lastModifiedBy}</span>
       </TableCell>
-      <TableCell className="hidden md:table-cell px-4 py-3">
+      <TableCell className="hidden md:table-cell">
         {sheet.current_revision_label ? (
-          <Badge variant="outline" className="text-xs px-2 py-0.5">
+          <Badge variant="outline" className="text-[11px] px-1.5 py-0">
             {sheet.current_revision_label}
           </Badge>
         ) : (
-          <span className="text-sm text-muted-foreground">-</span>
+          <span className="text-xs text-muted-foreground">-</span>
         )}
       </TableCell>
-      <TableCell className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="pr-4" onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <MoreHorizontal className="h-4 w-4" />
+            <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+              <MoreHorizontal className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
@@ -624,41 +802,37 @@ const SheetRow = memo(function SheetRow({
 
 function TableSkeleton({ rows, cols }: { rows: number; cols: number }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="divide-x">
-              {Array.from({ length: cols }).map((_, i) => (
-                <TableHead key={i} className="px-4 py-3">
-                  <Skeleton className="h-3 w-16" />
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {Array.from({ length: rows }).map((_, i) => (
-              <TableRow key={i} className="divide-x">
-                <TableCell className="px-3 py-3">
-                  <Skeleton className="h-4 w-4 rounded" />
-                </TableCell>
-                <TableCell className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <Skeleton className="h-9 w-9 rounded-md shrink-0" />
-                    <Skeleton className="h-4 w-40" />
-                  </div>
-                </TableCell>
-                {Array.from({ length: cols - 2 }).map((_, j) => (
-                  <TableCell key={j} className="px-4 py-3 hidden md:table-cell">
-                    <Skeleton className="h-3 w-16" />
-                  </TableCell>
-                ))}
-              </TableRow>
+    <Table>
+      <TableHeader>
+        <TableRow className="bg-muted/40 hover:bg-muted/40">
+          {Array.from({ length: cols }).map((_, i) => (
+            <TableHead key={i}>
+              <Skeleton className="h-3 w-14" />
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {Array.from({ length: rows }).map((_, i) => (
+          <TableRow key={i}>
+            <TableCell className="pl-4 pr-2">
+              <Skeleton className="h-3.5 w-3.5 rounded" />
+            </TableCell>
+            <TableCell>
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-8 w-8 rounded shrink-0" />
+                <Skeleton className="h-3.5 w-36" />
+              </div>
+            </TableCell>
+            {Array.from({ length: cols - 2 }).map((_, j) => (
+              <TableCell key={j} className="hidden md:table-cell">
+                <Skeleton className="h-3 w-14" />
+              </TableCell>
             ))}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   )
 }
 
@@ -670,43 +844,38 @@ function EmptyState({
   onUploadClick: () => void
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <Table>
-        <TableBody>
-          <TableRow>
-            <TableCell colSpan={7} className="py-16">
-              <div
-                className="flex cursor-pointer flex-col items-center gap-4"
-                onClick={onUploadClick}
-              >
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                  {hasFilters ? (
-                    <FileText className="h-6 w-6 text-muted-foreground" />
-                  ) : (
-                    <Upload className="h-6 w-6 text-muted-foreground" />
-                  )}
-                </div>
-                <div className="text-center">
-                  <p className="font-medium">
-                    {hasFilters ? "No files found" : "No documents yet"}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {hasFilters
-                      ? "Try adjusting your filters or search query."
-                      : "Drag and drop files here, or click to upload."}
-                  </p>
-                </div>
-                {!hasFilters && (
-                  <Button variant="outline">
-                    <Upload className="mr-2 h-4 w-4" />
-                    Upload Files
-                  </Button>
-                )}
-              </div>
-            </TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
+    <div
+      className="flex flex-col items-center justify-center gap-3 py-24 px-4"
+    >
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+        {hasFilters ? (
+          <FileText className="h-6 w-6 text-muted-foreground" />
+        ) : (
+          <Upload className="h-6 w-6 text-muted-foreground" />
+        )}
+      </div>
+      <div className="text-center max-w-[400px]">
+        <p className="font-medium">
+          {hasFilters ? "No files found" : "No documents yet"}
+        </p>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          {hasFilters
+            ? "Try adjusting your filters or search query."
+            : "Upload drawings, contracts, photos, permits, and closeout files for this project."}
+        </p>
+      </div>
+      <div className="mt-2">
+        {hasFilters ? (
+          <Button variant="outline" size="sm" onClick={() => {/* potentially clear filters */}}>
+            Clear filters
+          </Button>
+        ) : (
+          <Button variant="default" size="sm" onClick={onUploadClick}>
+            <Upload className="mr-2 h-4 w-4" />
+            Upload documents
+          </Button>
+        )}
+      </div>
     </div>
   )
 }

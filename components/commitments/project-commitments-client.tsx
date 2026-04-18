@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { useToast } from "@/hooks/use-toast"
-import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/files/actions"
+import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import type { CostCode } from "@/lib/types"
 
 function formatMoneyFromCents(cents?: number | null) {

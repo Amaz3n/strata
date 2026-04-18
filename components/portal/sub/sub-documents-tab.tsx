@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { FILE_CATEGORIES } from "@/components/files/types"
 import type { FileCategory } from "@/components/files/types"
 import type { FileMetadata } from "@/lib/types"
-import { logPortalFileAccessClientAction } from "@/app/(app)/files/actions"
+import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
 
 interface SubDocumentsTabProps {
   files: FileMetadata[]

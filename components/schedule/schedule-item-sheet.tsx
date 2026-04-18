@@ -22,7 +22,7 @@ import { getProjectAssignableResourcesAction, type AssignableResource } from "@/
 import { setScheduleAssigneeAction } from "@/app/(app)/schedule/assignment-actions"
 import { inspectionMetadataSchema, type InspectionChecklistItem, type InspectionResult } from "@/lib/validation/inspections"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
-import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/files/actions"
+import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
 import { ChangeOrderImpactBadge } from "./change-order-impact-badge"
 import { DrawMilestoneOverlay } from "./draw-milestone-overlay"

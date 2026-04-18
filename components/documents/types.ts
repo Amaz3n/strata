@@ -1,4 +1,4 @@
-import type { FileWithUrls } from "@/app/(app)/files/actions"
+import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/actions"
 import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/actions"
 
 export type ViewMode = "grid" | "list"
@@ -38,19 +38,26 @@ export interface DocumentsContextValue {
   files: FileWithUrls[]
   drawingSets: DrawingSet[]
   folders: string[]
+  folderPermissions: ProjectFolderPermissions[]
   counts: Record<string, number>
+  totalCount: number
+  hasMore: boolean
 
   // Filters
   currentPath: string
   quickFilter: QuickFilter
   searchQuery: string
   viewMode: ViewMode
+  sort: "name" | "updated_at" | "created_at" | "size"
+  direction: "asc" | "desc"
 
   // Navigation
   setCurrentPath: (path: string) => void
   setQuickFilter: (filter: QuickFilter) => void
   setSearchQuery: (query: string) => void
   setViewMode: (mode: ViewMode) => void
+  setSort: (sort: "name" | "updated_at" | "created_at" | "size") => void
+  setDirection: (direction: "asc" | "desc") => void
   setSelectedDrawingSet: (id: string | null, title?: string | null) => void
   navigateToRoot: () => void
   navigateToFolder: (path: string) => void
@@ -58,10 +65,13 @@ export interface DocumentsContextValue {
 
   // Actions
   refreshFiles: () => Promise<void>
+  loadMore: () => Promise<void>
   refreshDrawingSets: () => Promise<void>
+  refreshFolderPermissions: () => Promise<void>
 
   // Loading states
   isLoading: boolean
+  isLoadingMore: boolean
   isUploading: boolean
 
   // Expanded state for sidebar
@@ -82,9 +92,12 @@ export interface UnifiedDocumentsLayoutProps {
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]
+  initialFolderPermissions?: ProjectFolderPermissions[]
   initialSets: DrawingSet[]
   initialPath?: string
   initialSetId?: string
+  initialTotalCount?: number
+  initialHasMore?: boolean
 }
 
 export const QUICK_FILTER_CONFIG: Record<

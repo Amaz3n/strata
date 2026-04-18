@@ -15,7 +15,7 @@ import {
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"

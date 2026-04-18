@@ -1,27 +1,16 @@
 import { PageLayout } from "@/components/layout/page-layout"
-import { SignaturesHubClient } from "@/components/esign/signatures-hub-client"
-import {
-  listSignatureEnvelopeProjectsAction,
-  listSignaturesHubAction,
-} from "./actions"
+import { NoProjectSelected } from "@/components/projects/no-project-selected"
 
-export const dynamic = "force-dynamic"
+// export const dynamic = "force-dynamic" // Removed for better caching performance
 
-export default async function SignaturesHubPage() {
-  const [data, projectsForNewEnvelope] = await Promise.all([
-    listSignaturesHubAction(),
-    listSignatureEnvelopeProjectsAction(),
-  ])
+export default async function FilesPage() {
 
   return (
-    <PageLayout title="Signatures">
-      <div className="px-6 py-4 h-full">
-        <SignaturesHubClient
-          initialData={data}
-          scope="org"
-          projectsForNewEnvelope={projectsForNewEnvelope}
-        />
+    <PageLayout title="Documents">
+      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+        <NoProjectSelected />
       </div>
     </PageLayout>
   )
 }
+

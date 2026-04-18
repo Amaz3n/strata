@@ -54,7 +54,7 @@ import {
   updateDrawingSetAction,
   updateDrawingSheetAction,
 } from "@/app/(app)/drawings/actions";
-import { uploadFileAction } from "@/app/(app)/files/actions";
+import { uploadFileAction } from "@/app/(app)/documents/actions";
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client";
 import type {
   DrawingRevision,
@@ -131,6 +131,7 @@ export function SheetsContent({
   const [sheetPage, setSheetPage] = useState(1);
   const [sheets, setSheets] = useState<DrawingSheet[]>([]);
   const [loadingSheets, setLoadingSheets] = useState(false);
+  const [selectedDiscipline, setSelectedDiscipline] = useState<string>("all");
 
   const [editingSet, setEditingSet] = useState<DrawingSet | null>(null);
   const [setTitle, setSetTitle] = useState("");
@@ -199,15 +200,29 @@ export function SheetsContent({
   useEffect(() => {
     if (!selectedSet) {
       setSheets([]);
+      setSelectedDiscipline("all");
       return;
     }
     void loadSheets(selectedSet.id);
   }, [selectedSet?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const availableDisciplines = useMemo(() => {
+    const set = new Set<string>();
+    sheets.forEach((s) => {
+      if (s.discipline) set.add(s.discipline);
+    });
+    return Array.from(set).sort();
+  }, [sheets]);
+
   const filteredSheets = useMemo(
     () =>
-      sheets.filter((sheet) => matchesSheetQuery(sheet, searchQuery.trim())),
-    [sheets, searchQuery],
+      sheets.filter((sheet) => {
+        const queryMatch = matchesSheetQuery(sheet, searchQuery.trim());
+        const disciplineMatch =
+          selectedDiscipline === "all" || sheet.discipline === selectedDiscipline;
+        return queryMatch && disciplineMatch;
+      }),
+    [sheets, searchQuery, selectedDiscipline],
   );
 
   const totalPages = Math.max(
@@ -665,14 +680,35 @@ export function SheetsContent({
 
         {selectedSet.status === "ready" && (
           <>
-            {searchQuery && (
-              <p className="text-xs text-muted-foreground">
-                Filtering sheets by:{" "}
-                <span className="font-medium text-foreground">
-                  {searchQuery}
-                </span>
-              </p>
-            )}
+            <div className="flex flex-wrap items-center gap-4 border-b bg-muted/20 px-4 py-2">
+              {searchQuery && (
+                <p className="text-xs text-muted-foreground">
+                  Filtering by:{" "}
+                  <span className="font-medium text-foreground">
+                    {searchQuery}
+                  </span>
+                </p>
+              )}
+              
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="text-xs text-muted-foreground">Discipline:</span>
+                <select
+                  value={selectedDiscipline}
+                  onChange={(e) => {
+                    setSelectedDiscipline(e.target.value);
+                    setSheetPage(1);
+                  }}
+                  className="h-7 rounded border bg-background px-2 text-xs"
+                >
+                  <option value="all">All</option>
+                  {availableDisciplines.map((d) => (
+                    <option key={d} value={d}>
+                      {d} - {DISCIPLINE_LABELS[d as DrawingDiscipline] || d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
             {loadingSheets && (
               <div className="space-y-2">

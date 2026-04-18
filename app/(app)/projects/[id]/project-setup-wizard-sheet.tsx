@@ -876,7 +876,7 @@ export function ProjectSetupWizardSheet({
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex flex-wrap gap-2">
                               <Button asChild size="sm">
-                                <Link href="/documents">Open Signatures</Link>
+                                <Link href="/signatures">Open Signatures</Link>
                               </Button>
                               <Button asChild variant="outline" size="sm">
                                 <Link href={`/projects/${project.id}/documents`}>Project documents</Link>

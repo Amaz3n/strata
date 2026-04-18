@@ -216,7 +216,7 @@ export function EntityAttachments({
 
   const handleViewInDocuments = useCallback(
     (attachment: AttachedFile) => {
-      const basePath = projectId ? `/projects/${projectId}/files` : "/files"
+      const basePath = projectId ? `/projects/${projectId}/documents` : "/documents"
       router.push(`${basePath}?fileId=${attachment.id}`)
     },
     [projectId, router]

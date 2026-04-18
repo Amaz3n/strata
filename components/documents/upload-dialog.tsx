@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { uploadFileAction } from "@/app/(app)/files/actions"
+import { uploadFileAction } from "@/app/(app)/documents/actions"
 import type { FileCategory } from "@/components/files/types"
 
 interface UploadQueueItem {

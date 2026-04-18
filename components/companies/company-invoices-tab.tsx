@@ -19,7 +19,7 @@ import {
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100

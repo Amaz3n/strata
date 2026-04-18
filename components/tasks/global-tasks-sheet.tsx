@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
 export function GlobalTasksSheet() {
+  const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
@@ -36,6 +37,10 @@ export function GlobalTasksSheet() {
 
   const openTasks = useMemo(() => tasks.filter((task) => task.status !== "done"), [tasks])
   const completedTasks = useMemo(() => tasks.filter((task) => task.status === "done"), [tasks])
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const loadTasks = useCallback(async () => {
     setIsLoading(true)
@@ -107,6 +112,14 @@ export function GlobalTasksSheet() {
       setTasks(previousTasks)
       toast.error("Failed to delete task")
     }
+  }
+
+  if (!mounted) {
+    return (
+      <Button variant="ghost" size="icon" className="relative" aria-label="Open tasks">
+        <CheckSquare className="h-5 w-5" />
+      </Button>
+    )
   }
 
   return (

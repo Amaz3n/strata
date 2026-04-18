@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { logPortalFileAccessAction } from "@/app/(app)/files/actions"
+import { logPortalFileAccessAction } from "@/app/(app)/documents/actions"
 
 export async function POST(request: NextRequest) {
   try {

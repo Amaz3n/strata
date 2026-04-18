@@ -21,7 +21,7 @@ import {
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 import { generateInvoicePdfAction } from "@/app/(app)/invoices/actions"
 import { toast } from "sonner"
 

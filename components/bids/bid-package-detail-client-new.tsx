@@ -64,8 +64,8 @@ import {
   listFoldersAction,
   listAttachmentsAction,
   uploadFileAction,
-} from "@/app/(app)/files/actions"
-import type { FileWithUrls } from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
+import type { FileWithUrls } from "@/app/(app)/documents/actions"
 import {
   createBidAddendumAction,
   bulkCreateBidInvitesAction,
@@ -684,8 +684,8 @@ export function BidPackageDetailClientNew({
           limit: pageSize,
           offset,
         })
-        allFiles = [...allFiles, ...page]
-        hasMore = page.length === pageSize
+        allFiles = [...allFiles, ...page.data]
+        hasMore = page.hasMore
         offset += pageSize
       }
 

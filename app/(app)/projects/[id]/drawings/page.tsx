@@ -8,5 +8,5 @@ interface ProjectDrawingsPageProps {
 
 export default async function ProjectDrawingsPage({ params }: ProjectDrawingsPageProps) {
   const { id } = await params
-  redirect(`/projects/${id}/files?tab=drawings`)
+  redirect(`/projects/${id}/documents?tab=drawings`)
 }

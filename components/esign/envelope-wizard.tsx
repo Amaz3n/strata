@@ -31,7 +31,8 @@ import {
   saveDocumentFieldsAction,
   sendDocumentEnvelopeAction,
   uploadESignDocumentFileAction,
-} from "@/app/(app)/documents/actions"
+} from "@/app/(app)/signatures/actions"
+import type { FileWithUrls } from "@/app/(app)/documents/actions"
 import { type UnifiedSignableEntityType } from "@/lib/esign/unified-contracts"
 import { cn } from "@/lib/utils"
 import { ESignDocumentViewer, type ESignFieldDraft } from "@/components/esign/esign-document-viewer"
@@ -123,6 +124,7 @@ interface EnvelopeWizardProps {
   onOpenChange: (open: boolean) => void
   sourceEntity: EnvelopeWizardSourceEntity | null
   resumeDocumentId?: string | null
+  initialFile?: FileWithUrls | null
   sheetTitle?: string
   sheetDescription?: string
   sourceLabel?: string
@@ -195,6 +197,7 @@ export function EnvelopeWizard({
   onOpenChange,
   sourceEntity,
   resumeDocumentId = null,
+  initialFile = null,
   sheetTitle = "Prepare for signature",
   sheetDescription = "Set up recipients and upload the PDF before placing fields.",
   sourceLabel = "Signable",
@@ -227,6 +230,28 @@ export function EnvelopeWizard({
   const [viewerFields, setViewerFields] = useState<ESignFieldDraft[]>([])
   const [viewerDocument, setViewerDocument] = useState<{ id: string; title: string; document_type: string } | null>(null)
   const [viewerFileUrl, setViewerFileUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (resumeDocumentId || !initialFile || !open) return
+
+    setUploadedPdf({
+      id: initialFile.id,
+      fileName: initialFile.file_name,
+      url: `/api/files/${initialFile.id}/raw`,
+    })
+    setDocumentTitle(initialFile.file_name.replace(/\.pdf$/i, ""))
+    if (initialFile.category) {
+      // Map file category to document type if possible
+      const mapping: Record<string, DocumentType> = {
+        contracts: "contract",
+        proposals: "proposal",
+        change_orders: "change_order",
+      }
+      if (mapping[initialFile.category]) {
+        setDocumentType(mapping[initialFile.category])
+      }
+    }
+  }, [open, initialFile, resumeDocumentId])
 
   const signerRecipients = useMemo(
     () => recipients.filter((recipient) => recipient.role === "signer"),

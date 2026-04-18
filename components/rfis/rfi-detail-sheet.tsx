@@ -44,7 +44,7 @@ import {
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 import { addRfiResponseAction, decideRfiAction, listRfiResponsesAction, sendRfiAction } from "@/app/(app)/rfis/actions"
 import { rfiResponseInputSchema, rfiDecisionSchema, type RfiResponseInput, type RfiDecisionInput } from "@/lib/validation/rfis"
 

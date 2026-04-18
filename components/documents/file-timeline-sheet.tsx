@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import type { FileWithUrls, FileTimelineEvent } from "@/app/(app)/files/actions"
+import type { FileWithUrls, FileTimelineEvent } from "@/app/(app)/documents/actions"
 
 interface FileTimelineSheetProps {
   file: FileWithUrls | null

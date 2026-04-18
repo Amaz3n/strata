@@ -75,21 +75,13 @@ export function FileGrid({
     onSelectionChange(newSelection)
   }
 
-  const toggleAll = () => {
-    if (selectedIds.size === files.length) {
-      onSelectionChange(new Set())
-    } else {
-      onSelectionChange(new Set(files.map((f) => f.id)))
-    }
-  }
-
   if (files.length === 0 && !isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
-          <FileText className="h-8 w-8 text-muted-foreground" />
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted mb-3">
+          <FileText className="h-7 w-7 text-muted-foreground" />
         </div>
-        <h3 className="font-semibold text-lg">No files yet</h3>
+        <h3 className="font-semibold">No files yet</h3>
         <p className="text-sm text-muted-foreground mt-1 max-w-sm">
           Upload plans, contracts, photos, and documents to keep your project organized.
         </p>
@@ -98,271 +90,149 @@ export function FileGrid({
   }
 
   return (
-    <div className="space-y-4">
-      {/* Selection toolbar */}
-      {files.length > 0 && (
-        <div className="flex items-center gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <Checkbox
-              checked={selectedIds.size === files.length && files.length > 0}
-              onCheckedChange={toggleAll}
-              className="h-4 w-4"
-            />
-            <span className="text-muted-foreground">
-              {selectedIds.size > 0
-                ? `${selectedIds.size} selected`
-                : `${files.length} files`}
-            </span>
-          </div>
-        </div>
-      )}
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+      {files.map((file) => {
+        const isSelected = selectedIds.has(file.id)
+        const isHovered = hoveredId === file.id
+        const isImage = isImageFile(file.mime_type)
+        const category = file.category ? FILE_CATEGORIES[file.category] : null
 
-      {/* Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-        {files.map((file) => {
-          const isSelected = selectedIds.has(file.id)
-          const isHovered = hoveredId === file.id
-          const isImage = isImageFile(file.mime_type)
-          const category = file.category ? FILE_CATEGORIES[file.category] : null
-          const summary = attachmentSummary?.[file.id]
-          const attachmentText = summary
-            ? Object.entries(summary.types)
-                .map(([type, count]) => `${ENTITY_TYPE_LABELS[type] ?? type} (${count})`)
-                .join(", ")
-            : ""
-
-          return (
-            <div
-              key={file.id}
-              className={cn(
-                "group relative rounded-lg border bg-card overflow-hidden transition-all cursor-pointer",
-                isSelected
-                  ? "ring-2 ring-primary border-primary"
-                  : "hover:border-primary/50 hover:shadow-lg"
+        return (
+          <div
+            key={file.id}
+            className={cn(
+              "group relative rounded-lg border bg-card overflow-hidden transition-all cursor-pointer",
+              isSelected
+                ? "ring-2 ring-primary border-primary"
+                : "hover:border-foreground/20 hover:shadow-md"
+            )}
+            onMouseEnter={() => setHoveredId(file.id)}
+            onMouseLeave={() => setHoveredId(null)}
+            onClick={() => onPreview(file)}
+          >
+            {/* Thumbnail */}
+            <div className="relative aspect-[4/3] bg-muted">
+              {isImage && file.thumbnail_url ? (
+                <Image
+                  src={file.thumbnail_url}
+                  alt={file.file_name}
+                  fill
+                  className="object-cover"
+                  unoptimized
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full">
+                  <span className="text-3xl">{getMimeIcon(file.mime_type)}</span>
+                </div>
               )}
-              onMouseEnter={() => setHoveredId(file.id)}
-              onMouseLeave={() => setHoveredId(null)}
-              onClick={() => onPreview(file)}
-            >
-              {/* Thumbnail / Preview */}
-              <div className="relative aspect-square bg-muted">
-                {isImage && file.thumbnail_url ? (
-                  <Image
-                    src={file.thumbnail_url}
-                    alt={file.file_name}
-                    fill
-                    className="object-cover"
-                    unoptimized
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full">
-                    <span className="text-4xl">{getMimeIcon(file.mime_type)}</span>
-                  </div>
-                )}
 
-                {/* Overlay on hover/select */}
-                <div
-                  className={cn(
-                    "absolute inset-0 bg-black/60 transition-opacity flex items-center justify-center gap-2",
-                    isHovered || isSelected ? "opacity-100" : "opacity-0"
-                  )}
-                  onClick={(e) => e.stopPropagation()}
+              {/* Hover overlay */}
+              <div
+                className={cn(
+                  "absolute inset-0 bg-black/50 transition-opacity flex items-center justify-center gap-1.5",
+                  isHovered || isSelected ? "opacity-100" : "opacity-0"
+                )}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => onPreview(file)}
                 >
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    className="h-9 w-9"
-                    onClick={() => onPreview(file)}
-                  >
-                    <Eye className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    className="h-9 w-9"
-                    onClick={() => onDownload(file)}
-                  >
-                    <Download className="h-4 w-4" />
-                  </Button>
-                </div>
-
-                {/* Selection checkbox */}
-                <div
-                  className={cn(
-                    "absolute top-2 left-2 transition-opacity",
-                    isHovered || isSelected ? "opacity-100" : "opacity-0"
-                  )}
-                  onClick={(e) => e.stopPropagation()}
+                  <Eye className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => onDownload(file)}
                 >
-                  <Checkbox
-                    checked={isSelected}
-                    onCheckedChange={() => toggleSelection(file.id)}
-                    className="h-5 w-5 bg-white/90 border-white"
-                  />
-                </div>
-
-                {/* Version badge */}
-                {file.has_versions && (
-                  <div className="absolute top-2 right-2">
-                    <Badge
-                      variant="secondary"
-                      className="text-xs bg-black/60 text-white border-0"
-                    >
-                      <History className="h-3 w-3 mr-1" />v{file.version_number ?? 1}
-                    </Badge>
-                  </div>
-                )}
-
-                {/* Category badge */}
-                {category && (
-                  <div className="absolute bottom-2 left-2">
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "text-xs border-0",
-                        category.color
-                      )}
-                    >
-                      {category.icon}
-                    </Badge>
-                  </div>
-                )}
-
-                {(file.share_with_clients || file.share_with_subs) && (
-                  <div className="absolute bottom-2 right-2 flex gap-1">
-                    {file.share_with_clients && (
-                      <Badge variant="secondary" className="text-[10px] bg-black/60 text-white border-0">
-                        C
-                      </Badge>
-                    )}
-                    {file.share_with_subs && (
-                      <Badge variant="secondary" className="text-[10px] bg-black/60 text-white border-0">
-                        S
-                      </Badge>
-                    )}
-                  </div>
-                )}
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
               </div>
 
-              {/* File info */}
-              <div className="p-3">
-                <p className="font-medium text-sm truncate" title={file.file_name}>
-                  {file.file_name}
-                </p>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {file.share_with_clients && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Clients
-                    </Badge>
-                  )}
-                  {file.share_with_subs && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Subs
-                    </Badge>
-                  )}
-                  {!file.share_with_clients && !file.share_with_subs && (
-                    <span className="text-[11px] text-muted-foreground">Private</span>
-                  )}
+              {/* Checkbox */}
+              <div
+                className={cn(
+                  "absolute top-1.5 left-1.5 transition-opacity",
+                  isHovered || isSelected ? "opacity-100" : "opacity-0"
+                )}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={() => toggleSelection(file.id)}
+                  className="h-4 w-4 bg-white/90 border-white"
+                />
+              </div>
+
+              {/* Category indicator */}
+              {category && (
+                <div className="absolute bottom-1.5 left-1.5">
+                  <span className="text-sm drop-shadow-md">{category.icon}</span>
                 </div>
-                {(file.folder_path || (file.tags && file.tags.length > 0)) && (
-                  <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-                    {file.folder_path && <span>{file.folder_path}</span>}
-                    {file.tags && file.tags.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1">
-                        {file.tags.slice(0, 2).map((tag) => (
-                          <Badge key={tag} variant="outline" className="text-[9px]">
-                            {tag}
-                          </Badge>
-                        ))}
-                        {file.tags.length > 2 && (
-                          <span className="text-[9px] text-muted-foreground">
-                            +{file.tags.length - 2}
-                          </span>
-                        )}
-                      </div>
+              )}
+            </div>
+
+            {/* File info */}
+            <div className="px-2.5 py-2">
+              <p className="font-medium text-xs truncate" title={file.file_name}>
+                {file.file_name}
+              </p>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-[11px] text-muted-foreground">
+                  {formatFileSize(file.size_bytes)}
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                    >
+                      <MoreHorizontal className="h-3 w-3" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-44">
+                    <DropdownMenuItem onClick={() => onPreview(file)}>
+                      <Eye className="mr-2 h-3.5 w-3.5" />
+                      Preview
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onDownload(file)}>
+                      <Download className="mr-2 h-3.5 w-3.5" />
+                      Download
+                    </DropdownMenuItem>
+                    {onViewActivity && (
+                      <DropdownMenuItem onClick={() => onViewActivity(file)}>
+                        <History className="mr-2 h-3.5 w-3.5" />
+                        Activity
+                      </DropdownMenuItem>
                     )}
-                  </div>
-                )}
-                {summary && attachmentText && (
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    Attached to: {attachmentText}
-                  </p>
-                )}
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-xs text-muted-foreground">
-                    {formatFileSize(file.size_bytes)}
-                  </span>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100"
-                      >
-                        <MoreHorizontal className="h-3.5 w-3.5" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-48">
-                      <DropdownMenuItem onClick={() => onPreview(file)}>
-                        <Eye className="mr-2 h-4 w-4" />
-                        Preview
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onDownload(file)}>
-                        <Download className="mr-2 h-4 w-4" />
-                        Download
-                      </DropdownMenuItem>
-                      {onViewActivity && (
-                        <DropdownMenuItem onClick={() => onViewActivity(file)}>
-                          <History className="mr-2 h-4 w-4" />
-                          View activity
+                    {onEdit && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => onEdit(file)}>
+                          <Tag className="mr-2 h-3.5 w-3.5" />
+                          Edit details
                         </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem>
-                        <Copy className="mr-2 h-4 w-4" />
-                        Copy link
-                      </DropdownMenuItem>
-                      {onVersionHistory && (
-                        <DropdownMenuItem onClick={() => onVersionHistory(file)}>
-                          <History className="mr-2 h-4 w-4" />
-                          Version history
-                        </DropdownMenuItem>
-                      )}
-                      {onEdit && (
-                        <>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => onEdit(file)}>
-                            <Tag className="mr-2 h-4 w-4" />
-                            Edit details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => onEdit(file)}>
-                            <Folder className="mr-2 h-4 w-4" />
-                            Sharing & folders
-                          </DropdownMenuItem>
-                        </>
-                      )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onClick={() => onDelete(file)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {formatDistanceToNow(parseISO(file.created_at), { addSuffix: true })}
-                </p>
+                      </>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onClick={() => onDelete(file)}
+                    >
+                      <Trash2 className="mr-2 h-3.5 w-3.5" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
-          )
-        })}
-      </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
-
-
-
-

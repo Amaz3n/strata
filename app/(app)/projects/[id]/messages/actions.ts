@@ -252,7 +252,7 @@ export async function saveAttachmentToProjectFilesAction(
     })
   }
 
-  revalidatePath(`/projects/${projectId}/files`)
+  revalidatePath(`/projects/${projectId}/documents`)
 }
 
 /**

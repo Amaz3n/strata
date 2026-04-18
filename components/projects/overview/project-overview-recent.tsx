@@ -98,7 +98,7 @@ export function ProjectOverviewRecent({
             </div>
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="sm" className="h-7 px-2" asChild onClick={(e) => e.stopPropagation()}>
-                <Link href={`/projects/${projectId}/files`}>
+                <Link href={`/projects/${projectId}/documents`}>
                   Files
                   <ChevronRight className="h-3.5 w-3.5 ml-1" />
                 </Link>

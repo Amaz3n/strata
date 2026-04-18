@@ -10,7 +10,7 @@ import {
   listDocumentFieldsAction,
   saveDocumentFieldsAction,
   uploadESignDocumentFileAction,
-} from "@/app/(app)/documents/actions"
+} from "@/app/(app)/signatures/actions"
 import { ESignDocumentViewer, type ESignFieldDraft } from "@/components/esign/esign-document-viewer"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"

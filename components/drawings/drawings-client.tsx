@@ -1320,7 +1320,7 @@ export function DrawingsClient({
                       const status = resolveSetStatus(set.status)
                       const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
                       const setLink = projectId
-                        ? `/projects/${projectId}/files?tab=drawings&setId=${set.id}`
+                        ? `/projects/${projectId}/documents?tab=drawings&setId=${set.id}`
                         : null
 
                       return (
@@ -1435,7 +1435,7 @@ export function DrawingsClient({
                           const status = resolveSetStatus(set.status)
                           const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
                           const setLink = projectId
-                            ? `/projects/${projectId}/files?tab=drawings&setId=${set.id}`
+                            ? `/projects/${projectId}/documents?tab=drawings&setId=${set.id}`
                             : null
 
                           return (

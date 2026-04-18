@@ -62,8 +62,8 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/rfis")) return "rfis"
   if (pathname.includes("/submittals")) return "submittals"
   if (pathname.includes("/decisions")) return "decisions"
-  if (pathname.includes("/documents")) return "signatures"
-  if (pathname.includes("/files")) return "documents"
+  if (pathname.includes("/signatures")) return "signatures"
+  if (pathname.includes("/documents")) return "documents"
   if (pathname.includes("/proposals")) return "proposals"
   if (pathname.includes("/bids")) return "bids"
   if (pathname.includes("/change-orders")) return "change-orders"
@@ -152,7 +152,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
         },
         {
           title: "Documents",
-          url: scopedUrl("/files"),
+          url: scopedUrl("/documents"),
           icon: FileText,
           isActive: hasProject && section === "documents",
           disabled: !hasProject,
@@ -215,7 +215,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
         },
         {
           title: "Signatures",
-          url: scopedUrl("/documents"),
+          url: scopedUrl("/signatures"),
           icon: ClipboardCheck,
           isActive: hasProject && section === "signatures",
           disabled: !hasProject,
@@ -291,3 +291,4 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform }: AppS
     </Sidebar>
   )
 }
+

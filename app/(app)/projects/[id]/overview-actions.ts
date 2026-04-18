@@ -625,7 +625,7 @@ async function getRecentFiles(supabase: any, orgId: string, projectId: string): 
     mime_type: f.mime_type,
     size: f.size,
     uploaded_at: f.created_at,
-    link: `/projects/${projectId}/files?highlight=${f.id}`,
+    link: `/projects/${projectId}/documents?highlight=${f.id}`,
   }))
 }
 

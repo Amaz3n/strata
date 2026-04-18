@@ -6,5 +6,5 @@ interface ProjectDrawingSetPageProps {
 
 export default async function ProjectDrawingSetPage({ params }: ProjectDrawingSetPageProps) {
   const { id, setId } = await params
-  redirect(`/projects/${id}/files?tab=drawings&setId=${setId}`)
+  redirect(`/projects/${id}/documents?tab=drawings&setId=${setId}`)
 }

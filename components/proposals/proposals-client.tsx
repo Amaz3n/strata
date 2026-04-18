@@ -10,7 +10,7 @@ import { createProposalAction, sendProposalAction, generateProposalLinkAction } 
 import {
   getProposalEnvelopeStatusAction,
   sendDocumentSigningReminderAction,
-} from "@/app/(app)/documents/actions"
+} from "@/app/(app)/signatures/actions"
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

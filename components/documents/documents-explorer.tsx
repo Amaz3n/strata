@@ -10,14 +10,31 @@ import {
   FolderOpen,
   Layers,
   Loader2,
+  Users,
+  HardHat,
+  MoreHorizontal,
+  Pencil,
+  ShieldCheck,
+  Trash2,
 } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import type { DrawingSet } from "@/app/(app)/drawings/actions"
 import type { FolderNode } from "./types"
 import { buildFolderTree, useDocuments } from "./documents-context"
-
 interface DocumentsExplorerProps {
   className?: string
+  onRenameFolder?: (path: string) => void
+  onDeleteFolder?: (path: string) => void
+  onShareFolder?: (path: string) => void
 }
 
 function statusTone(set: DrawingSet): string {
@@ -26,10 +43,16 @@ function statusTone(set: DrawingSet): string {
   return "text-emerald-600"
 }
 
-export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
+export function DocumentsExplorer({ 
+  className,
+  onRenameFolder,
+  onDeleteFolder,
+  onShareFolder,
+}: DocumentsExplorerProps) {
   const {
     files,
     folders,
+    folderPermissions,
     drawingSets,
     currentPath,
     selectedDrawingSetId,
@@ -83,8 +106,12 @@ export function DocumentsExplorer({ className }: DocumentsExplorerProps) {
                     currentPath={currentPath}
                     selectedDrawingSetId={selectedDrawingSetId}
                     expandedFolders={expandedFolders}
+                    folderPermissions={folderPermissions}
                     onToggle={toggleFolderExpanded}
                     onNavigate={navigateToFolder}
+                    onRename={onRenameFolder}
+                    onDelete={onDeleteFolder}
+                    onShare={onShareFolder}
                   />
                 ))}
               </div>
@@ -140,20 +167,30 @@ function FolderTreeNode({
   currentPath,
   selectedDrawingSetId,
   expandedFolders,
+  folderPermissions,
   onToggle,
   onNavigate,
+  onRename,
+  onDelete,
+  onShare,
 }: {
   node: FolderNode
   depth: number
   currentPath: string
   selectedDrawingSetId: string | null
   expandedFolders: Set<string>
+  folderPermissions: any[]
   onToggle: (path: string) => void
   onNavigate: (path: string) => void
+  onRename?: (path: string) => void
+  onDelete?: (path: string) => void
+  onShare?: (path: string) => void
 }) {
   const hasChildren = node.children.length > 0
   const isExpanded = expandedFolders.has(node.path)
   const isActive = !selectedDrawingSetId && currentPath === node.path
+
+  const permissions = folderPermissions.find(p => p.path === node.path)
 
   return (
     <div className="space-y-0.5">
@@ -192,7 +229,54 @@ function FolderTreeNode({
             <FolderClosed className="h-4 w-4 shrink-0" />
           )}
           <span className="truncate text-sm">{node.name}</span>
+          {permissions && (
+            <div className="ml-auto flex items-center gap-0.5 pr-1 opacity-60 group-hover:opacity-100 transition-opacity">
+              {permissions.share_with_clients && (
+                <div title="Shared with clients">
+                  <Users className="h-3 w-3 text-blue-500" />
+                </div>
+              )}
+              {permissions.share_with_subs && (
+                <div title="Shared with subs">
+                  <HardHat className="h-3 w-3 text-indigo-500" />
+                </div>
+              )}
+            </div>
+          )}
         </button>
+
+        <div className="pr-1">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+                <span className="sr-only">Folder actions</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuItem onClick={() => onRename?.(node.path)}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onShare?.(node.path)}>
+                <ShieldCheck className="mr-2 h-4 w-4" />
+                Sharing defaults...
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={() => onDelete?.(node.path)}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete folder
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       {hasChildren && isExpanded && (
@@ -205,8 +289,12 @@ function FolderTreeNode({
               currentPath={currentPath}
               selectedDrawingSetId={selectedDrawingSetId}
               expandedFolders={expandedFolders}
+              folderPermissions={folderPermissions}
               onToggle={onToggle}
               onNavigate={onNavigate}
+              onRename={onRename}
+              onDelete={onDelete}
+              onShare={onShare}
             />
           ))}
         </div>

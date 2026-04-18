@@ -32,7 +32,7 @@ import {
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"

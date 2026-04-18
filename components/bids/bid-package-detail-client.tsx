@@ -21,7 +21,7 @@ import {
   detachFileLinkAction,
   listAttachmentsAction,
   uploadFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 import {
   createBidAddendumAction,
   createBidInviteAction,

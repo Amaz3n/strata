@@ -4,7 +4,7 @@ import { useMemo, useState, useTransition, useEffect } from "react"
 
 import type { CloseoutItem, CloseoutPackage } from "@/lib/types"
 import { createCloseoutItemAction, updateCloseoutItemAction } from "@/app/(app)/closeout/actions"
-import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/files/actions"
+import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

@@ -24,7 +24,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
-import { listFoldersAction } from "@/app/(app)/files/actions"
+import { listFoldersAction } from "@/app/(app)/documents/actions"
 import { listDrawingSetsAction } from "@/app/(app)/drawings/actions"
 import type { DrawingSet } from "@/app/(app)/drawings/actions"
 

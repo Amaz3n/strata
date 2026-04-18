@@ -1166,7 +1166,7 @@ function buildNotificationHref(payload: any): string | null {
     case "change_order":
       return `/projects/${projectId}/change-orders`
     case "file":
-      return entityId ? `/projects/${projectId}/files?fileId=${entityId}` : `/projects/${projectId}/files`
+      return entityId ? `/projects/${projectId}/documents?fileId=${entityId}` : `/projects/${projectId}/documents`
     case "drawing_set":
     case "drawing_sheet":
     case "drawing_revision":

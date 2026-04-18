@@ -25,7 +25,7 @@ import {
   detachFileLinkAction,
   uploadFileAction,
   attachFileAction,
-} from "@/app/(app)/files/actions"
+} from "@/app/(app)/documents/actions"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",

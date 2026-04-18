@@ -58,7 +58,7 @@ import {
   updateDrawingSetAction,
   updateDrawingSheetAction,
 } from "@/app/(app)/drawings/actions"
-import { uploadFileAction } from "@/app/(app)/files/actions"
+import { uploadFileAction } from "@/app/(app)/documents/actions"
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
 import type {
   DrawingRevision,
