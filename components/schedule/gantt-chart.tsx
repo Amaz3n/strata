@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback, useMemo, useEffect } from "react"
 import { format, differenceInDays, startOfDay, isSameDay, isWeekend as checkIsWeekend, addDays as dateAddDays } from "date-fns"
+import { calculateScheduleImpacts, calculateCriticalPath } from "@/lib/utils/schedule-calc"
 import { cn } from "@/lib/utils"
 import type { ScheduleItem } from "@/lib/types"
 import {
@@ -88,10 +89,11 @@ interface SortableTaskRowProps {
   item: ScheduleItem
   isSelected: boolean
   showCriticalPath: boolean
+  computedCriticalPath: Set<string>
   onSelect: (item: ScheduleItem) => void
 }
 
-function SortableTaskRow({ item, isSelected, showCriticalPath, onSelect }: SortableTaskRowProps) {
+function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalPath, onSelect }: SortableTaskRowProps) {
   const {
     attributes,
     listeners,
@@ -165,7 +167,7 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, onSelect }: Sorta
             </TooltipContent>
           </Tooltip>
         )}
-        {item.is_critical_path && showCriticalPath && (
+        {computedCriticalPath.has(item.id) && showCriticalPath && (
           <Tooltip>
             <TooltipTrigger>
               <AlertTriangle className="h-3.5 w-3.5 gantt-indicator-icon is-critical" />
@@ -310,6 +312,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   } = useSchedule()
 
   const items = useMemo(() => (Array.isArray(rawItems) ? rawItems : []), [rawItems])
+  const computedCriticalPath = useMemo(() => calculateCriticalPath(items, dependencies), [items, dependencies])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -439,20 +442,40 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
       end_date: toDateString(endDate),
     }
 
+    const impacts = calculateScheduleImpacts(items, dependencies, payload)
+    
+    // Also update UI optimistically for impacted items
+    setPendingDateUpdates((prev) => {
+      const next = { ...prev }
+      impacts.forEach(impact => {
+        if (impact.start_date && impact.end_date) {
+          next[impact.id] = { 
+            requestId, 
+            startDate: new Date(impact.start_date), 
+            endDate: new Date(impact.end_date) 
+          }
+        }
+      })
+      return next
+    })
+
     const persist = onItemsBulkUpdate
-      ? onItemsBulkUpdate([payload])
+      ? onItemsBulkUpdate(impacts)
       : onItemUpdate(itemId, { start_date: payload.start_date, end_date: payload.end_date }).then((item) => [item])
 
     void persist.finally(() => {
       setPendingDateUpdates((prev) => {
-        const pending = prev[itemId]
-        if (!pending || pending.requestId !== requestId) return prev
         const next = { ...prev }
-        delete next[itemId]
+        impacts.forEach(impact => {
+          const pending = next[impact.id]
+          if (pending && pending.requestId === requestId) {
+            delete next[impact.id]
+          }
+        })
         return next
       })
     })
-  }, [onItemUpdate, onItemsBulkUpdate])
+  }, [items, dependencies, onItemUpdate, onItemsBulkUpdate])
 
   const deriveDragDates = useCallback((state: DragState, clientX: number) => {
     const deltaX = clientX - state.startX
@@ -963,6 +986,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                               item={item}
                               isSelected={selectedItem?.id === item.id}
                               showCriticalPath={viewState.showCriticalPath}
+                              computedCriticalPath={computedCriticalPath}
                               onSelect={setSelectedItem}
                             />
                           ))}

@@ -32,7 +32,7 @@ export const fileInputSchema = z.object({
   storage_path: z.string().min(1),
   mime_type: z.string().optional(),
   size_bytes: z.number().int().nonnegative().optional(),
-  visibility: z.enum(["private", "public"]).default("private"),
+  visibility: z.enum(["private", "public"]).default("public"),
   // Phase 1 additions
   category: fileCategorySchema.optional(),
   folder_path: z.string().optional(),

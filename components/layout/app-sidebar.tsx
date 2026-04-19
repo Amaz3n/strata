@@ -5,6 +5,7 @@ import {
   Home,
   LayoutDashboard,
   FileText,
+  Layers,
   MessageSquare,
   Receipt,
   HardHat,
@@ -58,7 +59,7 @@ function getProjectIdFromPath(pathname: string): string | null {
 }
 
 function getProjectSection(pathname: string): string {
-  if (pathname.includes("/drawings")) return "documents"
+  if (pathname.includes("/drawings")) return "drawings"
   if (pathname.includes("/rfis")) return "rfis"
   if (pathname.includes("/submittals")) return "submittals"
   if (pathname.includes("/decisions")) return "decisions"
@@ -155,6 +156,13 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           url: scopedUrl("/documents"),
           icon: FileText,
           isActive: hasProject && section === "documents",
+          disabled: !hasProject,
+        },
+        {
+          title: "Drawings",
+          url: scopedUrl("/drawings"),
+          icon: Layers,
+          isActive: hasProject && section === "drawings",
           disabled: !hasProject,
         },
         {
@@ -291,4 +299,3 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform }: AppS
     </Sidebar>
   )
 }
-

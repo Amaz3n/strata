@@ -13,7 +13,10 @@ import {
   Plus,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
@@ -87,7 +90,12 @@ export function UploadDialog({
   const [queue, setQueue] = useState<UploadQueueItem[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [category, setCategory] = useState<FileCategory | "auto">("auto")
+  const [visibility, setVisibility] = useState<"public" | "private">("public")
   const [targetFolder, setTargetFolder] = useState(normalizeFolderPath(folderPath))
+  const [description, setDescription] = useState("")
+  const [tags, setTags] = useState("")
+  const [shareWithClients, setShareWithClients] = useState(false)
+  const [shareWithSubs, setShareWithSubs] = useState(false)
 
   const currentFolder = useMemo(() => normalizeFolderPath(folderPath), [folderPath])
   const selectableFolders = useMemo(() => {
@@ -132,7 +140,12 @@ export function UploadDialog({
       if (!nextOpen) {
         setQueue([])
         setCategory("auto")
+        setVisibility("public")
         setTargetFolder("")
+        setDescription("")
+        setTags("")
+        setShareWithClients(false)
+        setShareWithSubs(false)
         seededInitialFilesRef.current = ""
       }
       onOpenChange(nextOpen)
@@ -182,9 +195,18 @@ export function UploadDialog({
         if (category !== "auto") {
           formData.append("category", category)
         }
+        formData.append("visibility", visibility)
         if (targetFolder) {
           formData.append("folderPath", targetFolder)
         }
+        if (description.trim()) {
+          formData.append("description", description.trim())
+        }
+        if (tags.trim()) {
+          formData.append("tags", tags)
+        }
+        formData.append("shareWithClients", String(shareWithClients))
+        formData.append("shareWithSubs", String(shareWithSubs))
 
         await uploadFileAction(formData)
 
@@ -224,7 +246,19 @@ export function UploadDialog({
     if (failCount === 0) {
       handleOpenChange(false)
     }
-  }, [queue, projectId, category, targetFolder, onUploadComplete, handleOpenChange])
+  }, [
+    queue,
+    projectId,
+    category,
+    visibility,
+    targetFolder,
+    description,
+    tags,
+    shareWithClients,
+    shareWithSubs,
+    onUploadComplete,
+    handleOpenChange,
+  ])
 
   const hasQueuedFiles = queue.some((item) => item.status === "queued")
   const allComplete = queue.length > 0 && queue.every((item) => item.status !== "queued" && item.status !== "uploading")
@@ -358,6 +392,23 @@ export function UploadDialog({
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="visibility">Visibility</Label>
+                <Select
+                  value={visibility}
+                  onValueChange={(value) => setVisibility(value as "public" | "private")}
+                  disabled={isUploading}
+                >
+                  <SelectTrigger id="visibility">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="public">Public</SelectItem>
+                    <SelectItem value="private">Private</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="folder">Folder</Label>
                 <Select
                   value={targetFolder || ROOT_FOLDER_VALUE}
@@ -379,6 +430,51 @@ export function UploadDialog({
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="tags">Tags</Label>
+                <Input
+                  id="tags"
+                  value={tags}
+                  onChange={(event) => setTags(event.target.value)}
+                  placeholder="permit, closeout, client"
+                  disabled={isUploading}
+                />
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="description">Description</Label>
+                <Textarea
+                  id="description"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  placeholder="Optional notes about these files"
+                  disabled={isUploading}
+                  rows={3}
+                />
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Portal access</Label>
+                <div className="grid gap-2 rounded-md border p-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={shareWithClients}
+                      onCheckedChange={(value) => setShareWithClients(Boolean(value))}
+                      disabled={isUploading}
+                    />
+                    Visible to clients
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={shareWithSubs}
+                      onCheckedChange={(value) => setShareWithSubs(Boolean(value))}
+                      disabled={isUploading}
+                    />
+                    Visible to subcontractors
+                  </label>
+                </div>
               </div>
             </div>
           )}

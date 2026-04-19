@@ -436,6 +436,7 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
   const file = formData.get("file") as File
   const projectId = formData.get("projectId") as string | null
   const category = formData.get("category") as FileCategory | null
+  const visibility = formData.get("visibility") as "public" | "private" | null
   const description = formData.get("description") as string | null
   const folderPath = formData.get("folderPath") as string | null
   const shareWithClientsRaw = formData.get("shareWithClients") as string | null
@@ -503,7 +504,7 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     storage_path: storagePath,
     mime_type: file.type,
     size_bytes: file.size,
-    visibility: "private",
+    visibility: visibility === "private" ? "private" : "public",
     category: inferredCategory,
     folder_path: resolvedFolderPath,
     description: description || undefined,

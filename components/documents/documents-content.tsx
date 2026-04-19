@@ -21,6 +21,7 @@ interface DocumentsContentProps {
   onDeleteFile: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
+  onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
   onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
@@ -42,6 +43,7 @@ export function DocumentsContent({
   onDeleteFile,
   onViewActivity,
   onShareFile,
+  onUploadNewVersion,
   onSendForSignature,
   onSendForApproval,
   onOpenProperties,
@@ -215,6 +217,7 @@ export function DocumentsContent({
           onDeleteFile={onDeleteFile}
           onViewActivity={onViewActivity}
           onShareFile={onShareFile}
+          onUploadNewVersion={onUploadNewVersion}
           onSendForSignature={onSendForSignature}
           onSendForApproval={onSendForApproval}
           onOpenProperties={onOpenProperties}

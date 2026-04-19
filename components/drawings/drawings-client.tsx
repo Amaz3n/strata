@@ -999,6 +999,16 @@ export function DrawingsClient({
   }
 
   const projectId = selectedProject ?? defaultProjectId ?? projects[0]?.id
+  const selectedProjectName =
+    projects.find((project) => project.id === selectedProject)?.name ??
+    projects.find((project) => project.id === defaultProjectId)?.name ??
+    "Select a project"
+  const readySetCount = sets.filter((set) => set.status === "ready").length
+  const processingSetCount = sets.filter((set) => set.status === "processing").length
+  const totalOpenPins = Object.values(statusCounts).reduce(
+    (total, counts) => total + (counts?.open ?? 0),
+    0
+  )
 
   return (
     <div
@@ -1044,6 +1054,57 @@ export function DrawingsClient({
         className="hidden"
         onChange={handleFileSelect}
       />
+
+      <div className="shrink-0 border-b bg-background">
+        <div className="grid gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_repeat(4,minmax(120px,160px))] lg:px-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase text-muted-foreground">
+              Drawing workbench
+            </p>
+            <h1 className="mt-1 truncate text-xl font-semibold leading-tight">
+              {selectedProjectName}
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Search sheets, compare revisions, mark up plan details, and pin RFIs, tasks, or punch items from the viewer.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 lg:contents">
+            <div className="rounded-md border bg-muted/30 px-3 py-2">
+              <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                Ready sets
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">
+                {readySetCount}
+              </div>
+            </div>
+            <div className="rounded-md border bg-muted/30 px-3 py-2">
+              <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                Sheets
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">
+                {disciplineCounts.all ?? sheets.length}
+              </div>
+            </div>
+            <div className="rounded-md border bg-muted/30 px-3 py-2">
+              <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                Open pins
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">
+                {totalOpenPins}
+              </div>
+            </div>
+            <div className="rounded-md border bg-muted/30 px-3 py-2">
+              <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                Processing
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">
+                {processingSetCount}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Header */}
       <div className="shrink-0 bg-background">
@@ -1320,7 +1381,7 @@ export function DrawingsClient({
                       const status = resolveSetStatus(set.status)
                       const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
                       const setLink = projectId
-                        ? `/projects/${projectId}/documents?tab=drawings&setId=${set.id}`
+                        ? `/projects/${projectId}/drawings/sets/${set.id}`
                         : null
 
                       return (
@@ -1435,7 +1496,7 @@ export function DrawingsClient({
                           const status = resolveSetStatus(set.status)
                           const progress = set.total_pages ? (set.processed_pages / set.total_pages) * 100 : 0
                           const setLink = projectId
-                            ? `/projects/${projectId}/documents?tab=drawings&setId=${set.id}`
+                            ? `/projects/${projectId}/drawings/sets/${set.id}`
                             : null
 
                           return (

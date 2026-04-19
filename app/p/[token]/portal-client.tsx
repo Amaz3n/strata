@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
-import { Home, Camera, FileText, CheckSquare, MessageCircle, Info } from "lucide-react"
+import { Home, Camera, FileText, CheckSquare, MessageCircle, Info, Map } from "lucide-react"
 import { PortalBottomNav, type PortalTab } from "@/components/portal/portal-bottom-nav"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
 import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
@@ -12,6 +12,7 @@ import { PortalDocumentsTab } from "@/components/portal/tabs/portal-documents-ta
 import { PortalActionsTab } from "@/components/portal/tabs/portal-actions-tab"
 import { PortalMessagesTab } from "@/components/portal/tabs/portal-messages-tab"
 import { PortalAboutTab } from "@/components/portal/tabs/portal-about-tab"
+import { PortalRoadmapTab } from "@/components/portal/tabs/portal-roadmap-tab"
 import type { ClientPortalData, ExternalPortalWorkspaceContext } from "@/lib/types"
 
 interface PortalPublicClientProps {
@@ -31,12 +32,12 @@ export function PortalPublicClient({
   canMessage = false,
   workspace = null,
 }: PortalPublicClientProps) {
-  const [activeTab, setActiveTab] = useState<PortalTab>("home")
+  const [activeTab, setActiveTab] = useState<PortalTab | "roadmap">("home")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
   const isMobile = useIsMobile()
 
-  const tabsForPortal = useMemo<PortalTab[]>(
-    () => (canMessage ? ["home", "timeline", "documents", "actions", "messages", "about"] : ["home", "timeline", "documents", "actions", "about"]),
+  const tabsForPortal = useMemo<(PortalTab | "roadmap")[]>(
+    () => (canMessage ? ["home", "roadmap", "timeline", "documents", "actions", "messages", "about"] : ["home", "roadmap", "timeline", "documents", "actions", "about"]),
     [canMessage],
   )
 
@@ -52,7 +53,8 @@ export function PortalPublicClient({
     () =>
       [
         { id: "home", label: "Home", icon: Home },
-        { id: "timeline", label: "Timeline", icon: Camera },
+        { id: "roadmap", label: "Roadmap", icon: Map },
+        { id: "timeline", label: "Photos", icon: Camera },
         { id: "documents", label: "Documents", icon: FileText },
         {
           id: "actions",
@@ -62,12 +64,13 @@ export function PortalPublicClient({
         },
         canMessage ? { id: "messages", label: "Messages", icon: MessageCircle } : null,
         { id: "about", label: "About", icon: Info },
-      ].filter(Boolean) as Array<{ id: PortalTab; label: string; icon: typeof Home; indicator?: ReactNode }>,
+      ].filter(Boolean) as Array<{ id: any; label: string; icon: typeof Home; indicator?: ReactNode }>,
     [canMessage, hasPendingActions],
   )
 
-  const renderTab = (tab: PortalTab) => {
+  const renderTab = (tab: string) => {
     if (tab === "home") return <PortalHomeTab data={data} />
+    if (tab === "roadmap") return <PortalRoadmapTab data={data} />
     if (tab === "timeline") return <PortalTimelineTab data={data} />
     if (tab === "documents") return <PortalDocumentsTab data={data} token={token} portalType={portalType} />
     if (tab === "actions") return <PortalActionsTab data={data} token={token} portalType={portalType} />
@@ -83,8 +86,8 @@ export function PortalPublicClient({
       project={data.project}
       workspace={workspace}
       isMobile={isMobile}
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
+      activeTab={activeTab as any}
+      onTabChange={setActiveTab as any}
       tabs={shellTabs}
       renderTab={renderTab}
       pinVerified={pinVerified}
@@ -98,10 +101,10 @@ export function PortalPublicClient({
       }
       mobileNav={
         <PortalBottomNav
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
+          activeTab={activeTab as any}
+          onTabChange={setActiveTab as any}
           hasPendingActions={hasPendingActions}
-          tabs={tabsForPortal}
+          tabs={tabsForPortal as any}
         />
       }
     />

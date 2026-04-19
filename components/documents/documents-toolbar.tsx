@@ -12,7 +12,6 @@ import {
   Download,
   Plus,
   Upload,
-  Layers,
   ListFilter,
   ArrowUpDown,
 } from "lucide-react"
@@ -42,7 +41,6 @@ import { QUICK_FILTER_CONFIG } from "./types"
 
 interface DocumentsToolbarProps {
   onUploadClick: () => void
-  onUploadDrawingSetClick: () => void
   onCreateFolderClick: () => void
   selectedCount: number
   onDownloadSelected: () => void
@@ -57,7 +55,6 @@ interface DocumentsToolbarProps {
 
 export function DocumentsToolbar({
   onUploadClick,
-  onUploadDrawingSetClick,
   onCreateFolderClick,
   selectedCount,
   onDownloadSelected,
@@ -151,16 +148,18 @@ export function DocumentsToolbar({
             <DropdownMenuContent align="start" className="w-48">
               <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter by category</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {(Object.entries(QUICK_FILTER_CONFIG) as [any, any][]).map(([key, config]) => (
-                <DropdownMenuCheckboxItem
-                  key={key}
-                  checked={quickFilter === key}
-                  onCheckedChange={() => setQuickFilter(key)}
-                  className="text-xs"
-                >
-                  {config.label}
-                </DropdownMenuCheckboxItem>
-              ))}
+              {(Object.entries(QUICK_FILTER_CONFIG) as [any, any][])
+                .filter(([key]) => key !== "drawings")
+                .map(([key, config]) => (
+                  <DropdownMenuCheckboxItem
+                    key={key}
+                    checked={quickFilter === key}
+                    onCheckedChange={() => setQuickFilter(key)}
+                    className="text-xs"
+                  >
+                    {config.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -318,10 +317,6 @@ export function DocumentsToolbar({
             <DropdownMenuItem onClick={onUploadClick} disabled={isUploading}>
               <Upload className="h-4 w-4 mr-2" />
               {isUploading ? "Uploading..." : "Upload files"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onUploadDrawingSetClick} disabled={isUploading}>
-              <Layers className="h-4 w-4 mr-2" />
-              Upload drawing set
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onCreateFolderClick} disabled={isViewingDrawingSet}>
               <FolderPlus className="h-4 w-4 mr-2" />

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { FilePlus2, Loader2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
 import { FileViewer } from "@/components/files/file-viewer";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -168,6 +169,13 @@ function UnifiedDocumentsLayoutInner() {
 
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const versionFileInputRef = useRef<HTMLInputElement>(null);
+  const [versionDialogOpen, setVersionDialogOpen] = useState(false);
+  const [versionTargetFile, setVersionTargetFile] = useState<FileWithUrls | null>(null);
+  const [versionUploadFile, setVersionUploadFile] = useState<File | null>(null);
+  const [versionLabel, setVersionLabel] = useState("");
+  const [versionNotes, setVersionNotes] = useState("");
+  const [isUploadingVersion, setIsUploadingVersion] = useState(false);
   const drawingSetFileInputRef = useRef<HTMLInputElement>(null);
   const [drawingSetUploadOpen, setDrawingSetUploadOpen] = useState(false);
   const [drawingSetFile, setDrawingSetFile] = useState<File | null>(null);
@@ -397,6 +405,43 @@ function UnifiedDocumentsLayoutInner() {
     setUploadFiles([]);
     setUploadDialogOpen(true);
   }, []);
+
+  const resetVersionUploadDialog = useCallback(() => {
+    setVersionTargetFile(null);
+    setVersionUploadFile(null);
+    setVersionLabel("");
+    setVersionNotes("");
+    setIsUploadingVersion(false);
+    if (versionFileInputRef.current) {
+      versionFileInputRef.current.value = "";
+    }
+  }, []);
+
+  const openVersionUploadDialog = useCallback(
+    (fileId: string) => {
+      const file = files.find((item) => item.id === fileId);
+      if (!file) return;
+      setVersionTargetFile(file);
+      setVersionUploadFile(null);
+      setVersionLabel("");
+      setVersionNotes("");
+      setVersionDialogOpen(true);
+      if (versionFileInputRef.current) {
+        versionFileInputRef.current.value = "";
+      }
+    },
+    [files],
+  );
+
+  const handleVersionFileChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0] ?? null;
+      if (file) {
+        setVersionUploadFile(file);
+      }
+    },
+    [],
+  );
 
   const resetDrawingSetUploadDialog = useCallback(() => {
     setDrawingSetFile(null);
@@ -1075,24 +1120,63 @@ function UnifiedDocumentsLayoutInner() {
     }
   }, [files, selectedFileIds]);
 
-  const handleUploadVersion = useCallback(
-    async (file: File, label?: string, notes?: string) => {
-      if (!viewerFile) return;
+  const uploadVersionForFile = useCallback(
+    async (fileId: string, file: File, label?: string, notes?: string) => {
       const formData = new FormData();
-      formData.append("fileId", viewerFile.id);
+      formData.append("fileId", fileId);
       formData.append("file", file);
       if (label) formData.append("label", label);
       if (notes) formData.append("notes", notes);
       await uploadFileVersionAction(formData);
-      const versions = await listFileVersionsAction(viewerFile.id);
+      const versions = await listFileVersionsAction(fileId);
       setVersionsByFile((prev) => ({
         ...prev,
-        [viewerFile.id]: versions.map(mapVersion),
+        [fileId]: versions.map(mapVersion),
       }));
       await refreshFiles();
     },
-    [viewerFile, refreshFiles],
+    [refreshFiles],
   );
+
+  const handleUploadVersion = useCallback(
+    async (file: File, label?: string, notes?: string) => {
+      if (!viewerFile) return;
+      await uploadVersionForFile(viewerFile.id, file, label, notes);
+    },
+    [viewerFile, uploadVersionForFile],
+  );
+
+  const handleConfirmVersionUpload = useCallback(async () => {
+    if (!versionTargetFile || !versionUploadFile) {
+      toast.error("Choose a file for the new version");
+      return;
+    }
+
+    setIsUploadingVersion(true);
+    try {
+      await uploadVersionForFile(
+        versionTargetFile.id,
+        versionUploadFile,
+        versionLabel.trim() || undefined,
+        versionNotes.trim() || undefined,
+      );
+      toast.success("New version uploaded");
+      setVersionDialogOpen(false);
+      resetVersionUploadDialog();
+    } catch (error) {
+      console.error("Failed to upload version:", error);
+      toast.error("Failed to upload new version");
+    } finally {
+      setIsUploadingVersion(false);
+    }
+  }, [
+    versionTargetFile,
+    versionUploadFile,
+    versionLabel,
+    versionNotes,
+    uploadVersionForFile,
+    resetVersionUploadDialog,
+  ]);
 
   const handleMakeCurrentVersion = useCallback(
     async (versionId: string) => {
@@ -1352,6 +1436,7 @@ function UnifiedDocumentsLayoutInner() {
         onDeleteFile={(fileId) => openDeleteDialog(fileId)}
         onViewActivity={openTimeline}
         onShareFile={openShareDialog}
+        onUploadNewVersion={openVersionUploadDialog}
         onSendForSignature={handleSendForSignature}
         onSendForApproval={handleSendForApproval}
         onOpenProperties={setPropertiesFileId}
@@ -1375,7 +1460,6 @@ function UnifiedDocumentsLayoutInner() {
       <div className="relative z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm px-4 py-3">
         <DocumentsToolbar
           onUploadClick={handleUploadClick}
-          onUploadDrawingSetClick={handleOpenDrawingSetUpload}
           onCreateFolderClick={() => {
             setNewFolderPath(currentPath || "");
             setCreateFolderDialogOpen(true);
@@ -1428,6 +1512,114 @@ function UnifiedDocumentsLayoutInner() {
         folderOptions={folderOptions}
         onUploadComplete={refreshFiles}
       />
+
+      <Dialog
+        open={versionDialogOpen}
+        onOpenChange={(open) => {
+          setVersionDialogOpen(open);
+          if (!open) {
+            resetVersionUploadDialog();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Upload New Version</DialogTitle>
+            <DialogDescription>
+              Replace the current file while preserving the previous version history.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {versionTargetFile ? (
+              <div className="rounded-md border bg-muted/40 px-3 py-2">
+                <p className="truncate text-sm font-medium">
+                  {versionTargetFile.file_name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Current version: v{versionTargetFile.version_number ?? 1}
+                </p>
+              </div>
+            ) : null}
+
+            <input
+              ref={versionFileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleVersionFileChange}
+              disabled={isUploadingVersion}
+            />
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => versionFileInputRef.current?.click()}
+              disabled={isUploadingVersion}
+              className="w-full justify-start"
+            >
+              <FilePlus2 className="mr-2 h-4 w-4" />
+              Choose replacement file
+            </Button>
+
+            {versionUploadFile ? (
+              <div className="rounded-md border bg-muted/40 px-3 py-2">
+                <p className="truncate text-sm font-medium">
+                  {versionUploadFile.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {(versionUploadFile.size / 1024 / 1024).toFixed(2)} MB
+                </p>
+              </div>
+            ) : null}
+
+            <div className="space-y-2">
+              <Label htmlFor="version-label">Version label</Label>
+              <Input
+                id="version-label"
+                value={versionLabel}
+                onChange={(event) => setVersionLabel(event.target.value)}
+                placeholder="Addendum 2, owner comments, final"
+                disabled={isUploadingVersion}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="version-notes">Notes</Label>
+              <Textarea
+                id="version-notes"
+                value={versionNotes}
+                onChange={(event) => setVersionNotes(event.target.value)}
+                placeholder="What changed in this version?"
+                disabled={isUploadingVersion}
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setVersionDialogOpen(false)}
+              disabled={isUploadingVersion}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmVersionUpload}
+              disabled={isUploadingVersion || !versionUploadFile}
+            >
+              {isUploadingVersion ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                "Upload version"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <EnvelopeWizard
         open={esignOpen}

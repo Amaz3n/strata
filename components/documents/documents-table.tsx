@@ -156,6 +156,7 @@ export interface DocumentsFileTableProps {
   onDeleteFile: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
+  onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
   onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
@@ -194,6 +195,7 @@ export function DocumentsFileTable({
   onDeleteFile,
   onViewActivity,
   onShareFile,
+  onUploadNewVersion,
   onSendForSignature,
   onSendForApproval,
   onOpenProperties,
@@ -232,7 +234,7 @@ export function DocumentsFileTable({
           </TableHead>
           <TableHead className="w-[40%] min-w-[320px]">Name</TableHead>
           <TableHead className="hidden sm:table-cell w-[128px]">Category</TableHead>
-          <TableHead className="hidden md:table-cell w-[184px]">Status</TableHead>
+          <TableHead className="hidden md:table-cell w-[184px]">Workflow</TableHead>
           <TableHead className="hidden lg:table-cell w-[128px]">Shared</TableHead>
           <TableHead className="hidden md:table-cell w-[112px]">Modified</TableHead>
           <TableHead className="hidden xl:table-cell w-[88px] text-right">Size</TableHead>
@@ -263,6 +265,7 @@ export function DocumentsFileTable({
               onDeleteFile={onDeleteFile}
               onViewActivity={onViewActivity}
               onShareFile={onShareFile}
+              onUploadNewVersion={onUploadNewVersion}
               onSendForSignature={onSendForSignature}
               onSendForApproval={onSendForApproval}
               onOpenProperties={onOpenProperties}
@@ -395,6 +398,7 @@ const FileRow = memo(function FileRow({
   onDeleteFile,
   onViewActivity,
   onShareFile,
+  onUploadNewVersion,
   onSendForSignature,
   onSendForApproval,
   onOpenProperties,
@@ -410,6 +414,7 @@ const FileRow = memo(function FileRow({
   onDeleteFile: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
+  onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
   onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
@@ -640,6 +645,10 @@ const FileRow = memo(function FileRow({
               <DropdownMenuItem onClick={() => onFileClick(file.id)}>
                 <Eye className="h-4 w-4 mr-2" />
                 Preview
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onUploadNewVersion(file.id)}>
+                <FilePlus2 className="h-4 w-4 mr-2" />
+                Upload new version...
               </DropdownMenuItem>
               {file.mime_type === "application/pdf" && (
                 <DropdownMenuItem onClick={() => onSendForSignature?.(file.id)}>

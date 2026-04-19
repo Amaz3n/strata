@@ -6,7 +6,6 @@ import {
   FileText,
   FolderClosed,
   ChevronRight,
-  Layers,
 } from "lucide-react"
 import {
   Collapsible,
@@ -17,7 +16,6 @@ import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarMenu,
-  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -25,8 +23,6 @@ import {
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
 import { listFoldersAction } from "@/app/(app)/documents/actions"
-import { listDrawingSetsAction } from "@/app/(app)/drawings/actions"
-import type { DrawingSet } from "@/app/(app)/drawings/actions"
 
 interface DocumentsSidebarNavProps {
   projectId: string
@@ -75,11 +71,9 @@ export function DocumentsSidebarNav({ projectId }: DocumentsSidebarNavProps) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const currentSetId = searchParams.get("set")
   const currentPath = searchParams.get("path") || ""
 
   const [folders, setFolders] = useState<string[]>([])
-  const [drawingSets, setDrawingSets] = useState<DrawingSet[]>([])
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set()
     try {
@@ -92,12 +86,8 @@ export function DocumentsSidebarNav({ projectId }: DocumentsSidebarNavProps) {
 
   const fetchData = useCallback(async () => {
     try {
-      const [foldersData, setsData] = await Promise.all([
-        listFoldersAction(projectId),
-        listDrawingSetsAction({ project_id: projectId }),
-      ])
+      const foldersData = await listFoldersAction(projectId)
       setFolders(foldersData)
-      setDrawingSets(setsData)
     } catch (error) {
       console.error("Failed to load sidebar nav data:", error)
     }
@@ -119,8 +109,7 @@ export function DocumentsSidebarNav({ projectId }: DocumentsSidebarNavProps) {
   const folderTree = useMemo(() => buildFolderTreeFromPaths(folders), [folders])
 
   const basePath = useMemo(() => {
-    // Extract /projects/[id]/files from pathname
-    const match = pathname.match(/^(\/projects\/[^/]+\/files)/)
+    const match = pathname.match(/^(\/projects\/[^/]+\/documents)/)
     return match?.[1] ?? pathname
   }, [pathname])
 
@@ -132,15 +121,6 @@ export function DocumentsSidebarNav({ projectId }: DocumentsSidebarNavProps) {
     (path: string) => {
       const params = new URLSearchParams()
       params.set("path", path)
-      router.push(`${basePath}?${params.toString()}`)
-    },
-    [router, basePath],
-  )
-
-  const navigateToSet = useCallback(
-    (setId: string) => {
-      const params = new URLSearchParams()
-      params.set("set", setId)
       router.push(`${basePath}?${params.toString()}`)
     },
     [router, basePath],
@@ -192,7 +172,7 @@ export function DocumentsSidebarNav({ projectId }: DocumentsSidebarNavProps) {
     }
   }, [currentPath])
 
-  const isAllFilesActive = !currentSetId && !currentPath
+  const isAllFilesActive = !currentPath
 
   return (
     <>
@@ -221,29 +201,6 @@ export function DocumentsSidebarNav({ projectId }: DocumentsSidebarNavProps) {
           ))}
         </SidebarMenu>
       </SidebarGroup>
-
-      {drawingSets.length > 0 && (
-        <SidebarGroup>
-          <SidebarGroupLabel>Drawing Sets</SidebarGroupLabel>
-          <SidebarMenu>
-            {drawingSets.map((set) => (
-              <SidebarMenuItem key={set.id}>
-                <SidebarMenuButton
-                  isActive={currentSetId === set.id}
-                  onClick={() => navigateToSet(set.id)}
-                  tooltip={set.title}
-                >
-                  <Layers />
-                  <span className="truncate">{set.title}</span>
-                </SidebarMenuButton>
-                {(set.sheet_count ?? 0) > 0 && (
-                  <SidebarMenuBadge>{set.sheet_count}</SidebarMenuBadge>
-                )}
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroup>
-      )}
     </>
   )
 }

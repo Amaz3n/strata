@@ -902,7 +902,7 @@ export async function loadClientPortalData({
       updated_at: projectRow.data.updated_at,
     },
     projectManager,
-    schedule: (scheduleItems ?? []).filter((item) => item.project_id === projectId).slice(0, 10),
+    schedule: (scheduleItems ?? []).filter((item) => item.project_id === projectId),
     photos,
     pendingChangeOrders,
     pendingSelections: selections,

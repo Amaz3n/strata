@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
-import { listDrawingSets } from "@/lib/services/drawings"
 import {
   listFilesAction,
   getFileCountsAction,
@@ -11,19 +10,18 @@ import { UnifiedDocumentsLayout } from "@/components/documents"
 
 interface ProjectFilesPageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ path?: string; set?: string }>
+  searchParams: Promise<{ path?: string }>
 }
 
 export default async function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
   const { id } = await params
   const query = await searchParams
 
-  const [project, filesResult, counts, folders, sets] = await Promise.all([
+  const [project, filesResult, counts, folders] = await Promise.all([
     getProjectAction(id),
     listFilesAction({ project_id: id, limit: 100, offset: 0 }),
     getFileCountsAction(id),
     listFoldersAction(id),
-    listDrawingSets({ project_id: id, limit: 50 }),
   ])
 
   if (!project) {
@@ -40,9 +38,8 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
           initialHasMore={filesResult.hasMore}
           initialCounts={counts}
           initialFolders={folders}
-          initialSets={sets}
+          initialSets={[]}
           initialPath={query.path}
-          initialSetId={query.set}
         />
       </div>
     </PageLayout>

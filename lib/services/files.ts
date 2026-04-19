@@ -355,7 +355,7 @@ export async function createFileRecord(input: FileInput, orgId?: string): Promis
       storage_path: parsed.storage_path,
       mime_type: parsed.mime_type,
       size_bytes: parsed.size_bytes,
-      visibility: parsed.visibility ?? "private",
+      visibility: parsed.visibility ?? "public",
       category: parsed.category,
       folder_path: resolvedFolderPath,
       description: parsed.description,
