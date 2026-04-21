@@ -9,6 +9,9 @@ import type { FileCategory, ProjectPunchItem } from "@/app/(app)/projects/[id]/a
 import type { DailyLogEntryInput, DailyLogInput } from "@/lib/validation/daily-logs"
 import { cn } from "@/lib/utils"
 
+import { useOfflineDailyLogs } from "@/lib/hooks/use-offline-daily-logs"
+import { getCoordinatesFromAddress, getCurrentWeather } from "@/lib/utils/weather"
+
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -44,14 +47,13 @@ const weatherOptions = [
   { value: "Cloudy", emoji: "☁️" },
   { value: "Light Rain", emoji: "🌧️" },
   { value: "Heavy Rain", emoji: "⛈️" },
-  { value: "Snow", emoji: "❄️" },
   { value: "Windy", emoji: "💨" },
   { value: "Hot", emoji: "🔥" },
-  { value: "Cold", emoji: "🥶" },
 ]
 
 interface QuickLogEntryProps {
   projectId: string
+  projectAddress?: string
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
@@ -105,6 +107,7 @@ function createDraftId() {
 
 export function QuickLogEntry({
   projectId,
+  projectAddress,
   scheduleItems,
   tasks,
   punchItems,
@@ -125,6 +128,30 @@ export function QuickLogEntry({
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [showDatePicker, setShowDatePicker] = useState(false)
+
+  // Offline sync hook
+  const { isOnline, pendingLogs, saveOfflineLog, syncPendingLogs, isSyncing } = useOfflineDailyLogs(projectId)
+
+  // Auto-fetch weather when opening drawer if not set
+  useEffect(() => {
+    if (!open || selectedWeather || !projectAddress || !isOnline) return
+
+    let mounted = true
+    async function fetchWeather() {
+      const coords = await getCoordinatesFromAddress(projectAddress!)
+      if (!coords || !mounted) return
+      
+      const weather = await getCurrentWeather(coords.lat, coords.lon)
+      if (weather && mounted) {
+        setSelectedWeather(weather.condition)
+        // Optionally append temperature to summary if desired
+      }
+    }
+    
+    fetchWeather()
+
+    return () => { mounted = false }
+  }, [open, projectAddress, selectedWeather, isOnline])
 
   // Detailed entries - collapsed by default
   const [showDetailedEntries, setShowDetailedEntries] = useState(false)
@@ -234,6 +261,23 @@ export function QuickLogEntry({
 
     setIsSubmitting(true)
     try {
+      if (!isOnline) {
+        await saveOfflineLog(
+          {
+            project_id: projectId,
+            date: getDateValue(),
+            summary: summary.trim(),
+            weather: selectedWeather || undefined,
+            entries,
+          },
+          selectedFiles,
+          { category: "photos" }
+        )
+        resetForm()
+        setOpen(false)
+        return
+      }
+
       let createdLog: DailyLog | null = null
 
       if (hasLogContent || selectedFiles.length > 0) {
@@ -360,6 +404,25 @@ export function QuickLogEntry({
         )}
       </DrawerTrigger>
       <DrawerContent className="mx-auto max-w-lg outline-none flex flex-col max-h-[90vh]">
+        {!isOnline && (
+          <div className="bg-yellow-500/10 border-b border-yellow-500/20 text-yellow-700 dark:text-yellow-400 px-4 py-2 text-xs font-medium flex items-center justify-center">
+            You are offline. Logs will be saved to your device and synced later.
+          </div>
+        )}
+        {isOnline && pendingLogs.length > 0 && (
+          <div className="bg-primary/10 border-b border-primary/20 text-primary px-4 py-2 flex items-center justify-between text-xs font-medium">
+            <span>You have {pendingLogs.length} offline log{pendingLogs.length !== 1 ? 's' : ''} waiting to sync.</span>
+            <Button 
+              size="sm" 
+              variant="default" 
+              className="h-6 px-2 text-[10px]" 
+              disabled={isSyncing} 
+              onClick={() => syncPendingLogs(onCreateLog, onUploadFiles)}
+            >
+              {isSyncing ? "Syncing..." : "Sync Now"}
+            </Button>
+          </div>
+        )}
         {/* Scrollable content area */}
         <div className="flex-1 overflow-y-auto p-4 pb-4">
           {/* Header with date selector */}

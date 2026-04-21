@@ -31,7 +31,6 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import {
-  CalendarDays,
   Plus,
   MoreHorizontal,
   Camera,
@@ -44,6 +43,8 @@ import {
   Clock,
   TrendingUp,
   AlertTriangle,
+  Search,
+  SlidersHorizontal,
 } from "@/components/icons"
 import { DateRange } from "react-day-picker"
 
@@ -53,10 +54,8 @@ const weatherOptions = [
   { value: "Cloudy", emoji: "☁️" },
   { value: "Light Rain", emoji: "🌧️" },
   { value: "Heavy Rain", emoji: "⛈️" },
-  { value: "Snow", emoji: "❄️" },
   { value: "Windy", emoji: "💨" },
   { value: "Hot", emoji: "🌡️" },
-  { value: "Cold", emoji: "🥶" },
 ]
 
 function getWeatherEmoji(weather: string | undefined): string {
@@ -536,6 +535,7 @@ function PhotoStrip({ photos, onImageClick }: PhotoStripProps) {
 
 interface DailyLogsTabProps {
   projectId: string
+  projectAddress?: string
   dailyLogs: DailyLog[]
   files: EnhancedFileMetadata[]
   scheduleItems: ScheduleItem[]
@@ -555,8 +555,124 @@ interface DailyLogsTabProps {
   onDownloadFile: (file: EnhancedFileMetadata) => Promise<void>
 }
 
+interface DailyLogsFiltersPopoverContentProps {
+  feedFilter: "all" | "logs" | "photos"
+  setFeedFilter: (value: "all" | "logs" | "photos") => void
+  logDateRange: DateRange | undefined
+  setLogDateRange: (range: DateRange | undefined) => void
+  searchTerm: string
+  setSearchTerm: (value: string) => void
+  today: Date
+}
+
+function DailyLogsFiltersPopoverContent({
+  feedFilter,
+  setFeedFilter,
+  logDateRange,
+  setLogDateRange,
+  searchTerm,
+  setSearchTerm,
+  today,
+}: DailyLogsFiltersPopoverContentProps) {
+  const hasActiveFilters =
+    feedFilter !== "all" || Boolean(logDateRange?.from) || searchTerm.trim().length > 0
+
+  return (
+    <>
+      <div className="p-3 space-y-3">
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1.5">
+            Type
+          </div>
+          <div className="flex items-center p-0.5 bg-muted rounded-lg">
+            {(
+              [
+                { key: "all", label: "All" },
+                { key: "logs", label: "Logs" },
+                { key: "photos", label: "Photos" },
+              ] as const
+            ).map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setFeedFilter(key)}
+                className={cn(
+                  "flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-all",
+                  feedFilter === key
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1.5">
+            Date
+          </div>
+          <div className="flex flex-wrap gap-1">
+            <Button
+              variant={!logDateRange?.from ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setLogDateRange(undefined)}
+            >
+              All Time
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setLogDateRange({ from: addDays(today, -7), to: today })}
+            >
+              Last 7 Days
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setLogDateRange({ from: addDays(today, -30), to: today })}
+            >
+              Last 30 Days
+            </Button>
+          </div>
+        </div>
+
+        <Calendar
+          mode="range"
+          defaultMonth={logDateRange?.from}
+          selected={logDateRange}
+          onSelect={setLogDateRange}
+          numberOfMonths={1}
+        />
+      </div>
+
+      {hasActiveFilters && (
+        <div className="border-t p-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full h-8 text-xs"
+            onClick={() => {
+              setFeedFilter("all")
+              setLogDateRange(undefined)
+              setSearchTerm("")
+            }}
+          >
+            Clear all filters
+          </Button>
+        </div>
+      )}
+    </>
+  )
+}
+
 export function DailyLogsTab({
   projectId,
+  projectAddress,
   dailyLogs,
   files,
   scheduleItems,
@@ -609,7 +725,7 @@ export function DailyLogsTab({
   )
 
   // Filter and group by date
-  const { daySummaries, totalItems } = useMemo(() => {
+  const { daySummaries } = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
 
     // Filter logs
@@ -689,7 +805,6 @@ export function DailyLogsTab({
 
     return {
       daySummaries: summaries,
-      totalItems: filteredLogs.length + filteredPhotos.length,
     }
   }, [dailyLogs, imageFiles, feedFilter, logDateRange, searchTerm, scheduleById, tasksById, punchById])
 
@@ -702,131 +817,96 @@ export function DailyLogsTab({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Toolbar */}
-      <div className="flex-shrink-0 flex items-center justify-between gap-4 pb-4 border-b mb-4">
-        <div className="flex items-center gap-3">
-          {/* Filter Pills */}
-          <div className="flex items-center p-0.5 bg-muted rounded-lg">
-            {([
-              { key: 'all', label: 'All' },
-              { key: 'logs', label: 'Logs' },
-              { key: 'photos', label: 'Photos' },
-            ] as const).map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => setFeedFilter(key)}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-medium rounded-md transition-all",
-                  feedFilter === key
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Date Filter */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant={logDateRange?.from ? "secondary" : "ghost"}
-                size="sm"
-                className="gap-2"
-              >
-                <CalendarDays className="h-4 w-4" />
-                {logDateRange?.from ? (
-                  logDateRange.to ? (
-                    <span className="text-xs">
-                      {format(logDateRange.from, "MMM d")} – {format(logDateRange.to, "MMM d")}
-                    </span>
-                  ) : (
-                    format(logDateRange.from, "MMM d, yyyy")
-                  )
-                ) : (
-                  <span className="hidden sm:inline">Date Range</span>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="start">
-              <div className="p-3 border-b">
-                <div className="flex flex-wrap gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setLogDateRange(undefined)}
-                  >
-                    All Time
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setLogDateRange({ from: addDays(today, -7), to: today })}
-                  >
-                    Last 7 Days
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setLogDateRange({ from: addDays(today, -30), to: today })}
-                  >
-                    Last 30 Days
-                  </Button>
-                </div>
-              </div>
-              <Calendar
-                initialFocus
-                mode="range"
-                defaultMonth={logDateRange?.from}
-                selected={logDateRange}
-                onSelect={setLogDateRange}
-                numberOfMonths={2}
-              />
-            </PopoverContent>
-          </Popover>
-
-          {hasActiveFilters && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setFeedFilter('all')
-                setLogDateRange(undefined)
-                setSearchTerm("")
-              }}
-              className="h-8 px-2 text-xs text-muted-foreground"
-            >
-              Clear
-            </Button>
-          )}
+      {/* Mobile toolbar — single compact row */}
+      <div className="flex-shrink-0 flex sm:hidden items-center gap-2 pb-3 border-b mb-4">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Search"
+            className="h-9 pl-7"
+          />
         </div>
 
-        {/* Right side */}
-        <div className="flex items-center gap-3">
-          <div className="hidden md:flex">
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              className="relative h-9 w-9 flex-shrink-0"
+              aria-label="Filters"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              {hasActiveFilters && (
+                <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
+              )}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-[280px] p-0">
+            <DailyLogsFiltersPopoverContent
+              feedFilter={feedFilter}
+              setFeedFilter={setFeedFilter}
+              logDateRange={logDateRange}
+              setLogDateRange={setLogDateRange}
+              searchTerm={searchTerm}
+              setSearchTerm={setSearchTerm}
+              today={today}
+            />
+          </PopoverContent>
+        </Popover>
+      </div>
+
+      {/* Desktop toolbar */}
+      <div className="flex-shrink-0 hidden sm:flex items-center justify-between gap-4 pb-4 border-b mb-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="relative min-w-0 max-w-md flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               placeholder="Search logs..."
-              className="h-8 w-[200px]"
+              className="h-9 pl-7"
             />
           </div>
-          <span className="text-xs text-muted-foreground hidden sm:inline tabular-nums">
-            {totalItems} {totalItems === 1 ? "item" : "items"}
-          </span>
-          <QuickLogEntry
-            projectId={projectId}
-            scheduleItems={scheduleItems}
-            tasks={tasks}
-            punchItems={punchItems}
-            onCreateLog={onCreateLog}
-            onUploadFiles={onUploadFiles}
-          />
+
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                className="relative h-9 w-9 flex-shrink-0"
+                aria-label="Filters"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                {hasActiveFilters && (
+                  <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[280px] p-0">
+              <DailyLogsFiltersPopoverContent
+                feedFilter={feedFilter}
+                setFeedFilter={setFeedFilter}
+                logDateRange={logDateRange}
+                setLogDateRange={setLogDateRange}
+                searchTerm={searchTerm}
+                setSearchTerm={setSearchTerm}
+                today={today}
+              />
+            </PopoverContent>
+          </Popover>
         </div>
+
+        <QuickLogEntry
+          projectId={projectId}
+          projectAddress={projectAddress}
+          scheduleItems={scheduleItems}
+          tasks={tasks}
+          punchItems={punchItems}
+          onCreateLog={onCreateLog}
+          onUploadFiles={onUploadFiles}
+        />
       </div>
 
       {/* Timeline Feed */}
@@ -842,6 +922,7 @@ export function DailyLogsTab({
             </p>
             <QuickLogEntry
               projectId={projectId}
+              projectAddress={projectAddress}
               scheduleItems={scheduleItems}
               tasks={tasks}
               punchItems={punchItems}
@@ -907,6 +988,28 @@ export function DailyLogsTab({
             })}
           </div>
         )}
+      </div>
+
+      {/* Mobile Floating Action Button */}
+      <div className="sm:hidden fixed bottom-6 right-4 z-20">
+        <QuickLogEntry
+          projectId={projectId}
+          projectAddress={projectAddress}
+          scheduleItems={scheduleItems}
+          tasks={tasks}
+          punchItems={punchItems}
+          onCreateLog={onCreateLog}
+          onUploadFiles={onUploadFiles}
+          trigger={
+            <Button
+              size="icon"
+              className="h-14 w-14 rounded-md shadow-lg shadow-primary/25"
+              aria-label="New daily log"
+            >
+              <Plus className="h-6 w-6" />
+            </Button>
+          }
+        />
       </div>
 
       {/* Image Viewer */}

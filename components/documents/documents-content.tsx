@@ -14,7 +14,9 @@ interface DocumentsContentProps {
   onUploadClick: () => void
   onDropOnFolder: (path: string) => void
   selectedFileIds: Set<string>
+  selectedFolderPaths: Set<string>
   onFileSelectionChange: (fileId: string, selected: boolean) => void
+  onFolderSelectionChange: (path: string, selected: boolean) => void
   onSelectAllVisibleFiles: (fileIds: string[], selected: boolean) => void
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
@@ -36,7 +38,9 @@ export function DocumentsContent({
   onUploadClick,
   onDropOnFolder,
   selectedFileIds,
+  selectedFolderPaths,
   onFileSelectionChange,
+  onFolderSelectionChange,
   onSelectAllVisibleFiles,
   onRenameFile,
   onMoveFile,
@@ -204,10 +208,12 @@ export function DocumentsContent({
           items={documentItems}
           isLoading={isLoading}
           selectedFileIds={selectedFileIds}
+          selectedFolderPaths={selectedFolderPaths}
           allVisibleSelected={allVisibleSelected}
           visibleFileIds={visibleFileIds}
           onSelectAllVisibleFiles={onSelectAllVisibleFiles}
           onFileSelectionChange={onFileSelectionChange}
+          onFolderSelectionChange={onFolderSelectionChange}
           onFileClick={onFileClick}
           onFolderClick={onFolderClick}
           onUploadClick={onUploadClick}

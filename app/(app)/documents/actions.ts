@@ -46,10 +46,18 @@ import type { FileVersion } from "@/lib/services/file-versions"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { listFileAccessEvents, type FileAccessEvent } from "@/lib/services/file-access-events"
+import {
+  createFileShareLink,
+  listFileShareLinks,
+  revokeFileShareLink,
+  type CreateFileShareLinkInput,
+  type FileShareLink,
+} from "@/lib/services/file-share-links"
 
 // Re-export types
 export type { FileRecord, FileWithUrls, FileListFilters, FileUpdate, FileCategory, FileLinkWithFile, FileVersion, FileLinkSummary }
 export type { FileAccessEvent }
+export type { FileShareLink, CreateFileShareLinkInput }
 export type { ProjectFolderPermissions, FileTimelineEvent } from "@/lib/services/files"
 
 /**
@@ -160,6 +168,34 @@ export async function deleteFolderAction(
   await deleteEmptyProjectFolder(projectId, folderPath)
   revalidatePath("/documents")
   revalidatePath(`/projects/${projectId}`)
+}
+
+/**
+ * Create a public share link for a file.
+ */
+export async function createFileShareLinkAction(
+  input: CreateFileShareLinkInput,
+): Promise<FileShareLink> {
+  const result = await createFileShareLink(input)
+  revalidatePath("/documents")
+  return result
+}
+
+/**
+ * List share links for a file.
+ */
+export async function listFileShareLinksAction(
+  fileId: string,
+): Promise<FileShareLink[]> {
+  return listFileShareLinks(fileId)
+}
+
+/**
+ * Revoke a share link.
+ */
+export async function revokeFileShareLinkAction(linkId: string): Promise<void> {
+  await revokeFileShareLink(linkId)
+  revalidatePath("/documents")
 }
 
 /**

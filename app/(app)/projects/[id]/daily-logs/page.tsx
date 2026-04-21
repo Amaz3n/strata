@@ -39,6 +39,7 @@ export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsP
       <div className="space-y-6">
         <ProjectDailyLogsClient
           projectId={project.id}
+          projectAddress={project.address ?? undefined}
           initialDailyLogs={dailyLogs}
           initialFiles={files}
           scheduleItems={scheduleItems}

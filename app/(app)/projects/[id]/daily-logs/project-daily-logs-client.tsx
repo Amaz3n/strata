@@ -14,6 +14,7 @@ import {
 
 interface ProjectDailyLogsClientProps {
   projectId: string
+  projectAddress?: string
   initialDailyLogs: DailyLog[]
   initialFiles: EnhancedFileMetadata[]
   scheduleItems: ScheduleItem[]
@@ -24,6 +25,7 @@ interface ProjectDailyLogsClientProps {
 
 export function ProjectDailyLogsClient({
   projectId,
+  projectAddress,
   initialDailyLogs,
   initialFiles,
   scheduleItems,
@@ -71,6 +73,7 @@ export function ProjectDailyLogsClient({
   return (
     <DailyLogsTab
       projectId={projectId}
+      projectAddress={projectAddress}
       dailyLogs={dailyLogs}
       files={files}
       scheduleItems={scheduleItems}

@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { FilePlus2, Loader2 } from "lucide-react";
+import { Check, Copy, FilePlus2, FolderClosed, Link2, Loader2, Search, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { usePageTitle } from "@/components/layout/page-title-context";
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
 import { FileViewer } from "@/components/files/file-viewer";
 import { DrawingViewer } from "@/components/drawings/drawing-viewer";
@@ -12,7 +14,15 @@ import { CreateFromDrawingDialog } from "@/components/drawings/create-from-drawi
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
@@ -33,16 +43,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DocumentsProvider, useDocuments } from "./documents-context";
+import { DocumentsExplorer } from "./documents-explorer";
 import { DocumentsToolbar } from "./documents-toolbar";
 import { DocumentsContent } from "./documents-content";
 import { SheetsContent } from "./sheets-content";
 import { FilePropertiesPanel } from "./file-properties-panel";
-import { FileTimelineSheet } from "./file-timeline-sheet";
 import { UploadDialog } from "./upload-dialog";
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
 import type { UnifiedDocumentsLayoutProps } from "./types";
 import type { FileWithDetails } from "@/components/files/types";
 import {
+  getFileAction,
   getFileDownloadUrlAction,
   listFileVersionsAction,
   uploadFileVersionAction,
@@ -58,7 +69,11 @@ import {
   bulkMoveFilesAction,
   bulkDeleteFilesAction,
   listFileTimelineAction,
+  createFileShareLinkAction,
+  listFileShareLinksAction,
+  revokeFileShareLinkAction,
 } from "@/app/(app)/documents/actions";
+import type { FileShareLink } from "@/app/(app)/documents/actions";
 import type {
   FileVersion,
   FileWithUrls,
@@ -127,6 +142,13 @@ function normalizeFolderPath(path: string): string | null {
 }
 
 const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS);
+const EXPLORER_OPEN_STORAGE_KEY = "documents-explorer-open";
+function shareSummary(withClients: boolean, withSubs: boolean): string {
+  if (withClients && withSubs) return "Visible to your team, clients, and subcontractors.";
+  if (withClients) return "Visible to your team and clients.";
+  if (withSubs) return "Visible to your team and subcontractors.";
+  return "Visible to your internal team only.";
+}
 
 export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
   return (
@@ -148,10 +170,12 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
 
 function UnifiedDocumentsLayoutInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const ENABLE_TILES_AUTH =
     process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true";
   const {
     projectId,
+    projectName,
     files,
     folders,
     folderPermissions,
@@ -163,6 +187,9 @@ function UnifiedDocumentsLayoutInner() {
     refreshFolderPermissions,
     navigateToDrawingSet,
   } = useDocuments();
+  const { setBreadcrumbs } = usePageTitle();
+  const requestedFileId = searchParams.get("fileId");
+  const highlightedFileId = searchParams.get("highlight");
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const dragCounterRef = useRef(0);
@@ -196,6 +223,9 @@ function UnifiedDocumentsLayoutInner() {
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(
     new Set(),
   );
+  const [selectedFolderPaths, setSelectedFolderPaths] = useState<Set<string>>(
+    new Set(),
+  );
   const [propertiesFileId, setPropertiesFileId] = useState<string | null>(null);
   const [isDownloadingSelected, setIsDownloadingSelected] = useState(false);
   const [draggedFileId, setDraggedFileId] = useState<string | null>(null);
@@ -215,9 +245,18 @@ function UnifiedDocumentsLayoutInner() {
   const [shareWithClients, setShareWithClients] = useState(false);
   const [shareWithSubs, setShareWithSubs] = useState(false);
   const [isSavingShare, setIsSavingShare] = useState(false);
+  const [shareLinks, setShareLinks] = useState<FileShareLink[]>([]);
+  const [shareLinksLoading, setShareLinksLoading] = useState(false);
+  const [shareLinkExpiry, setShareLinkExpiry] = useState<"7d" | "30d" | "never">("30d");
+  const [shareLinkAllowDownload, setShareLinkAllowDownload] = useState(true);
+  const [shareLinkLabel, setShareLinkLabel] = useState("");
+  const [isCreatingShareLink, setIsCreatingShareLink] = useState(false);
+  const [revokingShareLinkId, setRevokingShareLinkId] = useState<string | null>(null);
+  const [copiedShareLinkId, setCopiedShareLinkId] = useState<string | null>(null);
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [moveTargetFolder, setMoveTargetFolder] = useState("");
+  const [moveSearchQuery, setMoveSearchQuery] = useState("");
   const [moveFileIds, setMoveFileIds] = useState<string[]>([]);
   const [isMoving, setIsMoving] = useState(false);
 
@@ -238,12 +277,11 @@ function UnifiedDocumentsLayoutInner() {
   const [folderSharePath, setFolderSharePath] = useState("");
   const [folderShareWithClients, setFolderShareWithClients] = useState(false);
   const [folderShareWithSubs, setFolderShareWithSubs] = useState(false);
+  const [folderShareApplyToExisting, setFolderShareApplyToExisting] = useState(false);
   const [isSavingFolderShare, setIsSavingFolderShare] = useState(false);
 
-  const [timelineOpen, setTimelineOpen] = useState(false);
-  const [timelineFile, setTimelineFile] = useState<FileWithUrls | null>(null);
-  const [timelineEvents, setTimelineEvents] = useState<FileTimelineEvent[]>([]);
-  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [propertiesTimelineEvents, setPropertiesTimelineEvents] = useState<FileTimelineEvent[]>([]);
+  const [propertiesTimelineLoading, setPropertiesTimelineLoading] = useState(false);
 
   const [esignOpen, setEsignOpen] = useState(false);
   const [esignFile, setEsignFile] = useState<FileWithUrls | null>(null);
@@ -269,9 +307,12 @@ function UnifiedDocumentsLayoutInner() {
   } | null>(null);
   const drawingViewerRequestIdRef = useRef(0);
   const tilesCookieRequestedRef = useRef(false);
+  const handledQueryRef = useRef("");
+  const [explorerOpen, setExplorerOpen] = useState(false);
 
   useEffect(() => {
     setSelectedFileIds(new Set());
+    setSelectedFolderPaths(new Set());
   }, [currentPath, selectedDrawingSetId]);
 
   useEffect(() => {
@@ -279,6 +320,22 @@ function UnifiedDocumentsLayoutInner() {
       lastNotifiedViewerFileIdRef.current = null;
     }
   }, [viewerOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(EXPLORER_OPEN_STORAGE_KEY);
+    if (saved === "true") {
+      setExplorerOpen(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      EXPLORER_OPEN_STORAGE_KEY,
+      explorerOpen ? "true" : "false",
+    );
+  }, [explorerOpen]);
 
   useEffect(() => {
     if (!ENABLE_TILES_AUTH || tilesCookieRequestedRef.current) return;
@@ -304,6 +361,11 @@ function UnifiedDocumentsLayoutInner() {
     }
     return Array.from(allFolderPaths).sort((a, b) => a.localeCompare(b));
   }, [files, folders]);
+  const filteredMoveFolderOptions = useMemo(() => {
+    const query = moveSearchQuery.trim().toLowerCase();
+    if (!query) return folderOptions;
+    return folderOptions.filter((folder) => folder.toLowerCase().includes(query));
+  }, [folderOptions, moveSearchQuery]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -393,6 +455,92 @@ function UnifiedDocumentsLayoutInner() {
     },
     [files],
   );
+
+  const resolveFileForDeepLink = useCallback(
+    async (fileId: string): Promise<FileWithUrls | null> => {
+      const existing = files.find((file) => file.id === fileId);
+      if (existing) return existing;
+      return await getFileAction(fileId);
+    },
+    [files],
+  );
+
+  const openPreviewFromDeepLink = useCallback(
+    async (fileId: string) => {
+      const existing = files.find((file) => file.id === fileId);
+      if (existing) {
+        await handleFileClick(fileId);
+        return;
+      }
+
+      const file = await getFileAction(fileId);
+      if (!file) return;
+
+      const downloadUrl = await getFileDownloadUrlAction(file.id);
+      setViewerFile({
+        ...file,
+        category: file.category as any,
+        download_url: downloadUrl,
+        thumbnail_url: file.mime_type?.startsWith("image/")
+          ? downloadUrl
+          : undefined,
+      });
+      setViewerOpen(true);
+
+      const versions = await listFileVersionsAction(file.id);
+      setVersionsByFile((prev) => ({
+        ...prev,
+        [file.id]: versions.map(mapVersion),
+      }));
+    },
+    [files, handleFileClick],
+  );
+
+  const focusFileFromDeepLink = useCallback(
+    async (fileId: string) => {
+      const file = await resolveFileForDeepLink(fileId);
+      if (!file) return;
+
+      setCurrentPath(file.folder_path ?? "");
+      setPropertiesFileId(file.id);
+    },
+    [resolveFileForDeepLink, setCurrentPath],
+  );
+
+  useEffect(() => {
+    const queryKey = `${requestedFileId ?? ""}|${highlightedFileId ?? ""}`;
+    if (queryKey === "|") {
+      handledQueryRef.current = "";
+      return;
+    }
+    if (handledQueryRef.current === queryKey) {
+      return;
+    }
+
+    handledQueryRef.current = queryKey;
+
+    const run = async () => {
+      try {
+        if (requestedFileId) {
+          await openPreviewFromDeepLink(requestedFileId);
+          return;
+        }
+
+        if (highlightedFileId) {
+          await focusFileFromDeepLink(highlightedFileId);
+        }
+      } catch (error) {
+        console.error("Failed to resolve documents deep link:", error);
+      }
+    };
+
+    void run();
+  }, [
+    requestedFileId,
+    highlightedFileId,
+    openPreviewFromDeepLink,
+    focusFileFromDeepLink,
+  ]);
 
   const handleFolderClick = useCallback(
     (path: string) => {
@@ -533,6 +681,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleFileSelectionChange = useCallback(
     (fileId: string, selected: boolean) => {
+      setSelectedFolderPaths(new Set());
       setSelectedFileIds((prev) => {
         const next = new Set(prev);
         if (selected) {
@@ -546,8 +695,23 @@ function UnifiedDocumentsLayoutInner() {
     [],
   );
 
+  const handleFolderSelectionChange = useCallback(
+    (path: string, selected: boolean) => {
+      setSelectedFileIds(new Set());
+      setSelectedFolderPaths((prev) => {
+        const next = new Set<string>();
+        if (selected) {
+          next.add(path);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
   const handleSelectAllVisibleFiles = useCallback(
     (fileIds: string[], selected: boolean) => {
+      setSelectedFolderPaths(new Set());
       setSelectedFileIds((prev) => {
         const next = new Set(prev);
         for (const id of fileIds) {
@@ -581,7 +745,18 @@ function UnifiedDocumentsLayoutInner() {
       setShareFile(file);
       setShareWithClients(Boolean(file.share_with_clients));
       setShareWithSubs(Boolean(file.share_with_subs));
+      setShareLinks([]);
+      setShareLinkLabel("");
+      setShareLinkExpiry("30d");
+      setShareLinkAllowDownload(true);
+      setShareLinksLoading(true);
       setShareDialogOpen(true);
+      listFileShareLinksAction(file.id)
+        .then((links) => setShareLinks(links))
+        .catch((err) => {
+          console.error("Failed to load share links", err);
+        })
+        .finally(() => setShareLinksLoading(false));
     },
     [files],
   );
@@ -594,6 +769,7 @@ function UnifiedDocumentsLayoutInner() {
         setMoveFileIds(Array.from(selectedFileIds));
       }
       setMoveTargetFolder(currentPath || "");
+      setMoveSearchQuery("");
       setMoveDialogOpen(true);
     },
     [selectedFileIds, currentPath],
@@ -688,25 +864,9 @@ function UnifiedDocumentsLayoutInner() {
     setDraggedFileId(null);
   }, [resolveDraggedFileIds, moveFilesToFolder]);
 
-  const openTimeline = useCallback(
-    async (fileId: string) => {
-      const file = files.find((item) => item.id === fileId);
-      if (!file) return;
-      setTimelineFile(file);
-      setTimelineOpen(true);
-      setTimelineLoading(true);
-      try {
-        const events = await listFileTimelineAction(fileId);
-        setTimelineEvents(events);
-      } catch (error) {
-        console.error("Failed to load timeline:", error);
-        toast.error("Failed to load timeline");
-        setTimelineEvents([]);
-      } finally {
-        setTimelineLoading(false);
-      }
-    },
-    [files],
+  const selectedFolderPath = useMemo(
+    () => Array.from(selectedFolderPaths)[0] ?? null,
+    [selectedFolderPaths],
   );
 
   const closeDrawingViewer = useCallback(() => {
@@ -1026,6 +1186,76 @@ function UnifiedDocumentsLayoutInner() {
     }
   }, [refreshFiles, shareFile, shareWithClients, shareWithSubs]);
 
+  const handleCreateShareLink = useCallback(async () => {
+    if (!shareFile) return;
+    setIsCreatingShareLink(true);
+    try {
+      const now = new Date();
+      const expires_at =
+        shareLinkExpiry === "never"
+          ? null
+          : new Date(
+              now.getTime() +
+                (shareLinkExpiry === "7d" ? 7 : 30) * 24 * 60 * 60 * 1000,
+            ).toISOString();
+      const link = await createFileShareLinkAction({
+        file_id: shareFile.id,
+        label: shareLinkLabel.trim() || null,
+        expires_at,
+        allow_download: shareLinkAllowDownload,
+      });
+      setShareLinks((prev) => [link, ...prev]);
+      setShareLinkLabel("");
+      const origin =
+        typeof window !== "undefined" ? window.location.origin : "";
+      try {
+        await navigator.clipboard.writeText(`${origin}/f/${link.token}`);
+        setCopiedShareLinkId(link.id);
+        setTimeout(() => setCopiedShareLinkId((prev) => (prev === link.id ? null : prev)), 2000);
+        toast.success("Link created and copied");
+      } catch {
+        toast.success("Link created");
+      }
+    } catch (error: any) {
+      console.error("Failed to create share link", error);
+      toast.error(error?.message || "Failed to create share link");
+    } finally {
+      setIsCreatingShareLink(false);
+    }
+  }, [shareFile, shareLinkExpiry, shareLinkAllowDownload, shareLinkLabel]);
+
+  const handleCopyShareLink = useCallback(async (link: FileShareLink) => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    try {
+      await navigator.clipboard.writeText(`${origin}/f/${link.token}`);
+      setCopiedShareLinkId(link.id);
+      setTimeout(() => setCopiedShareLinkId((prev) => (prev === link.id ? null : prev)), 2000);
+    } catch (err) {
+      console.error("Copy failed", err);
+      toast.error("Copy failed");
+    }
+  }, []);
+
+  const handleRevokeShareLink = useCallback(async (link: FileShareLink) => {
+    setRevokingShareLinkId(link.id);
+    try {
+      await revokeFileShareLinkAction(link.id);
+      setShareLinks((prev) =>
+        prev.map((item) =>
+          item.id === link.id
+            ? { ...item, revoked_at: new Date().toISOString(), is_active: false }
+            : item,
+        ),
+      );
+      toast.success("Link revoked");
+    } catch (error: any) {
+      console.error("Failed to revoke share link", error);
+      toast.error(error?.message || "Failed to revoke link");
+    } finally {
+      setRevokingShareLinkId(null);
+    }
+  }, []);
+
   const handleMoveConfirm = useCallback(async () => {
     if (moveFileIds.length === 0) return;
 
@@ -1278,6 +1508,7 @@ function UnifiedDocumentsLayoutInner() {
     setFolderSharePath(path);
     setFolderShareWithClients(perms?.share_with_clients ?? false);
     setFolderShareWithSubs(perms?.share_with_subs ?? false);
+    setFolderShareApplyToExisting(false);
     setFolderShareOpen(true);
   }, [folderPermissions]);
 
@@ -1372,12 +1603,71 @@ function UnifiedDocumentsLayoutInner() {
     if (!propertiesFileId) return null;
     return files.find((file) => file.id === propertiesFileId) ?? null;
   }, [files, propertiesFileId]);
+  const activeBreadcrumbPath = propertiesFile?.folder_path ?? currentPath;
 
   useEffect(() => {
     if (propertiesFileId && !propertiesFile) {
       setPropertiesFileId(null);
     }
   }, [propertiesFile, propertiesFileId]);
+
+  const refreshPropertiesTimeline = useCallback(
+    async (fileId: string) => {
+      setPropertiesTimelineLoading(true);
+      try {
+        const events = await listFileTimelineAction(fileId);
+        setPropertiesTimelineEvents(events);
+      } catch (error) {
+        console.error("Failed to load properties timeline:", error);
+        setPropertiesTimelineEvents([]);
+      } finally {
+        setPropertiesTimelineLoading(false);
+      }
+    },
+    [],
+  );
+
+  const openTimeline = useCallback(
+    async (fileId: string) => {
+      setPropertiesFileId(fileId);
+      await refreshPropertiesTimeline(fileId);
+    },
+    [refreshPropertiesTimeline],
+  );
+
+  useEffect(() => {
+    if (!propertiesFile) {
+      setPropertiesTimelineEvents([]);
+      setPropertiesTimelineLoading(false);
+      return;
+    }
+
+    void refreshPropertiesTimeline(propertiesFile.id);
+  }, [propertiesFile, refreshPropertiesTimeline]);
+
+  useEffect(() => {
+    const breadcrumbs: Array<{ label: string; href?: string }> = [
+      { label: "Documents", href: `/projects/${projectId}/documents` },
+    ];
+
+    const segments = activeBreadcrumbPath
+      ? activeBreadcrumbPath.split("/").filter(Boolean)
+      : [];
+
+    segments.forEach((segment, index) => {
+      const path = `/${segments.slice(0, index + 1).join("/")}`;
+      breadcrumbs.push({
+        label: segment,
+        href: `/projects/${projectId}/documents?path=${encodeURIComponent(path)}`,
+      });
+    });
+
+    if (propertiesFile) {
+      breadcrumbs.push({ label: propertiesFile.file_name });
+    }
+
+    setBreadcrumbs(breadcrumbs);
+  }, [activeBreadcrumbPath, projectId, propertiesFile, setBreadcrumbs]);
 
   const handleSendForSignature = useCallback(
     (fileId: string) => {
@@ -1423,14 +1713,16 @@ function UnifiedDocumentsLayoutInner() {
 
     // Otherwise show files/folders
     return (
-      <DocumentsContent
-        onFileClick={handleFileClick}
-        onFolderClick={handleFolderClick}
-        onUploadClick={handleUploadClick}
-        onDropOnFolder={handleDropOnFolder}
-        selectedFileIds={selectedFileIds}
-        onFileSelectionChange={handleFileSelectionChange}
-        onSelectAllVisibleFiles={handleSelectAllVisibleFiles}
+        <DocumentsContent
+          onFileClick={handleFileClick}
+          onFolderClick={handleFolderClick}
+          onUploadClick={handleUploadClick}
+          onDropOnFolder={handleDropOnFolder}
+          selectedFileIds={selectedFileIds}
+          selectedFolderPaths={selectedFolderPaths}
+          onFileSelectionChange={handleFileSelectionChange}
+          onFolderSelectionChange={handleFolderSelectionChange}
+          onSelectAllVisibleFiles={handleSelectAllVisibleFiles}
         onRenameFile={openRenameDialog}
         onMoveFile={(fileId) => openMoveDialog(fileId)}
         onDeleteFile={(fileId) => openDeleteDialog(fileId)}
@@ -1465,18 +1757,58 @@ function UnifiedDocumentsLayoutInner() {
             setCreateFolderDialogOpen(true);
           }}
           selectedCount={selectedFileIds.size}
+          selectedFolderCount={selectedFolderPaths.size}
           onDownloadSelected={handleDownloadSelected}
           onMoveSelected={() => openMoveDialog()}
           onDeleteSelected={() => openDeleteDialog()}
-          onClearSelection={() => setSelectedFileIds(new Set())}
+          onClearSelection={() => {
+            setSelectedFileIds(new Set());
+            setSelectedFolderPaths(new Set());
+          }}
+          onOpenSelectedFolder={() => {
+            if (selectedFolderPath) {
+              setCurrentPath(selectedFolderPath);
+            }
+          }}
+          onRenameSelectedFolder={() => {
+            if (selectedFolderPath) {
+              handleRenameFolder(selectedFolderPath);
+            }
+          }}
+          onShareSelectedFolder={() => {
+            if (selectedFolderPath) {
+              handleShareFolder(selectedFolderPath);
+            }
+          }}
+          onDeleteSelectedFolder={() => {
+            if (selectedFolderPath) {
+              handleDeleteFolder(selectedFolderPath);
+            }
+          }}
           onDropToFolderPath={handleDropOnFolder}
           onDropToRoot={handleDropToRoot}
           isDraggingFiles={isDraggingDocumentFile}
           isDownloadingSelected={isDownloadingSelected}
+          explorerOpen={explorerOpen}
+          onToggleExplorer={() => setExplorerOpen((open) => !open)}
+          activeFile={propertiesFile}
         />
       </div>
 
       <div className="relative z-10 flex min-h-0 flex-1">
+        <aside
+          className={cn(
+            "hidden shrink-0 overflow-hidden border-r bg-background transition-[width,opacity] duration-200 ease-out lg:block",
+            explorerOpen ? "w-[280px] opacity-100" : "w-0 border-r-0 opacity-0",
+          )}
+        >
+          <DocumentsExplorer
+            className="h-full"
+            onRenameFolder={handleRenameFolder}
+            onDeleteFolder={handleDeleteFolder}
+            onShareFolder={handleShareFolder}
+          />
+        </aside>
         <ScrollArea className="h-full flex-1">
           {renderContent()}
         </ScrollArea>
@@ -1494,7 +1826,10 @@ function UnifiedDocumentsLayoutInner() {
               onRename={openRenameDialog}
               onMove={(fileId) => openMoveDialog(fileId)}
               onShare={openShareDialog}
-              onTimeline={openTimeline}
+              onUploadNewVersion={openVersionUploadDialog}
+              timelineEvents={propertiesTimelineEvents}
+              timelineLoading={propertiesTimelineLoading}
+              onRefreshTimeline={refreshPropertiesTimeline}
               onSendForSignature={handleSendForSignature}
               onSendForApproval={handleSendForApproval}
               onDelete={(fileId) => openDeleteDialog(fileId)}
@@ -1522,23 +1857,44 @@ function UnifiedDocumentsLayoutInner() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Upload New Version</DialogTitle>
             <DialogDescription>
-              Replace the current file while preserving the previous version history.
+              Replace the current file while preserving version history, approvals, and sharing.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-2">
+          <div className="space-y-5 py-2">
             {versionTargetFile ? (
-              <div className="rounded-md border bg-muted/40 px-3 py-2">
-                <p className="truncate text-sm font-medium">
-                  {versionTargetFile.file_name}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Current version: v{versionTargetFile.version_number ?? 1}
-                </p>
+              <div className="rounded-lg border bg-muted/20 p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                      Current version
+                    </p>
+                    <p className="truncate text-sm font-medium">
+                      {versionTargetFile.file_name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      v{versionTargetFile.version_number ?? 1} • {formatFileSize(versionTargetFile.size_bytes)}
+                    </p>
+                  </div>
+                  <div className="rounded-md border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
+                    Existing metadata stays attached
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  {[
+                    "Version history",
+                    "Sharing access",
+                    "Workflow state",
+                  ].map((item) => (
+                    <div key={item} className="rounded-md border bg-background px-3 py-2 text-sm">
+                      {item}
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
 
@@ -1555,20 +1911,37 @@ function UnifiedDocumentsLayoutInner() {
               variant="outline"
               onClick={() => versionFileInputRef.current?.click()}
               disabled={isUploadingVersion}
-              className="w-full justify-start"
+              className="h-auto w-full justify-start rounded-lg border-dashed px-4 py-4 text-left"
             >
-              <FilePlus2 className="mr-2 h-4 w-4" />
-              Choose replacement file
+              <div className="flex items-start gap-3">
+                <FilePlus2 className="mt-0.5 h-4 w-4" />
+                <div>
+                  <p className="text-sm font-medium">
+                    {versionUploadFile ? "Choose a different replacement file" : "Choose replacement file"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Upload the revised PDF, image, or document to become the latest version.
+                  </p>
+                </div>
+              </div>
             </Button>
 
             {versionUploadFile ? (
-              <div className="rounded-md border bg-muted/40 px-3 py-2">
-                <p className="truncate text-sm font-medium">
-                  {versionUploadFile.name}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {(versionUploadFile.size / 1024 / 1024).toFixed(2)} MB
-                </p>
+              <div className="grid gap-3 rounded-lg border bg-background px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    Incoming file
+                  </p>
+                  <p className="truncate text-sm font-medium">
+                    {versionUploadFile.name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatFileSize(versionUploadFile.size)}
+                  </p>
+                </div>
+                <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  Ready to publish as the latest version
+                </div>
               </div>
             ) : null}
 
@@ -1813,20 +2186,6 @@ function UnifiedDocumentsLayoutInner() {
         projectId={projectId}
       />
 
-      <FileTimelineSheet
-        file={timelineFile}
-        events={timelineEvents}
-        loading={timelineLoading}
-        open={timelineOpen}
-        onOpenChange={(open) => {
-          setTimelineOpen(open);
-          if (!open) {
-            setTimelineFile(null);
-            setTimelineEvents([]);
-          }
-        }}
-      />
-
       <Dialog
         open={createFolderDialogOpen}
         onOpenChange={setCreateFolderDialogOpen}
@@ -1878,46 +2237,210 @@ function UnifiedDocumentsLayoutInner() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Share file</DialogTitle>
-            <DialogDescription>
-              {shareFile
-                ? `Choose who can see "${shareFile.file_name}".`
-                : "Choose who can see this file."}
-            </DialogDescription>
+            <DialogTitle>Share</DialogTitle>
+            {shareFile ? (
+              <DialogDescription className="truncate">
+                {shareFile.file_name}
+              </DialogDescription>
+            ) : null}
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">Client Portal</p>
+          <div className="space-y-5 py-1">
+            <section className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                Portals
+              </p>
+              <div className="divide-y rounded-lg border">
+                <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">Client portal</p>
+                    <p className="text-xs text-muted-foreground">
+                      Accessible to clients on the client portal.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={shareWithClients}
+                    onCheckedChange={(value) => setShareWithClients(Boolean(value))}
+                    disabled={isSavingShare}
+                  />
+                </label>
+                <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">Subcontractor portal</p>
+                    <p className="text-xs text-muted-foreground">
+                      Accessible to subcontractors on the subcontractor portal.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={shareWithSubs}
+                    onCheckedChange={(value) => setShareWithSubs(Boolean(value))}
+                    disabled={isSavingShare}
+                  />
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {shareSummary(shareWithClients, shareWithSubs)}
+              </p>
+            </section>
+
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Public links
+                </p>
                 <p className="text-xs text-muted-foreground">
-                  Allow clients to access this file.
+                  Anyone with the link
                 </p>
               </div>
-              <Checkbox
-                checked={shareWithClients}
-                onCheckedChange={(value) => setShareWithClients(Boolean(value))}
-                disabled={isSavingShare}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">Subcontractor Portal</p>
-                <p className="text-xs text-muted-foreground">
-                  Allow subcontractors to access this file.
-                </p>
+
+              <div className="rounded-lg border p-3">
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[10rem] flex-1">
+                    <Label className="text-xs text-muted-foreground">Label (optional)</Label>
+                    <Input
+                      value={shareLinkLabel}
+                      onChange={(event) => setShareLinkLabel(event.target.value)}
+                      placeholder="e.g. Inspector, Lender"
+                      disabled={isCreatingShareLink}
+                      className="h-9"
+                    />
+                  </div>
+                  <div className="w-[7rem]">
+                    <Label className="text-xs text-muted-foreground">Expires</Label>
+                    <Select
+                      value={shareLinkExpiry}
+                      onValueChange={(value) =>
+                        setShareLinkExpiry(value as "7d" | "30d" | "never")
+                      }
+                      disabled={isCreatingShareLink}
+                    >
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="7d">7 days</SelectItem>
+                        <SelectItem value="30d">30 days</SelectItem>
+                        <SelectItem value="never">Never</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <label className="mt-3 flex cursor-pointer items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm">Allow download</p>
+                    <p className="text-xs text-muted-foreground">
+                      Off = view/preview only.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={shareLinkAllowDownload}
+                    onCheckedChange={(value) => setShareLinkAllowDownload(Boolean(value))}
+                    disabled={isCreatingShareLink}
+                  />
+                </label>
+                <Button
+                  type="button"
+                  onClick={handleCreateShareLink}
+                  disabled={isCreatingShareLink || !shareFile}
+                  size="sm"
+                  className="mt-3 w-full"
+                >
+                  {isCreatingShareLink ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Creating
+                    </>
+                  ) : (
+                    <>
+                      <Link2 className="mr-2 h-4 w-4" />
+                      Create link
+                    </>
+                  )}
+                </Button>
               </div>
-              <Checkbox
-                checked={shareWithSubs}
-                onCheckedChange={(value) => setShareWithSubs(Boolean(value))}
-                disabled={isSavingShare}
-              />
-            </div>
+
+              {shareLinksLoading ? (
+                <p className="px-1 text-xs text-muted-foreground">Loading links…</p>
+              ) : shareLinks.length === 0 ? (
+                <p className="px-1 text-xs text-muted-foreground">
+                  No public links yet.
+                </p>
+              ) : (
+                <ul className="divide-y rounded-lg border">
+                  {shareLinks.map((link) => {
+                    const expiry = link.expires_at
+                      ? new Date(link.expires_at).toLocaleDateString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "Never";
+                    const statusLabel = link.revoked_at
+                      ? "Revoked"
+                      : !link.is_active
+                        ? "Expired"
+                        : `Expires ${expiry}`;
+                    return (
+                      <li
+                        key={link.id}
+                        className="flex items-center gap-2 px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm">
+                            {link.label || "Untitled link"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {statusLabel}
+                            {link.allow_download ? "" : " · View only"}
+                            {link.use_count > 0
+                              ? ` · ${link.use_count} view${link.use_count === 1 ? "" : "s"}`
+                              : ""}
+                          </p>
+                        </div>
+                        {link.is_active ? (
+                          <>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => handleCopyShareLink(link)}
+                              title="Copy link"
+                            >
+                              {copiedShareLinkId === link.id ? (
+                                <Check className="h-4 w-4 text-primary" />
+                              ) : (
+                                <Copy className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleRevokeShareLink(link)}
+                              disabled={revokingShareLinkId === link.id}
+                              title="Revoke link"
+                            >
+                              {revokingShareLinkId === link.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <X className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
           </div>
           <DialogFooter>
             <Button
-              variant="outline"
+              variant="ghost"
               onClick={() => setShareDialogOpen(false)}
               disabled={isSavingShare}
             >
@@ -1930,10 +2453,10 @@ function UnifiedDocumentsLayoutInner() {
               {isSavingShare ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving...
+                  Saving
                 </>
               ) : (
-                "Save Sharing"
+                "Save"
               )}
             </Button>
           </DialogFooter>
@@ -1978,28 +2501,115 @@ function UnifiedDocumentsLayoutInner() {
       </Dialog>
 
       <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Move files</DialogTitle>
             <DialogDescription>
-              Move {moveFileIds.length} file
-              {moveFileIds.length === 1 ? "" : "s"} to a folder. Leave empty to
-              move to root.
+              Pick a destination from your existing folders. Create a new folder only when you need one.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <Input
-              list="folder-options"
-              placeholder="/contracts"
-              value={moveTargetFolder}
-              onChange={(event) => setMoveTargetFolder(event.target.value)}
-              disabled={isMoving}
-            />
-            <datalist id="folder-options">
-              {folderOptions.map((folder) => (
-                <option key={folder} value={folder} />
-              ))}
-            </datalist>
+          <div className="space-y-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    Selected
+                  </p>
+                  <p className="mt-2 text-sm">
+                    Move {moveFileIds.length} file{moveFileIds.length === 1 ? "" : "s"} to{" "}
+                    <span className="font-medium">{moveTargetFolder || "Root"}</span>.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isMoving}
+                  onClick={() => {
+                    setMoveDialogOpen(false);
+                    setNewFolderPath(moveSearchQuery.trim() ? `/${moveSearchQuery.trim().replace(/^\/+/, "")}` : currentPath || "");
+                    setCreateFolderDialogOpen(true);
+                  }}
+                >
+                  New folder
+                </Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {moveFileIds.slice(0, 3).map((fileId) => {
+                  const file = files.find((item) => item.id === fileId);
+                  if (!file) return null;
+                  return (
+                    <div key={fileId} className="max-w-full rounded-md border bg-background px-3 py-1.5 text-sm">
+                      <span className="block truncate">{file.file_name}</span>
+                    </div>
+                  );
+                })}
+                {moveFileIds.length > 3 ? (
+                  <div className="rounded-md border bg-background px-3 py-1.5 text-sm text-muted-foreground">
+                    +{moveFileIds.length - 3} more
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Filter folders"
+                value={moveSearchQuery}
+                onChange={(event) => setMoveSearchQuery(event.target.value)}
+                className="pl-9"
+                disabled={isMoving}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => setMoveTargetFolder("")}
+                className={cn(
+                  "flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors",
+                  moveTargetFolder === "" ? "border-primary bg-primary/5" : "hover:bg-muted/40",
+                )}
+                disabled={isMoving}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="rounded-md bg-muted p-2 text-muted-foreground">
+                    <FolderClosed className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">Root</p>
+                    <p className="text-xs text-muted-foreground">Keep these files at the top level.</p>
+                  </div>
+                </div>
+                {moveTargetFolder === "" ? <Check className="h-4 w-4 text-primary" /> : null}
+              </button>
+              <ScrollArea className="max-h-64 rounded-lg border">
+                <div className="space-y-1 p-2">
+                  {filteredMoveFolderOptions.length === 0 ? (
+                    <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                      No folders match that search. Use New folder to add one first.
+                    </div>
+                  ) : (
+                    filteredMoveFolderOptions.map((folder) => (
+                      <button
+                        key={folder}
+                        type="button"
+                        onClick={() => setMoveTargetFolder(folder)}
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors",
+                          moveTargetFolder === folder ? "bg-primary/10 text-primary" : "hover:bg-muted/40",
+                        )}
+                        disabled={isMoving}
+                      >
+                        <span className="truncate">{folder}</span>
+                        {moveTargetFolder === folder ? <Check className="h-4 w-4 shrink-0" /> : null}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -2105,46 +2715,78 @@ function UnifiedDocumentsLayoutInner() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Folder Share Dialog */}
       <Dialog open={folderShareOpen} onOpenChange={setFolderShareOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Folder sharing defaults</DialogTitle>
-            <DialogDescription>
-              Set default permissions for new files uploaded to this folder.
+            <DialogTitle>Share folder</DialogTitle>
+            <DialogDescription className="truncate">
+              {folderSharePath || "Root"}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">Client Portal</p>
-                <p className="text-xs text-muted-foreground">Share new files with clients by default.</p>
-              </div>
-              <Checkbox 
-                checked={folderShareWithClients} 
-                onCheckedChange={(val) => setFolderShareWithClients(Boolean(val))} 
-              />
+          <div className="py-1">
+            <div className="divide-y rounded-lg border">
+              <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Client portal</p>
+                  <p className="text-xs text-muted-foreground">
+                    New uploads default to the client portal.
+                  </p>
+                </div>
+                <Switch
+                  checked={folderShareWithClients}
+                  onCheckedChange={(value) => setFolderShareWithClients(Boolean(value))}
+                  disabled={isSavingFolderShare}
+                />
+              </label>
+              <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Subcontractor portal</p>
+                  <p className="text-xs text-muted-foreground">
+                    New uploads default to the subcontractor portal.
+                  </p>
+                </div>
+                <Switch
+                  checked={folderShareWithSubs}
+                  onCheckedChange={(value) => setFolderShareWithSubs(Boolean(value))}
+                  disabled={isSavingFolderShare}
+                />
+              </label>
             </div>
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">Subcontractor Portal</p>
-                <p className="text-xs text-muted-foreground">Share new files with subs by default.</p>
-              </div>
-              <Checkbox 
-                checked={folderShareWithSubs} 
-                onCheckedChange={(val) => setFolderShareWithSubs(Boolean(val))} 
+            <p className="mt-3 text-xs text-muted-foreground">
+              {shareSummary(folderShareWithClients, folderShareWithSubs)}
+            </p>
+            <label className="mt-4 flex cursor-pointer items-start gap-2">
+              <Checkbox
+                checked={folderShareApplyToExisting}
+                onCheckedChange={(value) => setFolderShareApplyToExisting(Boolean(value))}
+                disabled={isSavingFolderShare}
+                className="mt-0.5"
               />
-            </div>
+              <span className="text-xs text-muted-foreground">
+                Apply to existing files in this folder. Otherwise, only new uploads are affected.
+              </span>
+            </label>
           </div>
-          <DialogFooter className="flex-col sm:flex-row gap-2">
-            <Button variant="ghost" onClick={() => setFolderShareOpen(false)} className="sm:mr-auto">
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setFolderShareOpen(false)}
+              disabled={isSavingFolderShare}
+            >
               Cancel
             </Button>
-            <Button variant="outline" onClick={() => onConfirmShareFolder(true)} disabled={isSavingFolderShare}>
-              {isSavingFolderShare ? "Applying..." : "Save & Apply to all existing files"}
-            </Button>
-            <Button onClick={() => onConfirmShareFolder(false)} disabled={isSavingFolderShare}>
-              {isSavingFolderShare ? "Saving..." : "Save for new files only"}
+            <Button
+              onClick={() => onConfirmShareFolder(folderShareApplyToExisting)}
+              disabled={isSavingFolderShare}
+            >
+              {isSavingFolderShare ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving
+                </>
+              ) : (
+                "Save"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

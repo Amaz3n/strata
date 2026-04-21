@@ -143,10 +143,12 @@ export interface DocumentsFileTableProps {
   items: DocumentTableItem[]
   isLoading?: boolean
   selectedFileIds: Set<string>
+  selectedFolderPaths: Set<string>
   allVisibleSelected: boolean
   visibleFileIds: string[]
   onSelectAllVisibleFiles: (fileIds: string[], selected: boolean) => void
   onFileSelectionChange: (fileId: string, selected: boolean) => void
+  onFolderSelectionChange: (path: string, selected: boolean) => void
   onFileClick: (fileId: string) => void
   onFolderClick: (path: string) => void
   onUploadClick: () => void
@@ -182,10 +184,12 @@ export function DocumentsFileTable({
   items,
   isLoading,
   selectedFileIds,
+  selectedFolderPaths,
   allVisibleSelected,
   visibleFileIds,
   onSelectAllVisibleFiles,
   onFileSelectionChange,
+  onFolderSelectionChange,
   onFileClick,
   onFolderClick,
   onUploadClick,
@@ -248,6 +252,8 @@ export function DocumentsFileTable({
               <FolderRow
                 key={item.path}
                 item={item}
+                isSelected={selectedFolderPaths.has(item.path)}
+                onSelectionChange={onFolderSelectionChange}
                 onFolderClick={onFolderClick}
                 onDropOnFolder={onDropOnFolder}
               />
@@ -334,16 +340,21 @@ export function SheetsTable({
 
 const FolderRow = memo(function FolderRow({
   item,
+  isSelected,
+  onSelectionChange,
   onFolderClick,
   onDropOnFolder,
 }: {
   item: Extract<DocumentTableItem, { type: "folder" }>
+  isSelected: boolean
+  onSelectionChange: (path: string, selected: boolean) => void
   onFolderClick: (path: string) => void
   onDropOnFolder: (path: string) => void
 }) {
   return (
     <TableRow
-      className="group cursor-pointer"
+      className={cn("group cursor-pointer hover:bg-muted/30", isSelected && "bg-primary/5")}
+      data-state={isSelected ? "selected" : undefined}
       onClick={() => onFolderClick(item.path)}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -352,37 +363,75 @@ const FolderRow = memo(function FolderRow({
         onDropOnFolder(item.path)
       }}
     >
-      <TableCell className="w-11 pl-4 pr-2" />
-      <TableCell colSpan={5} className="min-w-0">
-        <div className="flex items-center gap-3">
+      <TableCell className="w-11 pl-4 pr-2">
+        <div className="flex h-8 items-center" onClick={(event) => event.stopPropagation()}>
+          <Checkbox
+            checked={isSelected}
+            onCheckedChange={(value) => onSelectionChange(item.path, Boolean(value))}
+            aria-label={`Select folder ${item.name}`}
+            className="h-3.5 w-3.5"
+          />
+        </div>
+      </TableCell>
+      <TableCell className="min-w-0">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-100/80 dark:bg-amber-950/30">
             <FolderOpen className="h-4 w-4 text-amber-600 dark:text-amber-500" />
           </div>
-          <span className="text-sm font-medium">{item.name}</span>
-          <span className="text-xs text-muted-foreground">
-            {item.itemCount} {item.itemCount === 1 ? "item" : "items"}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium">{item.name}</span>
+            <span className="block text-xs text-muted-foreground sm:hidden">
+              {item.itemCount} {item.itemCount === 1 ? "item" : "items"}
+            </span>
+          </div>
         </div>
       </TableCell>
+      <TableCell className="hidden sm:table-cell w-[128px]">
+        <span className="text-xs text-muted-foreground">Folder</span>
+      </TableCell>
+      <TableCell className="hidden md:table-cell w-[184px]">
+        <span className="text-xs text-muted-foreground">
+          {item.itemCount} {item.itemCount === 1 ? "item" : "items"}
+        </span>
+      </TableCell>
+      <TableCell className="hidden lg:table-cell w-[128px]">
+        <span className="text-xs text-muted-foreground">-</span>
+      </TableCell>
+      <TableCell className="hidden md:table-cell w-[112px]">
+        <span className="text-xs text-muted-foreground">-</span>
+      </TableCell>
+      <TableCell className="hidden xl:table-cell w-[88px] text-right">
+        <span className="text-xs text-muted-foreground">-</span>
+      </TableCell>
       <TableCell className="w-[92px] pr-4" onClick={(e) => e.stopPropagation()}>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuItem onClick={() => onFolderClick(item.path)}>
-              <FolderOpenDot className="h-4 w-4 mr-2" />
-              Open
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive focus:text-destructive" disabled>
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete folder
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+            onClick={() => onFolderClick(item.path)}
+          >
+            Open
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => onFolderClick(item.path)}>
+                <FolderOpenDot className="h-4 w-4 mr-2" />
+                Open
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-destructive focus:text-destructive" disabled>
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete folder
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </TableCell>
     </TableRow>
   )

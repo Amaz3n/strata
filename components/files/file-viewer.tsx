@@ -16,8 +16,16 @@ import {
   FileText,
   Loader2,
   History,
+  MoreHorizontal,
 } from "@/components/icons"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { type FileWithDetails, isImageFile, isPdfFile, formatFileSize } from "./types"
 import { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
 
@@ -54,6 +62,8 @@ export function FileViewer({
 }: FileViewerProps) {
   const [zoom, setZoom] = useState(1)
   const [rotation, setRotation] = useState(0)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [swipeX, setSwipeX] = useState(0)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showVersions, setShowVersions] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -70,6 +80,15 @@ export function FileViewer({
   } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const pdfViewportRef = useRef<HTMLDivElement>(null)
+  const gestureRef = useRef({
+    startTouches: [] as Array<{ x: number; y: number }>,
+    startZoom: 1,
+    startPan: { x: 0, y: 0 },
+    startDistance: 0,
+    lastTapTime: 0,
+    lastTapX: 0,
+    lastTapY: 0,
+  })
 
   const hasFileList = files.length > 0
   const derivedIndexFromFile =
@@ -114,6 +133,8 @@ export function FileViewer({
   useEffect(() => {
     setZoom(1)
     setRotation(0)
+    setPan({ x: 0, y: 0 })
+    setSwipeX(0)
     setIsLoading(true)
     setImageDimensions(null)
     setPdfPageCount(0)
@@ -168,6 +189,8 @@ export function FileViewer({
       setIsLoading(true)
       setZoom(1)
       setRotation(0)
+      setPan({ x: 0, y: 0 })
+      setSwipeX(0)
       setImageDimensions(null)
     }
   }, [canPrev, parentControlsSelection, onFileChange, files, clampedIndex])
@@ -185,6 +208,8 @@ export function FileViewer({
       setIsLoading(true)
       setZoom(1)
       setRotation(0)
+      setPan({ x: 0, y: 0 })
+      setSwipeX(0)
       setImageDimensions(null)
     }
   }, [canNext, parentControlsSelection, onFileChange, files, clampedIndex])
@@ -202,6 +227,8 @@ export function FileViewer({
     setIsLoading(true)
     setZoom(1)
     setRotation(0)
+    setPan({ x: 0, y: 0 })
+    setSwipeX(0)
     setImageDimensions(null)
   }, [files, parentControlsSelection, onFileChange])
 
@@ -240,6 +267,7 @@ export function FileViewer({
         case "0":
           setZoom(1)
           setRotation(0)
+          setPan({ x: 0, y: 0 })
           break
       }
     }
@@ -247,6 +275,89 @@ export function FileViewer({
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [open, handlePrev, handleNext, onOpenChange])
+
+  // Touch gesture handlers (pinch zoom, pan, swipe between files, double-tap)
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    const g = gestureRef.current
+    const touches = Array.from(e.touches).map(t => ({ x: t.clientX, y: t.clientY }))
+    g.startTouches = touches
+    g.startZoom = zoom
+    g.startPan = pan
+
+    if (touches.length === 2) {
+      g.startDistance = Math.hypot(
+        touches[0].x - touches[1].x,
+        touches[0].y - touches[1].y,
+      )
+    } else if (touches.length === 1) {
+      const now = Date.now()
+      const { x, y } = touches[0]
+      const dt = now - g.lastTapTime
+      const dist = Math.hypot(x - g.lastTapX, y - g.lastTapY)
+      if (dt < 300 && dist < 30) {
+        // Double tap — toggle zoom
+        if (zoom > 1.1) {
+          setZoom(1)
+          setPan({ x: 0, y: 0 })
+        } else {
+          setZoom(2.5)
+        }
+        g.lastTapTime = 0
+      } else {
+        g.lastTapTime = now
+        g.lastTapX = x
+        g.lastTapY = y
+      }
+    }
+  }, [zoom, pan])
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    const g = gestureRef.current
+    const touches = Array.from(e.touches).map(t => ({ x: t.clientX, y: t.clientY }))
+
+    if (touches.length === 2 && g.startTouches.length === 2 && g.startDistance > 0) {
+      const dist = Math.hypot(
+        touches[0].x - touches[1].x,
+        touches[0].y - touches[1].y,
+      )
+      const scale = dist / g.startDistance
+      const nextZoom = Math.max(0.5, Math.min(5, g.startZoom * scale))
+      setZoom(nextZoom)
+      if (nextZoom <= 1.05) setPan({ x: 0, y: 0 })
+    } else if (touches.length === 1 && g.startTouches.length === 1) {
+      const dx = touches[0].x - g.startTouches[0].x
+      const dy = touches[0].y - g.startTouches[0].y
+      if (zoom > 1.05) {
+        setPan({ x: g.startPan.x + dx, y: g.startPan.y + dy })
+      } else if (Math.abs(dx) > Math.abs(dy)) {
+        setSwipeX(dx)
+      }
+    }
+  }, [zoom])
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    const g = gestureRef.current
+    const remaining = e.touches.length
+    if (g.startTouches.length === 1 && remaining === 0 && zoom <= 1.05) {
+      const threshold = 70
+      if (swipeX > threshold && canPrev) {
+        handlePrev()
+      } else if (swipeX < -threshold && canNext) {
+        handleNext()
+      }
+      setSwipeX(0)
+    }
+    if (remaining === 0) {
+      g.startTouches = []
+      g.startDistance = 0
+    } else {
+      // Reset gesture baseline with remaining touches (e.g., releasing 2nd finger)
+      g.startTouches = Array.from(e.touches).map(t => ({ x: t.clientX, y: t.clientY }))
+      g.startZoom = zoom
+      g.startPan = pan
+      g.startDistance = 0
+    }
+  }, [zoom, pan, swipeX, canPrev, canNext, handlePrev, handleNext])
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -279,213 +390,234 @@ export function FileViewer({
     isPdf && !pdfLoadFailed && Boolean(currentPdfUrl) && Boolean(PdfDocument && PdfPage) && pdfPageCount > 1
   const pdfThumbnailWidth = 88
 
-  // Calculate optimal dialog size based on image aspect ratio
-  const getDialogStyle = () => {
-    if (!isImage || !imageDimensions) {
-      // Default size for PDFs and non-images
-      return { width: "90vw", height: "90vh" }
-    }
-
-    const { width: imgW, height: imgH } = imageDimensions
-    const aspectRatio = imgW / imgH
-    const viewportW = window.innerWidth * 0.92
-    const viewportH = window.innerHeight * 0.92
-
-    let dialogW: number
-    let dialogH: number
-
-    if (aspectRatio > 1) {
-      // Landscape - prioritize width
-      dialogW = Math.min(imgW, viewportW)
-      dialogH = dialogW / aspectRatio
-      if (dialogH > viewportH) {
-        dialogH = viewportH
-        dialogW = dialogH * aspectRatio
-      }
-    } else {
-      // Portrait - prioritize height
-      dialogH = Math.min(imgH, viewportH)
-      dialogW = dialogH * aspectRatio
-      if (dialogW > viewportW) {
-        dialogW = viewportW
-        dialogH = dialogW / aspectRatio
-      }
-    }
-
-    // Add some padding for UI elements
-    const uiPadding = 120 // For header and thumbnail strip
-    dialogH = Math.min(dialogH + uiPadding, viewportH)
-
-    return {
-      width: `${Math.max(dialogW, 400)}px`,
-      height: `${Math.max(dialogH, 300)}px`,
-      maxWidth: "95vw",
-      maxHeight: "95vh",
-    }
-  }
-
-  const dialogStyle = getDialogStyle()
+  const hasBottomStrip = showPdfThumbnails || hasMultiple
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex bg-black/95"
       onClick={handleBackdropClick}
     >
+      {/* Main viewer column */}
       <div
         ref={containerRef}
-        className="relative flex flex-col bg-black/95 rounded-lg overflow-hidden shadow-2xl"
-        style={dialogStyle}
+        className="relative flex-1 flex flex-col min-w-0"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 bg-black/80 border-b border-white/10 shrink-0">
-          <div className="flex items-center gap-3 text-white min-w-0">
-            <FileText className="h-5 w-5 shrink-0 opacity-70" />
-            <div className="min-w-0">
-              <p className="font-medium truncate">{currentFile.file_name}</p>
-              <p className="text-xs opacity-60">
-                {formatFileSize(currentFile.size_bytes)}
-                {imageDimensions && (
-                  <span className="ml-2">
-                    {imageDimensions.width} × {imageDimensions.height}
-                  </span>
-                )}
-                {hasMultiple && (
-                  <span className="ml-2">
-                    • {clampedIndex + 1} of {files.length}
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
+        {/* TOP BAR */}
+        <div className="absolute top-0 inset-x-0 z-30 flex items-center gap-1 px-2 sm:px-3 py-2 sm:py-3 bg-gradient-to-b from-black/90 via-black/60 to-transparent pointer-events-none">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="pointer-events-auto h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0"
+            onClick={() => onOpenChange(false)}
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </Button>
 
-          <div className="flex items-center gap-1">
-            {isImage && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-white/80 hover:text-white hover:bg-white/10"
-                  onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}
-                >
-                  <ZoomOut className="h-4 w-4" />
-                </Button>
-                <span className="text-sm text-white/60 w-12 text-center">
-                  {Math.round(zoom * 100)}%
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-white/80 hover:text-white hover:bg-white/10"
-                  onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}
-                >
-                  <ZoomIn className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-white/80 hover:text-white hover:bg-white/10"
-                  onClick={() => setRotation((r) => (r + 90) % 360)}
-                >
-                  <RotateCw className="h-4 w-4" />
-                </Button>
-              </>
-            )}
-
-            {onDownload && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="text-white/80 hover:text-white hover:bg-white/10"
-                onClick={() => onDownload(currentFile)}
-              >
-                <Download className="h-4 w-4" />
-              </Button>
-            )}
-
-            {hasVersionsPanel && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className={cn(
-                  "text-white/80 hover:text-white hover:bg-white/10",
-                  showVersions && "bg-white/10 text-white"
-                )}
-                onClick={() => setShowVersions((prev) => !prev)}
-              >
-                <History className="h-4 w-4" />
-              </Button>
-            )}
-
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-white/80 hover:text-white hover:bg-white/10"
-              onClick={toggleFullscreen}
-            >
-              {isFullscreen ? (
-                <Minimize2 className="h-4 w-4" />
-              ) : (
-                <Maximize2 className="h-4 w-4" />
+          <div className="pointer-events-auto flex-1 min-w-0 text-white px-1 sm:px-2">
+            <p className="text-sm font-medium truncate">{currentFile.file_name}</p>
+            <p className="text-[11px] text-white/60 truncate">
+              {formatFileSize(currentFile.size_bytes)}
+              {imageDimensions && (
+                <span> · {imageDimensions.width} × {imageDimensions.height}</span>
               )}
-            </Button>
+              {hasMultiple && (
+                <span> · {clampedIndex + 1} of {files.length}</span>
+              )}
+              {isPdf && pdfPageCount > 0 && (
+                <span> · Page {activePdfPageClamped} of {pdfPageCount}</span>
+              )}
+            </p>
+          </div>
 
+          {/* Desktop inline zoom controls */}
+          {isImage && (
+            <div className="pointer-events-auto hidden md:flex items-center gap-0.5 mr-1 bg-white/5 rounded-full px-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-full text-white/90 hover:text-white hover:bg-white/10"
+                onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}
+                aria-label="Zoom out"
+              >
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <button
+                onClick={() => { setZoom(1); setRotation(0) }}
+                className="text-xs text-white/70 hover:text-white tabular-nums w-12 text-center"
+                aria-label="Reset zoom"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-full text-white/90 hover:text-white hover:bg-white/10"
+                onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}
+                aria-label="Zoom in"
+              >
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+
+          {/* Primary action — download */}
+          {onDownload && (
             <Button
               variant="ghost"
               size="icon"
-              className="text-white/80 hover:text-white hover:bg-white/10"
-              onClick={() => onOpenChange(false)}
+              className="pointer-events-auto h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0"
+              onClick={() => onDownload(currentFile)}
+              aria-label="Download"
             >
-              <X className="h-5 w-5" />
+              <Download className="h-4 w-4" />
             </Button>
-          </div>
+          )}
+
+          {/* Versions quick toggle (desktop) */}
+          {hasVersionsPanel && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "pointer-events-auto hidden md:inline-flex h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0",
+                showVersions && "bg-white/15 text-white"
+              )}
+              onClick={() => setShowVersions((prev) => !prev)}
+              aria-label="Version history"
+            >
+              <History className="h-4 w-4" />
+            </Button>
+          )}
+
+          {/* Overflow menu — mobile zoom/rotate, fullscreen, versions */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="pointer-events-auto h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0"
+                aria-label="More options"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              {isImage && (
+                <div className="md:hidden">
+                  <DropdownMenuItem onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}>
+                    <ZoomIn className="mr-2 h-4 w-4" />
+                    Zoom in
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}>
+                    <ZoomOut className="mr-2 h-4 w-4" />
+                    Zoom out
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { setZoom(1); setRotation(0) }}>
+                    Reset ({Math.round(zoom * 100)}%)
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </div>
+              )}
+              {isImage && (
+                <DropdownMenuItem onClick={() => setRotation((r) => (r + 90) % 360)}>
+                  <RotateCw className="mr-2 h-4 w-4" />
+                  Rotate
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={toggleFullscreen}>
+                {isFullscreen ? (
+                  <><Minimize2 className="mr-2 h-4 w-4" /> Exit fullscreen</>
+                ) : (
+                  <><Maximize2 className="mr-2 h-4 w-4" /> Fullscreen</>
+                )}
+              </DropdownMenuItem>
+              {hasVersionsPanel && (
+                <DropdownMenuItem
+                  className="md:hidden"
+                  onClick={() => setShowVersions((prev) => !prev)}
+                >
+                  <History className="mr-2 h-4 w-4" />
+                  {showVersions ? "Hide versions" : "Version history"}
+                </DropdownMenuItem>
+              )}
+              {onDownload && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => onDownload(currentFile)}>
+                    <Download className="mr-2 h-4 w-4" />
+                    Download
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
-        {/* Navigation Arrows */}
+        {/* NAV ARROWS */}
         {hasMultiple && (
           <>
             <Button
               variant="ghost"
               size="icon"
               className={cn(
-                "absolute left-4 top-1/2 -translate-y-1/2 z-50 h-12 w-12 rounded-full bg-black/50 text-white/80 hover:text-white hover:bg-black/70",
-                !canPrev && "opacity-30 cursor-not-allowed"
+                "absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-20 h-10 w-10 sm:h-12 sm:w-12 rounded-full bg-black/40 backdrop-blur-sm text-white/90 hover:text-white hover:bg-black/60 transition-opacity",
+                !canPrev && "opacity-0 pointer-events-none"
               )}
               onClick={handlePrev}
               disabled={!canPrev}
+              aria-label="Previous"
             >
-              <ChevronLeft className="h-6 w-6" />
+              <ChevronLeft className="h-5 w-5 sm:h-6 sm:w-6" />
             </Button>
 
             <Button
               variant="ghost"
               size="icon"
               className={cn(
-                "absolute right-4 top-1/2 -translate-y-1/2 z-50 h-12 w-12 rounded-full bg-black/50 text-white/80 hover:text-white hover:bg-black/70",
-                !canNext && "opacity-30 cursor-not-allowed"
+                "absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 h-10 w-10 sm:h-12 sm:w-12 rounded-full bg-black/40 backdrop-blur-sm text-white/90 hover:text-white hover:bg-black/60 transition-opacity",
+                !canNext && "opacity-0 pointer-events-none"
               )}
               onClick={handleNext}
               disabled={!canNext}
+              aria-label="Next"
             >
-              <ChevronRight className="h-6 w-6" />
+              <ChevronRight className="h-5 w-5 sm:h-6 sm:w-6" />
             </Button>
           </>
         )}
 
-        {/* Content */}
-        <div className="flex-1 flex overflow-hidden relative">
-          <div className="flex-1 flex items-center justify-center overflow-hidden relative">
-            {isLoading && (
-              <div className="absolute inset-0 flex items-center justify-center z-10">
-                <Loader2 className="h-8 w-8 animate-spin text-white/60" />
-              </div>
-            )}
+        {/* CONTENT */}
+        <div
+          className={cn(
+            "flex-1 flex items-center justify-center overflow-hidden relative",
+            "pt-14 sm:pt-16",
+            hasBottomStrip ? "pb-28 sm:pb-32" : "pb-4"
+          )}
+        >
+          {isLoading && (
+            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+              <Loader2 className="h-8 w-8 animate-spin text-white/60" />
+            </div>
+          )}
 
-            {isImage && currentFile.download_url && (
+          {isImage && currentFile.download_url && (
+            <div
+              className="absolute inset-0 flex items-center justify-center touch-none select-none"
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+              onTouchCancel={handleTouchEnd}
+            >
               <div
-                className="relative transition-transform duration-200 ease-out flex items-center justify-center"
+                className={cn(
+                  "flex items-center justify-center w-full h-full",
+                  // Only animate when not actively gesturing (zoom=1, pan=0, swipeX=0 → reset states transition)
+                  swipeX === 0 && "transition-transform duration-200 ease-out"
+                )}
                 style={{
-                  transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                  transform: `translate3d(${swipeX + pan.x}px, ${pan.y}px, 0) scale(${zoom}) rotate(${rotation}deg)`,
                 }}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -493,178 +625,153 @@ export function FileViewer({
                   src={currentFile.download_url}
                   alt={currentFile.file_name}
                   className={cn(
-                    "max-w-full max-h-full w-auto h-auto object-contain",
+                    "max-w-full max-h-full w-auto h-auto object-contain pointer-events-none",
                     isLoading && "opacity-0"
                   )}
                   onLoad={handleImageLoad}
-                  style={{
-                    maxHeight: hasMultiple ? "calc(100% - 80px)" : "100%",
+                  draggable={false}
+                />
+              </div>
+            </div>
+          )}
+
+          {isPdf && currentFile.download_url && (
+            <div ref={pdfViewportRef} className="h-full w-full overflow-auto bg-zinc-950/40">
+              {!pdfLoadFailed && currentPdfUrl && PdfDocument && PdfPage ? (
+                <PdfDocument
+                  key={currentFile.id}
+                  file={currentPdfUrl}
+                  onLoadSuccess={(info: { numPages: number }) => {
+                    setPdfPageCount(info.numPages)
+                    setActivePdfPage((prev) => Math.min(Math.max(prev, 1), Math.max(info.numPages, 1)))
+                    setPdfLoadFailed(false)
                   }}
+                  onLoadError={(error: unknown) => {
+                    console.error("Failed to load PDF", error)
+                    setPdfLoadFailed(true)
+                    setIsLoading(false)
+                  }}
+                >
+                  <div className="flex min-h-full items-start justify-center p-4">
+                    <PdfPage
+                      pageNumber={activePdfPageClamped}
+                      width={pdfPageWidth}
+                      renderTextLayer={false}
+                      renderAnnotationLayer={false}
+                      onRenderSuccess={() => setIsLoading(false)}
+                      className={cn("rounded-md shadow-2xl", isLoading && "opacity-0")}
+                    />
+                  </div>
+                </PdfDocument>
+              ) : !pdfLoadFailed && currentPdfUrl ? (
+                <div className="h-full w-full" />
+              ) : (
+                <iframe
+                  src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
+                  className={cn("w-full h-full bg-white", isLoading && "opacity-0")}
+                  onLoad={() => setIsLoading(false)}
+                  title={currentFile.file_name}
                 />
-              </div>
-            )}
+              )}
+            </div>
+          )}
 
-            {isPdf && currentFile.download_url && (
-              <div ref={pdfViewportRef} className="h-full w-full overflow-auto bg-zinc-950/40">
-                {!pdfLoadFailed && currentPdfUrl && PdfDocument && PdfPage ? (
-                  <PdfDocument
-                    key={currentFile.id}
-                    file={currentPdfUrl}
-                    onLoadSuccess={(info: { numPages: number }) => {
-                      setPdfPageCount(info.numPages)
-                      setActivePdfPage((prev) => Math.min(Math.max(prev, 1), Math.max(info.numPages, 1)))
-                      setPdfLoadFailed(false)
-                    }}
-                    onLoadError={(error: unknown) => {
-                      console.error("Failed to load PDF", error)
-                      setPdfLoadFailed(true)
-                      setIsLoading(false)
-                    }}
+          {!isImage && !isPdf && (
+            <div className="flex flex-col items-center justify-center gap-4 text-white/80 px-6 text-center">
+              <FileText className="h-16 w-16" />
+              <div>
+                <p className="font-medium">{currentFile.file_name}</p>
+                <p className="text-sm opacity-60 mt-1">
+                  Preview not available for this file type
+                </p>
+                {onDownload && (
+                  <Button
+                    variant="secondary"
+                    className="mt-4"
+                    onClick={() => onDownload(currentFile)}
                   >
-                    <div className="flex min-h-full items-start justify-center p-4">
-                      <PdfPage
-                        pageNumber={activePdfPageClamped}
-                        width={pdfPageWidth}
-                        renderTextLayer={false}
-                        renderAnnotationLayer={false}
-                        onRenderSuccess={() => setIsLoading(false)}
-                        className={cn("rounded-md shadow-2xl", isLoading && "opacity-0")}
-                      />
-                    </div>
-                  </PdfDocument>
-                ) : !pdfLoadFailed && currentPdfUrl ? (
-                  <div className="h-full w-full" />
-                ) : (
-                  <iframe
-                    src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
-                    className={cn(
-                      "w-full h-full bg-white",
-                      isLoading && "opacity-0"
-                    )}
-                    onLoad={() => setIsLoading(false)}
-                    title={currentFile.file_name}
-                  />
+                    <Download className="mr-2 h-4 w-4" />
+                    Download to view
+                  </Button>
                 )}
-              </div>
-            )}
-
-            {!isImage && !isPdf && (
-              <div className="flex flex-col items-center justify-center gap-4 text-white/80">
-                <FileText className="h-16 w-16" />
-                <div className="text-center">
-                  <p className="font-medium">{currentFile.file_name}</p>
-                  <p className="text-sm opacity-60 mt-1">
-                    Preview not available for this file type
-                  </p>
-                  {onDownload && (
-                    <Button
-                      variant="secondary"
-                      className="mt-4"
-                      onClick={() => onDownload(currentFile)}
-                    >
-                      <Download className="mr-2 h-4 w-4" />
-                      Download to view
-                    </Button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {hasVersionsPanel && showVersions && (
-            <div className="w-[360px] bg-background text-foreground border-l border-border overflow-y-auto">
-              <div className="p-4">
-                <VersionHistoryPanel
-                  fileId={currentFile.id}
-                  fileName={currentFile.file_name}
-                  versions={versions ?? []}
-                  onUploadVersion={onUploadVersion!}
-                  onMakeCurrent={onMakeCurrentVersion!}
-                  onDownloadVersion={onDownloadVersion!}
-                  onUpdateVersion={onUpdateVersion!}
-                  onDeleteVersion={onDeleteVersion!}
-                  onRefresh={onRefreshVersions!}
-                />
               </div>
             </div>
           )}
         </div>
 
-        {(showPdfThumbnails || hasMultiple) && (
-          <div className="bg-black/80 border-t border-white/10 p-3 shrink-0 space-y-3">
-            {showPdfThumbnails && (
-              <div className="space-y-1.5">
-                <p className="text-[11px] uppercase tracking-wide text-white/50">Pages</p>
-                {currentPdfUrl ? (
-                  <PdfDocument
-                    key={`${currentFile.id}-thumbs`}
-                    file={currentPdfUrl}
-                    loading={null}
-                    noData={null}
-                    error={null}
-                  >
-                    <div className="flex items-start gap-2 overflow-x-auto pb-1">
-                      {Array.from({ length: pdfPageCount }).map((_, pageIndex) => {
-                        const pageNumber = pageIndex + 1
-                        return (
-                          <button
-                            key={`pdf-page-${pageNumber}`}
-                            onClick={() => setActivePdfPage(pageNumber)}
-                            aria-label={`Go to page ${pageNumber}`}
-                            className={cn(
-                              "group shrink-0 rounded-md border border-white/15 bg-black/40 px-1.5 pb-1.5 pt-1.5 transition-all",
-                              pageNumber === activePdfPageClamped
-                                ? "border-primary ring-2 ring-primary/50"
-                                : "hover:border-white/30"
-                            )}
-                          >
-                            <div className="overflow-hidden rounded bg-white shadow-sm">
-                              <PdfPage
-                                pageNumber={pageNumber}
-                                width={pdfThumbnailWidth}
-                                renderTextLayer={false}
-                                renderAnnotationLayer={false}
-                                loading={
-                                  <div className="h-[114px] w-[88px] animate-pulse bg-zinc-200" />
-                                }
-                                error={
-                                  <div className="flex h-[114px] w-[88px] items-center justify-center bg-zinc-200 text-[10px] font-medium text-zinc-600">
-                                    Page {pageNumber}
-                                  </div>
-                                }
-                              />
-                            </div>
-                            <p
-                              className={cn(
-                                "mt-1 text-center text-[10px] font-medium",
-                                pageNumber === activePdfPageClamped ? "text-white" : "text-white/60 group-hover:text-white/90"
-                              )}
-                            >
-                              Page {pageNumber}
-                            </p>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </PdfDocument>
-                ) : null}
-              </div>
-            )}
-
-            {hasMultiple && (
-              <div className="space-y-1.5">
-                <p className="text-[11px] uppercase tracking-wide text-white/50">Files</p>
-                <div className="flex items-center justify-center gap-2 overflow-x-auto">
-                  {files.map((f, index) => (
+        {/* BOTTOM STRIP */}
+        {hasBottomStrip && (
+          <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/90 via-black/70 to-transparent pt-6 pb-3 px-3">
+            {showPdfThumbnails && currentPdfUrl && PdfDocument && PdfPage ? (
+              <PdfDocument
+                key={`${currentFile.id}-thumbs`}
+                file={currentPdfUrl}
+                loading={null}
+                noData={null}
+                error={null}
+              >
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 px-1">
+                  {Array.from({ length: pdfPageCount }).map((_, pageIndex) => {
+                    const pageNumber = pageIndex + 1
+                    const active = pageNumber === activePdfPageClamped
+                    return (
+                      <button
+                        key={`pdf-page-${pageNumber}`}
+                        onClick={() => setActivePdfPage(pageNumber)}
+                        aria-label={`Go to page ${pageNumber}`}
+                        className={cn(
+                          "group relative shrink-0 rounded-md overflow-hidden transition-all",
+                          active
+                            ? "ring-2 ring-primary shadow-lg"
+                            : "opacity-60 hover:opacity-100 ring-1 ring-white/10"
+                        )}
+                      >
+                        <div className="bg-white">
+                          <PdfPage
+                            pageNumber={pageNumber}
+                            width={pdfThumbnailWidth}
+                            renderTextLayer={false}
+                            renderAnnotationLayer={false}
+                            loading={
+                              <div className="h-[114px] w-[88px] animate-pulse bg-zinc-200" />
+                            }
+                            error={
+                              <div className="flex h-[114px] w-[88px] items-center justify-center bg-zinc-200 text-[10px] font-medium text-zinc-600">
+                                {pageNumber}
+                              </div>
+                            }
+                          />
+                        </div>
+                        <span
+                          className={cn(
+                            "absolute bottom-1 right-1 text-[10px] font-medium px-1.5 py-0.5 rounded tabular-nums",
+                            active
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-black/70 text-white/90"
+                          )}
+                        >
+                          {pageNumber}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </PdfDocument>
+            ) : hasMultiple ? (
+              <div className="flex items-center justify-center gap-1.5 overflow-x-auto px-1">
+                {files.map((f, index) => {
+                  const active = index === clampedIndex
+                  return (
                     <button
                       key={f.id}
                       onClick={() => handleSelectFile(index)}
                       className={cn(
-                        "relative h-12 w-12 shrink-0 rounded overflow-hidden border-2 transition-all",
-                        index === clampedIndex
-                          ? "border-primary ring-2 ring-primary/50"
-                          : "border-transparent opacity-60 hover:opacity-100"
+                        "relative h-14 w-14 shrink-0 rounded-md overflow-hidden transition-all",
+                        active
+                          ? "ring-2 ring-primary shadow-lg scale-105"
+                          : "opacity-60 hover:opacity-100 ring-1 ring-white/10"
                       )}
+                      aria-label={f.file_name}
                     >
                       {isImageFile(f.mime_type) && f.thumbnail_url ? (
                         <Image
@@ -675,18 +782,40 @@ export function FileViewer({
                           unoptimized
                         />
                       ) : (
-                        <div className="flex items-center justify-center h-full bg-muted text-lg">
-                          <FileText className="h-5 w-5 text-muted-foreground" />
+                        <div className="flex items-center justify-center h-full w-full bg-zinc-800">
+                          <FileText className="h-5 w-5 text-white/60" />
                         </div>
                       )}
                     </button>
-                  ))}
-                </div>
+                  )
+                })}
               </div>
-            )}
+            ) : null}
           </div>
         )}
       </div>
+
+      {/* Versions side panel */}
+      {hasVersionsPanel && showVersions && (
+        <aside
+          className="w-full sm:w-[360px] sm:max-w-[40vw] bg-background text-foreground border-l border-border overflow-y-auto flex-shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-4">
+            <VersionHistoryPanel
+              fileId={currentFile.id}
+              fileName={currentFile.file_name}
+              versions={versions ?? []}
+              onUploadVersion={onUploadVersion!}
+              onMakeCurrent={onMakeCurrentVersion!}
+              onDownloadVersion={onDownloadVersion!}
+              onUpdateVersion={onUpdateVersion!}
+              onDeleteVersion={onDeleteVersion!}
+              onRefresh={onRefreshVersions!}
+            />
+          </div>
+        </aside>
+      )}
     </div>
   )
 }

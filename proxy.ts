@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
-const PUBLIC_ROUTES = ["/proposal", "/i/", "/p/", "/s/", "/b/", "/d/", "/access"]
+const PUBLIC_ROUTES = ["/proposal", "/i/", "/p/", "/s/", "/b/", "/d/", "/f/", "/access"]
 const PUBLIC_API_ROUTES = ["/api/jobs/process-outbox", "/api/jobs/rbac-evidence"]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",
@@ -25,7 +25,7 @@ const PUBLIC_FILE_EXTENSIONS = [
   ".eot",
 ]
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set("x-pathname", request.nextUrl.pathname)
   requestHeaders.set("x-search", request.nextUrl.search)
@@ -68,7 +68,7 @@ export async function middleware(request: NextRequest) {
     return response
   }
 
-  // Basic authentication checks only - keep middleware lightweight
+  // Basic authentication checks only - keep proxy lightweight
   if (!user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {
     const redirectUrl = new URL("/auth/signin", request.url)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))

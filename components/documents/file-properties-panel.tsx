@@ -12,17 +12,19 @@ import {
   Info,
   Lock,
   Pencil,
+  RefreshCw,
   Share2,
   Trash2,
   Upload,
   Users,
+  History,
   X,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import type { FileWithUrls } from "@/app/(app)/documents/actions"
+import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/actions"
 import { cn } from "@/lib/utils"
 import { formatFileSize, getFileIcon } from "./documents-table"
 import { QUICK_FILTER_CONFIG } from "./types"
@@ -35,7 +37,10 @@ interface FilePropertiesPanelProps {
   onRename: (fileId: string) => void
   onMove: (fileId: string) => void
   onShare: (fileId: string) => void
-  onTimeline: (fileId: string) => void
+  onUploadNewVersion: (fileId: string) => void
+  timelineEvents: FileTimelineEvent[]
+  timelineLoading: boolean
+  onRefreshTimeline: (fileId: string) => void
   onSendForSignature: (fileId: string) => void
   onSendForApproval: (fileId: string) => void
   onDelete: (fileId: string) => void
@@ -101,7 +106,10 @@ export function FilePropertiesPanel({
   onRename,
   onMove,
   onShare,
-  onTimeline,
+  onUploadNewVersion,
+  timelineEvents,
+  timelineLoading,
+  onRefreshTimeline,
   onSendForSignature,
   onSendForApproval,
   onDelete,
@@ -113,6 +121,14 @@ export function FilePropertiesPanel({
     ? QUICK_FILTER_CONFIG[file.category as keyof typeof QUICK_FILTER_CONFIG]?.label ?? file.category
     : "-"
   const isShared = file.share_with_clients || file.share_with_subs
+  const accessSummary = !isShared
+    ? "Only internal team members can access this file."
+    : [
+        file.share_with_clients ? "Client portal" : null,
+        file.share_with_subs ? "Subcontractor portal" : null,
+      ]
+        .filter(Boolean)
+        .join(" and ")
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -164,7 +180,6 @@ export function FilePropertiesPanel({
           <h3 className="text-xs font-semibold uppercase text-muted-foreground">Details</h3>
           <DetailRow label="Category" value={categoryLabel} />
           <DetailRow label="Type" value={file.mime_type ?? "Unknown"} />
-          <DetailRow label="Folder" value={file.folder_path || "Root"} />
           <DetailRow label="Uploaded by" value={file.uploader_name ?? "-"} />
           <DetailRow label="Uploaded" value={formatDateTime(file.created_at)} />
           <DetailRow label="Modified" value={formatDateTime(file.updated_at ?? file.created_at)} />
@@ -189,7 +204,16 @@ export function FilePropertiesPanel({
         <Separator className="my-4" />
 
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold uppercase text-muted-foreground">Sharing</h3>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-muted-foreground">Sharing</h3>
+              <p className="mt-1 text-xs text-muted-foreground">{accessSummary}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => onShare(file.id)}>
+              <Share2 className="mr-2 h-4 w-4" />
+              Manage
+            </Button>
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {!isShared ? (
               <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-normal text-muted-foreground">
@@ -214,6 +238,96 @@ export function FilePropertiesPanel({
 
         <Separator className="my-4" />
 
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-muted-foreground">Versions</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Keep the file history intact while replacing the current file.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => onUploadNewVersion(file.id)}>
+              <History className="mr-2 h-4 w-4" />
+              New version
+            </Button>
+          </div>
+          <div className="rounded-md border bg-muted/30 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">
+                  Current version {file.version_number ? `v${file.version_number}` : "v1"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {file.is_current === false ? "Superseded revision" : "Latest revision"} • Updated{" "}
+                  {formatDateTime(file.updated_at ?? file.created_at)}
+                </p>
+              </div>
+              {file.version_number ? (
+                <Badge variant="outline" className="h-5 px-1.5 text-[11px] font-normal">
+                  v{file.version_number}
+                </Badge>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <Separator className="my-4" />
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-muted-foreground">Activity</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Recent access, version, and workflow events.
+              </p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => onRefreshTimeline(file.id)}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
+          {timelineLoading ? (
+            <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+              Loading activity…
+            </div>
+          ) : timelineEvents.length === 0 ? (
+            <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+              No activity yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {timelineEvents.slice(0, 8).map((event) => (
+                <div key={event.id} className="rounded-md border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary" className="capitalize">
+                          {event.action.replace(/_/g, " ")}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground uppercase tracking-[0.08em]">
+                          {event.source}
+                        </span>
+                      </div>
+                      {(event.actor_name || event.actor_email) && (
+                        <p className="truncate text-sm text-muted-foreground">
+                          {event.actor_name ?? "System"}
+                          {event.actor_email ? ` • ${event.actor_email}` : ""}
+                        </p>
+                      )}
+                      {event.details ? <p className="text-sm">{event.details}</p> : null}
+                    </div>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {formatDateTime(event.created_at)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <Separator className="my-4" />
+
         <div className="space-y-2">
           <h3 className="text-xs font-semibold uppercase text-muted-foreground">Actions</h3>
           <div className="grid gap-1">
@@ -224,18 +338,6 @@ export function FilePropertiesPanel({
             <Button variant="ghost" size="sm" className="justify-start" onClick={() => onMove(file.id)}>
               <FolderInput className="mr-2 h-4 w-4" />
               Move
-            </Button>
-            <Button variant="ghost" size="sm" className="justify-start" onClick={() => onShare(file.id)}>
-              <Share2 className="mr-2 h-4 w-4" />
-              Share
-            </Button>
-            <Button variant="ghost" size="sm" className="justify-start" onClick={() => onTimeline(file.id)}>
-              <Activity className="mr-2 h-4 w-4" />
-              Timeline
-            </Button>
-            <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" disabled>
-              <Clock className="mr-2 h-4 w-4" />
-              Version history
             </Button>
             <Button
               variant="ghost"

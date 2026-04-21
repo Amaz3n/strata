@@ -1,11 +1,10 @@
 "use client"
 
-import { Fragment, useRef } from "react"
+import { useRef } from "react"
 import {
   Search,
   X,
   FolderClosed,
-  ChevronRight,
   FolderPlus,
   FolderInput,
   Trash2,
@@ -14,18 +13,12 @@ import {
   Upload,
   ListFilter,
   ArrowUpDown,
+  PanelLeft,
+  PanelLeftClose,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -35,7 +28,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { cn } from "@/lib/utils"
 import { useDocuments } from "./documents-context"
 import { QUICK_FILTER_CONFIG } from "./types"
 
@@ -43,38 +35,47 @@ interface DocumentsToolbarProps {
   onUploadClick: () => void
   onCreateFolderClick: () => void
   selectedCount: number
+  selectedFolderCount?: number
   onDownloadSelected: () => void
   onMoveSelected: () => void
   onDeleteSelected: () => void
   onClearSelection: () => void
+  onOpenSelectedFolder?: () => void
+  onRenameSelectedFolder?: () => void
+  onShareSelectedFolder?: () => void
+  onDeleteSelectedFolder?: () => void
   onDropToFolderPath: (path: string) => void
   onDropToRoot: () => void
   isDraggingFiles: boolean
   isDownloadingSelected?: boolean
+  explorerOpen?: boolean
+  onToggleExplorer?: () => void
 }
 
 export function DocumentsToolbar({
   onUploadClick,
   onCreateFolderClick,
   selectedCount,
+  selectedFolderCount = 0,
   onDownloadSelected,
   onMoveSelected,
   onDeleteSelected,
   onClearSelection,
+  onOpenSelectedFolder,
+  onRenameSelectedFolder,
+  onShareSelectedFolder,
+  onDeleteSelectedFolder,
   onDropToFolderPath,
   onDropToRoot,
   isDraggingFiles,
   isDownloadingSelected = false,
+  explorerOpen = false,
+  onToggleExplorer,
 }: DocumentsToolbarProps) {
   const {
-    currentPath,
     searchQuery,
     setSearchQuery,
     isUploading,
-    selectedDrawingSetId,
-    selectedDrawingSetTitle,
-    navigateToRoot,
-    navigateToFolder,
     quickFilter,
     setQuickFilter,
     sort,
@@ -84,20 +85,6 @@ export function DocumentsToolbar({
   } = useDocuments()
 
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const isViewingDrawingSet = Boolean(selectedDrawingSetId)
-
-  const pathSegments = currentPath
-    ? currentPath.split("/").filter(Boolean)
-    : []
-
-  const handleBreadcrumbClick = (index: number) => {
-    if (index < 0) {
-      navigateToRoot()
-    } else {
-      const newPath = "/" + pathSegments.slice(0, index + 1).join("/")
-      navigateToFolder(newPath)
-    }
-  }
 
   const sortOptions = [
     { label: "Date created", value: "created_at" },
@@ -105,18 +92,95 @@ export function DocumentsToolbar({
     { label: "Name", value: "name" },
     { label: "File size", value: "size" },
   ] as const
+  const hasFolderSelection = selectedFolderCount > 0
 
   return (
     <div className="flex flex-col gap-2">
+      {hasFolderSelection ? (
+        <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
+          <span className="text-sm font-medium">
+            {selectedFolderCount} folder{selectedFolderCount === 1 ? "" : "s"} selected
+          </span>
+          {selectedFolderCount === 1 && (
+            <>
+              <Button variant="outline" size="sm" onClick={onOpenSelectedFolder}>
+                <FolderClosed className="h-4 w-4 mr-2" />
+                Open
+              </Button>
+              <Button variant="outline" size="sm" onClick={onRenameSelectedFolder}>
+                <FolderInput className="h-4 w-4 mr-2" />
+                Rename
+              </Button>
+              <Button variant="outline" size="sm" onClick={onShareSelectedFolder}>
+                <Plus className="h-4 w-4 mr-2" />
+                Share
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={onDeleteSelectedFolder}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </Button>
+            </>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClearSelection}>
+            Clear
+          </Button>
+        </div>
+      ) : selectedCount > 0 ? (
+        <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
+          <span className="text-sm font-medium">{selectedCount} selected</span>
+          <Button variant="outline" size="sm" onClick={onDownloadSelected} disabled={isDownloadingSelected}>
+            <Download className="h-4 w-4 mr-2" />
+            {isDownloadingSelected ? "Downloading..." : "Download"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={onMoveSelected}>
+            <FolderInput className="h-4 w-4 mr-2" />
+            Move
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={onDeleteSelected}
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onClearSelection}>
+            Clear
+          </Button>
+        </div>
+      ) : null}
+
       {/* Main toolbar row */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 flex-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={onToggleExplorer}
+            aria-label={explorerOpen ? "Hide explorer" : "Show explorer"}
+            title={explorerOpen ? "Hide explorer" : "Show explorer"}
+          >
+            {explorerOpen ? (
+              <PanelLeftClose className="h-3.5 w-3.5" />
+            ) : (
+              <PanelLeft className="h-3.5 w-3.5" />
+            )}
+          </Button>
+
           {/* Search */}
           <div className="relative w-full max-w-[300px]">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               ref={searchInputRef}
-              placeholder={isViewingDrawingSet ? "Search sheets..." : "Search documents..."}
+              placeholder="Search documents..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="h-8 pl-8 text-sm"
@@ -203,106 +267,6 @@ export function DocumentsToolbar({
           </DropdownMenu>
 
           <div className="flex-1" />
-
-          {/* Drawing set breadcrumb */}
-          {isViewingDrawingSet && (
-            <Breadcrumb className="shrink-0 hidden lg:block">
-              <BreadcrumbList className="flex-nowrap gap-1">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      navigateToRoot()
-                    }}
-                    className="flex items-center gap-1 text-xs rounded px-1 py-0.5"
-                  >
-                    <FolderClosed className="h-3.5 w-3.5" />
-                    All files
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator>
-                  <ChevronRight className="h-3 w-3" />
-                </BreadcrumbSeparator>
-                <BreadcrumbItem>
-                  <BreadcrumbPage className="text-xs truncate max-w-[200px]">
-                    {selectedDrawingSetTitle || "Drawing Set"}
-                  </BreadcrumbPage>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-          )}
-
-          {/* Folder breadcrumbs */}
-          {currentPath && !isViewingDrawingSet && (
-            <Breadcrumb className="shrink-0 hidden lg:block">
-              <BreadcrumbList className="flex-nowrap gap-1">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      handleBreadcrumbClick(-1)
-                    }}
-                    onDragOver={(event) => {
-                      if (!isDraggingFiles) return
-                      event.preventDefault()
-                    }}
-                    onDrop={(event) => {
-                      if (!isDraggingFiles) return
-                      event.preventDefault()
-                      onDropToRoot()
-                    }}
-                    className={cn(
-                      "flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-colors",
-                      isDraggingFiles && "hover:bg-muted",
-                    )}
-                  >
-                    <FolderClosed className="h-3.5 w-3.5" />
-                    All files
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                {pathSegments.map((segment, index) => (
-                  <Fragment key={segment + index}>
-                    <BreadcrumbSeparator>
-                      <ChevronRight className="h-3 w-3" />
-                    </BreadcrumbSeparator>
-                    <BreadcrumbItem>
-                      {index === pathSegments.length - 1 ? (
-                        <BreadcrumbPage className="text-xs truncate max-w-[160px]">
-                          {segment}
-                        </BreadcrumbPage>
-                      ) : (
-                        <BreadcrumbLink
-                          href="#"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            handleBreadcrumbClick(index)
-                          }}
-                          onDragOver={(event) => {
-                            if (!isDraggingFiles) return
-                            event.preventDefault()
-                          }}
-                          onDrop={(event) => {
-                            if (!isDraggingFiles) return
-                            event.preventDefault()
-                            const targetPath = "/" + pathSegments.slice(0, index + 1).join("/")
-                            onDropToFolderPath(targetPath)
-                          }}
-                          className={cn(
-                            "text-xs truncate max-w-[160px] rounded px-1 py-0.5 transition-colors",
-                            isDraggingFiles && "hover:bg-muted",
-                          )}
-                        >
-                          {segment}
-                        </BreadcrumbLink>
-                      )}
-                    </BreadcrumbItem>
-                  </Fragment>
-                ))}
-              </BreadcrumbList>
-            </Breadcrumb>
-          )}
         </div>
 
         {/* Right side: New dropdown */}
@@ -318,7 +282,7 @@ export function DocumentsToolbar({
               <Upload className="h-4 w-4 mr-2" />
               {isUploading ? "Uploading..." : "Upload files"}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onCreateFolderClick} disabled={isViewingDrawingSet}>
+            <DropdownMenuItem onClick={onCreateFolderClick}>
               <FolderPlus className="h-4 w-4 mr-2" />
               New folder
             </DropdownMenuItem>
@@ -326,111 +290,6 @@ export function DocumentsToolbar({
         </DropdownMenu>
       </div>
 
-      {/* Breadcrumbs for smaller screens */}
-      {(currentPath || isViewingDrawingSet) && (
-        <div className="lg:hidden px-1">
-          {/* Duplicate of breadcrumb logic but visible only on small screens */}
-          {isViewingDrawingSet ? (
-            <Breadcrumb>
-              <BreadcrumbList className="flex-nowrap gap-1">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      navigateToRoot()
-                    }}
-                    className="flex items-center gap-1 text-[10px] rounded px-1 py-0.5"
-                  >
-                    <FolderClosed className="h-3 w-3" />
-                    All files
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator>
-                  <ChevronRight className="h-2.5 w-2.5" />
-                </BreadcrumbSeparator>
-                <BreadcrumbItem>
-                  <BreadcrumbPage className="text-[10px] truncate max-w-[150px]">
-                    {selectedDrawingSetTitle || "Drawing Set"}
-                  </BreadcrumbPage>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-          ) : (
-            <Breadcrumb>
-              <BreadcrumbList className="flex-nowrap gap-1">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      handleBreadcrumbClick(-1)
-                    }}
-                    className="flex items-center gap-1 text-[10px] rounded px-1 py-0.5"
-                  >
-                    <FolderClosed className="h-3 w-3" />
-                    All files
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                {pathSegments.map((segment, index) => (
-                  <Fragment key={segment + index}>
-                    <BreadcrumbSeparator>
-                      <ChevronRight className="h-2.5 w-2.5" />
-                    </BreadcrumbSeparator>
-                    <BreadcrumbItem>
-                      {index === pathSegments.length - 1 ? (
-                        <BreadcrumbPage className="text-[10px] truncate max-w-[120px]">
-                          {segment}
-                        </BreadcrumbPage>
-                      ) : (
-                        <BreadcrumbLink
-                          href="#"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            handleBreadcrumbClick(index)
-                          }}
-                          className="text-[10px] truncate max-w-[120px] rounded px-1 py-0.5"
-                        >
-                          {segment}
-                        </BreadcrumbLink>
-                      )}
-                    </BreadcrumbItem>
-                  </Fragment>
-                ))}
-              </BreadcrumbList>
-            </Breadcrumb>
-          )}
-        </div>
-      )}
-
-      {/* Bulk actions bar */}
-      {selectedCount > 0 && (
-        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
-          <span className="text-sm font-medium">{selectedCount} selected</span>
-          <div className="flex items-center gap-1 ml-2">
-            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onDownloadSelected} disabled={isDownloadingSelected}>
-              <Download className="h-3.5 w-3.5 mr-1" />
-              {isDownloadingSelected ? "..." : "Download"}
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onMoveSelected}>
-              <FolderInput className="h-3.5 w-3.5 mr-1" />
-              Move
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs text-destructive hover:text-destructive"
-              onClick={onDeleteSelected}
-            >
-              <Trash2 className="h-3.5 w-3.5 mr-1" />
-              Delete
-            </Button>
-          </div>
-          <Button variant="ghost" size="sm" className="h-7 text-xs ml-auto" onClick={onClearSelection}>
-            Clear
-          </Button>
-        </div>
-      )}
     </div>
   )
 }
