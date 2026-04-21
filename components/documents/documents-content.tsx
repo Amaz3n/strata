@@ -10,6 +10,7 @@ import type { DocumentTableItem } from "./documents-table"
 
 interface DocumentsContentProps {
   onFileClick: (fileId: string) => void
+  onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
   onUploadClick: () => void
   onDropOnFolder: (path: string) => void
@@ -34,6 +35,7 @@ interface DocumentsContentProps {
 
 export function DocumentsContent({
   onFileClick,
+  onDownloadFile,
   onFolderClick,
   onUploadClick,
   onDropOnFolder,
@@ -215,6 +217,7 @@ export function DocumentsContent({
           onFileSelectionChange={onFileSelectionChange}
           onFolderSelectionChange={onFolderSelectionChange}
           onFileClick={onFileClick}
+          onDownloadFile={onDownloadFile}
           onFolderClick={onFolderClick}
           onUploadClick={onUploadClick}
           onDropOnFolder={onDropOnFolder}

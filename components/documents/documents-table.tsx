@@ -31,6 +31,7 @@ import {
   AlertCircle,
   Info,
   ShieldCheck,
+  Download,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -150,6 +151,7 @@ export interface DocumentsFileTableProps {
   onFileSelectionChange: (fileId: string, selected: boolean) => void
   onFolderSelectionChange: (path: string, selected: boolean) => void
   onFileClick: (fileId: string) => void
+  onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
   onUploadClick: () => void
   onDropOnFolder: (path: string) => void
@@ -191,6 +193,7 @@ export function DocumentsFileTable({
   onFileSelectionChange,
   onFolderSelectionChange,
   onFileClick,
+  onDownloadFile,
   onFolderClick,
   onUploadClick,
   onDropOnFolder,
@@ -266,6 +269,7 @@ export function DocumentsFileTable({
               isSelected={selectedFileIds.has(item.data.id)}
               onSelectionChange={onFileSelectionChange}
               onFileClick={onFileClick}
+              onDownloadFile={onDownloadFile}
               onRenameFile={onRenameFile}
               onMoveFile={onMoveFile}
               onDeleteFile={onDeleteFile}
@@ -442,6 +446,7 @@ const FileRow = memo(function FileRow({
   isSelected,
   onSelectionChange,
   onFileClick,
+  onDownloadFile,
   onRenameFile,
   onMoveFile,
   onDeleteFile,
@@ -458,6 +463,7 @@ const FileRow = memo(function FileRow({
   isSelected: boolean
   onSelectionChange: (fileId: string, selected: boolean) => void
   onFileClick: (fileId: string) => void
+  onDownloadFile: (fileId: string) => void
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
@@ -694,6 +700,10 @@ const FileRow = memo(function FileRow({
               <DropdownMenuItem onClick={() => onFileClick(file.id)}>
                 <Eye className="h-4 w-4 mr-2" />
                 Preview
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onDownloadFile(file.id)}>
+                <Download className="h-4 w-4 mr-2" />
+                Download
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onUploadNewVersion(file.id)}>
                 <FilePlus2 className="h-4 w-4 mr-2" />

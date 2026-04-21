@@ -1573,6 +1573,18 @@ function UnifiedDocumentsLayoutInner() {
     [handleDownload],
   );
 
+  const handleDownloadById = useCallback(
+    async (fileId: string) => {
+      const file = files.find((item) => item.id === fileId);
+      if (!file) {
+        toast.error("File not found");
+        return;
+      }
+      await handleDownload(file as FileWithDetails);
+    },
+    [files, handleDownload],
+  );
+
   const previewableFiles = useMemo(() => {
     return files
       .filter((f) => {
@@ -1715,6 +1727,7 @@ function UnifiedDocumentsLayoutInner() {
     return (
         <DocumentsContent
           onFileClick={handleFileClick}
+          onDownloadFile={handleDownloadById}
           onFolderClick={handleFolderClick}
           onUploadClick={handleUploadClick}
           onDropOnFolder={handleDropOnFolder}
@@ -2237,7 +2250,7 @@ function UnifiedDocumentsLayoutInner() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Share</DialogTitle>
             {shareFile ? (
@@ -2246,7 +2259,7 @@ function UnifiedDocumentsLayoutInner() {
               </DialogDescription>
             ) : null}
           </DialogHeader>
-          <div className="space-y-5 py-1">
+          <div className="max-h-[70vh] space-y-5 overflow-y-auto py-1 pr-1">
             <section className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 Portals
