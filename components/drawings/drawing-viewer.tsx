@@ -213,9 +213,9 @@ const MARKUP_COLORS = [
 // Stroke width options
 const STROKE_WIDTHS = [1, 2, 3, 4, 6, 8]
 
-function DrawingLoader({ sheetNumber }: { sheetNumber?: string }) {
+function DrawingLoader(_: { sheetNumber?: string }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+    <div className="absolute inset-0 overflow-hidden pointer-events-none">
       <div
         className="absolute inset-0 opacity-[0.08]"
         style={{
@@ -226,23 +226,9 @@ function DrawingLoader({ sheetNumber }: { sheetNumber?: string }) {
         }}
       />
       <div
-        className="absolute inset-y-0 w-40 -skew-x-12 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-[drawing-shimmer_2.4s_ease-in-out_infinite]"
-        style={{ left: "-10rem" }}
+        className="absolute inset-y-0 w-32 bg-gradient-to-r from-transparent via-white/10 to-transparent animate-[drawing-shimmer_1.4s_ease-in-out_infinite]"
+        style={{ left: "-8rem" }}
       />
-      <div className="relative flex flex-col items-center gap-4">
-        <div className="relative h-16 w-16">
-          <div className="absolute inset-0 rounded-xl border border-white/10" />
-          <div className="absolute inset-0 rounded-xl border-2 border-white/30 border-t-white/80 animate-spin" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-[11px] font-mono tracking-wider text-white/70">
-              {sheetNumber ?? "—"}
-            </span>
-          </div>
-        </div>
-        <div className="text-xs text-white/50 font-medium tracking-wide uppercase">
-          Loading drawing
-        </div>
-      </div>
     </div>
   )
 }

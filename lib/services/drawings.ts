@@ -939,7 +939,7 @@ export async function listDrawingSheetsWithUrls(
     .select(`
       drawing_sheet_id,
       thumb_path, medium_path, full_path,
-      tile_manifest_path, tiles_base_path,
+      tile_manifest, tile_base_url, tile_manifest_path, tiles_base_path,
       thumbnail_url, medium_url, full_url,
       image_width, image_height,
       created_at
@@ -961,6 +961,8 @@ export async function listDrawingSheetsWithUrls(
     imageThumbnailPath?: string | null
     imageMediumPath?: string | null
     imageFullPath?: string | null
+    tileManifest?: Record<string, any> | null
+    tileBaseUrl?: string | null
     tileManifestPath?: string | null
     tilesBasePath?: string | null
   }>()
@@ -971,6 +973,8 @@ export async function listDrawingSheetsWithUrls(
         imageThumbnailPath: (v as any).thumb_path ?? null,
         imageMediumPath: (v as any).medium_path ?? null,
         imageFullPath: (v as any).full_path ?? null,
+        tileManifest: (v as any).tile_manifest ?? null,
+        tileBaseUrl: (v as any).tile_base_url ?? null,
         tileManifestPath: (v as any).tile_manifest_path ?? null,
         tilesBasePath: (v as any).tiles_base_path ?? null,
         imageThumbnailUrl:
@@ -993,6 +997,8 @@ export async function listDrawingSheetsWithUrls(
       image_thumbnail_path: versionData?.imageThumbnailPath ?? null,
       image_medium_path: versionData?.imageMediumPath ?? null,
       image_full_path: versionData?.imageFullPath ?? null,
+      tile_manifest: versionData?.tileManifest ?? null,
+      tile_base_url: versionData?.tileBaseUrl ?? null,
       tile_manifest_path: versionData?.tileManifestPath ?? null,
       tiles_base_path: versionData?.tilesBasePath ?? null,
       image_thumbnail_url: versionData?.imageThumbnailUrl ?? null,

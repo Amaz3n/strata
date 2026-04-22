@@ -323,7 +323,8 @@ export function DrawingsSetsView({
     setSheetsLoading(false)
   }, [initialSheets, selectedProjectId])
 
-  // Pick a default set once sets load: most recent ready/processing one.
+  // Pick a default set once sets load. Prefer the newest ready set so a
+  // background upload does not take over the table while it is processing.
   useEffect(() => {
     if (!sets.length) {
       setSelectedSetId((curr) => (curr === null ? curr : null))
@@ -335,7 +336,9 @@ export function DrawingsSetsView({
         (a, b) =>
           new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       )
-      return sorted[0]?.id ?? null
+      const preferred =
+        sorted.find((set) => set.status === "ready") ?? sorted[0] ?? null
+      return preferred?.id ?? null
     })
   }, [sets])
 
@@ -536,7 +539,7 @@ export function DrawingsSetsView({
       })
 
       setSets((prev) => [newSet, ...prev])
-      setSelectedSetId(newSet.id)
+      setSelectedSetId((current) => current ?? newSet.id)
 
       const revisionLabel = uploadRevisionLabel.trim()
       if (revisionLabel) {
@@ -1160,12 +1163,6 @@ export function DrawingsSetsView({
             title="No plan set available"
             description="Upload a plan set to start organizing drawings."
           />
-        ) : activeSetProcessing && totalSheetsInSet === 0 ? (
-          <EmptyState
-            icon={RefreshCw}
-            title="Processing sheets"
-            description="Sheets will appear here as the plan set is split up."
-          />
         ) : totalSheetsInSet === 0 ? (
           <EmptyState
             icon={FileText}
@@ -1173,6 +1170,8 @@ export function DrawingsSetsView({
             description={
               activeSetFailed
                 ? "Processing failed — retry from above."
+                : activeSetProcessing
+                  ? "Sheets are processing in the background."
                 : "This plan set doesn't have any sheets yet."
             }
           />
@@ -1780,9 +1779,7 @@ function SheetRow({
           </div>
         </div>
       </TableCell>
-      <TableCell className="hidden sm:table-cell text-center text-xs text-muted-foreground">
-        1
-      </TableCell>
+      <TableCell className="hidden sm:table-cell" />
       <TableCell className="hidden md:table-cell text-center text-xs text-muted-foreground">
         {sheetVersionLabel(sheet)}
       </TableCell>

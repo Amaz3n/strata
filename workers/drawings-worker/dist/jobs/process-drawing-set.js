@@ -1,4 +1,7 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.processDrawingSet = processDrawingSet;
 const child_process_1 = require("child_process");
@@ -6,6 +9,7 @@ const fs_1 = require("fs");
 const os_1 = require("os");
 const path_1 = require("path");
 const crypto_1 = require("crypto");
+const sharp_1 = __importDefault(require("sharp"));
 const pdfs_1 = require("../storage/pdfs");
 const tiles_1 = require("../storage/tiles");
 const SHEET_NUMBER_MAX_LENGTH = 50;
@@ -108,6 +112,7 @@ async function processDrawingSet(supabase, job) {
         await fs_1.promises.mkdir(tempPngDir, { recursive: true });
         // Extract pages one-by-one (more reliable, doesn't timeout)
         const tempPngPaths = [];
+        const tempLocalPngPaths = [];
         for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
             const localPngPath = (0, path_1.join)(tempPngDir, `page-${pageIndex}.png`);
             const storagePngPath = `${basePath}/temp/page-${pageIndex}.png`;
@@ -129,13 +134,12 @@ async function processDrawingSet(supabase, job) {
                         cacheControl: 'public, max-age=3600',
                     });
                     tempPngPaths.push(storagePngPath);
+                    tempLocalPngPaths.push(localPngPath);
                     console.log(`Uploaded page ${pageIndex + 1}/${pageCount}`);
                 }
                 catch (uploadError) {
                     console.warn(`Failed to upload PNG for page ${pageIndex}:`, uploadError);
                 }
-                // Clean up local PNG to save disk space
-                await fs_1.promises.unlink(localPngPath).catch(() => { });
             }
             catch (error) {
                 console.error(`Failed to extract page ${pageIndex}:`, error.message);
@@ -153,9 +157,18 @@ async function processDrawingSet(supabase, job) {
                 setTitle,
                 pageNumber,
             });
-            const sheetNumber = ensureUniqueSheetNumber(detectedSheet.sheetNumber, pageNumber, usedSheetNumbers);
-            const sheetTitle = truncateValue(detectedSheet.sheetTitle || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH);
-            console.log(`[SheetDetect] Page ${pageNumber}: ${sheetNumber} (${detectedSheet.method}, ${detectedSheet.confidence})`);
+            const visionSheet = shouldUseVisionFallback(detectedSheet, pageTexts[pageIndex] || '')
+                ? await detectSheetMetadataWithVision({
+                    localPngPath: tempLocalPngPaths[pageIndex] || null,
+                    pageText: pageTexts[pageIndex] || '',
+                    setTitle,
+                    pageNumber,
+                    initial: detectedSheet,
+                })
+                : null;
+            const resolvedSheet = mergeDetectedSheetMetadata(detectedSheet, visionSheet, setTitle, pageNumber);
+            const sheetTitle = truncateValue(resolvedSheet.sheetTitle || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH);
+            console.log(`[SheetDetect] Page ${pageNumber}: ${resolvedSheet.sheetNumber} (${resolvedSheet.method}, ${resolvedSheet.confidence})`);
             // Create sheet record
             const { data: sheet, error: sheetError } = await supabase
                 .from('drawing_sheets')
@@ -163,9 +176,9 @@ async function processDrawingSet(supabase, job) {
                 org_id: drawingSet.org_id,
                 project_id: projectId,
                 drawing_set_id: drawingSetId,
-                sheet_number: sheetNumber,
+                sheet_number: ensureUniqueSheetNumber(resolvedSheet.sheetNumber, pageNumber, usedSheetNumbers),
                 sheet_title: sheetTitle,
-                discipline: detectedSheet.discipline,
+                discipline: resolvedSheet.discipline,
                 sort_order: pageIndex,
                 share_with_clients: false,
                 share_with_subs: false,
@@ -192,9 +205,11 @@ async function processDrawingSet(supabase, job) {
                     source_hash: hash,
                     page_index: pageIndex,
                     sheet_detection: {
-                        method: detectedSheet.method,
-                        confidence: detectedSheet.confidence,
-                        source_line: detectedSheet.sourceLine,
+                        method: resolvedSheet.method,
+                        confidence: resolvedSheet.confidence,
+                        source_line: resolvedSheet.sourceLine,
+                        vision_used: Boolean(visionSheet),
+                        vision_notes: visionSheet?.notes ?? [],
                     },
                 },
                 created_at: new Date().toISOString(),
@@ -257,6 +272,191 @@ async function processDrawingSet(supabase, job) {
             console.warn('Failed to clean up temp PNG directory:', e);
         }
     }
+}
+function shouldUseVisionFallback(detected, pageText) {
+    if (!process.env.OPENAI_API_KEY)
+        return false;
+    if (!pageText.trim())
+        return true;
+    return detected.method === 'fallback' || detected.confidence === 'low';
+}
+async function detectSheetMetadataWithVision(input) {
+    const { localPngPath, pageText, setTitle, pageNumber, initial } = input;
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey || !localPngPath)
+        return null;
+    try {
+        const images = await buildVisionInputs(localPngPath);
+        if (images.length === 0)
+            return null;
+        const baseUrl = (process.env.OPENAI_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+        const model = process.env.OPENAI_DRAWINGS_VISION_MODEL || process.env.OPENAI_VISION_MODEL || 'gpt-4.1-mini';
+        const prompt = [
+            'You are extracting metadata from one construction drawing page.',
+            `Project set title: ${setTitle}`,
+            `Page number in upload order: ${pageNumber}`,
+            `Current text-based guess: sheet_number=${initial.sheetNumber}; sheet_title=${initial.sheetTitle}; discipline=${initial.discipline}; method=${initial.method}; confidence=${initial.confidence}`,
+            pageText.trim() ? `Extracted PDF text (may be partial): ${truncateValue(pageText, 4000)}` : 'Extracted PDF text is empty, so rely on the image.',
+            'Return only JSON with these keys: sheet_number, sheet_title, discipline, confidence, notes.',
+            'discipline must be one of: A, S, M, E, P, FP, C, L, I, G, T, SP, D, X.',
+            'confidence must be one of: high, medium, low.',
+            'If uncertain, preserve the existing guess unless the image clearly shows a better answer.',
+            'Prefer title block values like E1.1, A-101, S2.0, etc.',
+        ].join('\n');
+        const response = await fetch(`${baseUrl}/responses`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model,
+                input: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'input_text', text: prompt },
+                            ...images.map((image, index) => ({
+                                type: 'input_image',
+                                image_url: image.dataUrl,
+                                detail: index === 0 ? 'low' : 'high',
+                            })),
+                        ],
+                    },
+                ],
+            }),
+        });
+        if (!response.ok) {
+            const body = await response.text();
+            console.warn(`[Vision] OpenAI request failed for page ${pageNumber}: ${response.status} ${body}`);
+            return null;
+        }
+        const payload = await response.json();
+        const rawText = extractResponseText(payload);
+        if (!rawText)
+            return null;
+        const parsed = parseVisionJson(rawText);
+        if (!parsed)
+            return null;
+        const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? '');
+        const discipline = typeof parsed.discipline === 'string' && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
+            ? parsed.discipline.toUpperCase()
+            : sheetNumber
+                ? detectDiscipline(sheetNumber)
+                : null;
+        const sheetTitle = sanitizeTitle(parsed.sheet_title ?? '');
+        const confidence = normalizeConfidence(parsed.confidence);
+        const notes = Array.isArray(parsed.notes)
+            ? parsed.notes.filter((note) => typeof note === 'string').slice(0, 6)
+            : [];
+        return {
+            sheetNumber,
+            sheetTitle,
+            discipline,
+            confidence,
+            notes,
+        };
+    }
+    catch (error) {
+        console.warn(`[Vision] Failed for page ${pageNumber}:`, error);
+        return null;
+    }
+}
+async function buildVisionInputs(localPngPath) {
+    const page = (0, sharp_1.default)(localPngPath);
+    const metadata = await page.metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (width <= 0 || height <= 0)
+        return [];
+    const full = await page
+        .resize({ width: Math.min(width, 1600), withoutEnlargement: true })
+        .webp({ quality: 85 })
+        .toBuffer();
+    const cornerWidth = Math.max(300, Math.round(width * 0.34));
+    const cornerHeight = Math.max(220, Math.round(height * 0.24));
+    const crops = await Promise.all([
+        (0, sharp_1.default)(localPngPath)
+            .extract({ left: Math.max(0, width - cornerWidth), top: 0, width: Math.min(cornerWidth, width), height: Math.min(cornerHeight, height) })
+            .resize({ width: 1200, withoutEnlargement: false })
+            .webp({ quality: 90 })
+            .toBuffer(),
+        (0, sharp_1.default)(localPngPath)
+            .extract({ left: Math.max(0, width - cornerWidth), top: Math.max(0, height - cornerHeight), width: Math.min(cornerWidth, width), height: Math.min(cornerHeight, height) })
+            .resize({ width: 1200, withoutEnlargement: false })
+            .webp({ quality: 90 })
+            .toBuffer(),
+        (0, sharp_1.default)(localPngPath)
+            .extract({ left: 0, top: Math.max(0, height - cornerHeight), width: Math.min(cornerWidth, width), height: Math.min(cornerHeight, height) })
+            .resize({ width: 1200, withoutEnlargement: false })
+            .webp({ quality: 90 })
+            .toBuffer(),
+    ]);
+    return [full, ...crops].map((buffer) => ({
+        dataUrl: `data:image/webp;base64,${buffer.toString('base64')}`,
+    }));
+}
+function extractResponseText(payload) {
+    if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
+        return payload.output_text.trim();
+    }
+    const output = Array.isArray(payload?.output) ? payload.output : [];
+    const texts = [];
+    for (const item of output) {
+        const content = Array.isArray(item?.content) ? item.content : [];
+        for (const entry of content) {
+            if (entry?.type === 'output_text' && typeof entry?.text === 'string') {
+                texts.push(entry.text);
+            }
+        }
+    }
+    return texts.join('\n').trim();
+}
+function parseVisionJson(raw) {
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    const candidate = fenced?.[1] ?? raw;
+    const jsonMatch = candidate.match(/\{[\s\S]*\}/);
+    if (!jsonMatch)
+        return null;
+    try {
+        return JSON.parse(jsonMatch[0]);
+    }
+    catch {
+        return null;
+    }
+}
+function normalizeConfidence(value) {
+    if (value === 'high' || value === 'medium' || value === 'low')
+        return value;
+    return 'low';
+}
+function mergeDetectedSheetMetadata(detected, vision, setTitle, pageNumber) {
+    if (!vision)
+        return detected;
+    const useVisionSheetNumber = Boolean(vision.sheetNumber) && (detected.method === 'fallback' ||
+        detected.confidence === 'low' ||
+        detected.sheetNumber === `${setTitle} - Page ${pageNumber}`);
+    const sheetNumber = useVisionSheetNumber ? vision.sheetNumber : detected.sheetNumber;
+    const sheetTitle = vision.sheetTitle || detected.sheetTitle || `${setTitle} - Page ${pageNumber}`;
+    const discipline = vision.discipline || detected.discipline || detectDiscipline(sheetNumber);
+    const confidence = confidenceRank(vision.confidence) > confidenceRank(detected.confidence)
+        ? vision.confidence
+        : detected.confidence;
+    return {
+        sheetNumber,
+        sheetTitle,
+        discipline,
+        method: useVisionSheetNumber ? 'pattern' : detected.method,
+        confidence,
+        sourceLine: detected.sourceLine,
+    };
+}
+function confidenceRank(value) {
+    if (value === 'high')
+        return 3;
+    if (value === 'medium')
+        return 2;
+    return 1;
 }
 function getPdfPageCount(pdfPath) {
     try {

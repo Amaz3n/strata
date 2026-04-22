@@ -258,10 +258,10 @@
   
   @keyframes drawing-shimmer {
     0% {
-      transform: translateX(-10rem) skewX(-12deg);
+      transform: translateX(-8rem);
     }
     100% {
-      transform: translateX(110vw) skewX(-12deg);
+      transform: translateX(110vw);
     }
   }
 
