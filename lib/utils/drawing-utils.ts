@@ -1,3 +1,17 @@
+import {
+  Bolt,
+  Building2,
+  Droplets,
+  FileText,
+  Flame,
+  Layers3,
+  Ruler,
+  ScrollText,
+  Sofa,
+  TreePine,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react"
 import type { DrawingDiscipline } from "@/lib/validation/drawings"
 
 /**
@@ -213,6 +227,61 @@ export const DISCIPLINE_COLORS: Record<DrawingDiscipline, string> = {
   SP: "#6B7280", // Gray
   D: "#6B7280",  // Gray
   X: "#9CA3AF",  // Light gray
+}
+
+/**
+ * Tailwind gradient/border/text classes for a discipline chip.
+ * Used in the drawings table and the drawing viewer for consistency.
+ */
+export const DISCIPLINE_GRADIENT_CLASSES: Record<string, string> = {
+  G: "bg-gradient-to-br from-slate-500/10 to-slate-600/5 border-slate-500/30 text-slate-600 dark:from-slate-400/20 dark:to-slate-500/10 dark:border-slate-400/30 dark:text-slate-300",
+  T: "bg-gradient-to-br from-zinc-500/10 to-zinc-600/5 border-zinc-500/30 text-zinc-600 dark:from-zinc-400/20 dark:to-zinc-500/10 dark:border-zinc-400/30 dark:text-zinc-300",
+  A: "bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/30 text-blue-600 dark:from-blue-500/20 dark:to-blue-600/10 dark:border-blue-500/30 dark:text-blue-400",
+  S: "bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/30 text-purple-600 dark:from-purple-500/20 dark:to-purple-600/10 dark:border-purple-500/30 dark:text-purple-400",
+  M: "bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/30 text-orange-600 dark:from-orange-500/20 dark:to-orange-600/10 dark:border-orange-500/30 dark:text-orange-400",
+  E: "bg-gradient-to-br from-amber-500/10 to-amber-600/5 border-amber-500/30 text-amber-600 dark:from-amber-500/20 dark:to-amber-600/10 dark:border-amber-500/30 dark:text-amber-400",
+  P: "bg-gradient-to-br from-cyan-500/10 to-cyan-600/5 border-cyan-500/30 text-cyan-600 dark:from-cyan-500/20 dark:to-cyan-600/10 dark:border-cyan-500/30 dark:text-cyan-400",
+  FP: "bg-gradient-to-br from-rose-500/10 to-rose-600/5 border-rose-500/30 text-rose-600 dark:from-rose-500/20 dark:to-rose-600/10 dark:border-rose-500/30 dark:text-rose-400",
+  C: "bg-gradient-to-br from-emerald-500/10 to-teal-600/5 border-emerald-500/30 text-emerald-600 dark:from-emerald-500/20 dark:to-teal-600/10 dark:border-emerald-500/30 dark:text-emerald-400",
+  L: "bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border-emerald-500/30 text-emerald-600 dark:from-emerald-500/20 dark:to-emerald-600/10 dark:border-emerald-500/30 dark:text-emerald-400",
+  I: "bg-gradient-to-br from-violet-500/10 to-violet-600/5 border-violet-500/30 text-violet-600 dark:from-violet-500/20 dark:to-violet-600/10 dark:border-violet-500/30 dark:text-violet-400",
+  SP: "bg-gradient-to-br from-fuchsia-500/10 to-fuchsia-600/5 border-fuchsia-500/30 text-fuchsia-600 dark:from-fuchsia-500/20 dark:to-fuchsia-600/10 dark:border-fuchsia-500/30 dark:text-fuchsia-400",
+  D: "bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border-indigo-500/30 text-indigo-600 dark:from-indigo-500/20 dark:to-indigo-600/10 dark:border-indigo-500/30 dark:text-indigo-400",
+  X: "bg-gradient-to-br from-muted/80 to-muted/30 border-border text-muted-foreground dark:from-muted/60 dark:to-muted/20 dark:border-border dark:text-muted-foreground",
+}
+
+export function disciplineGradientClass(code?: string | null) {
+  if (!code) return DISCIPLINE_GRADIENT_CLASSES.X
+  return DISCIPLINE_GRADIENT_CLASSES[code] ?? DISCIPLINE_GRADIENT_CLASSES.X
+}
+
+export function disciplineIcon(code?: string | null): LucideIcon {
+  switch (code) {
+    case "A":
+      return Building2
+    case "S":
+      return Layers3
+    case "M":
+      return Wrench
+    case "E":
+      return Bolt
+    case "P":
+      return Droplets
+    case "FP":
+      return Flame
+    case "C":
+      return Ruler
+    case "L":
+      return TreePine
+    case "I":
+      return Sofa
+    case "SP":
+      return ScrollText
+    case "D":
+      return Ruler
+    default:
+      return FileText
+  }
 }
 
 /**

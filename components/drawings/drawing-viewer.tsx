@@ -74,7 +74,20 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { PIN_ENTITY_TYPE_LABELS } from "@/lib/validation/drawings"
+import { PIN_ENTITY_TYPE_LABELS, DISCIPLINE_LABELS } from "@/lib/validation/drawings"
+import type { DrawingDiscipline } from "@/lib/validation/drawings"
+import {
+  disciplineGradientClass,
+  disciplineIcon,
+  groupSheetsByDiscipline,
+  DISCIPLINE_SORT_ORDER,
+} from "@/lib/utils/drawing-utils"
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion"
 import type { DrawingSheet, DrawingSheetVersion, DrawingMarkup, DrawingPin, MarkupType } from "@/app/(app)/drawings/actions"
 import { listSheetVersionsWithUrlsAction } from "@/app/(app)/drawings/actions"
 import { useDrawingKeyboardShortcuts } from "./use-drawing-keyboard-shortcuts"
@@ -156,11 +169,7 @@ const PDFViewer = ({
   }, [])
 
   if (!PDFComponents) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">Loading PDF...</div>
-      </div>
-    )
+    return null
   }
 
   const { Document, Page } = PDFComponents
@@ -203,6 +212,40 @@ const MARKUP_COLORS = [
 
 // Stroke width options
 const STROKE_WIDTHS = [1, 2, 3, 4, 6, 8]
+
+function DrawingLoader({ sheetNumber }: { sheetNumber?: string }) {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div
+        className="absolute inset-0 opacity-[0.08]"
+        style={{
+          backgroundImage:
+            "linear-gradient(to right, rgba(255,255,255,0.6) 1px, transparent 1px)," +
+            "linear-gradient(to bottom, rgba(255,255,255,0.6) 1px, transparent 1px)",
+          backgroundSize: "40px 40px",
+        }}
+      />
+      <div
+        className="absolute inset-y-0 w-40 -skew-x-12 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-[drawing-shimmer_2.4s_ease-in-out_infinite]"
+        style={{ left: "-10rem" }}
+      />
+      <div className="relative flex flex-col items-center gap-4">
+        <div className="relative h-16 w-16">
+          <div className="absolute inset-0 rounded-xl border border-white/10" />
+          <div className="absolute inset-0 rounded-xl border-2 border-white/30 border-t-white/80 animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-[11px] font-mono tracking-wider text-white/70">
+              {sheetNumber ?? "—"}
+            </span>
+          </div>
+        </div>
+        <div className="text-xs text-white/50 font-medium tracking-wide uppercase">
+          Loading drawing
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // Markup tool definitions
 const MARKUP_TOOLS: Array<{
@@ -376,6 +419,8 @@ export function DrawingViewer({
   const [sheetListOpen, setSheetListOpen] = useState(false)
   const [sheetListQuery, setSheetListQuery] = useState("")
   const [markupMenuOpen, setMarkupMenuOpen] = useState(false)
+  const [versionsPanelOpen, setVersionsPanelOpen] = useState(false)
+  const [compareSelection, setCompareSelection] = useState<string[]>([])
 
   // Stage 2: Comparison mode state
   const [showCompare, setShowCompare] = useState(false)
@@ -668,6 +713,13 @@ export function DrawingViewer({
     },
   })
 
+  // Auto-load versions when the versions panel is opened
+  useEffect(() => {
+    if (versionsPanelOpen && versions.length === 0 && !loadingVersions) {
+      loadVersions()
+    }
+  }, [versionsPanelOpen, versions.length, loadingVersions, loadVersions])
+
   // Toggle all floating UI chrome with "\"
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -914,14 +966,39 @@ export function DrawingViewer({
     }
     setZoom((z) => Math.max(z / 1.2, 0.5))
   }
+  const computeFitZoom = useCallback((): number => {
+    if (!containerRef.current) return 1
+    const container = containerRef.current.getBoundingClientRect()
+    const naturalW = imageWidth ?? contentSize?.width
+    const naturalH = imageHeight ?? contentSize?.height
+    if (!naturalW || !naturalH || !container.width || !container.height) return 1
+    const padding = 48
+    const fitW = (container.width - padding) / naturalW
+    const fitH = (container.height - padding) / naturalH
+    return Math.min(fitW, fitH, 1)
+  }, [contentSize, imageWidth, imageHeight])
+
   const handleResetView = () => {
     if (hasTiles && osdViewer) {
       osdViewer.viewport.goHome()
       return
     }
-    setZoom(1)
+    const fit = computeFitZoom()
+    setZoom(fit)
     setPan({ x: 0, y: 0 })
   }
+
+  // Auto-fit on first content load for each sheet
+  const fittedSheetIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (hasTiles) return
+    if (!contentSize) return
+    if (fittedSheetIdRef.current === sheet.id) return
+    fittedSheetIdRef.current = sheet.id
+    const fit = computeFitZoom()
+    setZoom(fit)
+    setPan({ x: 0, y: 0 })
+  }, [contentSize, hasTiles, sheet.id, computeFitZoom])
 
   // Render markup on canvas
   const renderMarkup = useCallback(
@@ -1258,6 +1335,17 @@ export function DrawingViewer({
     )
   })
 
+  const groupedSheets = groupSheetsByDiscipline(filteredSheets as Array<DrawingSheet & { discipline?: DrawingDiscipline | null }>)
+  const orderedDisciplines = DISCIPLINE_SORT_ORDER.filter((d) => groupedSheets.has(d))
+
+  const activeDiscipline = (sheet.discipline as DrawingDiscipline | undefined) ?? "X"
+  const ActiveDisciplineIcon = disciplineIcon(activeDiscipline)
+
+  // When searching, auto-expand all matching groups; otherwise expand the current sheet's group.
+  const accordionDefault = sheetListQuery
+    ? orderedDisciplines.map((d) => String(d))
+    : [String(activeDiscipline)]
+
   const activeToolDef = MARKUP_TOOLS.find((t) => t.type === activeTool)
   const MarkupActiveIcon = activeToolDef?.icon ?? Pencil
   const markupToolActive = !!activeTool && activeTool !== "pan" && activeTool !== "pin"
@@ -1303,9 +1391,18 @@ export function DrawingViewer({
               onPinClick={(pin) => onPinClick?.(pin)}
             />
           </div>
+        ) : !hasOptimizedImages && !fileUrl ? (
+          <DrawingLoader sheetNumber={sheet.sheet_number} />
         ) : (
+          <>
+            {!contentSize && (
+              <DrawingLoader sheetNumber={sheet.sheet_number} />
+            )}
           <div
-            className="absolute inset-0 flex items-center justify-center"
+            className={cn(
+              "absolute inset-0 flex items-center justify-center transition-opacity duration-300",
+              !contentSize && "opacity-0",
+            )}
             style={{
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transformOrigin: "center",
@@ -1338,10 +1435,6 @@ export function DrawingViewer({
                     console.error("[DrawingViewer] Image load error:", error)
                   }}
                 />
-              ) : !fileUrl ? (
-                <div className="flex items-center justify-center h-[70vh] w-[70vw]">
-                  <div className="text-muted-foreground">Loading sheet…</div>
-                </div>
               ) : isPdf ? (
                 <div ref={pdfCanvasRef}>
                   <PDFViewer
@@ -1397,6 +1490,7 @@ export function DrawingViewer({
               )}
             </div>
           </div>
+          </>
         )}
       </div>
 
@@ -1431,27 +1525,25 @@ export function DrawingViewer({
           )}
           <Popover open={sheetListOpen} onOpenChange={setSheetListOpen}>
             <PopoverTrigger asChild>
-              <button className="flex items-center gap-2 px-2 h-9 rounded-lg hover:bg-muted/60 transition-colors text-left">
-                <div className="flex flex-col leading-tight">
-                  <span className="text-sm font-semibold">{sheet.sheet_number}</span>
-                  {sheet.sheet_title && !isMobile && (
-                    <span className="text-xs text-muted-foreground truncate max-w-[220px]">
-                      {sheet.sheet_title}
-                    </span>
-                  )}
-                </div>
+              <button className="flex items-center gap-2 px-1.5 h-9 rounded-lg hover:bg-muted/60 transition-colors text-left">
                 {sheet.discipline && (
-                  <Badge variant="outline" className="ml-1">
-                    {sheet.discipline}
-                  </Badge>
+                  <span
+                    className={cn(
+                      "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border",
+                      disciplineGradientClass(sheet.discipline),
+                    )}
+                  >
+                    <ActiveDisciplineIcon className="h-3.5 w-3.5" />
+                  </span>
                 )}
+                <span className="text-sm font-semibold">{sheet.sheet_number}</span>
                 {sheets.length > 1 && (
                   <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                 )}
               </button>
             </PopoverTrigger>
             {sheets.length > 1 && onNavigateSheet && (
-              <PopoverContent align="start" className="w-80 p-0">
+              <PopoverContent align="start" className="w-[360px] p-0">
                 <div className="p-2 border-b">
                   <Input
                     placeholder="Search sheets..."
@@ -1461,41 +1553,76 @@ export function DrawingViewer({
                     autoFocus
                   />
                 </div>
-                <ScrollArea className="h-80">
-                  <div className="p-1">
-                    {filteredSheets.length === 0 ? (
-                      <div className="text-center text-sm text-muted-foreground py-8">
-                        No sheets match
-                      </div>
-                    ) : (
-                      filteredSheets.map((s) => (
-                        <button
-                          key={s.id}
-                          onClick={() => {
-                            onNavigateSheet(s)
-                            setSheetListOpen(false)
-                            setSheetListQuery("")
-                          }}
-                          className={cn(
-                            "w-full text-left rounded-md px-2 py-1.5 hover:bg-muted/60 flex items-center gap-2",
-                            s.id === sheet.id && "bg-muted",
-                          )}
-                        >
-                          <span className="text-sm font-medium flex-shrink-0 w-16 font-mono truncate">
-                            {s.sheet_number}
-                          </span>
-                          <span className="text-sm text-muted-foreground truncate flex-1">
-                            {s.sheet_title ?? ""}
-                          </span>
-                          {s.discipline && (
-                            <Badge variant="outline" className="text-[10px]">
-                              {s.discipline}
-                            </Badge>
-                          )}
-                        </button>
-                      ))
-                    )}
-                  </div>
+                <ScrollArea className="h-[420px]">
+                  {orderedDisciplines.length === 0 ? (
+                    <div className="text-center text-sm text-muted-foreground py-10">
+                      No sheets match
+                    </div>
+                  ) : (
+                    <Accordion
+                      type="multiple"
+                      defaultValue={accordionDefault}
+                      key={sheetListQuery || "default"}
+                      className="px-1 py-1"
+                    >
+                      {orderedDisciplines.map((d) => {
+                        const sheetsIn = groupedSheets.get(d) ?? []
+                        const DIcon = disciplineIcon(d)
+                        const label = DISCIPLINE_LABELS[d] ?? String(d)
+                        return (
+                          <AccordionItem
+                            key={d}
+                            value={String(d)}
+                            className="border-b-0"
+                          >
+                            <AccordionTrigger className="py-1.5 px-1.5 hover:no-underline rounded-md hover:bg-muted/40">
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <span
+                                  className={cn(
+                                    "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border",
+                                    disciplineGradientClass(d),
+                                  )}
+                                >
+                                  <DIcon className="h-3 w-3" />
+                                </span>
+                                <span className="text-sm font-medium truncate">
+                                  {label}
+                                </span>
+                                <span className="text-xs text-muted-foreground ml-auto mr-2">
+                                  {sheetsIn.length}
+                                </span>
+                              </div>
+                            </AccordionTrigger>
+                            <AccordionContent className="pb-1">
+                              <div className="space-y-0.5">
+                                {sheetsIn.map((s) => (
+                                  <button
+                                    key={s.id}
+                                    onClick={() => {
+                                      onNavigateSheet(s)
+                                      setSheetListOpen(false)
+                                      setSheetListQuery("")
+                                    }}
+                                    className={cn(
+                                      "w-full text-left rounded-md px-2 py-1.5 hover:bg-muted/60 flex items-center gap-2 pl-8",
+                                      s.id === sheet.id && "bg-muted",
+                                    )}
+                                  >
+                                    <span className="text-sm font-medium flex-shrink-0 font-mono truncate w-14">
+                                      {s.sheet_number}
+                                    </span>
+                                    <span className="text-sm text-muted-foreground truncate flex-1">
+                                      {s.sheet_title ?? ""}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        )
+                      })}
+                    </Accordion>
+                  )}
                 </ScrollArea>
               </PopoverContent>
             )}
@@ -1592,39 +1719,19 @@ export function DrawingViewer({
               </Tooltip>
             )}
 
-            <DropdownMenu>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9"
-                      disabled={loadingVersions}
-                    >
-                      <GitCompare className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">Versions</TooltipContent>
-              </Tooltip>
-              <DropdownMenuContent align="end">
-                {versions.length === 0 ? (
-                  <DropdownMenuItem
-                    disabled={loadingVersions}
-                    onClick={loadVersions}
-                  >
-                    {loadingVersions ? "Loading versions..." : "Load versions"}
-                  </DropdownMenuItem>
-                ) : versions.length < 2 ? (
-                  <DropdownMenuItem disabled>Only 1 version</DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem onClick={handleCompareClick}>
-                    Compare versions ({versions.length})
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={versionsPanelOpen ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => setVersionsPanelOpen((v) => !v)}
+                >
+                  <GitCompare className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Versions</TooltipContent>
+            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1680,6 +1787,149 @@ export function DrawingViewer({
           </TooltipProvider>
         </div>
       </div>
+
+      {/* Versions panel (floats below top-right chrome) */}
+      {versionsPanelOpen && (
+        <div
+          className={cn(
+            "absolute top-[72px] right-4 w-80 z-20 rounded-xl border bg-background/95 backdrop-blur-md shadow-xl flex flex-col",
+            uiHidden && "opacity-0 pointer-events-none",
+          )}
+        >
+          <div className="p-3 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <GitCompare className="h-4 w-4" />
+              Versions
+              {versions.length > 0 && (
+                <Badge variant="secondary" className="ml-1">
+                  {versions.length}
+                </Badge>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => {
+                setVersionsPanelOpen(false)
+                setCompareSelection([])
+              }}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+
+          <div className="px-3 py-2 text-xs text-muted-foreground border-b">
+            {loadingVersions
+              ? "Loading versions…"
+              : versions.length < 2
+                ? "Only one version available"
+                : compareSelection.length === 0
+                  ? "Select two versions to compare"
+                  : compareSelection.length === 1
+                    ? "Select one more version"
+                    : "Ready to compare"}
+          </div>
+
+          <ScrollArea className="flex-1 max-h-[50vh]">
+            <div className="p-1.5 space-y-1">
+              {loadingVersions && versions.length === 0 ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="h-5 w-5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+                </div>
+              ) : versions.length === 0 ? (
+                <div className="text-center text-xs text-muted-foreground py-8">
+                  No versions
+                </div>
+              ) : (
+                versions.map((v, idx) => {
+                  const selIndex = compareSelection.indexOf(v.id)
+                  const selected = selIndex >= 0
+                  const isCurrent = idx === 0
+                  const selLabel =
+                    selIndex === 0 ? "A" : selIndex === 1 ? "B" : null
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => {
+                        setCompareSelection((prev) => {
+                          if (prev.includes(v.id)) {
+                            return prev.filter((id) => id !== v.id)
+                          }
+                          if (prev.length >= 2) {
+                            return [prev[1], v.id]
+                          }
+                          return [...prev, v.id]
+                        })
+                      }}
+                      className={cn(
+                        "w-full text-left rounded-lg border p-2.5 transition-colors flex items-start gap-2.5 hover:bg-muted/50",
+                        selected && "border-primary bg-primary/5",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "mt-0.5 flex-shrink-0 h-5 w-5 rounded-md border flex items-center justify-center text-[10px] font-semibold transition-colors",
+                          selected
+                            ? "bg-primary border-primary text-primary-foreground"
+                            : "border-muted-foreground/30 text-muted-foreground",
+                        )}
+                      >
+                        {selLabel ?? ""}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-semibold">
+                            v{v.version_number}
+                          </span>
+                          {isCurrent && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[9px] py-0 h-4"
+                            >
+                              CURRENT
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          {v.creator_name ?? "Unknown"} ·{" "}
+                          {new Date(v.created_at).toLocaleDateString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}
+                        </div>
+                        {v.change_description && (
+                          <div className="text-xs text-muted-foreground/80 mt-1 line-clamp-2">
+                            {v.change_description}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </ScrollArea>
+
+          <div className="p-2 border-t">
+            <Button
+              size="sm"
+              className="w-full"
+              disabled={compareSelection.length !== 2}
+              onClick={() => {
+                if (compareSelection.length === 2) {
+                  setCompareVersions([compareSelection[0], compareSelection[1]])
+                  setShowCompare(true)
+                }
+              }}
+            >
+              <GitCompare className="h-4 w-4 mr-2" />
+              Compare{compareSelection.length === 2 ? " A vs B" : ""}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Bottom-center: tool dock */}
       {!readOnly && !isMobile && (
@@ -1815,50 +2065,56 @@ export function DrawingViewer({
                 </PopoverContent>
               </Popover>
 
-              <Separator orientation="vertical" className="h-6 mx-1" />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-10 w-10"
-                    onClick={handleUndo}
-                    disabled={history.length === 0}
-                  >
-                    <Undo2 className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Undo</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-10 w-10"
-                    onClick={handleClear}
-                    disabled={localMarkups.length === 0}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Clear drafts</TooltipContent>
-              </Tooltip>
-
-              <Separator orientation="vertical" className="h-6 mx-1" />
-
-              <Button
-                variant="default"
-                size="sm"
-                className="h-10 gap-1.5"
-                onClick={handleSave}
-                disabled={localMarkups.length === 0 || !onSaveMarkup}
+              <div
+                className={cn(
+                  "flex items-center gap-0.5 overflow-hidden transition-[max-width,opacity,margin] duration-300 ease-out",
+                  markupToolActive || localMarkups.length > 0
+                    ? "max-w-[280px] opacity-100 ml-1"
+                    : "max-w-0 opacity-0 ml-0 pointer-events-none",
+                )}
               >
-                <Save className="h-4 w-4" />
-                Save
-                {localMarkups.length > 0 && ` (${localMarkups.length})`}
-              </Button>
+                <Separator orientation="vertical" className="h-6 mx-1" />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-10 w-10"
+                      onClick={handleUndo}
+                      disabled={history.length === 0}
+                    >
+                      <Undo2 className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Undo</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-10 w-10"
+                      onClick={handleClear}
+                      disabled={localMarkups.length === 0}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Clear drafts</TooltipContent>
+                </Tooltip>
+                <Separator orientation="vertical" className="h-6 mx-1" />
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-10 rounded-xl gap-1.5 whitespace-nowrap"
+                  onClick={handleSave}
+                  disabled={localMarkups.length === 0 || !onSaveMarkup}
+                >
+                  <Save className="h-4 w-4" />
+                  Save
+                  {localMarkups.length > 0 && ` (${localMarkups.length})`}
+                </Button>
+              </div>
             </TooltipProvider>
           </div>
         </div>

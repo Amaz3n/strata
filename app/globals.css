@@ -256,6 +256,15 @@
     background: transparent;
   }
   
+  @keyframes drawing-shimmer {
+    0% {
+      transform: translateX(-10rem) skewX(-12deg);
+    }
+    100% {
+      transform: translateX(110vw) skewX(-12deg);
+    }
+  }
+
   @keyframes skeleton-slide {
     0% {
       transform: translateX(-100%);
