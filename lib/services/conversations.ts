@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { Conversation, ConversationChannel, PortalMessage } from "@/lib/types"
 import { requireOrgContext } from "@/lib/services/context"
-import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
+import { buildInternalFileUrl } from "@/lib/services/files"
 
 export interface ConversationWithCompany extends Conversation {
   audience_company_id?: string | null
@@ -397,14 +397,7 @@ export async function getMessageAttachments(params: {
 
   return (data ?? []).map((row: any) => {
     const storagePath = row.files?.storage_path ?? undefined
-    let publicUrl: string | undefined
-    if (storagePath) {
-      try {
-        publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, storagePath)) ?? undefined
-      } catch (error) {
-        console.error("Failed to generate attachment URL")
-      }
-    }
+    const internalUrl = row.file_id ? buildInternalFileUrl(row.file_id) : undefined
     const isImage = row.files?.mime_type?.startsWith("image/")
 
     return {
@@ -414,8 +407,8 @@ export async function getMessageAttachments(params: {
       mime_type: row.files?.mime_type ?? undefined,
       size_bytes: row.files?.size_bytes ?? undefined,
       storage_path: storagePath,
-      download_url: publicUrl,
-      thumbnail_url: isImage ? publicUrl : undefined,
+      download_url: internalUrl,
+      thumbnail_url: isImage ? internalUrl : undefined,
     }
   })
 }

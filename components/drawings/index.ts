@@ -1,6 +1,5 @@
 export { DrawingsClient } from "./drawings-client"
 export { DrawingsSetsView } from "./drawings-sets-view"
-export { DrawingSetDetail } from "./drawing-set-detail"
 export { DrawingViewer } from "./drawing-viewer"
 export { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 export { PinsList } from "./pins-list"

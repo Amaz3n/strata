@@ -32,6 +32,7 @@ import { createContact } from "@/lib/services/contacts"
 import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
 import { requireOrgContext } from "@/lib/services/context"
+import { buildInternalFileUrl } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import {
   buildFilesPublicUrl,
@@ -1495,10 +1496,10 @@ export async function getProjectFilesAction(projectId: string): Promise<Enhanced
     return []
   }
 
-  // Generate CDN URLs for files
+  // Generate authenticated URLs for files
   const filesWithUrls = await Promise.all(
     (data ?? []).map(async (row) => {
-      const downloadUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, row.storage_path)) ?? undefined
+      const downloadUrl = buildInternalFileUrl(row.id)
       const thumbnailUrl = row.mime_type?.startsWith("image/") ? downloadUrl : undefined
 
       const uploader = row.app_users as { full_name?: string; avatar_url?: string } | null
@@ -3201,9 +3202,5 @@ export async function getFileDownloadUrlAction(fileId: string): Promise<string> 
     throw new Error("File not found")
   }
 
-  const publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(orgId, file.storage_path))
-  if (!publicUrl) {
-    throw new Error("Failed to generate download URL")
-  }
-  return publicUrl
+  return buildInternalFileUrl(fileId)
 }

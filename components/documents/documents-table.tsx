@@ -32,6 +32,9 @@ import {
   Info,
   ShieldCheck,
   Download,
+  ArrowUpDown,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -60,6 +63,7 @@ import {
 } from "@/components/ui/tooltip"
 import type { FileWithUrls } from "@/app/(app)/documents/actions"
 import type { DrawingSheet } from "@/app/(app)/drawings/actions"
+import { useDocuments } from "./documents-context"
 import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 
 // ---------------------------------------------------------------------------
@@ -178,6 +182,46 @@ export interface SheetsTableProps {
   onAddVersion: (sheet: DrawingSheet) => void
 }
 
+type SortableFileColumn = "name" | "updated_at" | "size"
+
+function SortableTableHead({
+  label,
+  sortKey,
+  currentSort,
+  direction,
+  onSort,
+  className,
+  align = "left",
+}: {
+  label: string
+  sortKey: SortableFileColumn
+  currentSort: "name" | "updated_at" | "created_at" | "size"
+  direction: "asc" | "desc"
+  onSort: (sortKey: SortableFileColumn) => void
+  className?: string
+  align?: "left" | "right"
+}) {
+  const isActive = currentSort === sortKey
+  const Icon = !isActive ? ArrowUpDown : direction === "asc" ? ChevronUp : ChevronDown
+
+  return (
+    <TableHead className={className}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          "flex w-full items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
+          align === "right" ? "justify-end text-right" : "justify-start text-left",
+        )}
+        aria-label={`Sort by ${label}`}
+      >
+        <span>{label}</span>
+        <Icon className={cn("h-3.5 w-3.5 shrink-0", !isActive && "opacity-50")} />
+      </button>
+    </TableHead>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Files Table
 // ---------------------------------------------------------------------------
@@ -210,6 +254,8 @@ export function DocumentsFileTable({
   onFileDragEnd,
   hasFilters,
 }: DocumentsFileTableProps) {
+  const { sort, direction, toggleSort } = useDocuments()
+
   if (isLoading && items.length === 0) {
     return <TableSkeleton rows={10} cols={8} />
   }
@@ -239,12 +285,34 @@ export function DocumentsFileTable({
               />
             )}
           </TableHead>
-          <TableHead className="w-[40%] min-w-[320px]">Name</TableHead>
+          <SortableTableHead
+            label="Name"
+            sortKey="name"
+            currentSort={sort}
+            direction={direction}
+            onSort={toggleSort}
+            className="w-[40%] min-w-[320px]"
+          />
           <TableHead className="hidden sm:table-cell w-[128px]">Category</TableHead>
           <TableHead className="hidden md:table-cell w-[184px]">Workflow</TableHead>
           <TableHead className="hidden lg:table-cell w-[128px]">Shared</TableHead>
-          <TableHead className="hidden md:table-cell w-[112px]">Modified</TableHead>
-          <TableHead className="hidden xl:table-cell w-[88px] text-right">Size</TableHead>
+          <SortableTableHead
+            label="Modified"
+            sortKey="updated_at"
+            currentSort={sort}
+            direction={direction}
+            onSort={toggleSort}
+            className="hidden md:table-cell w-[112px]"
+          />
+          <SortableTableHead
+            label="Size"
+            sortKey="size"
+            currentSort={sort}
+            direction={direction}
+            onSort={toggleSort}
+            className="hidden xl:table-cell w-[88px] text-right"
+            align="right"
+          />
           <TableHead className="w-[92px] pr-4" />
         </TableRow>
       </TableHeader>

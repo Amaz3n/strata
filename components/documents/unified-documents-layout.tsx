@@ -104,6 +104,50 @@ function dispatchNavRefresh() {
   window.dispatchEvent(new CustomEvent("docs-nav-refresh"));
 }
 
+function getDownloadFileName(contentDisposition: string | null, fallback?: string) {
+  if (fallback) return fallback;
+  if (!contentDisposition) return "download";
+
+  const utf8Match = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const quotedMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const bareMatch = contentDisposition.match(/filename\s*=\s*([^;]+)/i);
+  return bareMatch?.[1]?.trim() || "download";
+}
+
+async function downloadUrlToFile(url: string, fileName?: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Download request failed with status ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const resolvedFileName = getDownloadFileName(
+    response.headers.get("content-disposition"),
+    fileName,
+  );
+
+  try {
+    link.href = objectUrl;
+    link.download = resolvedFileName;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+}
+
 interface FileVersionInfo {
   id: string;
   version_number: number;
@@ -1318,14 +1362,12 @@ function UnifiedDocumentsLayoutInner() {
       let successCount = 0;
       for (const download of downloads) {
         if (!download) continue;
-        const link = document.createElement("a");
-        link.href = download.url;
-        link.download = download.fileName;
-        link.rel = "noopener";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        successCount += 1;
+        try {
+          await downloadUrlToFile(download.url, download.fileName);
+          successCount += 1;
+        } catch {
+          // Skip failed files so other selected downloads can continue.
+        }
       }
 
       if (successCount === 0) {
@@ -1424,9 +1466,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleDownloadVersion = useCallback(async (versionId: string) => {
     const url = await getVersionDownloadUrlAction(versionId);
-    const link = document.createElement("a");
-    link.href = url;
-    link.click();
+    await downloadUrlToFile(url);
   }, []);
 
   const handleUpdateVersion = useCallback(
@@ -1555,10 +1595,7 @@ function UnifiedDocumentsLayoutInner() {
   const handleDownload = useCallback(async (file: FileWithDetails) => {
     try {
       const url = await getFileDownloadUrlAction(file.id);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = file.file_name;
-      link.click();
+      await downloadUrlToFile(url, file.file_name);
       toast.success(`Downloading ${file.file_name}`);
     } catch (error) {
       console.error("Download failed:", error);

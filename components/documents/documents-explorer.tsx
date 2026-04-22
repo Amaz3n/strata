@@ -44,6 +44,7 @@ export function DocumentsExplorer({
     folders,
     folderPermissions,
     currentPath,
+    loadFolderChildren,
     navigateToRoot,
     navigateToFolder,
     expandedFolders,
@@ -90,6 +91,7 @@ export function DocumentsExplorer({
                     currentPath={currentPath}
                     expandedFolders={expandedFolders}
                     folderPermissions={folderPermissions}
+                    onLoadChildren={loadFolderChildren}
                     onToggle={toggleFolderExpanded}
                     onNavigate={navigateToFolder}
                     onRename={onRenameFolder}
@@ -114,6 +116,7 @@ function FolderTreeNode({
   currentPath,
   expandedFolders,
   folderPermissions,
+  onLoadChildren,
   onToggle,
   onNavigate,
   onRename,
@@ -125,6 +128,7 @@ function FolderTreeNode({
   currentPath: string
   expandedFolders: Set<string>
   folderPermissions: any[]
+  onLoadChildren: (path?: string) => Promise<void>
   onToggle: (path: string) => void
   onNavigate: (path: string) => void
   onRename?: (path: string) => void
@@ -150,7 +154,12 @@ function FolderTreeNode({
           <button
             type="button"
             className="inline-flex h-7 w-5 items-center justify-center text-muted-foreground"
-            onClick={() => onToggle(node.path)}
+            onClick={() => {
+              if (!isExpanded) {
+                void onLoadChildren(node.path)
+              }
+              onToggle(node.path)
+            }}
             aria-label={isExpanded ? "Collapse folder" : "Expand folder"}
           >
             <ChevronRight
@@ -234,6 +243,7 @@ function FolderTreeNode({
               currentPath={currentPath}
               expandedFolders={expandedFolders}
               folderPermissions={folderPermissions}
+              onLoadChildren={onLoadChildren}
               onToggle={onToggle}
               onNavigate={onNavigate}
               onRename={onRename}

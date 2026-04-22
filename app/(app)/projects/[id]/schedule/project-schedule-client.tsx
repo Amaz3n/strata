@@ -21,8 +21,9 @@ export function ProjectScheduleClient({ projectId, initialItems }: ProjectSchedu
   const [items, setItems] = useState<ScheduleItem[]>(initialItems)
 
   return (
-    <div className="h-full">
+    <div className="h-[calc(100vh-56px)] -mt-6 -mx-4 -mb-4 flex flex-col bg-background border-t border-border">
       <ScheduleView
+        className="flex-1"
         projectId={projectId}
         items={items}
         onItemCreate={async (item) => {

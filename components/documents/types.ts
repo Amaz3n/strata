@@ -58,10 +58,12 @@ export interface DocumentsContextValue {
   setViewMode: (mode: ViewMode) => void
   setSort: (sort: "name" | "updated_at" | "created_at" | "size") => void
   setDirection: (direction: "asc" | "desc") => void
+  toggleSort: (sort: "name" | "updated_at" | "created_at" | "size") => void
   setSelectedDrawingSet: (id: string | null, title?: string | null) => void
   navigateToRoot: () => void
   navigateToFolder: (path: string) => void
   navigateToDrawingSet: (id: string, title: string) => void
+  loadFolderChildren: (path?: string) => Promise<void>
 
   // Actions
   refreshFiles: () => Promise<void>

@@ -64,6 +64,7 @@ export const fileListFiltersSchema = z.object({
   project_id: z.string().uuid().optional(),
   category: fileCategorySchema.optional(),
   folder_path: z.string().optional(),
+  root_only: z.boolean().optional(),
   tags: z.array(z.string()).optional(),
   search: z.string().optional(),
   status: z.string().optional(),

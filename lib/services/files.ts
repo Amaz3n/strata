@@ -2,7 +2,7 @@ import type { FileCategory, FileSource } from "@/lib/validation/files"
 import type { FileInput, FileUpdate, FileListFilters } from "@/lib/validation/files"
 import { fileInputSchema, fileUpdateSchema, fileListFiltersSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
-import { buildFilesPublicUrl, deleteFilesObjects, ensureOrgScopedPath } from "@/lib/storage/files-storage"
+import { deleteFilesObjects } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { triggerFileIndexing } from "./files-indexing"
@@ -49,6 +49,11 @@ export interface ProjectFolderPermissions {
   updated_at?: string
 }
 
+export interface FolderChild {
+  name: string
+  path: string
+}
+
 export interface FileTimelineEvent {
   id: string
   created_at: string
@@ -57,6 +62,10 @@ export interface FileTimelineEvent {
   actor_name?: string
   actor_email?: string
   details?: string
+}
+
+export function buildInternalFileUrl(fileId: string): string {
+  return `/api/files/${fileId}/raw`
 }
 
 export const DEFAULT_PROJECT_FOLDERS = [
@@ -243,6 +252,10 @@ export async function listFiles(
     query = query.eq("folder_path", parsed.folder_path)
   }
 
+  if (parsed.root_only) {
+    query = query.or("folder_path.is.null,folder_path.eq./")
+  }
+
   if (parsed.tags?.length) {
     // Filter files that have any of the specified tags
     query = query.overlaps("tags", parsed.tags)
@@ -378,6 +391,10 @@ export async function createFileRecord(input: FileInput, orgId?: string): Promis
     throw new Error(`Failed to create file record: ${error?.message}`)
   }
 
+  if (parsed.project_id && resolvedFolderPath && resolvedFolderPath !== "/") {
+    await createProjectFolder(parsed.project_id, resolvedFolderPath, resolvedOrgId)
+  }
+
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -453,6 +470,11 @@ export async function updateFile(
 
   if (error || !data) {
     throw new Error(`Failed to update file: ${error?.message}`)
+  }
+
+  const nextFolderPath = normalizeFolderPath(data.folder_path)
+  if (data.project_id && nextFolderPath && nextFolderPath !== "/") {
+    await createProjectFolder(data.project_id, nextFolderPath, resolvedOrgId)
   }
 
   await recordAudit({
@@ -657,12 +679,7 @@ export async function getSignedUrl(
     throw new Error("File not found")
   }
 
-  const orgScopedPath = ensureOrgScopedPath(resolvedOrgId, file.storage_path)
-  const publicUrl = buildFilesPublicUrl(orgScopedPath)
-  if (!publicUrl) {
-    throw new Error("Failed to generate download URL")
-  }
-  return publicUrl
+  return buildInternalFileUrl(fileId)
 }
 
 /**
@@ -677,17 +694,12 @@ export async function listFilesWithUrls(
   if (result.data.length === 0) return { data: [], count: result.count, hasMore: result.hasMore }
 
   const dataWithUrls = result.data.map((file) => {
-    let publicUrl: string | undefined
-    try {
-      publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(file.org_id, file.storage_path)) ?? undefined
-    } catch (error) {
-      console.error("Failed to generate file URL")
-    }
+    const internalUrl = buildInternalFileUrl(file.id)
 
     return {
       ...file,
-      download_url: publicUrl,
-      thumbnail_url: file.mime_type?.startsWith("image/") ? publicUrl : undefined,
+      download_url: internalUrl,
+      thumbnail_url: file.mime_type?.startsWith("image/") ? internalUrl : undefined,
     }
   })
 
@@ -748,6 +760,86 @@ export async function listFolders(
   }
 
   return Array.from(folders).sort()
+}
+
+function extractImmediateChildPath(parentPath: string | undefined, candidatePath?: string | null): string | null {
+  const normalizedCandidate = normalizeFolderPath(candidatePath)
+  if (!normalizedCandidate || normalizedCandidate === "/") return null
+
+  if (!parentPath) {
+    const parts = normalizedCandidate.split("/").filter(Boolean)
+    return parts.length > 0 ? `/${parts[0]}` : null
+  }
+
+  if (normalizedCandidate === parentPath) return null
+
+  const prefix = `${parentPath}/`
+  if (!normalizedCandidate.startsWith(prefix)) return null
+
+  const remainder = normalizedCandidate.slice(prefix.length)
+  const nextSegment = remainder.split("/").filter(Boolean)[0]
+  if (!nextSegment) return null
+  return `${parentPath}/${nextSegment}`
+}
+
+export async function listChildFolders(
+  projectId: string,
+  parentPath?: string,
+  orgId?: string,
+): Promise<FolderChild[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const normalizedParentPath = normalizeFolderPath(parentPath)
+  const childPaths = new Set<string>()
+
+  let persistedFoldersQuery = supabase
+    .from("project_file_folders")
+    .select("path")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+
+  if (normalizedParentPath) {
+    persistedFoldersQuery = persistedFoldersQuery.like("path", `${normalizedParentPath}/%`)
+  }
+
+  const { data: persistedFolders, error: persistedFoldersError } = await persistedFoldersQuery
+
+  if (persistedFoldersError && persistedFoldersError.code !== "42P01") {
+    throw new Error(`Failed to list project folders: ${persistedFoldersError.message}`)
+  }
+
+  for (const row of persistedFolders ?? []) {
+    const childPath = extractImmediateChildPath(normalizedParentPath, (row as any).path)
+    if (childPath) childPaths.add(childPath)
+  }
+
+  let fileFoldersQuery = supabase
+    .from("files")
+    .select("folder_path")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .not("folder_path", "is", null)
+
+  if (normalizedParentPath) {
+    fileFoldersQuery = fileFoldersQuery.like("folder_path", `${normalizedParentPath}/%`)
+  }
+
+  const { data: fileFolders, error: fileFoldersError } = await fileFoldersQuery
+
+  if (fileFoldersError) {
+    throw new Error(`Failed to list folder children: ${fileFoldersError.message}`)
+  }
+
+  for (const row of fileFolders ?? []) {
+    const childPath = extractImmediateChildPath(normalizedParentPath, (row as any).folder_path)
+    if (childPath) childPaths.add(childPath)
+  }
+
+  return Array.from(childPaths)
+    .sort((a, b) => a.localeCompare(b))
+    .map((path) => ({
+      path,
+      name: path.split("/").filter(Boolean).pop() ?? path,
+    }))
 }
 
 export async function createProjectFolder(

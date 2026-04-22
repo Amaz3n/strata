@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { listFilesAction, getFileCountsAction, listFoldersAction, listProjectFolderPermissionsAction } from "@/app/(app)/documents/actions"
+import { listFilesAction, getFileCountsAction, listChildFoldersAction, listProjectFolderPermissionsAction } from "@/app/(app)/documents/actions"
 import { listDrawingSetsAction, listDrawingSheetsWithUrlsAction } from "@/app/(app)/drawings/actions"
 import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/actions"
 import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/actions"
@@ -142,6 +142,7 @@ export function DocumentsProvider({
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const loadingSheetsSetIdsRef = useRef<Set<string>>(new Set())
+  const loadingFolderPathsRef = useRef<Set<string>>(new Set())
   const syncedUrlStateRef = useRef(`${initialSetId ?? ""}|${initialNormalizedPath}`)
 
   const setSelectedDrawingSet = useCallback((id: string | null, title?: string | null) => {
@@ -211,6 +212,21 @@ export function DocumentsProvider({
     setDirection(newDirection)
     pushDocsState(currentPath, selectedDrawingSetId, sort, newDirection)
   }, [currentPath, selectedDrawingSetId, sort, pushDocsState])
+
+  const toggleSort = useCallback((nextSort: typeof sort) => {
+    const nextDirection =
+      sort === nextSort
+        ? direction === "asc"
+          ? "desc"
+          : "asc"
+        : nextSort === "name"
+          ? "asc"
+          : "desc"
+
+    setSort(nextSort)
+    setDirection(nextDirection)
+    pushDocsState(currentPath, selectedDrawingSetId, nextSort, nextDirection)
+  }, [currentPath, selectedDrawingSetId, sort, direction, pushDocsState])
 
   const setCurrentPath = useCallback(
     (path: string) => {
@@ -287,6 +303,31 @@ export function DocumentsProvider({
 
   const pageSize = 100
 
+  const loadFolderChildren = useCallback(async (path?: string) => {
+    const normalizedPath = normalizeDocsPath(path)
+    const cacheKey = normalizedPath || "/"
+    if (loadingFolderPathsRef.current.has(cacheKey)) return
+
+    loadingFolderPathsRef.current.add(cacheKey)
+    try {
+      const childFolders = await listChildFoldersAction(project.id, normalizedPath || undefined)
+      setFolders((prev) => {
+        const next = new Set(prev)
+        if (normalizedPath) {
+          next.add(normalizedPath)
+        }
+        for (const folder of childFolders) {
+          next.add(folder.path)
+        }
+        return Array.from(next).sort()
+      })
+    } catch (error) {
+      console.error("Failed to load folder children:", error)
+    } finally {
+      loadingFolderPathsRef.current.delete(cacheKey)
+    }
+  }, [project.id])
+
   // Refresh functions
   const refreshFiles = useCallback(async () => {
     if (quickFilter === "drawings") return
@@ -301,11 +342,13 @@ export function DocumentsProvider({
     })
     setIsLoading(true)
     try {
-      const [filesData, countsData, foldersData, permsData] = await Promise.all([
+      const shouldLoadFolders = !searchQuery
+      const [filesData, countsData, permsData, childFolders] = await Promise.all([
         listFilesAction({
           project_id: project.id,
           category: quickFilter === "all" ? undefined : quickFilter,
           folder_path: currentPath || undefined,
+          root_only: currentPath || searchQuery ? undefined : true,
           search: searchQuery || undefined,
           sort,
           direction,
@@ -313,20 +356,33 @@ export function DocumentsProvider({
           offset: 0,
         }),
         getFileCountsAction(project.id),
-        listFoldersAction(project.id),
         listProjectFolderPermissionsAction(project.id),
+        shouldLoadFolders
+          ? listChildFoldersAction(project.id, currentPath || undefined)
+          : Promise.resolve([]),
       ])
       setFiles(filesData.data)
       setTotalCount(filesData.count)
       setHasMore(filesData.hasMore)
       setCounts(countsData)
-      setFolders(foldersData)
       setFolderPermissions(permsData)
+      if (shouldLoadFolders) {
+        setFolders((prev) => {
+          const next = new Set(prev)
+          if (currentPath) {
+            next.add(currentPath)
+          }
+          for (const folder of childFolders) {
+            next.add(folder.path)
+          }
+          return Array.from(next).sort()
+        })
+      }
       docsDebugLog("refreshFiles:success", {
         files: filesData.data.length,
         total: filesData.count,
         hasMore: filesData.hasMore,
-        folders: foldersData.length,
+        folders: childFolders.length,
         elapsedMs: Math.round(performance.now() - startedAt),
       })
     } catch (error) {
@@ -355,6 +411,7 @@ export function DocumentsProvider({
         project_id: project.id,
         category: quickFilter === "all" ? undefined : quickFilter,
         folder_path: currentPath || undefined,
+        root_only: currentPath || searchQuery ? undefined : true,
         search: searchQuery || undefined,
         sort,
         direction,
@@ -530,10 +587,12 @@ export function DocumentsProvider({
       setViewMode,
       setSort: updateSort,
       setDirection: updateDirection,
+      toggleSort,
       setSelectedDrawingSet,
       navigateToRoot,
       navigateToFolder,
       navigateToDrawingSet,
+      loadFolderChildren,
       refreshFiles,
       loadMore,
       refreshDrawingSets,
@@ -580,10 +639,12 @@ export function DocumentsProvider({
       setViewMode,
       updateSort,
       updateDirection,
+      toggleSort,
       setSelectedDrawingSet,
       navigateToRoot,
       navigateToFolder,
       navigateToDrawingSet,
+      loadFolderChildren,
       toggleFolderExpanded,
       toggleDrawingSetExpanded,
       loadSheetsForSet,

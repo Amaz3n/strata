@@ -3,8 +3,7 @@ import { fileLinkInputSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import type { FileRecord, FileWithUrls } from "@/lib/services/files"
-import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
+import { buildInternalFileUrl, type FileRecord, type FileWithUrls } from "@/lib/services/files"
 
 export interface FileLink {
   id: string
@@ -329,9 +328,9 @@ export async function listAttachments(
 
     // Generate download/thumbnail URL
     try {
-      const publicUrl = buildFilesPublicUrl(ensureOrgScopedPath(resolvedOrgId, file.storage_path))
-      file.download_url = publicUrl ?? undefined
-      if (file.mime_type?.startsWith("image/")) file.thumbnail_url = file.download_url
+      const internalUrl = buildInternalFileUrl(file.id)
+      file.download_url = internalUrl
+      if (file.mime_type?.startsWith("image/")) file.thumbnail_url = internalUrl
     } catch (e) {
       console.error("Failed to generate URL for", file.file_name)
     }

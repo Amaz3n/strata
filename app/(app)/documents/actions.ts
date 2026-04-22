@@ -24,13 +24,15 @@ import {
   listFileTimeline,
   getDefaultFolderForCategory,
   normalizeFolderPath,
+  listChildFolders,
 } from "@/lib/services/files"
-import type { FileRecord, FileWithUrls, ProjectFolderPermissions } from "@/lib/services/files"
+import type { FileRecord, FileWithUrls, ProjectFolderPermissions, FolderChild } from "@/lib/services/files"
 import type { FileListFilters, FileUpdate, FileCategory } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
 import { attachFile, detachFile, listAttachments, detachFileById, listFileLinkSummary } from "@/lib/services/file-links"
 import type { FileLinkWithFile, FileLinkSummary } from "@/lib/services/file-links"
-import { buildFilesPublicUrl, uploadFilesObject } from "@/lib/storage/files-storage"
+import { uploadFilesObject } from "@/lib/storage/files-storage"
+import { buildInternalFileUrl } from "@/lib/services/files"
 import {
   listVersions,
   getVersion,
@@ -58,7 +60,7 @@ import {
 export type { FileRecord, FileWithUrls, FileListFilters, FileUpdate, FileCategory, FileLinkWithFile, FileVersion, FileLinkSummary }
 export type { FileAccessEvent }
 export type { FileShareLink, CreateFileShareLinkInput }
-export type { ProjectFolderPermissions, FileTimelineEvent } from "@/lib/services/files"
+export type { ProjectFolderPermissions, FileTimelineEvent, FolderChild } from "@/lib/services/files"
 
 /**
  * List files with optional filters
@@ -88,6 +90,16 @@ export async function getFileCountsAction(projectId?: string): Promise<Record<st
  */
 export async function listFoldersAction(projectId?: string): Promise<string[]> {
   return listFolders(projectId)
+}
+
+/**
+ * List the immediate child folders for a project path.
+ */
+export async function listChildFoldersAction(
+  projectId: string,
+  parentPath?: string,
+): Promise<FolderChild[]> {
+  return listChildFolders(projectId, parentPath)
 }
 
 /**
@@ -558,7 +570,7 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     sizeBytes: file.size,
   })
 
-  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
+  const downloadUrl = buildInternalFileUrl(record.id)
   const thumbnailUrl = file.type.startsWith("image/") ? downloadUrl : undefined
 
   revalidatePath("/documents")

@@ -36,6 +36,11 @@ import {
   GitCompare,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Maximize2,
+  PanelRight,
+  PanelRightClose,
+  Keyboard,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -52,6 +57,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -359,6 +370,13 @@ export function DrawingViewer({
   // Keyboard shortcuts help
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false)
 
+  // New UI state for redesigned viewer
+  const [pinsDrawerOpen, setPinsDrawerOpen] = useState(false)
+  const [uiHidden, setUiHidden] = useState(false)
+  const [sheetListOpen, setSheetListOpen] = useState(false)
+  const [sheetListQuery, setSheetListQuery] = useState("")
+  const [markupMenuOpen, setMarkupMenuOpen] = useState(false)
+
   // Stage 2: Comparison mode state
   const [showCompare, setShowCompare] = useState(false)
   const [versions, setVersions] = useState<DrawingSheetVersion[]>([])
@@ -649,6 +667,21 @@ export function DrawingViewer({
       onPreviousSheet: goToPrevSheet,
     },
   })
+
+  // Toggle all floating UI chrome with "\"
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (textDialogOpen || showCompare) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return
+      if (e.key === "\\") {
+        e.preventDefault()
+        setUiHidden((v) => !v)
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [textDialogOpen, showCompare])
 
   // Get normalized coordinates (0-1)
   const getNormalizedCoords = useCallback(
@@ -1204,574 +1237,765 @@ export function DrawingViewer({
     )
   }
 
+  // Fade chrome while actively drawing; fully hide when uiHidden
+  const isInteracting = isDrawing || isPanning
+  const chromeClass = cn(
+    "transition-opacity duration-200",
+    uiHidden
+      ? "opacity-0 pointer-events-none"
+      : isInteracting
+        ? "opacity-30 hover:opacity-100"
+        : "opacity-100",
+  )
+
+  const filteredSheets = sheets.filter((s) => {
+    if (!sheetListQuery) return true
+    const q = sheetListQuery.toLowerCase()
+    return (
+      s.sheet_number?.toLowerCase().includes(q) ||
+      s.sheet_title?.toLowerCase().includes(q) ||
+      s.discipline?.toLowerCase().includes(q)
+    )
+  })
+
+  const activeToolDef = MARKUP_TOOLS.find((t) => t.type === activeTool)
+  const MarkupActiveIcon = activeToolDef?.icon ?? Pencil
+  const markupToolActive = !!activeTool && activeTool !== "pan" && activeTool !== "pin"
+
   return (
-    <div className="fixed inset-0 z-50 bg-background">
-      <div className="h-full w-full flex flex-col">
-        {/* Header with tools */}
-        <div className="p-4 border-b flex-shrink-0">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {/* Navigation buttons */}
-              {sheets.length > 1 && onNavigateSheet && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={goToPrevSheet}
-                    disabled={!hasPrevSheet}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  <span className="text-sm text-muted-foreground">
-                    {currentSheetIndex + 1} / {sheets.length}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={goToNextSheet}
-                    disabled={!hasNextSheet}
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </Button>
-                  <div className="w-px h-6 bg-border mx-2" />
-                </>
-              )}
-
-              <h2 className="flex items-center gap-2 text-lg font-semibold">
-                {sheet.sheet_number}
-                {sheet.sheet_title && !isMobile && (
-                  <span className="text-muted-foreground font-normal">
-                    - {sheet.sheet_title}
-                  </span>
-                )}
-                {sheet.discipline && (
-                  <Badge variant="outline">{sheet.discipline}</Badge>
-                )}
-              </h2>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {/* Compare button */}
-              {versions.length >= 2 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCompareClick}
-                  disabled={loadingVersions}
-                >
-                  <GitCompare className="h-4 w-4 mr-1" />
-                  {!isMobile && "Compare"}
-                </Button>
-              )}
-              {versions.length === 0 && !loadingVersions && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={loadVersions}
-                  disabled={loadingVersions}
-                >
-                  <GitCompare className="h-4 w-4 mr-1" />
-                  {!isMobile && "Load Versions"}
-                </Button>
-              )}
-              <Button variant="ghost" size="icon" onClick={onClose}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
+    <div className="fixed inset-0 z-50 bg-neutral-900 overflow-hidden">
+      {/* Full-bleed drawing surface */}
+      <div
+        ref={(el) => {
+          ;(containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+          if (touchRef) {
+            ;(touchRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+          }
+        }}
+        className="absolute inset-0 overflow-hidden"
+        style={{ cursor: activeTool === "pan" ? "grab" : "crosshair" }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        {hasTiles && tileBaseUrl && tileManifest && tiledImageSize ? (
+          <div className="absolute inset-0">
+            <TiledDrawingViewer
+              tileBaseUrl={tileBaseUrl}
+              tileManifest={tileManifest}
+              thumbnailUrl={imageThumbnailUrl || undefined}
+              className="absolute inset-0"
+              onReady={handleOsdReady}
+              onTransformChange={handleOsdTransformChange}
+            />
+            <SVGOverlay
+              container={osdContainer}
+              matrix={osdMatrix}
+              imageSize={tiledImageSize}
+              markups={markups}
+              draftMarkups={tiledDraftMarkups}
+              pins={pins}
+              showMarkups={showMarkups}
+              showPins={showPins}
+              highlightedPinId={highlightedPinId}
+              interactive={!readOnly && activeTool !== "pan"}
+              onPinClick={(pin) => onPinClick?.(pin)}
+            />
           </div>
-        </div>
-
-        <div className="flex flex-1 min-h-0">
-          {/* Toolbar */}
-          {!readOnly && (
-            <div className="w-14 border-r bg-muted/30 flex flex-col items-center py-2 gap-1">
-              <TooltipProvider>
-                {/* Pan tool */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant={activeTool === "pan" ? "secondary" : "ghost"}
-                      size="icon"
-                      className="h-10 w-10"
-                      onClick={() => setActiveTool("pan")}
-                    >
-                      <Move className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">Pan</TooltipContent>
-                </Tooltip>
-
-                {/* Pin tool */}
-                {onCreatePin && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant={activeTool === "pin" ? "secondary" : "ghost"}
-                        size="icon"
-                        className="h-10 w-10"
-                        onClick={() => setActiveTool("pin")}
-                      >
-                        <MapPin className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">Add Pin</TooltipContent>
-                  </Tooltip>
-                )}
-
-                <div className="w-8 border-t my-2" />
-
-                {/* Markup tools */}
-                {MARKUP_TOOLS.map((tool) => (
-                  <Tooltip key={tool.type}>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant={activeTool === tool.type ? "secondary" : "ghost"}
-                        size="icon"
-                        className="h-10 w-10"
-                        onClick={() => setActiveTool(tool.type)}
-                      >
-                        <tool.icon className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">{tool.label}</TooltipContent>
-                  </Tooltip>
-                ))}
-
-                <div className="w-8 border-t my-2" />
-
-                {/* Color picker */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-10 w-10">
-                      <div
-                        className="h-5 w-5 rounded-full border-2"
-                        style={{ backgroundColor: selectedColor }}
-                      />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent side="right" className="p-2">
-                    <div className="grid grid-cols-4 gap-1">
-                      {MARKUP_COLORS.map((color) => (
-                        <button
-                          key={color}
-                          className={cn(
-                            "h-6 w-6 rounded-full border-2",
-                            selectedColor === color
-                              ? "border-foreground"
-                              : "border-transparent"
-                          )}
-                          style={{ backgroundColor: color }}
-                          onClick={() => setSelectedColor(color)}
-                        />
-                      ))}
-                    </div>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                {/* Stroke width */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-10 w-10">
-                      <div
-                        className="rounded-full bg-current"
-                        style={{ width: strokeWidth * 2, height: strokeWidth * 2 }}
-                      />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent side="right" className="w-40 p-3">
-                    <Label className="text-xs">Stroke Width</Label>
-                    <Slider
-                      value={[strokeWidth]}
-                      min={1}
-                      max={8}
-                      step={1}
-                      onValueChange={([v]) => setStrokeWidth(v)}
-                      className="mt-2"
-                    />
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                <div className="flex-1" />
-
-                {/* Actions */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-10 w-10"
-                      onClick={handleUndo}
-                      disabled={history.length === 0}
-                    >
-                      <Undo2 className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">Undo</TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-10 w-10"
-                      onClick={handleClear}
-                      disabled={localMarkups.length === 0}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">Clear</TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-10 w-10"
-                      onClick={handleSave}
-                      disabled={localMarkups.length === 0 || !onSaveMarkup}
-                    >
-                      <Save className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">Save Markups</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-          )}
-
-          {/* Main viewer */}
-          <div className="flex-1 flex flex-col min-w-0">
-            {/* View controls */}
-            <div className="flex items-center justify-between p-2 border-b bg-muted/30">
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon" onClick={handleZoomOut}>
-                  <ZoomOut className="h-4 w-4" />
-                </Button>
-                <span className="text-sm w-16 text-center">
-                  {Math.round((hasTiles ? osdZoom : zoom) * 100)}%
-                </span>
-                <Button variant="ghost" size="icon" onClick={handleZoomIn}>
-                  <ZoomIn className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="icon" onClick={handleResetView}>
-                  <RotateCcw className="h-4 w-4" />
-                </Button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  variant={showMarkups ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => setShowMarkups(!showMarkups)}
-                >
-                  {showMarkups ? (
-                    <Eye className="h-4 w-4 mr-1" />
-                  ) : (
-                    <EyeOff className="h-4 w-4 mr-1" />
-                  )}
-                  Markups
-                </Button>
-
-                <Button
-                  variant={showPins ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => setShowPins(!showPins)}
-                >
-                  {showPins ? (
-                    <Eye className="h-4 w-4 mr-1" />
-                  ) : (
-                    <EyeOff className="h-4 w-4 mr-1" />
-                  )}
-                  Pins
-                </Button>
-
-                <Button variant="outline" size="sm" asChild>
-                  {fileUrl ? (
-                    <a href={fileUrl} download target="_blank" rel="noreferrer">
-                      <Download className="h-4 w-4 mr-1" />
-                      Download
-                    </a>
-                  ) : (
-                    // Keep layout stable while the signed URL loads in background
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3"
-                      disabled
-                    >
-                      <Download className="h-4 w-4 mr-1" />
-                      Download
-                    </button>
-                  )}
-                </Button>
-              </div>
-            </div>
-
-            {/* Drawing area */}
-            <div
-              ref={(el) => {
-                // Combine refs
-                (containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el
-                if (touchRef) {
-                  (touchRef as React.MutableRefObject<HTMLDivElement | null>).current = el
-                }
-              }}
-              className="flex-1 overflow-hidden bg-muted/50 relative"
-              style={{ cursor: activeTool === "pan" ? "grab" : "crosshair" }}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-            >
-              {hasTiles && tileBaseUrl && tileManifest && tiledImageSize ? (
-                <div className="absolute inset-0">
-                  <TiledDrawingViewer
-                    tileBaseUrl={tileBaseUrl}
-                    tileManifest={tileManifest}
-                    thumbnailUrl={imageThumbnailUrl || undefined}
-                    className="absolute inset-0"
-                    onReady={handleOsdReady}
-                    onTransformChange={handleOsdTransformChange}
-                  />
-
-                  <SVGOverlay
-                    container={osdContainer}
-                    matrix={osdMatrix}
-                    imageSize={tiledImageSize}
-                    markups={markups}
-                    draftMarkups={tiledDraftMarkups}
-                    pins={pins}
-                    showMarkups={showMarkups}
-                    showPins={showPins}
-                    highlightedPinId={highlightedPinId}
-                    // Only capture pointer input when not panning.
-                    interactive={!readOnly && activeTool !== "pan"}
-                    onPinClick={(pin) => onPinClick?.(pin)}
+        ) : (
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: "center",
+            }}
+          >
+            <div ref={contentRef} className="relative inline-block bg-white shadow-2xl">
+              {hasOptimizedImages ? (
+                <ImageViewer
+                  thumbnailUrl={imageThumbnailUrl!}
+                  mediumUrl={imageMediumUrl!}
+                  fullUrl={imageFullUrl!}
+                  width={imageWidth || 2400}
+                  height={imageHeight || 1800}
+                  alt={`${sheet.sheet_number} - ${sheet.sheet_title || ""}`}
+                  className="max-w-full max-h-full"
+                  onLoadStage={(stage: ImageLoadStage) => {
+                    if (stage === "thumbnail") {
+                      markTiming("thumbnailLoad")
+                      if (imageWidth && imageHeight) {
+                        setContentSize({ width: imageWidth, height: imageHeight })
+                      }
+                    } else if (stage === "medium") {
+                      markTiming("mediumLoad")
+                    } else if (stage === "full") {
+                      markTiming("fullLoad")
+                      markFullyLoaded()
+                    }
+                  }}
+                  onError={(error) => {
+                    console.error("[DrawingViewer] Image load error:", error)
+                  }}
+                />
+              ) : !fileUrl ? (
+                <div className="flex items-center justify-center h-[70vh] w-[70vw]">
+                  <div className="text-muted-foreground">Loading sheet…</div>
+                </div>
+              ) : isPdf ? (
+                <div ref={pdfCanvasRef}>
+                  <PDFViewer
+                    file={fileUrl}
+                    onLoadSuccess={() => {
+                      syncPdfSize()
+                      markTiming("rendering")
+                      markFullyLoaded()
+                    }}
+                    onPdfImported={() => markTiming("pdfImport")}
+                    onWorkerLoaded={() => markTiming("workerLoad")}
+                    onDocumentLoaded={() => markTiming("pdfParsing")}
                   />
                 </div>
               ) : (
-                <div
-                  className="absolute inset-0 flex items-start justify-center"
-                  style={{
-                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                    transformOrigin: "center",
+                <img
+                  ref={imageRef}
+                  src={fileUrl}
+                  alt={sheet.sheet_number}
+                  className="max-w-full max-h-full object-contain bg-white"
+                  draggable={false}
+                  onDragStart={(e) => e.preventDefault()}
+                  onLoad={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    if (rect.width && rect.height) {
+                      setContentSize({ width: rect.width, height: rect.height })
+                    }
+                    markTiming("fullLoad")
+                    markFullyLoaded()
                   }}
-                >
-                  {/* PDF/Image - Phase 1: Use optimized images when available */}
-                  <div ref={contentRef} className="relative inline-block bg-white shadow-lg">
-                    {hasOptimizedImages ? (
-                      // Phase 1: Progressive image loading (10x faster than PDF)
-                      <ImageViewer
-                        thumbnailUrl={imageThumbnailUrl!}
-                        mediumUrl={imageMediumUrl!}
-                        fullUrl={imageFullUrl!}
-                        width={imageWidth || 2400}
-                        height={imageHeight || 1800}
-                        alt={`${sheet.sheet_number} - ${sheet.sheet_title || ""}`}
-                        className="max-w-full max-h-full"
-                        onLoadStage={(stage: ImageLoadStage) => {
-                          if (stage === "thumbnail") {
-                            markTiming("thumbnailLoad")
-                            // Set content size based on image dimensions for markup positioning
-                            if (imageWidth && imageHeight) {
-                              setContentSize({ width: imageWidth, height: imageHeight })
-                            }
-                          } else if (stage === "medium") {
-                            markTiming("mediumLoad")
-                          } else if (stage === "full") {
-                            markTiming("fullLoad")
-                            markFullyLoaded()
-                          }
-                        }}
-                        onError={(error) => {
-                          console.error("[DrawingViewer] Image load error:", error)
-                          // Could fall back to PDF here if needed
-                        }}
-                      />
-                    ) : !fileUrl ? (
-                      <div className="flex items-center justify-center h-[70vh] w-[70vw]">
-                        <div className="text-muted-foreground">Loading sheet…</div>
-                      </div>
-                    ) : isPdf ? (
-                      // Legacy: PDF rendering via react-pdf
-                      <div ref={pdfCanvasRef}>
-                        <PDFViewer
-                          file={fileUrl}
-                          onLoadSuccess={() => {
-                            syncPdfSize()
-                            markTiming("rendering")
-                            markFullyLoaded()
-                          }}
-                          onPdfImported={() => markTiming("pdfImport")}
-                          onWorkerLoaded={() => markTiming("workerLoad")}
-                          onDocumentLoaded={() => markTiming("pdfParsing")}
-                        />
-                      </div>
-                    ) : (
-                      // Legacy: Direct image (non-PDF, non-optimized)
-                      <img
-                        ref={imageRef}
-                        src={fileUrl}
-                        alt={sheet.sheet_number}
-                        className="max-w-full max-h-full object-contain bg-white"
-                        draggable={false}
-                        onDragStart={(e) => e.preventDefault()}
-                        onLoad={(e) => {
-                          const rect = e.currentTarget.getBoundingClientRect()
-                          if (rect.width && rect.height) {
-                            setContentSize({ width: rect.width, height: rect.height })
-                          }
-                          // Track image load time
-                          markTiming("fullLoad")
-                          markFullyLoaded()
-                        }}
-                      />
-                    )}
+                />
+              )}
 
-                    {/* Canvas overlay for markups */}
-                    <canvas
-                      ref={canvasRef}
-                      className="absolute inset-0 pointer-events-none"
-                      style={{
-                        width: contentSize?.width ?? "100%",
-                        height: contentSize?.height ?? "100%",
-                      }}
-                    />
+              <canvas
+                ref={canvasRef}
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  width: contentSize?.width ?? "100%",
+                  height: contentSize?.height ?? "100%",
+                }}
+              />
 
-                    {/* Enhanced Pins overlay with clustering */}
-                    {showPins && contentSize && (
-                      <DrawingPinLayer
-                        pins={pins}
-                        zoom={zoom}
-                        containerWidth={contentSize.width}
-                        containerHeight={contentSize.height}
-                        onPinClick={(pin) => onPinClick?.(pin)}
-                        onClusterClick={handleClusterClick}
-                        highlightedPinId={highlightedPinId}
-                      />
-                    )}
-                  </div>
-                </div>
+              {showPins && contentSize && (
+                <DrawingPinLayer
+                  pins={pins}
+                  zoom={zoom}
+                  containerWidth={contentSize.width}
+                  containerHeight={contentSize.height}
+                  onPinClick={(pin) => onPinClick?.(pin)}
+                  onClusterClick={handleClusterClick}
+                  highlightedPinId={highlightedPinId}
+                />
               )}
             </div>
           </div>
+        )}
+      </div>
 
-          {/* Pins sidebar */}
-          {pins.length > 0 && (
-            <div className="w-64 border-l bg-background flex flex-col">
-              <div className="p-3 border-b font-medium flex items-center gap-2">
-                <Layers className="h-4 w-4" />
-                Linked Items ({pins.length})
-              </div>
-              <ScrollArea className="flex-1">
-                <div className="p-2 space-y-2">
-                  {pins.map((pin) => (
-                    <button
-                      key={pin.id}
-                      className={`w-full p-2 rounded-md border hover:bg-muted/50 text-left transition-colors ${
-                        highlightedPinId === pin.id ? "border-primary bg-primary/5" : ""
-                      }`}
-                      onClick={() => onPinClick?.(pin)}
+      {/* Top-left: sheet identity + navigation */}
+      <div className={cn("absolute top-4 left-4 z-20", chromeClass)}>
+        <div className="flex items-center gap-1 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1">
+          {sheets.length > 1 && onNavigateSheet && (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={goToPrevSheet}
+                disabled={!hasPrevSheet}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-xs text-muted-foreground font-mono tabular-nums w-10 text-center">
+                {currentSheetIndex + 1}/{sheets.length}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={goToNextSheet}
+                disabled={!hasNextSheet}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Separator orientation="vertical" className="h-6 mx-1" />
+            </>
+          )}
+          <Popover open={sheetListOpen} onOpenChange={setSheetListOpen}>
+            <PopoverTrigger asChild>
+              <button className="flex items-center gap-2 px-2 h-9 rounded-lg hover:bg-muted/60 transition-colors text-left">
+                <div className="flex flex-col leading-tight">
+                  <span className="text-sm font-semibold">{sheet.sheet_number}</span>
+                  {sheet.sheet_title && !isMobile && (
+                    <span className="text-xs text-muted-foreground truncate max-w-[220px]">
+                      {sheet.sheet_title}
+                    </span>
+                  )}
+                </div>
+                {sheet.discipline && (
+                  <Badge variant="outline" className="ml-1">
+                    {sheet.discipline}
+                  </Badge>
+                )}
+                {sheets.length > 1 && (
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                )}
+              </button>
+            </PopoverTrigger>
+            {sheets.length > 1 && onNavigateSheet && (
+              <PopoverContent align="start" className="w-80 p-0">
+                <div className="p-2 border-b">
+                  <Input
+                    placeholder="Search sheets..."
+                    value={sheetListQuery}
+                    onChange={(e) => setSheetListQuery(e.target.value)}
+                    className="h-8"
+                    autoFocus
+                  />
+                </div>
+                <ScrollArea className="h-80">
+                  <div className="p-1">
+                    {filteredSheets.length === 0 ? (
+                      <div className="text-center text-sm text-muted-foreground py-8">
+                        No sheets match
+                      </div>
+                    ) : (
+                      filteredSheets.map((s) => (
+                        <button
+                          key={s.id}
+                          onClick={() => {
+                            onNavigateSheet(s)
+                            setSheetListOpen(false)
+                            setSheetListQuery("")
+                          }}
+                          className={cn(
+                            "w-full text-left rounded-md px-2 py-1.5 hover:bg-muted/60 flex items-center gap-2",
+                            s.id === sheet.id && "bg-muted",
+                          )}
+                        >
+                          <span className="text-sm font-medium flex-shrink-0 w-16 font-mono truncate">
+                            {s.sheet_number}
+                          </span>
+                          <span className="text-sm text-muted-foreground truncate flex-1">
+                            {s.sheet_title ?? ""}
+                          </span>
+                          {s.discipline && (
+                            <Badge variant="outline" className="text-[10px]">
+                              {s.discipline}
+                            </Badge>
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            )}
+          </Popover>
+        </div>
+      </div>
+
+      {/* Top-right: view + actions */}
+      <div
+        className={cn(
+          "absolute top-4 right-4 z-20 flex items-center gap-2",
+          chromeClass,
+        )}
+      >
+        <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            onClick={handleZoomOut}
+            title="Zoom out"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </Button>
+          <span className="text-xs font-mono tabular-nums w-11 text-center">
+            {Math.round((hasTiles ? osdZoom : zoom) * 100)}%
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            onClick={handleZoomIn}
+            title="Zoom in"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            onClick={handleResetView}
+            title="Fit to screen (0)"
+          >
+            <Maximize2 className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1">
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={showMarkups ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => setShowMarkups(!showMarkups)}
+                >
+                  {showMarkups ? (
+                    <Eye className="h-4 w-4" />
+                  ) : (
+                    <EyeOff className="h-4 w-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {showMarkups ? "Hide" : "Show"} markups
+              </TooltipContent>
+            </Tooltip>
+
+            {pins.length > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={pinsDrawerOpen ? "secondary" : "ghost"}
+                    size="icon"
+                    className="h-9 w-9 relative"
+                    onClick={() => setPinsDrawerOpen((v) => !v)}
+                  >
+                    {pinsDrawerOpen ? (
+                      <PanelRightClose className="h-4 w-4" />
+                    ) : (
+                      <PanelRight className="h-4 w-4" />
+                    )}
+                    {!pinsDrawerOpen && (
+                      <span className="absolute -top-1 -right-1 h-4 min-w-[16px] px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-medium flex items-center justify-center">
+                        {pins.length}
+                      </span>
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  Linked items ({pins.length})
+                </TooltipContent>
+              </Tooltip>
+            )}
+
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      disabled={loadingVersions}
                     >
-                      <div className="flex items-center gap-2">
-                        <MapPin
-                          className="h-4 w-4 flex-shrink-0"
-                          style={{ color: getStatusColor(pin.status) }}
+                      <GitCompare className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Versions</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end">
+                {versions.length === 0 ? (
+                  <DropdownMenuItem
+                    disabled={loadingVersions}
+                    onClick={loadVersions}
+                  >
+                    {loadingVersions ? "Loading versions..." : "Load versions"}
+                  </DropdownMenuItem>
+                ) : versions.length < 2 ? (
+                  <DropdownMenuItem disabled>Only 1 version</DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onClick={handleCompareClick}>
+                    Compare versions ({versions.length})
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {fileUrl ? (
+                  <Button variant="ghost" size="icon" className="h-9 w-9" asChild>
+                    <a href={fileUrl} download target="_blank" rel="noreferrer">
+                      <Download className="h-4 w-4" />
+                    </a>
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9"
+                    disabled
+                  >
+                    <Download className="h-4 w-4" />
+                  </Button>
+                )}
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Download</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => setShowShortcutsHelp(true)}
+                >
+                  <Keyboard className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Shortcuts (?)</TooltipContent>
+            </Tooltip>
+
+            <Separator orientation="vertical" className="h-6 mx-1" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={onClose}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Close (Esc)</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      </div>
+
+      {/* Bottom-center: tool dock */}
+      {!readOnly && !isMobile && (
+        <div
+          className={cn(
+            "absolute bottom-6 left-1/2 -translate-x-1/2 z-20",
+            chromeClass,
+          )}
+        >
+          <div className="flex items-center gap-0.5 rounded-2xl border bg-background/95 backdrop-blur-md shadow-xl p-1.5">
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={activeTool === "pan" ? "secondary" : "ghost"}
+                    size="icon"
+                    className="h-10 w-10"
+                    onClick={() => setActiveTool("pan")}
+                  >
+                    <Move className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Pan</TooltipContent>
+              </Tooltip>
+
+              {onCreatePin && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={activeTool === "pin" ? "secondary" : "ghost"}
+                      size="icon"
+                      className="h-10 w-10"
+                      onClick={() => setActiveTool("pin")}
+                    >
+                      <MapPin className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Drop pin</TooltipContent>
+                </Tooltip>
+              )}
+
+              <Separator orientation="vertical" className="h-6 mx-1" />
+
+              <Popover open={markupMenuOpen} onOpenChange={setMarkupMenuOpen}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant={markupToolActive ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-10 gap-1.5 px-2.5"
+                      >
+                        <MarkupActiveIcon className="h-4 w-4" />
+                        <div
+                          className="h-3.5 w-3.5 rounded-full border border-background shadow-sm"
+                          style={{ backgroundColor: selectedColor }}
                         />
-                        <span className="text-sm font-medium truncate">
-                          {pin.entity_title ?? pin.label ?? "Untitled"}
+                        <ChevronDown className="h-3 w-3 opacity-60" />
+                      </Button>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Markup tools</TooltipContent>
+                </Tooltip>
+                <PopoverContent side="top" align="center" className="w-64 p-3">
+                  <div className="space-y-3">
+                    <div>
+                      <Label className="text-xs text-muted-foreground mb-2 block">
+                        Tool
+                      </Label>
+                      <div className="grid grid-cols-5 gap-1">
+                        {MARKUP_TOOLS.map((tool) => (
+                          <Tooltip key={tool.type}>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant={
+                                  activeTool === tool.type ? "secondary" : "ghost"
+                                }
+                                size="icon"
+                                className="h-9 w-9"
+                                onClick={() => {
+                                  setActiveTool(tool.type)
+                                  setMarkupMenuOpen(false)
+                                }}
+                              >
+                                <tool.icon className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">
+                              {tool.label}
+                            </TooltipContent>
+                          </Tooltip>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground mb-2 block">
+                        Color
+                      </Label>
+                      <div className="flex gap-1.5 flex-wrap">
+                        {MARKUP_COLORS.map((color) => (
+                          <button
+                            key={color}
+                            className={cn(
+                              "h-6 w-6 rounded-full border-2 transition-transform hover:scale-110",
+                              selectedColor === color
+                                ? "border-foreground"
+                                : "border-transparent",
+                            )}
+                            style={{ backgroundColor: color }}
+                            onClick={() => setSelectedColor(color)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <Label className="text-xs text-muted-foreground">
+                          Stroke
+                        </Label>
+                        <span className="text-xs text-muted-foreground font-mono">
+                          {strokeWidth}px
                         </span>
                       </div>
-                      <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                        <Badge variant="outline" className="text-xs">
+                      <Slider
+                        value={[strokeWidth]}
+                        min={1}
+                        max={8}
+                        step={1}
+                        onValueChange={([v]) => setStrokeWidth(v)}
+                      />
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              <Separator orientation="vertical" className="h-6 mx-1" />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-10 w-10"
+                    onClick={handleUndo}
+                    disabled={history.length === 0}
+                  >
+                    <Undo2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Undo</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-10 w-10"
+                    onClick={handleClear}
+                    disabled={localMarkups.length === 0}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Clear drafts</TooltipContent>
+              </Tooltip>
+
+              <Separator orientation="vertical" className="h-6 mx-1" />
+
+              <Button
+                variant="default"
+                size="sm"
+                className="h-10 gap-1.5"
+                onClick={handleSave}
+                disabled={localMarkups.length === 0 || !onSaveMarkup}
+              >
+                <Save className="h-4 w-4" />
+                Save
+                {localMarkups.length > 0 && ` (${localMarkups.length})`}
+              </Button>
+            </TooltipProvider>
+          </div>
+        </div>
+      )}
+
+      {/* Right pins drawer */}
+      {pinsDrawerOpen && pins.length > 0 && (
+        <div
+          className={cn(
+            "absolute top-20 right-4 bottom-24 w-72 z-20 rounded-xl border bg-background/95 backdrop-blur-md shadow-xl flex flex-col",
+            uiHidden && "opacity-0 pointer-events-none",
+          )}
+        >
+          <div className="p-3 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Layers className="h-4 w-4" />
+              Linked items
+              <Badge variant="secondary" className="ml-1">
+                {pins.length}
+              </Badge>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setPinsDrawerOpen(false)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="p-2 space-y-1.5">
+              {pins.map((pin) => (
+                <button
+                  key={pin.id}
+                  onClick={() => onPinClick?.(pin)}
+                  className={cn(
+                    "w-full p-2.5 rounded-lg border hover:bg-muted/50 text-left transition-colors",
+                    highlightedPinId === pin.id && "border-primary bg-primary/5",
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    <MapPin
+                      className="h-4 w-4 flex-shrink-0 mt-0.5"
+                      style={{ color: getStatusColor(pin.status) }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">
+                        {pin.entity_title ?? pin.label ?? "Untitled"}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] py-0 h-4"
+                        >
                           {PIN_ENTITY_TYPE_LABELS[pin.entity_type]}
                         </Badge>
                         {pin.status && (
-                          <span className="capitalize">{pin.status}</span>
+                          <span className="text-[10px] text-muted-foreground capitalize">
+                            {pin.status}
+                          </span>
                         )}
                       </div>
-                    </button>
-                  ))}
-                </div>
-              </ScrollArea>
+                    </div>
+                  </div>
+                </button>
+              ))}
             </div>
-          )}
+          </ScrollArea>
         </div>
+      )}
 
-        {/* Stage 2: Thumbnail strip for sheet navigation */}
-        {sheets.length > 1 && onNavigateSheet && !isMobile && (
-          <SheetThumbnailStrip
-            sheets={sheets}
-            currentSheetId={sheet.id}
-            onSelectSheet={(s) => onNavigateSheet(s)}
-            className="border-t"
-          />
-        )}
-
-        {/* Stage 2: Mobile toolbar */}
-        {isMobile && isTouch && !readOnly && (
-          <MobileDrawingToolbar
-            onPrevious={hasPrevSheet ? goToPrevSheet : undefined}
-            onNext={hasNextSheet ? goToNextSheet : undefined}
-            onDropPin={handleMobileDropPin}
-            onMarkup={handleMobileMarkupToggle}
-            onCamera={handleMobileCamera}
-            isMarkupActive={isMarkupMode}
-          />
-        )}
-
-        {/* Stage 2: Long press context menu */}
-        <LongPressMenu
-          open={showLongPressMenu}
-          onClose={() => {
-            setShowLongPressMenu(false)
-            setLongPressPosition(null)
-          }}
-          onAction={handleLongPressAction}
-          position={longPressPosition ? { x: longPressPosition.clientX, y: longPressPosition.clientY } : { x: 0, y: 0 }}
+      {/* Mobile toolbar */}
+      {isMobile && isTouch && !readOnly && !uiHidden && (
+        <MobileDrawingToolbar
+          onPrevious={hasPrevSheet ? goToPrevSheet : undefined}
+          onNext={hasNextSheet ? goToNextSheet : undefined}
+          onDropPin={handleMobileDropPin}
+          onMarkup={handleMobileMarkupToggle}
+          onCamera={handleMobileCamera}
+          isMarkupActive={isMarkupMode}
         />
+      )}
 
-        {/* Text input dialog */}
-        <Dialog open={textDialogOpen} onOpenChange={setTextDialogOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {activeTool === "callout" ? "Add Callout" : "Add Text"}
-              </DialogTitle>
-            </DialogHeader>
-            <div>
-              <Label htmlFor="text">Text</Label>
-              <Input
-                id="text"
-                value={textInput}
-                onChange={(e) => setTextInput(e.target.value)}
-                placeholder="Enter text..."
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    handleTextSubmit()
-                  }
-                }}
-              />
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setTextDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleTextSubmit}>Add</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+      {/* Long press context menu */}
+      <LongPressMenu
+        open={showLongPressMenu}
+        onClose={() => {
+          setShowLongPressMenu(false)
+          setLongPressPosition(null)
+        }}
+        onAction={handleLongPressAction}
+        position={
+          longPressPosition
+            ? { x: longPressPosition.clientX, y: longPressPosition.clientY }
+            : { x: 0, y: 0 }
+        }
+      />
 
-        {/* Keyboard shortcuts help */}
-        <KeyboardShortcutsHelp
-          open={showShortcutsHelp}
-          onOpenChange={setShowShortcutsHelp}
-          context="viewer"
-        />
-      </div>
+      {/* Text input dialog */}
+      <Dialog open={textDialogOpen} onOpenChange={setTextDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {activeTool === "callout" ? "Add Callout" : "Add Text"}
+            </DialogTitle>
+          </DialogHeader>
+          <div>
+            <Label htmlFor="text">Text</Label>
+            <Input
+              id="text"
+              value={textInput}
+              onChange={(e) => setTextInput(e.target.value)}
+              placeholder="Enter text..."
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handleTextSubmit()
+                }
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTextDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleTextSubmit}>Add</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Keyboard shortcuts help */}
+      <KeyboardShortcutsHelp
+        open={showShortcutsHelp}
+        onOpenChange={setShowShortcutsHelp}
+        context="viewer"
+      />
     </div>
   )
 }

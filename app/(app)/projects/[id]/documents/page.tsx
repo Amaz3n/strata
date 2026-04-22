@@ -4,7 +4,7 @@ import { getProjectAction } from "../actions"
 import {
   listFilesAction,
   getFileCountsAction,
-  listFoldersAction,
+  listChildFoldersAction,
 } from "@/app/(app)/documents/actions"
 import { UnifiedDocumentsLayout } from "@/components/documents"
 
@@ -17,11 +17,19 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
   const { id } = await params
   const query = await searchParams
 
+  const normalizedPath = query.path?.trim() ? query.path : undefined
+
   const [project, filesResult, counts, folders] = await Promise.all([
     getProjectAction(id),
-    listFilesAction({ project_id: id, limit: 100, offset: 0 }),
+    listFilesAction({
+      project_id: id,
+      folder_path: normalizedPath,
+      root_only: normalizedPath ? undefined : true,
+      limit: 100,
+      offset: 0,
+    }),
     getFileCountsAction(id),
-    listFoldersAction(id),
+    listChildFoldersAction(id, normalizedPath),
   ])
 
   if (!project) {
@@ -37,7 +45,7 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
           initialTotalCount={filesResult.count}
           initialHasMore={filesResult.hasMore}
           initialCounts={counts}
-          initialFolders={folders}
+          initialFolders={folders.map((folder) => folder.path)}
           initialSets={[]}
           initialPath={query.path}
         />

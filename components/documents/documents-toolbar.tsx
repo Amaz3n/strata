@@ -12,7 +12,6 @@ import {
   Plus,
   Upload,
   ListFilter,
-  ArrowUpDown,
   PanelLeft,
   PanelLeftClose,
 } from "lucide-react"
@@ -78,20 +77,9 @@ export function DocumentsToolbar({
     isUploading,
     quickFilter,
     setQuickFilter,
-    sort,
-    setSort,
-    direction,
-    setDirection,
   } = useDocuments()
 
   const searchInputRef = useRef<HTMLInputElement>(null)
-
-  const sortOptions = [
-    { label: "Date created", value: "created_at" },
-    { label: "Date modified", value: "updated_at" },
-    { label: "Name", value: "name" },
-    { label: "File size", value: "size" },
-  ] as const
   const hasFolderSelection = selectedFolderCount > 0
 
   return (
@@ -224,45 +212,6 @@ export function DocumentsToolbar({
                     {config.label}
                   </DropdownMenuCheckboxItem>
                 ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {/* Sort */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 hidden md:flex">
-                <ArrowUpDown className="h-3.5 w-3.5" />
-                <span className="text-xs">Sort</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-48">
-              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Sort by</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {sortOptions.map((option) => (
-                <DropdownMenuCheckboxItem
-                  key={option.value}
-                  checked={sort === option.value}
-                  onCheckedChange={() => setSort(option.value as any)}
-                  className="text-xs"
-                >
-                  {option.label}
-                </DropdownMenuCheckboxItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuCheckboxItem
-                checked={direction === "asc"}
-                onCheckedChange={() => setDirection("asc")}
-                className="text-xs"
-              >
-                Ascending
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={direction === "desc"}
-                onCheckedChange={() => setDirection("desc")}
-                className="text-xs"
-              >
-                Descending
-              </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
