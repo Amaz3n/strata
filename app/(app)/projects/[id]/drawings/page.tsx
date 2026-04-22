@@ -2,7 +2,7 @@ import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { DrawingsSetsView } from "@/components/drawings"
 import { getProjectAction } from "../actions"
-import { listDrawingSets, listDrawingSheets } from "@/lib/services/drawings"
+import { listDrawingSets, listDrawingSheetsWithUrls } from "@/lib/services/drawings"
 
 interface ProjectDrawingsPageProps {
   params: Promise<{ id: string }>
@@ -19,7 +19,7 @@ export default async function ProjectDrawingsPage({
   const [project, sets, sheets] = await Promise.all([
     getProjectAction(id),
     listDrawingSets({ project_id: id, limit: 100 }),
-    listDrawingSheets({ project_id: id, limit: 500 }),
+    listDrawingSheetsWithUrls({ project_id: id, limit: 500 }),
   ])
 
   if (!project) {

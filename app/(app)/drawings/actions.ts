@@ -452,7 +452,7 @@ export async function deleteDrawingRevisionAction(revisionId: string): Promise<v
 export async function listDrawingSheetsAction(
   filters: Partial<DrawingSheetListFilters> = {}
 ): Promise<DrawingSheet[]> {
-  return listDrawingSheets(filters)
+  return listDrawingSheetsWithUrls(filters)
 }
 
 /**

@@ -1,6 +1,6 @@
 import { PageLayout } from "@/components/layout/page-layout"
 import { DrawingsSetsView } from "@/components/drawings"
-import { listDrawingSets, listDrawingSheets } from "@/lib/services/drawings"
+import { listDrawingSets, listDrawingSheetsWithUrls } from "@/lib/services/drawings"
 import { listProjectsForDrawingsAction } from "./actions"
 
 interface DrawingsPageProps {
@@ -18,7 +18,7 @@ export default async function DrawingsPage({ searchParams }: DrawingsPageProps) 
   const [sets, sheets] = selectedProjectId
     ? await Promise.all([
         listDrawingSets({ project_id: selectedProjectId, limit: 100 }),
-        listDrawingSheets({ project_id: selectedProjectId, limit: 500 }),
+        listDrawingSheetsWithUrls({ project_id: selectedProjectId, limit: 500 }),
       ])
     : [[], []]
   const initialSelectedSetId =
