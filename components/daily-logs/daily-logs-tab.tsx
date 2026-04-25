@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils"
 
 import { FileViewer } from "@/components/files/file-viewer"
 import { QuickLogEntry } from "./quick-log-entry"
+import { ActivityCalendar } from "./activity-calendar"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -694,6 +695,20 @@ export function DailyLogsTab({
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerFile, setViewerFile] = useState<EnhancedFileMetadata | null>(null)
 
+  // Derive the single-day selection for the activity rail from logDateRange
+  const selectedCalendarDate = useMemo(() => {
+    if (!logDateRange?.from || !logDateRange?.to) return undefined
+    return isSameDay(logDateRange.from, logDateRange.to) ? logDateRange.from : undefined
+  }, [logDateRange])
+
+  function handleCalendarSelect(date: Date | undefined) {
+    if (!date) {
+      setLogDateRange(undefined)
+      return
+    }
+    setLogDateRange({ from: date, to: date })
+  }
+
   const scheduleById = useMemo(
     () => scheduleItems.reduce<Record<string, ScheduleItem>>((acc, item) => {
       acc[item.id] = item
@@ -909,85 +924,97 @@ export function DailyLogsTab({
         />
       </div>
 
-      {/* Timeline Feed */}
-      <div className="flex-1 overflow-y-auto">
-        {daySummaries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
-              <ClipboardList className="h-8 w-8 text-muted-foreground" />
+      {/* Body: timeline feed + desktop activity rail */}
+      <div className="flex-1 flex min-h-0 gap-6 lg:gap-8">
+        <div className="flex-1 min-w-0 overflow-y-auto">
+          {daySummaries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
+                <ClipboardList className="h-8 w-8 text-muted-foreground" />
+              </div>
+              <h3 className="font-semibold mb-1">No daily logs yet</h3>
+              <p className="text-sm text-muted-foreground max-w-[300px] mb-4">
+                Start documenting site activity, weather conditions, and progress with daily logs.
+              </p>
+              <QuickLogEntry
+                projectId={projectId}
+                projectAddress={projectAddress}
+                scheduleItems={scheduleItems}
+                tasks={tasks}
+                punchItems={punchItems}
+                onCreateLog={onCreateLog}
+                onUploadFiles={onUploadFiles}
+                trigger={
+                  <Button>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create First Log
+                  </Button>
+                }
+              />
             </div>
-            <h3 className="font-semibold mb-1">No daily logs yet</h3>
-            <p className="text-sm text-muted-foreground max-w-[300px] mb-4">
-              Start documenting site activity, weather conditions, and progress with daily logs.
-            </p>
-            <QuickLogEntry
-              projectId={projectId}
-              projectAddress={projectAddress}
-              scheduleItems={scheduleItems}
-              tasks={tasks}
-              punchItems={punchItems}
-              onCreateLog={onCreateLog}
-              onUploadFiles={onUploadFiles}
-              trigger={
-                <Button>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create First Log
-                </Button>
-              }
-            />
-          </div>
-        ) : (
-          <div className="max-w-4xl">
-            {daySummaries.map((summary) => {
-              const isToday = isSameDay(summary.date, today)
-              const isYesterday = isSameDay(summary.date, addDays(today, -1))
-              const dateKey = format(summary.date, 'yyyy-MM-dd')
+          ) : (
+            <div className="max-w-4xl">
+              {daySummaries.map((summary) => {
+                const isToday = isSameDay(summary.date, today)
+                const isYesterday = isSameDay(summary.date, addDays(today, -1))
+                const dateKey = format(summary.date, 'yyyy-MM-dd')
 
-              // Group photos by log
-              const photosByLogId = summary.photos.reduce<Record<string, EnhancedFileMetadata[]>>((acc, photo) => {
-                const logId = photo.daily_log_id ?? "standalone"
-                if (!acc[logId]) acc[logId] = []
-                acc[logId].push(photo)
-                return acc
-              }, {})
+                // Group photos by log
+                const photosByLogId = summary.photos.reduce<Record<string, EnhancedFileMetadata[]>>((acc, photo) => {
+                  const logId = photo.daily_log_id ?? "standalone"
+                  if (!acc[logId]) acc[logId] = []
+                  acc[logId].push(photo)
+                  return acc
+                }, {})
 
-              const standalonePhotos = photosByLogId["standalone"] ?? []
+                const standalonePhotos = photosByLogId["standalone"] ?? []
 
-              return (
-                <div key={dateKey} className="mb-2">
-                  <DayHeader
-                    summary={summary}
-                    isToday={isToday}
-                    isYesterday={isYesterday}
-                  />
+                return (
+                  <div key={dateKey} className="mb-2">
+                    <DayHeader
+                      summary={summary}
+                      isToday={isToday}
+                      isYesterday={isYesterday}
+                    />
 
-                  <div className="pt-4">
-                    {/* Log entries */}
-                    {summary.logs.map((log) => (
-                      <LogEntry
-                        key={log.id}
-                        log={log}
-                        photos={photosByLogId[log.id] ?? []}
-                        scheduleById={scheduleById}
-                        tasksById={tasksById}
-                        punchById={punchById}
-                        onImageClick={handleImageClick}
-                      />
-                    ))}
+                    <div className="pt-4">
+                      {/* Log entries */}
+                      {summary.logs.map((log) => (
+                        <LogEntry
+                          key={log.id}
+                          log={log}
+                          photos={photosByLogId[log.id] ?? []}
+                          scheduleById={scheduleById}
+                          tasksById={tasksById}
+                          punchById={punchById}
+                          onImageClick={handleImageClick}
+                        />
+                      ))}
 
-                    {/* Standalone photos */}
-                    {standalonePhotos.length > 0 && summary.logs.length === 0 && (
-                      <PhotoStrip
-                        photos={standalonePhotos}
-                        onImageClick={handleImageClick}
-                      />
-                    )}
+                      {/* Standalone photos */}
+                      {standalonePhotos.length > 0 && summary.logs.length === 0 && (
+                        <PhotoStrip
+                          photos={standalonePhotos}
+                          onImageClick={handleImageClick}
+                        />
+                      )}
+                    </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Desktop-only activity rail */}
+        <aside className="hidden lg:flex w-[300px] xl:w-[320px] flex-shrink-0 flex-col border-l pl-6 xl:pl-8">
+          <ActivityCalendar
+            dailyLogs={dailyLogs}
+            photos={imageFiles}
+            selectedDate={selectedCalendarDate}
+            onSelectDate={handleCalendarSelect}
+          />
+        </aside>
       </div>
 
       {/* Mobile Floating Action Button */}

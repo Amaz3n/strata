@@ -107,13 +107,13 @@ export interface ScheduleContextValue {
 }
 
 // Constants
-export const GANTT_ROW_HEIGHT = 40
-export const GANTT_HEADER_HEIGHT = 60
-export const GANTT_SIDEBAR_WIDTH = 300
+export const GANTT_ROW_HEIGHT = 44
+export const GANTT_HEADER_HEIGHT = 64
+export const GANTT_SIDEBAR_WIDTH = 312
 export const GANTT_MIN_COL_WIDTH = 40
-export const GANTT_BAR_HEIGHT = 28
-export const GANTT_BAR_PADDING = 6
-export const GANTT_MILESTONE_SIZE = 16
+export const GANTT_BAR_HEIGHT = 30
+export const GANTT_BAR_PADDING = 7
+export const GANTT_MILESTONE_SIZE = 18
 
 // Animation constants
 export const ANIMATION = {

@@ -34,17 +34,17 @@ export default async function AppLayout({
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider className="h-svh max-h-svh overflow-hidden">
       <AppSidebar
         user={currentUser}
         pipelineBadgeCount={pipelineBadgeCount}
         canAccessPlatform={platformAccess.canAccessPlatform}
       />
-      <SidebarInset className="min-w-0 overflow-x-hidden">
+      <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
         <PageTitleProvider>
           <PlatformSessionBanner />
           <AppHeader />
-          <div className="flex flex-1 flex-col gap-4 p-4 pt-6 min-w-0 overflow-x-hidden">
+          <div className="flex flex-1 flex-col gap-4 p-4 pt-6 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden">
             {children}
           </div>
         </PageTitleProvider>

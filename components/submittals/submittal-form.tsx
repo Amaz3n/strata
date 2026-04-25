@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
@@ -12,7 +11,6 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -26,8 +24,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { Badge } from "@/components/ui/badge"
-import { FileText, Building2 } from "@/components/icons"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar as CalendarPicker } from "@/components/ui/calendar"
+import { format } from "date-fns"
+import { cn } from "@/lib/utils"
+import { FileText, Calendar } from "@/components/icons"
 
 interface SubmittalFormProps {
   open: boolean
@@ -38,9 +39,7 @@ interface SubmittalFormProps {
   isSubmitting?: boolean
 }
 
-type SubmittalFormValues = Omit<SubmittalInput, "submittal_number"> & {
-  submittal_number: string | number
-}
+type SubmittalFormValues = Omit<SubmittalInput, "submittal_number">
 
 export function SubmittalForm({
   open,
@@ -50,13 +49,10 @@ export function SubmittalForm({
   onSubmit,
   isSubmitting,
 }: SubmittalFormProps) {
-  const [statusValue, setStatusValue] = useState("submitted")
-
   const form = useForm<SubmittalFormValues>({
     resolver: zodResolver(submittalInputSchema),
     defaultValues: {
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      submittal_number: "",
       title: "",
       description: "",
       status: "submitted",
@@ -70,7 +66,6 @@ export function SubmittalForm({
     await onSubmit(values as unknown as SubmittalInput)
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      submittal_number: "",
       title: "",
       description: "",
       status: "submitted",
@@ -101,50 +96,6 @@ export function SubmittalForm({
         <Form {...form}>
           <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="project_id"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Project</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select a project" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {projects.map((project) => (
-                            <SelectItem key={project.id} value={project.id}>
-                              <div className="flex items-center gap-2">
-                                <Building2 className="h-4 w-4 text-muted-foreground" />
-                                <span>{project.name}</span>
-                              </div>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="submittal_number"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Submittal #</FormLabel>
-                      <FormControl>
-                        <Input placeholder="SUB-001" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
               <FormField
                 control={form.control}
                 name="title"
@@ -173,22 +124,16 @@ export function SubmittalForm({
                 )}
               />
 
-              <div className="grid gap-4 md:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2">
                 <FormField
                   control={form.control}
                   name="status"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Status</FormLabel>
-                      <Select
-                        onValueChange={(val) => {
-                          field.onChange(val)
-                          setStatusValue(val)
-                        }}
-                        value={field.value}
-                      >
+                      <Select onValueChange={field.onChange} value={field.value}>
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select status" />
                           </SelectTrigger>
                         </FormControl>
@@ -200,7 +145,68 @@ export function SubmittalForm({
                           <SelectItem value="rejected">Rejected</SelectItem>
                         </SelectContent>
                       </Select>
-                      <FormDescription>Current state of this submittal.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="due_date"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-col">
+                      <FormLabel>Due date</FormLabel>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <FormControl>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
+                            >
+                              <Calendar className="mr-2 h-4 w-4" />
+                              {field.value ? format(new Date(field.value), "PPP") : "Pick a date"}
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <CalendarPicker
+                            mode="single"
+                            selected={field.value ? new Date(field.value) : undefined}
+                            onSelect={(date) => field.onChange(date ? format(date, "yyyy-MM-dd") : "")}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="submittal_type"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Type</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="product_data">Product Data</SelectItem>
+                          <SelectItem value="shop_drawing">Shop Drawing</SelectItem>
+                          <SelectItem value="sample">Sample</SelectItem>
+                          <SelectItem value="mockup">Mockup</SelectItem>
+                          <SelectItem value="certificate">Certificate</SelectItem>
+                          <SelectItem value="test_report">Test Report</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -219,53 +225,14 @@ export function SubmittalForm({
                     </FormItem>
                   )}
                 />
-
-                <FormField
-                  control={form.control}
-                  name="submittal_type"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Type</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Product data / shop drawing / sample" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <FormField
-                control={form.control}
-                name="due_date"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Due date</FormLabel>
-                    <FormControl>
-                      <Input type="date" value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value)} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <div className="rounded-lg border bg-muted/40 p-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">Status: {statusValue}</Badge>
-                  <Badge variant="outline">Spec: {form.watch("spec_section") || "n/a"}</Badge>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  {form.watch("due_date") ? `Due ${form.watch("due_date")}` : "No due date"}
-                </div>
               </div>
             </div>
 
-            <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-col gap-3">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">Spec-aware</Badge>
-                <Badge variant="outline">Status: draft→approved</Badge>
-              </div>
-              <Button type="submit" className="w-full" disabled={isSubmitting}>
+            <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-row gap-2">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-1" disabled={isSubmitting}>
                 Save submittal
               </Button>
             </SheetFooter>

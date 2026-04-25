@@ -550,31 +550,48 @@ export function ChangeOrderForm({
 
               <Separator />
 
-              <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
-                <div className="flex items-center gap-2">
-                  <DollarSign className="h-4 w-4 text-muted-foreground" />
-                  <h4 className="font-semibold text-sm">Totals preview</h4>
+              <div className="rounded-xl border bg-gradient-to-b from-muted/30 to-muted/10 p-5 space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+                      <DollarSign className="h-4 w-4" />
+                    </div>
+                    <h4 className="font-semibold text-sm">Totals preview</h4>
+                  </div>
+                  <Badge variant="secondary" className="font-mono text-[10px] tracking-wider uppercase">
+                    Calculated
+                  </Badge>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-                  <div className="flex items-center justify-between rounded-md bg-background border px-3 py-2">
+                
+                <div className="space-y-2.5 text-sm">
+                  <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Subtotal</span>
-                    <span className="font-semibold">{formatMoney(previewTotals.subtotal)}</span>
+                    <span className="font-medium font-mono">{formatMoney(previewTotals.subtotal)}</span>
                   </div>
-                  <div className="flex items-center justify-between rounded-md bg-background border px-3 py-2">
+                  <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Allowances</span>
-                    <span className="font-semibold">{formatMoney(previewTotals.allowanceTotal)}</span>
+                    <span className="font-medium font-mono text-muted-foreground">{formatMoney(previewTotals.allowanceTotal)}</span>
                   </div>
-                  <div className="flex items-center justify-between rounded-md bg-background border px-3 py-2">
-                    <span className="text-muted-foreground">Markup</span>
-                    <span className="font-semibold">{formatMoney(previewTotals.markup)}</span>
-                  </div>
-                  <div className="flex items-center justify-between rounded-md bg-background border px-3 py-2">
-                    <span className="text-muted-foreground">Tax</span>
-                    <span className="font-semibold">{formatMoney(previewTotals.tax)}</span>
-                  </div>
-                  <div className="flex items-center justify-between rounded-md bg-background border px-3 py-2 md:col-span-2">
-                    <span className="text-muted-foreground">Total</span>
-                    <span className="text-lg font-bold">{formatMoney(previewTotals.total)}</span>
+                  
+                  {previewTotals.markup > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Markup ({form.watch("markup_percent") || 0}%)</span>
+                      <span className="font-medium font-mono text-muted-foreground">{formatMoney(previewTotals.markup)}</span>
+                    </div>
+                  )}
+                  
+                  {previewTotals.tax > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Tax ({form.watch("tax_rate") || 0}%)</span>
+                      <span className="font-medium font-mono text-muted-foreground">{formatMoney(previewTotals.tax)}</span>
+                    </div>
+                  )}
+
+                  <div className="pt-3 mt-1 border-t flex items-center justify-between">
+                    <span className="font-medium">Total</span>
+                    <span className="text-xl font-bold font-mono tracking-tight text-primary">
+                      {formatMoney(previewTotals.total)}
+                    </span>
                   </div>
                 </div>
               </div>

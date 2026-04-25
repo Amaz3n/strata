@@ -78,9 +78,11 @@ export default async function SchedulePage() {
 
   return (
     <PageLayout title="Schedule">
-      <Suspense fallback={<GanttChartSkeleton />}>
-        <ScheduleContent />
-      </Suspense>
+      <div className="-m-4 -mt-6 flex flex-1 min-h-0 flex-col overflow-hidden">
+        <Suspense fallback={<GanttChartSkeleton />}>
+          <ScheduleContent />
+        </Suspense>
+      </div>
     </PageLayout>
   )
 }

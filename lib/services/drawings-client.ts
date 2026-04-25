@@ -18,6 +18,33 @@ export async function uploadDrawingFileToStorage(
   projectId: string,
   orgId?: string
 ): Promise<{ storagePath: string }> {
+  const hostname =
+    typeof window !== "undefined" ? window.location.hostname.toLowerCase() : ""
+  const useAppProxy =
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".local")
+
+  if (useAppProxy) {
+    const formData = new FormData()
+    formData.append("projectId", projectId)
+    formData.append("file", file)
+
+    const response = await fetch("/api/drawings/upload-file", {
+      method: "POST",
+      body: formData,
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to upload file to storage.")
+    }
+
+    const payload = (await response.json()) as { storagePath?: string }
+    if (!payload?.storagePath) {
+      throw new Error("Invalid upload response.")
+    }
+
+    return { storagePath: payload.storagePath }
+  }
+
   const response = await fetch("/api/drawings/upload-url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

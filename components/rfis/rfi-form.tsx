@@ -146,44 +146,6 @@ export function RfiForm({
         <Form {...form}>
           <form className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
-              {!isProjectScoped && (
-                <div className="grid gap-4 md:grid-cols-1">
-                  <FormField
-                    control={form.control}
-                    name="project_id"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Project</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select a project" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {projects.map((project) => (
-                              <SelectItem key={project.id} value={project.id}>
-                                <div className="flex items-center gap-2">
-                                  <Building2 className="h-4 w-4 text-muted-foreground" />
-                                  <span>{project.name}</span>
-                                </div>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-              )}
-
-              {isProjectScoped && scopedProject && (
-                <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                  <span className="font-medium text-foreground">Project:</span> {scopedProject.name}
-                </div>
-              )}
-
               <FormField
                 control={form.control}
                 name="subject"
@@ -192,6 +154,20 @@ export function RfiForm({
                     <FormLabel>Subject</FormLabel>
                     <FormControl>
                       <Input placeholder="Clarify lighting rough-in location" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="location"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Location</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Kitchen, level 2..." {...field} value={field.value ?? ""} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -212,34 +188,7 @@ export function RfiForm({
                 )}
               />
 
-              <div className="grid gap-4 md:grid-cols-3">
-                <FormField
-                  control={form.control}
-                  name="status"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Status</FormLabel>
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select status" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="draft">Draft</SelectItem>
-                          <SelectItem value="open">Open</SelectItem>
-                          <SelectItem value="answered">Answered</SelectItem>
-                          <SelectItem value="closed">Closed</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
+              <div className="grid gap-4 md:grid-cols-2">
                 <FormField
                   control={form.control}
                   name="priority"
@@ -248,7 +197,7 @@ export function RfiForm({
                       <FormLabel>Priority</FormLabel>
                       <Select onValueChange={field.onChange} value={field.value}>
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select priority" />
                           </SelectTrigger>
                         </FormControl>
@@ -320,7 +269,7 @@ export function RfiForm({
                         value={field.value || "__none__"}
                       >
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select company" />
                           </SelectTrigger>
                         </FormControl>
@@ -336,8 +285,8 @@ export function RfiForm({
                         </SelectContent>
                       </Select>
                       {selectedCompanyId && companyContacts.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          No contacts are linked to this company yet.
+                        <p className="text-xs text-muted-foreground mt-1.5">
+                          No contacts linked to this company.
                         </p>
                       ) : null}
                       <FormMessage />
@@ -367,7 +316,7 @@ export function RfiForm({
                         value={field.value || "__none__"}
                       >
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select contact" />
                           </SelectTrigger>
                         </FormControl>
@@ -386,90 +335,6 @@ export function RfiForm({
                   )}
                 />
               </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="location"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Location</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Kitchen, level 2..." {...field} value={field.value ?? ""} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="drawing_reference"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Drawing Ref</FormLabel>
-                      <FormControl>
-                        <Input placeholder="A-201, detail 4..." {...field} value={field.value ?? ""} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="spec_reference"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Spec Ref</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Section 09 29 00..." {...field} value={field.value ?? ""} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="cost_impact_cents"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Cost Impact ($)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          min={0}
-                          placeholder="0"
-                          value={field.value ? Math.round(field.value / 100) : ""}
-                          onChange={(e) => {
-                            const dollars = Number(e.target.value || 0)
-                            field.onChange(Number.isFinite(dollars) ? dollars * 100 : undefined)
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="schedule_impact_days"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Schedule Impact (days)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          min={0}
-                          placeholder="0"
-                          value={field.value ?? ""}
-                          onChange={(e) => field.onChange(e.target.value ? Number(e.target.value) : undefined)}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
             </div>
 
             <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-row gap-2">

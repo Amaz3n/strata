@@ -116,6 +116,16 @@ export type {
   SheetStatusCounts,
 }
 
+export interface UploadReviewSheet {
+  id: string
+  drawing_set_id: string
+  sheet_number: string
+  sheet_title?: string
+  discipline?: DrawingDiscipline
+  sort_order: number
+  updated_at: string
+}
+
 // ============================================================================
 // DRAWING SET ACTIONS
 // ============================================================================
@@ -189,7 +199,7 @@ export async function createDrawingSetFromUpload(input: {
   const { supabase, orgId } = await requireOrgContext()
   const { data: project, error: projectError } = await supabase
     .from("projects")
-    .select("id")
+    .select("id, name")
     .eq("org_id", orgId)
     .eq("id", input.projectId)
     .maybeSingle()
@@ -199,9 +209,12 @@ export async function createDrawingSetFromUpload(input: {
   }
 
   const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
-  const expectedPrefix = `${orgId}/${input.projectId}/drawings/sets/`
+  const allowedPrefixes = [
+    `${orgId}/${input.projectId}/drawings/uploads/`,
+    `${orgId}/${input.projectId}/drawings/sets/`,
+  ]
 
-  if (!normalizedStoragePath.startsWith(expectedPrefix)) {
+  if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
     throw new Error("Invalid drawing upload path for project scope")
   }
 
@@ -217,13 +230,63 @@ export async function createDrawingSetFromUpload(input: {
     source: "upload",
   })
 
-  // Create drawing set record
-  const drawingSet = await createDrawingSet({
-    project_id: input.projectId,
-    title: input.title || input.fileName.replace(/\.pdf$/i, ""),
-    set_type: input.setType as any,
-    source_file_id: fileRecord.id,
-  })
+  const { data: existingSets, error: existingSetsError } = await supabase
+    .from("drawing_sets")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", input.projectId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+
+  if (existingSetsError) {
+    throw new Error(`Failed to load existing drawing sets: ${existingSetsError.message}`)
+  }
+
+  let drawingSet: DrawingSet
+
+  if (existingSets && existingSets.length > 0) {
+    const existingSetId = existingSets[0].id as string
+    const { error: updateError } = await supabase
+      .from("drawing_sets")
+      .update({
+        status: "processing",
+        processed_pages: 0,
+        total_pages: null,
+        processing_stage: "queued",
+        error_message: null,
+        processed_at: null,
+        source_file_id: fileRecord.id,
+      })
+      .eq("org_id", orgId)
+      .eq("id", existingSetId)
+
+    if (updateError) {
+      throw new Error(`Failed to prepare drawing set: ${updateError.message}`)
+    }
+
+    const reusedSet = await getDrawingSet(existingSetId)
+    if (!reusedSet) {
+      throw new Error("Prepared drawing set could not be loaded")
+    }
+    drawingSet = reusedSet
+  } else {
+    drawingSet = await createDrawingSet({
+      project_id: input.projectId,
+      title: input.title || `${project.name} Drawings`,
+      set_type: input.setType as any,
+      source_file_id: fileRecord.id,
+    })
+
+    const { error: stageError } = await supabase
+      .from("drawing_sets")
+      .update({ processing_stage: "queued" })
+      .eq("org_id", orgId)
+      .eq("id", drawingSet.id)
+
+    if (stageError) {
+      console.warn("Failed to set initial processing stage:", stageError.message)
+    }
+  }
 
   // Trigger processing via outbox system
   try {
@@ -328,6 +391,16 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
     error_message: null,
     processed_pages: 0,
   })
+
+  await supabase
+    .from("drawing_sets")
+    .update({
+      processing_stage: "queued",
+      total_pages: null,
+      processed_at: null,
+    })
+    .eq("org_id", orgId)
+    .eq("id", setId)
 
   // Get the source file path
   if (!set.source_file_id) {
@@ -791,6 +864,7 @@ export async function getProcessingStatusAction(setId: string): Promise<{
   status: string
   processed_pages: number
   total_pages?: number
+  processing_stage?: string
   error_message?: string
 }> {
   const set = await getDrawingSet(setId)
@@ -802,8 +876,59 @@ export async function getProcessingStatusAction(setId: string): Promise<{
     status: set.status,
     processed_pages: set.processed_pages,
     total_pages: set.total_pages,
+    processing_stage: set.processing_stage,
     error_message: set.error_message,
   }
+}
+
+export async function listUploadedSheetsAction(
+  sourceFileId: string
+): Promise<UploadReviewSheet[]> {
+  const { orgId } = await requireOrgContext()
+  const service = createServiceSupabaseClient()
+
+  const { data: versions, error: versionsError } = await service
+    .from("drawing_sheet_versions")
+    .select("drawing_sheet_id")
+    .eq("org_id", orgId)
+    .eq("file_id", sourceFileId)
+
+  if (versionsError) {
+    throw new Error(`Failed to load uploaded sheets: ${versionsError.message}`)
+  }
+
+  const sheetIds = Array.from(
+    new Set(
+      (versions ?? [])
+        .map((row) => row.drawing_sheet_id)
+        .filter((value): value is string => typeof value === "string"),
+    ),
+  )
+
+  if (sheetIds.length === 0) return []
+
+  const { data: sheets, error: sheetsError } = await service
+    .from("drawing_sheets")
+    .select(
+      "id, drawing_set_id, sheet_number, sheet_title, discipline, sort_order, updated_at",
+    )
+    .eq("org_id", orgId)
+    .in("id", sheetIds)
+    .order("sort_order", { ascending: true })
+
+  if (sheetsError) {
+    throw new Error(`Failed to load uploaded sheet rows: ${sheetsError.message}`)
+  }
+
+  return (sheets ?? []).map((sheet) => ({
+    id: sheet.id,
+    drawing_set_id: sheet.drawing_set_id,
+    sheet_number: sheet.sheet_number,
+    sheet_title: sheet.sheet_title ?? undefined,
+    discipline: sheet.discipline ?? undefined,
+    sort_order: sheet.sort_order ?? 0,
+    updated_at: sheet.updated_at,
+  }))
 }
 
 // ============================================================================

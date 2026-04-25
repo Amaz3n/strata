@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
+import { useIsMobile } from "@/hooks/use-mobile"
 import type { ChangeOrder, CostCode, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { createChangeOrderAction, publishChangeOrderAction } from "@/app/(app)/change-orders/actions"
@@ -15,7 +16,8 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, Share2, FolderOpen } from "@/components/icons"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Plus, Share2, FolderOpen, MoreHorizontal } from "@/components/icons"
 
 type StatusKey = "draft" | "pending" | "sent" | "approved" | "requested_changes" | "cancelled"
 type StatusFilter = StatusKey | "all"
@@ -57,6 +59,7 @@ interface ChangeOrdersClientProps {
 }
 
 export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProjectFilter }: ChangeOrdersClientProps) {
+  const isMobile = useIsMobile()
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>(() =>
     hideProjectFilter ? projects[0]?.id ?? "all" : "all",
@@ -130,53 +133,265 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
   }
 
   return (
-    <div className="space-y-4 lg:space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        <div className="w-full sm:max-w-md">
-          <Input
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Search by title, summary, or project"
-            className="w-full"
-          />
+    <>
+      <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
+        <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search by title, summary, or project"
+              className="w-full sm:w-72"
+            />
+            <div className="flex items-center gap-2">
+              {!hideProjectFilter && (
+                <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+                  <SelectTrigger className="w-full sm:w-40">
+                    <SelectValue placeholder="Project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All projects</SelectItem>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
+                <SelectTrigger className="w-full sm:w-36">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  {(Object.keys(statusLabels) as StatusKey[]).map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {statusLabels[status]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex w-full gap-2 sm:w-auto">
+            <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+              <Plus className="h-4 w-4 mr-2" />
+              New change order
+            </Button>
+          </div>
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          {!hideProjectFilter && (
-            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-              <SelectTrigger className="w-full sm:w-[200px]">
-                <SelectValue placeholder="Filter by project" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All projects</SelectItem>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>
-                    {project.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+        {isMobile ? (
+          <div className="min-h-0 flex-1 overflow-auto p-4">
+            <div className="space-y-3">
+              {filtered.map((changeOrder) => {
+                const projectName = projectLookup[changeOrder.project_id]?.name ?? "Unknown project"
+                const statusKey = resolveStatusKey(changeOrder.status)
+                const total = formatMoneyFromCents(changeOrder.total_cents ?? changeOrder.totals?.total_cents)
+                const impact =
+                  changeOrder.days_impact != null && changeOrder.days_impact !== 0
+                    ? `${changeOrder.days_impact} day${Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}`
+                    : "—"
 
-          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
-            <SelectTrigger className="w-full sm:w-[180px]">
-              <SelectValue placeholder="Filter by status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              {(Object.keys(statusLabels) as StatusKey[]).map((status) => (
-                <SelectItem key={status} value={status}>
-                  {statusLabels[status]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+                return (
+                  <button
+                    key={changeOrder.id}
+                    type="button"
+                    onClick={() => handleRowClick(changeOrder)}
+                    className="block w-full text-left rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[statusKey]}`}>
+                            {statusLabels[statusKey]}
+                          </Badge>
+                          {changeOrder.client_visible ? (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal bg-primary/10 text-primary border-primary/20">
+                              <Share2 className="mr-1 h-3 w-3" />
+                              Client can view
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal text-muted-foreground">
+                              Internal
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="font-semibold mt-1 line-clamp-2">{changeOrder.title}</p>
+                        <p className="text-xs text-muted-foreground mt-1">Project: {projectName}</p>
+                        <div className="mt-2 flex items-center gap-4 text-xs">
+                          <div className="font-semibold">{total}</div>
+                          <div className="text-muted-foreground">Impact: {impact}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+              {filtered.length === 0 && !isPending && (
+                <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                      <FolderOpen className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="font-medium">No change orders yet</p>
+                      <p className="text-sm">Create your first change order to get started.</p>
+                    </div>
+                    <Button onClick={() => setSheetOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Create change order
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  <TableHead className="w-[40%] min-w-[320px] pl-4">Title</TableHead>
+                  {!hideProjectFilter && (
+                    <TableHead className="hidden md:table-cell w-[184px]">Project</TableHead>
+                  )}
+                  <TableHead className="hidden lg:table-cell w-[112px] text-center">Created</TableHead>
+                  <TableHead className="hidden xl:table-cell w-[112px] text-center">Impact</TableHead>
+                  <TableHead className="hidden sm:table-cell w-[140px] text-right">Total</TableHead>
+                  <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
+                  <TableHead className="hidden xl:table-cell w-[128px] text-center">Client</TableHead>
+                  <TableHead className="w-[92px] pr-2" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((changeOrder) => {
+                  const projectName = projectLookup[changeOrder.project_id]?.name ?? "Unknown project"
+                  const statusKey = resolveStatusKey(changeOrder.status)
+                  const total = formatMoneyFromCents(changeOrder.total_cents ?? changeOrder.totals?.total_cents)
+                  const impact =
+                    changeOrder.days_impact != null && changeOrder.days_impact !== 0
+                      ? `${changeOrder.days_impact} day${Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}`
+                      : "—"
 
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-2" />
-            New change order
-          </Button>
-        </div>
+                  return (
+                    <TableRow
+                      key={changeOrder.id}
+                      className="group cursor-pointer hover:bg-muted/30 h-[64px]"
+                      onClick={() => handleRowClick(changeOrder)}
+                    >
+                      <TableCell className="min-w-0 pl-4">
+                        <span className="text-sm font-medium truncate block">{changeOrder.title}</span>
+                        {changeOrder.summary ? (
+                          <span className="text-xs text-muted-foreground truncate block mt-0.5">{changeOrder.summary}</span>
+                        ) : null}
+                      </TableCell>
+
+                      {!hideProjectFilter && (
+                        <TableCell className="hidden md:table-cell">
+                          <span className="text-xs text-muted-foreground truncate block">{projectName}</span>
+                        </TableCell>
+                      )}
+
+                      <TableCell className="hidden lg:table-cell text-center">
+                        <span className="text-xs text-muted-foreground">
+                          {changeOrder.created_at ? format(new Date(changeOrder.created_at), "MMM d, yyyy") : "—"}
+                        </span>
+                      </TableCell>
+
+                      <TableCell className="hidden xl:table-cell text-center">
+                        <span className="text-xs text-muted-foreground">{impact}</span>
+                      </TableCell>
+
+                      <TableCell className="hidden sm:table-cell text-right">
+                        <div className="font-semibold text-sm">{total}</div>
+                      </TableCell>
+
+                      <TableCell className="hidden sm:table-cell text-center">
+                        <div className="flex flex-col gap-1 items-center">
+                          <Badge variant="secondary" className={`text-[10px] px-1 py-0 h-4 font-normal capitalize border ${statusStyles[statusKey]}`}>
+                            {statusLabels[statusKey]}
+                          </Badge>
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="hidden xl:table-cell text-center">
+                        {changeOrder.client_visible ? (
+                          <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal bg-primary/10 text-primary border-primary/20">
+                            <Share2 className="mr-1 h-3 w-3" />
+                            Client can view
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal text-muted-foreground">
+                            Internal
+                          </Badge>
+                        )}
+                      </TableCell>
+
+                      <TableCell className="pr-2" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <MoreHorizontal className="h-3.5 w-3.5" />
+                                <span className="sr-only">Actions</span>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleRowClick(changeOrder)}>
+                                Edit
+                              </DropdownMenuItem>
+                              {!changeOrder.client_visible && (
+                                <DropdownMenuItem onClick={() => handlePublish(changeOrder.id)} disabled={isPending}>
+                                  Publish to client
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+
+                {filtered.length === 0 && !isPending && (
+                  <TableRow>
+                    <TableCell colSpan={hideProjectFilter ? 7 : 8} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                          <FolderOpen className="h-6 w-6" />
+                        </div>
+                        <div className="text-center max-w-[400px]">
+                          <p className="font-medium">No change orders yet</p>
+                          <p className="text-sm text-muted-foreground mt-0.5">Create your first change order to get started.</p>
+                        </div>
+                        <div className="mt-2">
+                          <Button variant="default" size="sm" onClick={() => setSheetOpen(true)}>
+                            <Plus className="mr-2 h-4 w-4" />
+                            Create change order
+                          </Button>
+                        </div>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+
+                {isPending && filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={hideProjectFilter ? 7 : 8} className="py-6 hover:bg-transparent">
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {[...Array(3)].map((_, idx) => (
+                          <Skeleton key={idx} className="h-16 w-full rounded-md" />
+                        ))}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </div>
 
       <ChangeOrderForm
@@ -196,135 +411,6 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
         onOpenChange={setDetailSheetOpen}
         onUpdate={handleUpdate}
       />
-
-      <div className="rounded-lg border bg-card overflow-hidden">
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="divide-x">
-                <TableHead className="min-w-[200px] px-4 py-4">Title</TableHead>
-                <TableHead className="px-4 py-4">Project</TableHead>
-                <TableHead className="px-4 py-4 text-center">Created</TableHead>
-                <TableHead className="px-4 py-4 text-center">Impact</TableHead>
-                <TableHead className="text-right px-4 py-4">Total</TableHead>
-                <TableHead className="px-4 py-4 text-center">Status</TableHead>
-                <TableHead className="px-4 py-4 text-center">Client</TableHead>
-                <TableHead className="text-center w-24 px-4 py-4">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((changeOrder) => {
-                const projectName = projectLookup[changeOrder.project_id]?.name ?? "Unknown project"
-                const statusKey = resolveStatusKey(changeOrder.status)
-                const total = formatMoneyFromCents(changeOrder.total_cents ?? changeOrder.totals?.total_cents)
-                const impact =
-                  changeOrder.days_impact != null && changeOrder.days_impact !== 0
-                    ? `${changeOrder.days_impact} day${Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}`
-                    : "—"
-
-                return (
-                  <TableRow
-                    key={changeOrder.id}
-                    className="divide-x cursor-pointer hover:bg-muted/50 transition-colors"
-                    onClick={() => handleRowClick(changeOrder)}
-                  >
-                    <TableCell className="px-4 py-4 align-top">
-                      <div className="flex flex-col gap-1">
-                        <div className="font-semibold">{changeOrder.title}</div>
-                        {changeOrder.summary && (
-                          <p className="text-sm text-muted-foreground line-clamp-2">{changeOrder.summary}</p>
-                        )}
-                      </div>
-                    </TableCell>
-
-                    <TableCell className="px-4 py-4 text-muted-foreground">{projectName}</TableCell>
-
-                    <TableCell className="px-4 py-4 text-center text-sm text-muted-foreground">
-                      {changeOrder.created_at ? format(new Date(changeOrder.created_at), "MMM d, yyyy") : "—"}
-                    </TableCell>
-
-                    <TableCell className="px-4 py-4 text-center text-sm text-muted-foreground">{impact}</TableCell>
-
-                    <TableCell className="px-4 py-4 text-right">
-                      <div className="font-semibold">{total}</div>
-                    </TableCell>
-
-                    <TableCell className="px-4 py-4 text-center">
-                      <Badge variant="secondary" className={`capitalize border ${statusStyles[statusKey]}`}>
-                        {statusLabels[statusKey]}
-                      </Badge>
-                    </TableCell>
-
-                    <TableCell className="px-4 py-4 text-center">
-                      {changeOrder.client_visible ? (
-                        <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/20">
-                          <Share2 className="mr-1 h-3 w-3" />
-                          Client can view
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-xs text-muted-foreground">
-                          Internal
-                        </Badge>
-                      )}
-                    </TableCell>
-
-                    <TableCell className="px-4 py-4 text-center">
-                      {!changeOrder.client_visible ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handlePublish(changeOrder.id)
-                          }}
-                          disabled={isPending}
-                        >
-                          <Share2 className="h-4 w-4 mr-2" />
-                          Publish
-                        </Button>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">Published</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-
-              {filtered.length === 0 && !isPending && (
-                <TableRow className="divide-x">
-                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                        <FolderOpen className="h-6 w-6" />
-                      </div>
-                      <div>
-                        <p className="font-medium">No change orders yet</p>
-                        <p className="text-sm">Create your first change order to get started.</p>
-                      </div>
-                      <Button onClick={() => setSheetOpen(true)}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Create change order
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )}
-
-              {isPending && filtered.length === 0 && (
-                <TableRow className="divide-x">
-                  <TableCell colSpan={8} className="py-6">
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {[...Array(3)].map((_, idx) => (
-                        <Skeleton key={idx} className="h-16 w-full rounded-md" />
-                      ))}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
-    </div>
+    </>
   )
 }

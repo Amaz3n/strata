@@ -277,7 +277,7 @@ export function ScheduleOverviewClient({
         </div>
 
         {/* Schedule view */}
-        <div className="flex-1 min-w-0">
+        <div className="flex flex-1 min-w-0 min-h-0 flex-col overflow-hidden">
           {selectedProject ? (
             <ScheduleView
               projectId={selectedProject.id}

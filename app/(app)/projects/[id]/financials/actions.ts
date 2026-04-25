@@ -2,7 +2,7 @@
 
 import { getBudgetWithActuals, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
-import { listProjectCommitments } from "@/lib/services/commitments"
+import { listCommitmentLines, listProjectCommitments } from "@/lib/services/commitments"
 import { listCompanies } from "@/lib/services/companies"
 import { listInvoices } from "@/lib/services/invoices"
 import { listContacts } from "@/lib/services/contacts"
@@ -95,4 +95,31 @@ export async function fetchBudgetBreakdownAction(projectId: string) {
     breakdown: budgetData?.breakdown ?? [],
     costCodes,
   }
+}
+
+export async function fetchBudgetBucketCommitmentsAction(projectId: string, costCodeId?: string | null) {
+  const commitments = await listProjectCommitments(projectId).catch(() => [])
+  if (commitments.length === 0) return []
+
+  const commitmentLines = await Promise.all(
+    commitments.map(async (commitment) => ({
+      commitment,
+      lines: await listCommitmentLines(commitment.id).catch(() => []),
+    })),
+  )
+
+  return commitmentLines
+    .map(({ commitment, lines }) => {
+      const matching = lines.filter((line) =>
+        costCodeId ? line.cost_code_id === costCodeId : !line.cost_code_id,
+      )
+      const allocatedCents = matching.reduce((sum, line) => sum + (line.total_cents ?? 0), 0)
+      return {
+        ...commitment,
+        allocated_cents: allocatedCents,
+        matching_line_count: matching.length,
+      }
+    })
+    .filter((commitment) => commitment.allocated_cents > 0)
+    .sort((a, b) => (b.allocated_cents ?? 0) - (a.allocated_cents ?? 0))
 }

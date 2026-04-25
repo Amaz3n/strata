@@ -69,6 +69,28 @@ function normalizeFormat(value?: string) {
   return normalized || "png"
 }
 
+function buildRenderableTileBaseUrl(baseUrl: string, secureTilesEnabled: boolean) {
+  if (typeof window === "undefined") return baseUrl
+  if (!secureTilesEnabled) return baseUrl
+
+  const host = window.location.hostname.toLowerCase()
+  const isProductionAppHost =
+    host === "app.arcnaples.com" || host.endsWith(".arcnaples.com")
+
+  if (isProductionAppHost) return baseUrl
+
+  try {
+    const parsed = new URL(baseUrl)
+    const marker = "/drawings-tiles/"
+    const index = parsed.pathname.indexOf(marker)
+    if (index === -1) return baseUrl
+    const path = parsed.pathname.slice(index + marker.length)
+    return `/api/drawings/tiles/${path}`
+  } catch {
+    return baseUrl
+  }
+}
+
 export function TiledDrawingViewer({
   tileBaseUrl,
   tileManifest,
@@ -90,6 +112,10 @@ export function TiledDrawingViewer({
     const h = tileManifest?.Image?.Size?.Height ?? 1
     return { width: w, height: h }
   }, [tileManifest])
+  const renderableTileBaseUrl = useMemo(
+    () => buildRenderableTileBaseUrl(tileBaseUrl, secureTilesEnabled),
+    [secureTilesEnabled, tileBaseUrl]
+  )
 
   useEffect(() => {
     imageSizeRef.current = imageSize
@@ -124,7 +150,7 @@ export function TiledDrawingViewer({
       }
 
       const maxLevel = explicitLevels - 1
-      const tileSize = Math.max(1, manifest?.Image?.TileSize ?? 256)
+      const tileSize = Math.max(1, manifest?.Image?.TileSize ?? 512)
       const overlap = Math.max(0, manifest?.Image?.Overlap ?? 0)
 
       return {
@@ -163,16 +189,16 @@ export function TiledDrawingViewer({
     const boot = async () => {
       // Avoid importing openseadragon during SSR/module evaluation:
       // it touches `document` at import-time.
-      const mod = (await import("openseadragon")) as any
-      const OSD: OpenSeadragonNS = mod?.default ?? mod
-      if (disposed || !containerRef.current) return
+        const mod = (await import("openseadragon")) as any
+        const OSD: OpenSeadragonNS = mod?.default ?? mod
+        if (disposed || !containerRef.current) return
 
-      await ensureTilesCookie()
+        await ensureTilesCookie()
       if (disposed || !containerRef.current) return
 
       viewer = OSD({
         element: containerRef.current,
-        tileSources: [buildTileSource(tileBaseUrl, tileManifest)],
+        tileSources: [buildTileSource(renderableTileBaseUrl, tileManifest)],
         // Secure tiles are cookie-protected on a sibling subdomain.
         // Avoid `anonymous` here because it strips credentials from image requests.
         crossOriginPolicy: secureTilesEnabled ? false : "Anonymous",
@@ -188,8 +214,10 @@ export function TiledDrawingViewer({
         },
         // Performance
         immediateRender: true,
-        imageLoaderLimit: 4,
-        maxImageCacheCount: 200,
+        imageLoaderLimit: 18,
+        maxImageCacheCount: 600,
+        blendTime: 0.05,
+        alwaysBlend: false,
         // UI (we provide our own controls)
         showNavigationControl: false,
         showNavigator: false,
@@ -248,16 +276,22 @@ export function TiledDrawingViewer({
       viewerRef.current = null
       onReadyRef.current?.(null)
     }
-  }, [buildTileSource, ensureTilesCookie, secureTilesEnabled, tileBaseUrl, tileManifest])
+  }, [
+    buildTileSource,
+    ensureTilesCookie,
+    renderableTileBaseUrl,
+    secureTilesEnabled,
+    tileManifest,
+  ])
 
   useEffect(() => {
     if (!viewerRef.current) return
     try {
-      viewerRef.current.open(buildTileSource(tileBaseUrl, tileManifest))
+      viewerRef.current.open(buildTileSource(renderableTileBaseUrl, tileManifest))
     } catch (e) {
       console.error('[TiledViewer] Failed to update tile source:', e)
     }
-  }, [buildTileSource, tileBaseUrl, tileManifest])
+  }, [buildTileSource, renderableTileBaseUrl, tileManifest])
 
   return <div ref={containerRef} className={cn("h-full w-full", className)} />
 }

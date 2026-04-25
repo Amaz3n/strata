@@ -415,147 +415,162 @@
     }
   }
 
-  /* ===== Premium Gantt Bar Styles ===== */
-
+  /* ===== Premium Gantt Bar Styles =====
+     Two-tone bar: opaque tinted shell + solid saturated progress.
+     Consumers set --bar-color AND an inline backgroundColor fallback. */
   .gantt-task-bar {
     position: relative;
-    border-radius: 6px;
-    /* Layered shadow for depth */
+    border-radius: 7px;
+    background: var(--bar-color, #3b82f6);
     box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.06),
-      0 2px 4px rgba(0, 0, 0, 0.06),
-      0 4px 8px rgba(0, 0, 0, 0.04);
-    /* Top highlight */
-    border-top: 1px solid rgba(255, 255, 255, 0.18);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.18),
+      0 1px 2px rgba(15, 23, 42, 0.1);
     transition:
-      transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94),
-      box-shadow 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      box-shadow 0.18s ease,
+      transform 0.18s ease,
+      filter 0.18s ease;
   }
 
-  /* Gradient overlay for dimension */
-  .gantt-task-bar::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.12) 0%,
-      rgba(255, 255, 255, 0.04) 40%,
-      rgba(0, 0, 0, 0.02) 60%,
-      rgba(0, 0, 0, 0.06) 100%
-    );
-    pointer-events: none;
+  .dark .gantt-task-bar {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+      0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .gantt-task-bar:hover {
-    transform: translateY(-1px);
     box-shadow:
-      0 2px 4px rgba(0, 0, 0, 0.08),
-      0 4px 8px rgba(0, 0, 0, 0.08),
-      0 8px 16px rgba(0, 0, 0, 0.06);
+      inset 0 0 0 1px color-mix(in srgb, var(--bar-color, #3b82f6) 75%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 4px 12px -2px color-mix(in srgb, var(--bar-color, #3b82f6) 40%, transparent),
+      0 2px 4px rgba(15, 23, 42, 0.08);
+    transform: translateY(-0.5px);
   }
 
   .gantt-task-bar.is-selected {
     box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--bar-color, #3b82f6) 85%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
       0 0 0 2px var(--primary),
-      0 2px 4px rgba(0, 0, 0, 0.08),
-      0 4px 8px rgba(0, 0, 0, 0.08);
+      0 6px 16px -4px color-mix(in srgb, var(--bar-color, #3b82f6) 50%, transparent);
   }
 
   .gantt-task-bar.is-dragging {
-    transform: scale(1.02);
     box-shadow:
-      0 8px 16px rgba(0, 0, 0, 0.12),
-      0 16px 32px rgba(0, 0, 0, 0.08);
+      inset 0 0 0 1px color-mix(in srgb, var(--bar-color, #3b82f6) 85%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 10px 24px -6px color-mix(in srgb, var(--bar-color, #3b82f6) 60%, transparent),
+      0 4px 10px rgba(15, 23, 42, 0.15);
     z-index: 100;
+    transform: translateY(-1px);
   }
 
   .gantt-task-bar.is-critical {
-    border: 1px solid rgba(249, 115, 22, 0.4);
     box-shadow:
-      0 0 0 1px rgba(249, 115, 22, 0.2),
-      0 1px 2px rgba(0, 0, 0, 0.06),
-      0 2px 4px rgba(0, 0, 0, 0.06);
+      inset 0 0 0 1.5px rgba(249, 115, 22, 0.75),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 1px 2px rgba(15, 23, 42, 0.06);
   }
 
-  /* Progress section styling */
+  .gantt-task-bar.is-critical.is-selected {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(249, 115, 22, 0.85),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 0 0 2px var(--primary),
+      0 6px 16px -4px rgba(249, 115, 22, 0.4);
+  }
+
+  /* Progress section clips the remainder overlay to the bar's rounded corners */
   .gantt-progress-section {
     position: absolute;
     inset: 0;
     border-radius: inherit;
     overflow: hidden;
+    pointer-events: none;
   }
 
-  .gantt-progress-fill {
+  /* Remainder overlay — covers the NOT-YET-DONE portion on the right.
+     Hatched translucent white dims the unfinished area, leaving the
+     saturated bar to visually represent completed progress on the left. */
+  .gantt-bar-remainder {
     position: absolute;
     top: 0;
-    left: 0;
     bottom: 0;
-    background: linear-gradient(
-      180deg,
-      rgba(0, 0, 0, 0.08) 0%,
-      rgba(0, 0, 0, 0.12) 100%
+    background-color: rgba(15, 23, 42, 0.28);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgba(255, 255, 255, 0.14) 0 4px,
+      rgba(255, 255, 255, 0) 4px 8px
     );
+    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.35);
   }
 
-  /* Subtle separator line at progress edge */
-  .gantt-progress-fill::after {
+  .dark .gantt-bar-remainder {
+    background-color: rgba(0, 0, 0, 0.4);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgba(255, 255, 255, 0.08) 0 4px,
+      rgba(255, 255, 255, 0) 4px 8px
+    );
+    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.22);
+  }
+
+  /* Bright "now" tick at the progress boundary — on the remainder's left edge */
+  .gantt-bar-remainder::before {
     content: "";
     position: absolute;
-    right: 0;
-    top: 4px;
-    bottom: 4px;
-    width: 1px;
-    background: rgba(255, 255, 255, 0.25);
+    left: -1px;
+    top: 3px;
+    bottom: 3px;
+    width: 2px;
+    border-radius: 1px;
+    background: rgba(255, 255, 255, 0.95);
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.2),
+      0 0 8px rgba(255, 255, 255, 0.5);
   }
 
-  /* Completed bar striped pattern */
-  .gantt-task-bar.is-completed .gantt-progress-fill {
-    background: repeating-linear-gradient(
-      -45deg,
-      rgba(0, 0, 0, 0.06),
-      rgba(0, 0, 0, 0.06) 2px,
-      rgba(0, 0, 0, 0.12) 2px,
-      rgba(0, 0, 0, 0.12) 4px
-    );
+  .gantt-task-bar.is-completed {
+    opacity: 0.75;
+    filter: saturate(0.85);
   }
 
-  .gantt-task-bar.is-completed .gantt-progress-fill::after {
-    display: none;
-  }
-
-  /* Content styling */
+  /* Label lives INSIDE the bar — readable on both tint and solid regions */
   .gantt-bar-content {
     position: relative;
+    z-index: 2;
     height: 100%;
     display: flex;
     align-items: center;
     padding: 0 10px;
     gap: 6px;
     overflow: hidden;
+    pointer-events: none;
   }
 
   .gantt-bar-label {
-    font-size: 11px;
-    font-weight: 500;
-    color: white;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: -0.003em;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    letter-spacing: 0.01em;
+    flex: 1;
   }
 
   .gantt-bar-progress-text {
-    font-size: 10px;
-    font-weight: 600;
-    color: rgba(255, 255, 255, 0.85);
-    background: rgba(0, 0, 0, 0.15);
-    padding: 2px 5px;
-    border-radius: 3px;
+    font-variant-numeric: tabular-nums;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: var(--bar-color, #3b82f6);
+    background: rgba(255, 255, 255, 0.95);
     flex-shrink: 0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
   }
 
   /* Resize handles */
@@ -563,35 +578,38 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 10px;
+    width: 8px;
     cursor: ew-resize;
     opacity: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     transition: opacity 0.15s ease;
+    z-index: 3;
   }
 
   .gantt-resize-handle-left {
-    left: 0;
-    border-radius: 6px 0 0 6px;
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.25) 0%, transparent 100%);
+    left: -2px;
+    border-radius: 7px 0 0 7px;
   }
 
   .gantt-resize-handle-right {
-    right: 0;
-    border-radius: 0 6px 6px 0;
-    background: linear-gradient(-90deg, rgba(255, 255, 255, 0.25) 0%, transparent 100%);
+    right: -2px;
+    border-radius: 0 7px 7px 0;
   }
 
-  /* Grip dots pattern */
   .gantt-resize-handle::before {
     content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
     width: 3px;
-    height: 10px;
-    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.7) 1px, transparent 1px);
-    background-size: 3px 4px;
-    background-position: center;
+    height: 14px;
+    border-radius: 2px;
+    background: var(--bar-color, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+  }
+
+  .dark .gantt-resize-handle::before {
+    box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.9);
   }
 
   .gantt-task-bar:hover .gantt-resize-handle,
@@ -599,8 +617,160 @@
     opacity: 1;
   }
 
-  .gantt-resize-handle:hover {
-    background: rgba(255, 255, 255, 0.35);
+  /* ===== Milestone: disc with flag icon ===== */
+  .gantt-milestone {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--bar-color, #3b82f6);
+    color: white;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.25),
+      0 0 0 2px color-mix(in srgb, var(--bar-color, #3b82f6) 15%, var(--background)),
+      0 2px 6px color-mix(in srgb, var(--bar-color, #3b82f6) 40%, transparent);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .gantt-milestone::before {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    width: 1px;
+    height: 14px;
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bar-color, #3b82f6) 60%, transparent) 0%,
+      transparent 100%
+    );
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+
+  .gantt-milestone:hover {
+    transform: scale(1.12);
+  }
+
+  .gantt-milestone.is-selected {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.25),
+      0 0 0 2px var(--primary),
+      0 0 0 4px color-mix(in srgb, var(--primary) 20%, transparent),
+      0 2px 8px color-mix(in srgb, var(--bar-color, #3b82f6) 50%, transparent);
+  }
+
+  /* ===== Today marker: glow column + crisp line + pill ===== */
+  .gantt-today-glow {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 1;
+    background: radial-gradient(
+      ellipse 50% 100% at 50% 50%,
+      color-mix(in srgb, var(--primary) 14%, transparent) 0%,
+      color-mix(in srgb, var(--primary) 6%, transparent) 35%,
+      transparent 70%
+    );
+  }
+
+  .gantt-today-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    z-index: 20;
+    pointer-events: none;
+    background: linear-gradient(
+      180deg,
+      var(--primary) 0%,
+      color-mix(in srgb, var(--primary) 70%, transparent) 100%
+    );
+    box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 40%, transparent);
+  }
+
+  .gantt-today-pill {
+    position: absolute;
+    top: 4px;
+    transform: translateX(-50%);
+    z-index: 21;
+    padding: 2px 8px 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--primary-foreground);
+    background: var(--primary);
+    box-shadow:
+      0 0 0 2px var(--background),
+      0 2px 6px color-mix(in srgb, var(--primary) 35%, transparent);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  .gantt-today-pill::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--primary-foreground);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-foreground) 40%, transparent);
+    animation: pulse-subtle 2s ease-in-out infinite;
+  }
+
+  /* ===== Row swim-lane tint (phase-colored background) ===== */
+  .gantt-row-bg {
+    --row-tint: transparent;
+    background: color-mix(in srgb, var(--row-tint) 4%, transparent);
+  }
+
+  .dark .gantt-row-bg {
+    background: color-mix(in srgb, var(--row-tint) 7%, transparent);
+  }
+
+  .gantt-row-bg.is-selected {
+    background: color-mix(in srgb, var(--primary) 7%, color-mix(in srgb, var(--row-tint) 4%, transparent));
+  }
+
+  /* ===== Weekend diagonal hatch ===== */
+  .gantt-weekend-col {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent 0 3px,
+      color-mix(in srgb, var(--foreground) 6%, transparent) 3px 4px
+    );
+  }
+
+  .dark .gantt-weekend-col {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent 0 3px,
+      color-mix(in srgb, var(--foreground) 8%, transparent) 3px 4px
+    );
+  }
+
+  /* ===== Dependency lines (critical path animated flow) ===== */
+  @keyframes gantt-dash-flow {
+    to {
+      stroke-dashoffset: -12;
+    }
+  }
+
+  .gantt-dep-critical {
+    stroke-dasharray: 6 4;
+    animation: gantt-dash-flow 1.2s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .gantt-dep-critical {
+      animation: none;
+      stroke-dasharray: none;
+    }
   }
 
   /* Status indicator dot */
@@ -628,31 +798,13 @@
     background: #ef4444;
   }
 
-  /* Dark mode refinements */
+  /* Dark mode bar shadow */
   .dark .gantt-task-bar {
-    border-top-color: rgba(255, 255, 255, 0.1);
-    border-bottom-color: rgba(0, 0, 0, 0.2);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.2),
-      0 2px 4px rgba(0, 0, 0, 0.15),
-      0 4px 8px rgba(0, 0, 0, 0.1);
-  }
-
-  .dark .gantt-task-bar::before {
-    background: linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.08) 0%,
-      rgba(255, 255, 255, 0.02) 40%,
-      rgba(0, 0, 0, 0.04) 60%,
-      rgba(0, 0, 0, 0.1) 100%
-    );
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 
   .dark .gantt-task-bar:hover {
-    box-shadow:
-      0 4px 8px rgba(0, 0, 0, 0.25),
-      0 8px 16px rgba(0, 0, 0, 0.2),
-      0 16px 32px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   }
 
   /* ===== Date Selection Styling ===== */
@@ -804,34 +956,34 @@
   /* ===== Sidebar Task Row Styling ===== */
 
   .gantt-sidebar-row {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 12px;
-    border-bottom: 1px solid var(--border);
+    padding: 0 10px 0 2px;
+    border-bottom: 1px solid color-mix(in oklab, var(--border) 35%, transparent);
     cursor: pointer;
-    transition: background-color 0.15s ease, border-color 0.15s ease;
+    transition: background-color 0.12s ease;
   }
 
   .gantt-sidebar-row:hover {
-    background-color: rgba(var(--primary), 0.04);
+    background-color: color-mix(in oklab, var(--muted) 55%, transparent);
   }
 
   .gantt-sidebar-row.is-selected {
-    background: linear-gradient(90deg, var(--primary) 0%, var(--primary) 3px, rgba(var(--primary), 0.06) 3px);
-    border-bottom-color: rgba(var(--primary), 0.1);
+    background-color: color-mix(in oklab, var(--primary) 7%, transparent);
   }
 
-  .gantt-sidebar-row.is-critical:not(.is-selected) {
-    background: linear-gradient(90deg, #f97316 0%, #f97316 3px, transparent 3px);
+  .gantt-sidebar-row.is-selected:hover {
+    background-color: color-mix(in oklab, var(--primary) 10%, transparent);
   }
 
   .gantt-sidebar-row.is-dragging {
-    background-color: var(--muted);
+    background-color: var(--background);
     box-shadow:
-      0 4px 12px rgba(0, 0, 0, 0.1),
-      0 2px 4px rgba(0, 0, 0, 0.05);
-    border-radius: 6px;
+      0 8px 24px -8px rgba(0, 0, 0, 0.18),
+      0 2px 6px -2px rgba(0, 0, 0, 0.08),
+      0 0 0 1px color-mix(in oklab, var(--border) 80%, transparent);
+    border-radius: 8px;
     border-bottom-color: transparent;
   }
 
@@ -916,49 +1068,52 @@
     opacity: 1;
   }
 
-  /* Group header styling */
+  /* Group header styling — flat, quiet, uppercase section label */
   .gantt-group-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 12px;
-    background: linear-gradient(180deg, var(--muted) 0%, rgba(var(--muted), 0.5) 100%);
-    border-bottom: 1px solid var(--border);
+    gap: 10px;
+    padding: 0 10px 0 10px;
+    background: color-mix(in oklab, var(--muted) 35%, transparent);
+    border-top: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
+    border-bottom: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
     cursor: pointer;
-    transition: background-color 0.15s ease;
+    transition: background-color 0.12s ease;
+    user-select: none;
+  }
+
+  .gantt-group-header:first-child {
+    border-top: none;
   }
 
   .gantt-group-header:hover {
-    background: var(--muted);
+    background: color-mix(in oklab, var(--muted) 55%, transparent);
   }
 
-  .gantt-group-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+  .gantt-group-chip {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
     flex-shrink: 0;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5), 0 1px 3px rgba(0, 0, 0, 0.1);
   }
 
   .gantt-group-name {
-    font-size: 12px;
+    font-size: 10.5px;
     font-weight: 600;
-    color: var(--foreground);
-    text-transform: capitalize;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .gantt-group-count {
-    margin-left: auto;
-    font-size: 11px;
-    font-weight: 500;
+    font-size: 10.5px;
+    font-weight: 600;
     color: var(--muted-foreground);
-    background: var(--background);
-    padding: 2px 8px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
   }
 
   /* ===== eSign Field Styles ===== */

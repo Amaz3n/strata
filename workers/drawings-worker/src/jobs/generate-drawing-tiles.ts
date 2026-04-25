@@ -3,10 +3,13 @@ import sharp from 'sharp';
 import { Job } from '../worker';
 import { buildTilesBaseUrl, deleteTileObjects, downloadTileObject, uploadTileObject } from '../storage/tiles';
 
-const TILE_SIZE = 256;
+const TILE_SIZE = Number.parseInt(process.env.DRAWINGS_TILE_SIZE ?? '512', 10);
 const OVERLAP = 0;
 const TILE_FORMAT = 'png';
-const TILE_UPLOAD_CONCURRENCY = 8;
+const TILE_UPLOAD_CONCURRENCY = Number.parseInt(
+  process.env.DRAWINGS_TILE_UPLOAD_CONCURRENCY ?? '12',
+  10
+);
 
 type TileManifest = {
   Image: {
@@ -287,11 +290,22 @@ async function checkAndUpdateDrawingSetStatus(supabase: SupabaseClient, orgId: s
           .update({
             status: 'ready',
             processed_pages: totalSheets,
-            processed_at: new Date().toISOString()
+            processed_at: new Date().toISOString(),
+            processing_stage: 'ready',
           })
           .eq('id', set.id);
 
         console.log(`Updated drawing set ${set.id} to ready (${readySheets}/${totalSheets} sheets)`);
+      } else if (totalSheets > 0) {
+        await supabase
+          .from('drawing_sets')
+          .update({
+            status: 'processing',
+            processed_pages: readySheets,
+            total_pages: totalSheets,
+            processing_stage: 'generating_tiles',
+          })
+          .eq('id', set.id);
       }
     }
 

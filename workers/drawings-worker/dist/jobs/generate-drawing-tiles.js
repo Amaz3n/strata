@@ -6,10 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateDrawingTiles = generateDrawingTiles;
 const sharp_1 = __importDefault(require("sharp"));
 const tiles_1 = require("../storage/tiles");
-const TILE_SIZE = 256;
+const TILE_SIZE = Number.parseInt(process.env.DRAWINGS_TILE_SIZE ?? '512', 10);
 const OVERLAP = 0;
 const TILE_FORMAT = 'png';
-const TILE_UPLOAD_CONCURRENCY = 8;
+const TILE_UPLOAD_CONCURRENCY = Number.parseInt(process.env.DRAWINGS_TILE_UPLOAD_CONCURRENCY ?? '12', 10);
 async function generateDrawingTiles(supabase, job) {
     const { sheetVersionId } = job.payload;
     if (!sheetVersionId) {

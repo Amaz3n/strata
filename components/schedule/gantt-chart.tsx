@@ -12,7 +12,6 @@ import {
   GANTT_BAR_HEIGHT,
   GANTT_BAR_PADDING,
   GANTT_MILESTONE_SIZE,
-  STATUS_COLORS,
   PHASE_COLORS,
   type GanttZoomLevel,
   type GroupByOption,
@@ -20,10 +19,27 @@ import {
   parseDate,
   toDateString,
 } from "./types"
+
+// Matching raw hex for status-based group coloring
+const STATUS_HEX: Record<string, string> = {
+  planned: "#94a3b8",
+  in_progress: "#3b82f6",
+  at_risk: "#f59e0b",
+  blocked: "#ef4444",
+  completed: "#10b981",
+  cancelled: "#9ca3af",
+}
+
+// Group dot color depends on the groupBy mode so colors stay meaningful
+function getGroupColor(groupKey: string, groupBy: GroupByOption): string {
+  if (groupBy === "phase") return PHASE_COLORS[groupKey] || "#64748b"
+  if (groupBy === "status") return STATUS_HEX[groupKey] || "#64748b"
+  // trade / assignee / none — keep neutral, no arbitrary color mapping
+  return "#94a3b8"
+}
 import { useSchedule } from "./schedule-context"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -37,9 +53,9 @@ import {
   ArrowRightLeft,
   Layers,
   Truck,
-  AlertTriangle,
-  Link2,
   Plus,
+  Search,
+  X,
 } from "lucide-react"
 import {
   DndContext,
@@ -110,71 +126,70 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalP
     zIndex: isDragging ? 50 : undefined,
   }
 
-  const statusColors = STATUS_COLORS[item.status] || STATUS_COLORS.planned
+  const isCritical = computedCriticalPath.has(item.id) && showCriticalPath
+  const showTypeGlyph = item.item_type && item.item_type !== "task" && item.item_type !== "phase"
 
   return (
     <div
       ref={setNodeRef}
       style={style}
       className={cn(
-        "gantt-sidebar-row",
+        "gantt-sidebar-row group",
         isSelected && "is-selected",
-        item.is_critical_path && showCriticalPath && "is-critical",
-        isDragging && "is-dragging"
+        isCritical && "is-critical",
+        isDragging && "is-dragging",
       )}
       onClick={() => onSelect(item)}
     >
-      {/* Drag handle */}
+      {/* Left accent — selection (primary) or critical path (orange), otherwise invisible */}
+      <span
+        aria-hidden
+        className={cn(
+          "pointer-events-none absolute inset-y-2 left-0 w-[2px] rounded-r-full transition-opacity",
+          isSelected
+            ? "opacity-100"
+            : isCritical
+              ? "opacity-70"
+              : "opacity-0",
+        )}
+        style={{ backgroundColor: isSelected ? "var(--primary)" : "#f97316" }}
+      />
+
+      {/* Drag handle — reveals on hover, flush-left */}
       <div
         {...attributes}
         {...listeners}
-        className="gantt-drag-handle cursor-grab active:cursor-grabbing flex-shrink-0 touch-none"
-      >
-        <GripVertical className="h-4 w-4" />
-      </div>
-
-      {/* Checkbox */}
-      <Checkbox
-        checked={item.status === "completed"}
-        className="h-4 w-4 flex-shrink-0 border-muted-foreground/30"
+        role="button"
+        aria-label="Drag to reorder"
+        title="Drag to reorder"
+        className="gantt-row-grip flex h-full w-5 flex-shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/50 active:cursor-grabbing"
         onClick={(e) => e.stopPropagation()}
-      />
-
-      {/* Status icon */}
-      <div className={cn("gantt-status-icon", statusColors.bg)}>
-        {getItemIcon(item.item_type)}
+      >
+        <GripVertical className="h-3.5 w-3.5" />
       </div>
 
-      {/* Task info */}
-      <div className="gantt-task-info">
-        <div className="gantt-task-name">{item.name}</div>
-        {item.trade && (
-          <div className="gantt-task-meta">
-            {item.trade.replace(/_/g, " ")}
-          </div>
+      {/* Name + optional type glyph — single line, that is the entire row */}
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        {showTypeGlyph && (
+          <span
+            aria-hidden
+            className="flex-shrink-0 text-muted-foreground/55 [&>svg]:h-3 [&>svg]:w-3"
+          >
+            {getItemIcon(item.item_type)}
+          </span>
         )}
-      </div>
-
-      {/* Indicators */}
-      <div className="gantt-row-indicators">
-        {item.dependencies && item.dependencies.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger>
-              <Link2 className="h-3.5 w-3.5 gantt-indicator-icon" />
-            </TooltipTrigger>
-            <TooltipContent>
-              {item.dependencies.length} {item.dependencies.length === 1 ? 'dependency' : 'dependencies'}
-            </TooltipContent>
-          </Tooltip>
-        )}
-        {computedCriticalPath.has(item.id) && showCriticalPath && (
-          <Tooltip>
-            <TooltipTrigger>
-              <AlertTriangle className="h-3.5 w-3.5 gantt-indicator-icon is-critical" />
-            </TooltipTrigger>
-            <TooltipContent>Critical path</TooltipContent>
-          </Tooltip>
-        )}
+        <span
+          className={cn(
+            "truncate text-[13px] leading-none tracking-[-0.003em]",
+            isSelected
+              ? "font-semibold text-foreground"
+              : "font-medium text-foreground/90",
+            item.status === "completed" &&
+              "text-muted-foreground/70 line-through decoration-muted-foreground/25",
+          )}
+        >
+          {item.name}
+        </span>
       </div>
     </div>
   )
@@ -331,6 +346,29 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   const [scrollLeft, setScrollLeft] = useState(0)
   const [dateSelection, setDateSelection] = useState<DateSelection | null>(null)
   const [viewportHeight, setViewportHeight] = useState(0)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(GANTT_SIDEBAR_WIDTH)
+  const [sidebarSearch, setSidebarSearch] = useState("")
+  const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const handleSidebarResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    sidebarResizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
+  }, [sidebarWidth])
+
+  const handleSidebarResizeMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const state = sidebarResizeRef.current
+    if (!state) return
+    const delta = e.clientX - state.startX
+    const next = Math.min(Math.max(state.startWidth + delta, 220), 560)
+    setSidebarWidth(next)
+  }, [])
+
+  const handleSidebarResizeEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!sidebarResizeRef.current) return
+    ;(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId)
+    sidebarResizeRef.current = null
+  }, [])
 
   // DnD sensors for drag-to-reorder
   const sensors = useSensors(
@@ -388,10 +426,17 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   const monthHeaders = useMemo(() => generateMonthHeaders(rangeStart, rangeEnd), [rangeStart, rangeEnd])
   const totalWidth = columns.length * columnWidth
 
-  // Group items - Ensure items are sorted by sort_order first
-  const sortedItems = useMemo(() => 
-    [...items].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)), 
-  [items])
+  // Group items - Ensure items are sorted by sort_order first, then apply sidebar search filter
+  const sortedItems = useMemo(() => {
+    const base = [...items].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    const q = sidebarSearch.trim().toLowerCase()
+    if (!q) return base
+    return base.filter((i) =>
+      i.name.toLowerCase().includes(q) ||
+      (i.trade ?? "").toLowerCase().includes(q) ||
+      (i.phase ?? "").toLowerCase().includes(q)
+    )
+  }, [items, sidebarSearch])
   
   const groupedItems = useMemo(() => groupItems(sortedItems, viewState.groupBy), [sortedItems, viewState.groupBy])
   const sortedGroups = useMemo(() => {
@@ -673,19 +718,32 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     })
   }, [])
 
-  // Sync scroll between header and body
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLDivElement
-    setScrollLeft(target.scrollLeft)
-  }, [])
+  // Guard to avoid an infinite scroll-sync loop between sidebar and main panes
+  const scrollSyncSourceRef = useRef<"main" | "sidebar" | null>(null)
 
-  // Sync sidebar scroll with main scroll
+  // Sync sidebar ← main (and horizontal scroll position)
   const handleMainScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const target = e.target as HTMLDivElement
-    if (sidebarRef.current) {
+    if (scrollSyncSourceRef.current === "sidebar") {
+      scrollSyncSourceRef.current = null
+    } else if (sidebarRef.current && sidebarRef.current.scrollTop !== target.scrollTop) {
+      scrollSyncSourceRef.current = "main"
       sidebarRef.current.scrollTop = target.scrollTop
     }
     setScrollLeft(target.scrollLeft)
+  }, [])
+
+  // Sync main ← sidebar so wheel events over the task list also drive the timeline
+  const handleSidebarScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLDivElement
+    if (scrollSyncSourceRef.current === "main") {
+      scrollSyncSourceRef.current = null
+      return
+    }
+    if (scrollContainerRef.current && scrollContainerRef.current.scrollTop !== target.scrollTop) {
+      scrollSyncSourceRef.current = "sidebar"
+      scrollContainerRef.current.scrollTop = target.scrollTop
+    }
   }, [])
 
   // Click to select date range for quick add
@@ -877,14 +935,38 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
         style={{ maxWidth: "100%" }} // Clamp to parent width
       >
         {/* Timeline Header - Fixed */}
-        <div className="flex flex-shrink-0 border-b bg-muted/30 min-w-0">
-          {/* Sidebar header */}
-          <div 
-            className="flex-shrink-0 border-r bg-muted/50 flex items-end px-3 pb-2"
-            style={{ width: GANTT_SIDEBAR_WIDTH, minWidth: GANTT_SIDEBAR_WIDTH, height: GANTT_HEADER_HEIGHT }}
+        <div className="flex flex-shrink-0 border-b bg-background min-w-0">
+          {/* Sidebar header — functional: search + add + summary */}
+          <div
+            className="flex flex-shrink-0 items-center bg-background px-2"
+            style={{ width: sidebarWidth, minWidth: sidebarWidth, height: GANTT_HEADER_HEIGHT }}
           >
-            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Task</span>
+            <label className="group/search relative flex h-9 w-full cursor-text items-center rounded-lg px-2.5 transition-colors hover:bg-muted/50 focus-within:bg-muted/60">
+              <Search className="pointer-events-none h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/50 transition-colors group-hover/search:text-muted-foreground/80 group-focus-within/search:text-foreground/80" />
+              <input
+                type="text"
+                value={sidebarSearch}
+                onChange={(e) => setSidebarSearch(e.target.value)}
+                placeholder="Search tasks"
+                className="min-w-0 flex-1 bg-transparent px-2 text-[12.5px] tracking-[-0.003em] text-foreground placeholder:font-normal placeholder:text-muted-foreground/55 focus:outline-none"
+              />
+              {sidebarSearch && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    setSidebarSearch("")
+                  }}
+                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                  aria-label="Clear search"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </label>
           </div>
+          {/* Divider alignment line in header row (matches body divider) */}
+          <div className="w-px flex-shrink-0 bg-border" style={{ height: GANTT_HEADER_HEIGHT }} />
           
           {/* Timeline header - scrolls horizontally */}
           <div className="flex-1 overflow-hidden min-w-0" style={{ maxWidth: '100%' }}>
@@ -900,33 +982,41 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                 }}
               >
                 {/* Month row */}
-                <div className="flex h-7 border-b border-border/50">
+                <div className="flex h-7 border-b border-border">
                   {monthHeaders.map((month, i) => (
                     <div
                       key={i}
-                      className="flex items-center justify-center text-xs font-medium text-muted-foreground border-r border-border/30"
+                      className="flex items-center text-[11px] font-semibold uppercase tracking-wide text-foreground border-r border-border/40 px-2"
                       style={{ width: month.span * columnWidth }}
                     >
                       {month.label}
                     </div>
                   ))}
                 </div>
-                
+
                 {/* Day row */}
                 <div className="flex h-8">
-                  {columns.map((col, i) => (
-                    <div
-                      key={i}
-                      className={cn(
-                        "flex items-center justify-center text-xs border-r border-border/20 cursor-pointer hover:bg-primary/5 transition-colors",
-                        col.isToday && "bg-primary/10 text-primary font-semibold",
-                        col.isWeekend && !col.isToday && "bg-muted/50 text-muted-foreground"
-                      )}
-                      style={{ width: columnWidth, minWidth: columnWidth }}
-                    >
-                      {col.label}
-                    </div>
-                  ))}
+                  {columns.map((col, i) => {
+                    const isMonday = col.date.getDay() === 1
+                    return (
+                      <div
+                        key={i}
+                        className={cn(
+                          "flex items-center justify-center text-[11px] cursor-pointer transition-colors border-r border-border/15",
+                          isMonday && "border-l border-border/40",
+                          col.isToday
+                            ? "font-semibold text-primary"
+                            : col.isWeekend && viewState.showWeekends && viewState.zoom !== "quarter"
+                              ? "text-muted-foreground/60"
+                              : "text-muted-foreground",
+                          "hover:bg-muted/40",
+                        )}
+                        style={{ width: columnWidth, minWidth: columnWidth }}
+                      >
+                        {col.label}
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             </div>
@@ -936,10 +1026,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden min-h-0 min-w-0">
           {/* Sidebar - scrolls vertically only */}
-          <div 
+          <div
             ref={sidebarRef}
-            className="flex-shrink-0 border-r overflow-y-auto overflow-x-hidden"
-            style={{ width: GANTT_SIDEBAR_WIDTH, minWidth: GANTT_SIDEBAR_WIDTH }}
+            onScroll={handleSidebarScroll}
+            className="@container flex-shrink-0 overflow-y-auto overflow-x-hidden"
+            style={{ width: sidebarWidth, minWidth: sidebarWidth }}
           >
             <DndContext
               sensors={sensors}
@@ -957,16 +1048,16 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                       {/* Group header */}
                       {viewState.groupBy !== "none" && (
                         <div
-                          className="gantt-group-header"
+                          className="gantt-group-header group"
                           style={{ height: GANTT_ROW_HEIGHT }}
                           onClick={() => toggleGroup(groupKey)}
                         >
-                          <Button variant="ghost" size="icon" className="h-6 w-6 p-0 hover:bg-transparent">
-                            {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </Button>
-                          <div
-                            className="gantt-group-dot"
-                            style={{ backgroundColor: PHASE_COLORS[groupKey] || "#64748b" }}
+                          <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-muted-foreground/60 transition-colors group-hover:text-foreground">
+                            {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                          </span>
+                          <span
+                            className="gantt-group-chip"
+                            style={{ backgroundColor: getGroupColor(groupKey, viewState.groupBy) }}
                           />
                           <span className="gantt-group-name flex-1">
                             {groupKey.replace(/_/g, " ")}
@@ -1024,6 +1115,19 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
             </DndContext>
           </div>
 
+          {/* Resizable divider between sidebar and timeline */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onPointerDown={handleSidebarResizeStart}
+            onPointerMove={handleSidebarResizeMove}
+            onPointerUp={handleSidebarResizeEnd}
+            onPointerCancel={handleSidebarResizeEnd}
+            className="group/divider relative z-20 flex w-px flex-shrink-0 cursor-col-resize justify-center bg-border transition-colors hover:w-0.5 hover:bg-primary/60"
+          >
+            <span aria-hidden className="absolute inset-y-0 -left-1 -right-1" />
+          </div>
+
           {/* Timeline grid - scrolls both directions */}
           <div
             ref={scrollContainerRef}
@@ -1050,8 +1154,9 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                   <div
                     key={i}
                     className={cn(
-                      "absolute top-0 bottom-0 border-r border-border/10",
-                      col.isWeekend && "bg-muted/20"
+                      "absolute top-0 bottom-0",
+                      col.date.getDay() === 1 ? "border-l border-border/40" : "border-r border-border/10",
+                      col.isWeekend && viewState.showWeekends && viewState.zoom !== "quarter" && "gantt-weekend-col"
                     )}
                     style={{ left: i * columnWidth, width: columnWidth }}
                   />
@@ -1088,14 +1193,24 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                 </div>
               )}
 
-              {/* Today marker */}
+              {/* Today marker — glow column + crisp line + pill */}
               {todayPosition !== null && (
-                <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-primary z-20 pointer-events-none"
-                  style={{ left: todayPosition }}
-                >
-                  <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-primary" />
-                </div>
+                <>
+                  <div
+                    className="gantt-today-glow"
+                    style={{ left: todayPosition - 40, width: 80 }}
+                  />
+                  <div
+                    className="gantt-today-line"
+                    style={{ left: todayPosition }}
+                  />
+                  <div
+                    className="gantt-today-pill"
+                    style={{ left: todayPosition }}
+                  >
+                    Today
+                  </div>
+                </>
               )}
 
               {/* Dependency lines (SVG overlay) */}
@@ -1134,23 +1249,66 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                   </defs>
                   {dependencyLines.map((line: any) => {
                     if (!line) return null
-                    
-                    const dx = line.to.x - line.from.x
-                    const controlOffset = Math.min(Math.abs(dx) / 3, 50)
-                    
-                    const path = `M ${line.from.x} ${line.from.y} 
-                      C ${line.from.x + controlOffset} ${line.from.y}, 
-                        ${line.to.x - controlOffset} ${line.to.y}, 
-                        ${line.to.x} ${line.to.y}`
-                    
+
+                    // Rounded-elbow path: horizontal → rounded corner → vertical → rounded corner → horizontal
+                    const r = 6
+                    const fromX = line.from.x
+                    const fromY = line.from.y
+                    const toX = line.to.x
+                    const toY = line.to.y
+                    const dy = toY - fromY
+                    const sy = dy >= 0 ? 1 : -1
+
+                    // Where the vertical segment sits — prefer midpoint, but keep away from endpoints
+                    let bendX: number
+                    if (toX > fromX + 20) {
+                      bendX = Math.min(fromX + 24, (fromX + toX) / 2)
+                    } else {
+                      // Backward dependency — route around: go right past fromX then back
+                      bendX = fromX + 20
+                    }
+
+                    let path: string
+                    if (Math.abs(dy) < 1) {
+                      path = `M ${fromX} ${fromY} L ${toX} ${toY}`
+                    } else if (toX > fromX + 20) {
+                      path = [
+                        `M ${fromX} ${fromY}`,
+                        `H ${bendX - r}`,
+                        `Q ${bendX} ${fromY} ${bendX} ${fromY + r * sy}`,
+                        `V ${toY - r * sy}`,
+                        `Q ${bendX} ${toY} ${bendX + r} ${toY}`,
+                        `H ${toX}`,
+                      ].join(" ")
+                    } else {
+                      // Route backwards: out right, down, back left past toX, down/up, then in
+                      const outX = fromX + 20
+                      const backX = toX - 20
+                      path = [
+                        `M ${fromX} ${fromY}`,
+                        `H ${outX - r}`,
+                        `Q ${outX} ${fromY} ${outX} ${fromY + r * sy}`,
+                        `V ${fromY + (dy / 2) - r * sy}`,
+                        `Q ${outX} ${fromY + dy / 2} ${outX - r} ${fromY + dy / 2}`,
+                        `H ${backX + r}`,
+                        `Q ${backX} ${fromY + dy / 2} ${backX} ${fromY + dy / 2 + r * sy}`,
+                        `V ${toY - r * sy}`,
+                        `Q ${backX} ${toY} ${backX + r} ${toY}`,
+                        `H ${toX}`,
+                      ].join(" ")
+                    }
+
                     return (
                       <path
                         key={line.id}
                         d={path}
                         fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
                         className={cn(
-                          "stroke-[1.5]",
-                          line.isCritical ? "stroke-orange-500/70" : "stroke-muted-foreground/30"
+                          line.isCritical
+                            ? "gantt-dep-critical stroke-[1.75] stroke-orange-500/80"
+                            : "stroke-[1.25] stroke-muted-foreground/30"
                         )}
                         markerEnd={line.isCritical ? "url(#arrowhead-critical)" : "url(#arrowhead)"}
                       />
@@ -1159,27 +1317,31 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                 </svg>
               )}
 
-              {/* Row backgrounds */}
+              {/* Row backgrounds — swim-lane tinted by phase color */}
               {sortedGroups.map((groupKey) => {
                 const groupItemsList = groupedItems.get(groupKey) || []
                 const isExpanded = expandedGroups.has(groupKey) || viewState.groupBy === "none"
-                
+
                 if (!isExpanded) return null
-                
+
                 return groupItemsList.map((item) => {
                   const rowIndex = itemRowIndices.get(item.id)
                   if (rowIndex === undefined) return null
-                  
+
+                  const rowTint = (item.color && (item.color.startsWith("#") || item.color.startsWith("rgb") || item.color.startsWith("hsl"))) ? item.color : PHASE_COLORS[item.phase || ""] || "transparent"
+                  const isSelectedRow = selectedItem?.id === item.id
+
                   return (
                     <div
                       key={`row-${item.id}`}
                       className={cn(
-                        "absolute left-0 right-0 border-b border-border/5",
-                        selectedItem?.id === item.id && "bg-primary/5"
+                        "gantt-row-bg absolute left-0 right-0 border-b border-border/5",
+                        isSelectedRow && "is-selected",
                       )}
                       style={{
                         top: rowIndex * GANTT_ROW_HEIGHT,
                         height: GANTT_ROW_HEIGHT,
+                        ["--row-tint" as string]: rowTint,
                       }}
                     />
                   )
@@ -1206,7 +1368,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                   const isMilestone = item.item_type === "milestone"
                   const isSelected = selectedItem?.id === item.id
                   const isDragging = dragState?.itemId === item.id
-                  const barColor = item.color || PHASE_COLORS[item.phase || ""] || "#3b82f6"
+                  const barColor = (item.color && (item.color.startsWith("#") || item.color.startsWith("rgb") || item.color.startsWith("hsl"))) ? item.color : PHASE_COLORS[item.phase || ""] || "#3b82f6"
                   const progress = item.progress || 0
                   
                   const top = rowIndex * GANTT_ROW_HEIGHT + GANTT_BAR_PADDING
@@ -1218,27 +1380,25 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                           <div
                             data-bar
                             className={cn(
-                              "absolute cursor-pointer z-10 touch-none select-none",
-                              "transition-all duration-200 ease-out",
-                              "hover:scale-125 hover:shadow-lg",
-                              isSelected && "ring-2 ring-primary ring-offset-2 scale-125",
-                              isDragging && "opacity-80 scale-150 shadow-xl z-50"
+                              "gantt-milestone cursor-pointer z-10 touch-none select-none",
+                              isSelected && "is-selected",
+                              isDragging && "is-dragging",
                             )}
                             style={{
                               left: position.left + position.width / 2 - GANTT_MILESTONE_SIZE / 2,
                               top: top + (GANTT_BAR_HEIGHT - GANTT_MILESTONE_SIZE) / 2,
                               width: GANTT_MILESTONE_SIZE,
                               height: GANTT_MILESTONE_SIZE,
-                              backgroundColor: barColor,
-                              transform: "rotate(45deg)",
-                              transformOrigin: "center center",
+                              ["--bar-color" as string]: barColor,
                             }}
                             onClick={(e) => handleBarClick(e, item)}
                             onPointerDown={(e) => handleDragStart(e, item, "move")}
                             onPointerMove={handleDragPointerMove}
                             onPointerUp={handleDragPointerUp}
                             onPointerCancel={handleDragPointerCancel}
-                          />
+                          >
+                            <Flag className="h-2.5 w-2.5" fill="currentColor" />
+                          </div>
                         </TooltipTrigger>
                         <TooltipContent>
                           <div className="text-sm font-medium">{item.name}</div>
@@ -1249,7 +1409,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                       </Tooltip>
                     )
                   }
-                  
+
                   const isCompleted = item.status === "completed"
 
                   return (
@@ -1269,7 +1429,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                             top,
                             width: position.width,
                             height: GANTT_BAR_HEIGHT,
-                            backgroundColor: barColor,
+                            ["--bar-color" as string]: barColor,
                           }}
                           onClick={(e) => handleBarClick(e, item)}
                           onPointerDown={(e) => handleDragStart(e, item, "move")}
@@ -1277,25 +1437,24 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                           onPointerUp={handleDragPointerUp}
                           onPointerCancel={handleDragPointerCancel}
                         >
-                          {/* Progress section */}
+                          {/* Remainder overlay — dims the not-yet-done portion */}
                           <div className="gantt-progress-section">
-                            {progress > 0 && (
+                            {progress < 100 && (
                               <div
-                                className="gantt-progress-fill"
-                                style={{ width: `${progress}%` }}
+                                className="gantt-bar-remainder"
+                                style={{
+                                  left: `${progress}%`,
+                                  width: `${100 - progress}%`,
+                                }}
                               />
                             )}
                           </div>
 
-                          {/* Content */}
+                          {/* Label inside bar — reads on both tint and solid regions */}
                           <div className="gantt-bar-content">
-                            <span className="gantt-bar-label flex-1">
-                              {item.name}
-                            </span>
+                            <span className="gantt-bar-label">{item.name}</span>
                             {progress > 0 && progress < 100 && (
-                              <span className="gantt-bar-progress-text">
-                                {progress}%
-                              </span>
+                              <span className="gantt-bar-progress-text">{progress}%</span>
                             )}
                           </div>
 

@@ -46,6 +46,7 @@ export interface DrawingSet {
   source_file_id?: string
   total_pages?: number
   processed_pages: number
+  processing_stage?: string
   error_message?: string
   created_by?: string
   creator_name?: string
@@ -166,6 +167,7 @@ function mapDrawingSet(row: any): DrawingSet {
     source_file_id: row.source_file_id ?? undefined,
     total_pages: row.total_pages ?? undefined,
     processed_pages: row.processed_pages ?? 0,
+    processing_stage: row.processing_stage ?? undefined,
     error_message: row.error_message ?? undefined,
     created_by: row.created_by ?? undefined,
     creator_name: (row.app_users as any)?.full_name ?? undefined,
@@ -344,7 +346,7 @@ export async function listDrawingSets(
     .from("drawing_sets")
     .select(`
       id, org_id, project_id, title, description, set_type, status,
-      source_file_id, total_pages, processed_pages, error_message,
+      source_file_id, total_pages, processed_pages, processing_stage, error_message,
       created_by, created_at, processed_at, updated_at,
       app_users!drawing_sets_created_by_fkey(full_name, avatar_url),
       drawing_sheets(count)
@@ -390,7 +392,7 @@ export async function getDrawingSet(
     .from("drawing_sets")
     .select(`
       id, org_id, project_id, title, description, set_type, status,
-      source_file_id, total_pages, processed_pages, error_message,
+      source_file_id, total_pages, processed_pages, processing_stage, error_message,
       created_by, created_at, processed_at, updated_at,
       app_users!drawing_sets_created_by_fkey(full_name, avatar_url),
       drawing_sheets(count)

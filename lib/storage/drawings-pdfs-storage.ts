@@ -103,6 +103,32 @@ export async function createDrawingPdfUploadUrl(params: {
   return { storagePath, uploadUrl, provider }
 }
 
+export async function uploadDrawingPdfObject(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  bytes: Uint8Array | Buffer
+  contentType: string
+  cacheControl?: string
+}): Promise<{ storagePath: string; provider: PdfsStorageProvider }> {
+  const { supabase: _supabase, orgId, bytes, contentType } = params
+  const provider = getProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  await client.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      Body: bytes,
+      ContentType: contentType,
+      CacheControl: params.cacheControl ?? "private, max-age=3600",
+    })
+  )
+
+  return { storagePath, provider }
+}
+
 export async function downloadDrawingPdfObject(params: {
   supabase: SupabaseClient
   orgId: string

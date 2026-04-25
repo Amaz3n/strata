@@ -56,7 +56,6 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
   const isMobile = useIsMobile()
   const [items, setItems] = useState<Rfi[]>(rfis)
   const [search, setSearch] = useState("")
-  const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
@@ -72,16 +71,15 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
     const safeItems = items ?? []
     const term = search.toLowerCase()
     return safeItems.filter((item) => {
-      const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
       const matchesStatus = statusFilter === "all" || item.status === statusFilter
       const matchesSearch =
         term.length === 0 ||
         [String(item.rfi_number ?? ""), item.subject ?? "", item.question ?? ""].some((value) =>
           value.toLowerCase().includes(term),
         )
-      return matchesProject && matchesStatus && matchesSearch
+      return matchesStatus && matchesSearch
     })
-  }, [filterProjectId, items, search, statusFilter])
+  }, [items, search, statusFilter])
 
 
   async function handleCreate(values: RfiInput, options: { sendNow: boolean }) {
@@ -120,7 +118,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
         projects={projects}
         companies={companies}
         contacts={contacts}
-        defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
+        defaultProjectId={projects[0]?.id}
         onSubmit={handleCreate}
         isSubmitting={isPending}
       />
@@ -144,20 +142,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
-              <Select value={filterProjectId} onValueChange={setFilterProjectId}>
-                <SelectTrigger className="w-full sm:w-40">
-                  <SelectValue placeholder="Project" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All projects</SelectItem>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="flex items-center gap-2">
               <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
                 <SelectTrigger className="w-full sm:w-36">
                   <SelectValue placeholder="Status" />
@@ -249,59 +234,64 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
           <div className="min-h-0 flex-1 overflow-auto">
             <Table>
               <TableHeader>
-                <TableRow className="divide-x">
-                  <TableHead className="px-4 py-4">RFI Number</TableHead>
-                  <TableHead className="px-4 py-4">Subject</TableHead>
-                  <TableHead className="px-4 py-4">Project</TableHead>
-                  <TableHead className="px-4 py-4 text-center">Status</TableHead>
-                  <TableHead className="px-4 py-4 text-center">Due Date</TableHead>
-                  <TableHead className="px-4 py-4 text-center">Priority</TableHead>
-                  <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  <TableHead className="w-[96px] text-center pl-2">RFI Number</TableHead>
+                  <TableHead className="w-[40%] min-w-[320px]">Subject</TableHead>
+                  <TableHead className="hidden md:table-cell w-[184px] text-center">Assignee</TableHead>
+                  <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
+                  <TableHead className="hidden lg:table-cell w-[112px] text-center">Due Date</TableHead>
+                  <TableHead className="hidden xl:table-cell w-[100px] text-center">Priority</TableHead>
+                  <TableHead className="w-[92px] pr-2" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.map((rfi) => (
-                  <TableRow key={rfi.id} className="divide-x">
-                    <TableCell className="px-4 py-4">
-                      <div className="font-semibold">{rfi.rfi_number}</div>
+                  <TableRow 
+                    key={rfi.id} 
+                    className="group cursor-pointer hover:bg-muted/30 h-[64px]"
+                    onClick={() => handleRfiClick(rfi)}
+                  >
+                    <TableCell className="text-center px-2">
+                      <span className="text-sm font-semibold">{rfi.rfi_number}</span>
                     </TableCell>
-                    <TableCell className="px-4 py-4">
-                      <button
-                        type="button"
-                        onClick={() => handleRfiClick(rfi)}
-                        className="font-semibold text-left hover:text-primary transition-colors"
-                        aria-label={`View RFI ${rfi.rfi_number ?? rfi.subject ?? ""}`}
-                      >
-                        {rfi.subject}
-                      </button>
+                    <TableCell className="min-w-0">
+                      <span className="text-sm font-medium truncate block">{rfi.subject}</span>
                     </TableCell>
-                    <TableCell className="px-4 py-4 text-muted-foreground">
-                      {projects.find((p) => p.id === rfi.project_id)?.name ?? "Unknown project"}
+                    <TableCell className="hidden md:table-cell text-center">
+                      <span className="text-xs text-muted-foreground truncate block">
+                        {rfi.assigned_to 
+                          ? contacts.find((c) => c.id === rfi.assigned_to)?.full_name 
+                          : rfi.assigned_company_id 
+                            ? companies.find((c) => c.id === rfi.assigned_company_id)?.name 
+                            : "Unassigned"}
+                      </span>
                     </TableCell>
-                    <TableCell className="px-4 py-4 text-center">
-                      <div className="space-y-1">
-                        <Badge variant="secondary" className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}>
+                    <TableCell className="hidden sm:table-cell text-center">
+                      <div className="flex flex-col gap-1 items-center">
+                        <Badge variant="secondary" className={`text-[10px] px-1 py-0 h-4 font-normal capitalize border ${statusStyles[rfi.status] ?? ""}`}>
                           {statusLabels[rfi.status] ?? rfi.status}
                         </Badge>
                         {sentStatusLabel(rfi) && (
-                          <div className="text-[11px] text-muted-foreground">{sentStatusLabel(rfi)}</div>
+                          <span className="text-[10px] text-muted-foreground">{sentStatusLabel(rfi)}</span>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                      {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
+                    <TableCell className="hidden lg:table-cell text-center">
+                      <span className="text-xs text-muted-foreground">
+                        {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
+                      </span>
                     </TableCell>
-                    <TableCell className="px-4 py-4 text-center">
-                      <Badge variant="outline" className="text-[11px] capitalize">
+                    <TableCell className="hidden xl:table-cell text-center">
+                      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal capitalize">
                         {rfi.priority ?? "normal"}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-center w-12 px-4 py-4">
-                      <div className="flex justify-center">
+                    <TableCell className="pr-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreHorizontal className="h-4 w-4" />
+                            <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <MoreHorizontal className="h-3.5 w-3.5" />
                               <span className="sr-only">RFI actions</span>
                             </Button>
                           </DropdownMenuTrigger>
@@ -316,20 +306,22 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                   </TableRow>
                 ))}
                 {filtered.length === 0 && (
-                  <TableRow className="divide-x">
-                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-4">
+                  <TableRow>
+                    <TableCell colSpan={7} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                      <div className="flex flex-col items-center gap-3">
                         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                           <FileText className="h-6 w-6" />
                         </div>
-                        <div>
+                        <div className="text-center max-w-[400px]">
                           <p className="font-medium">No RFIs yet</p>
-                          <p className="text-sm">Create your first RFI to get started.</p>
+                          <p className="text-sm text-muted-foreground mt-0.5">Create your first RFI to get started.</p>
                         </div>
-                        <Button onClick={() => setSheetOpen(true)}>
-                          <Plus className="mr-2 h-4 w-4" />
-                          Create RFI
-                        </Button>
+                        <div className="mt-2">
+                          <Button variant="default" size="sm" onClick={() => setSheetOpen(true)}>
+                            <Plus className="mr-2 h-4 w-4" />
+                            Create RFI
+                          </Button>
+                        </div>
                       </div>
                     </TableCell>
                   </TableRow>

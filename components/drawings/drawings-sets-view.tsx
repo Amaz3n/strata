@@ -69,23 +69,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import {
-  DISCIPLINE_LABELS,
-  DRAWING_SET_TYPE_LABELS,
-} from "@/lib/validation/drawings"
+import { DISCIPLINE_LABELS } from "@/lib/validation/drawings"
 import type { DrawingDiscipline } from "@/lib/validation/drawings"
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
 import {
   createDrawingMarkupAction,
   createDrawingPinAction,
-  createDrawingRevisionAction,
   createDrawingSetFromUpload,
   createPunchItemFromDrawingAction,
   createRfiFromDrawingAction,
@@ -96,6 +86,7 @@ import {
   getProcessingStatusAction,
   getSheetDownloadUrlAction,
   getSheetOptimizedImageUrlsAction,
+  listUploadedSheetsAction,
   listDrawingMarkupsAction,
   listDrawingPinsWithEntitiesAction,
   listDrawingSetsAction,
@@ -108,6 +99,7 @@ import type {
   DrawingPin,
   DrawingSet,
   DrawingSheet,
+  UploadReviewSheet,
 } from "@/app/(app)/drawings/actions"
 import { DrawingViewer } from "./drawing-viewer"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
@@ -123,10 +115,6 @@ interface DrawingsSetsViewProps {
   initialSelectedSetId?: string
   initialSheetId?: string
 }
-
-const SET_TYPE_OPTIONS = Object.entries(DRAWING_SET_TYPE_LABELS).map(
-  ([value, label]) => ({ value, label }),
-)
 
 const DISCIPLINE_ORDER: DrawingDiscipline[] = [
   "G",
@@ -160,14 +148,6 @@ function formatDate(value?: string | null) {
     day: "numeric",
     year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
   })
-}
-
-function resolveSetTypeLabel(value?: string | null) {
-  if (!value) return "General"
-  return (
-    DRAWING_SET_TYPE_LABELS[value as keyof typeof DRAWING_SET_TYPE_LABELS] ??
-    value
-  )
 }
 
 function disciplineLabel(code?: DrawingDiscipline | string | null) {
@@ -220,6 +200,65 @@ function sheetVersionLabel(sheet: DrawingSheet) {
   return "v1"
 }
 
+function describeProcessingStage(set: DrawingSet | null) {
+  const processed = set?.processed_pages ?? 0
+  const total = set?.total_pages ?? null
+  const stage = set?.processing_stage ?? "queued"
+
+  switch (stage) {
+    case "queued":
+      return {
+        title: "Queued for processing",
+        detail: "Waiting for the drawings worker to pick up this upload.",
+      }
+    case "downloading_pdf":
+      return {
+        title: "Preparing upload",
+        detail: "Downloading the source PDF and initializing the import.",
+      }
+    case "counting_pages":
+      return {
+        title: "Counting pages",
+        detail: "Reading the PDF structure so we know how many sheets to process.",
+      }
+    case "extracting_text":
+      return {
+        title: `Processing ${processed}/${total ?? "?"} sheets`,
+        detail: "Using OCR and embedded PDF text to read each page.",
+      }
+    case "rendering_pages":
+      return {
+        title: `Rendering ${processed}/${total ?? "?"} sheets`,
+        detail: "Splitting the uploaded PDF into individual drawing pages.",
+      }
+    case "detecting_sheets":
+      return {
+        title: `Detecting sheet metadata`,
+        detail: "Using computer vision and text extraction to identify sheet numbers, titles, and trades.",
+      }
+    case "creating_sheets":
+      return {
+        title: "Building the drawing register",
+        detail: "Creating the page rows that will appear under each trade.",
+      }
+    case "generating_tiles":
+      return {
+        title: `Processing ${processed}/${total ?? "?"} sheets`,
+        detail: "Generating the zoomable drawing tiles for fast viewing.",
+      }
+    case "ready":
+      return {
+        title: "Import complete",
+        detail: "The uploaded pages are ready to review.",
+      }
+    default:
+      return {
+        title: `Processing ${processed}/${total ?? "?"} sheets`,
+        detail: "Working through the uploaded drawing pages.",
+      }
+  }
+}
+
 export function DrawingsSetsView({
   initialSets,
   initialSheets = [],
@@ -243,21 +282,37 @@ export function DrawingsSetsView({
   )
   const [sheetsLoading, setSheetsLoading] = useState(false)
   const [isDragActive, setIsDragActive] = useState(false)
+  const [processingMessageIndex, setProcessingMessageIndex] = useState(0)
   const dragCounterRef = useRef(0)
 
   // Upload dialog
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
-  const [uploadTitle, setUploadTitle] = useState("")
-  const [uploadSetType, setUploadSetType] = useState<string>("general")
-  const [uploadRevisionLabel, setUploadRevisionLabel] = useState("")
-  const [uploadIssuedDate, setUploadIssuedDate] = useState("")
-  const [uploadSource, setUploadSource] = useState("")
-  const [uploadNotes, setUploadNotes] = useState("")
-  const [revisionOpen, setRevisionOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadStage, setUploadStage] = useState<string | null>(null)
+  const [uploadStep, setUploadStep] = useState<"prepare" | "processing" | "review">("prepare")
+  const [uploadSetId, setUploadSetId] = useState<string | null>(null)
+  const [uploadSourceFileId, setUploadSourceFileId] = useState<string | null>(null)
+  const [uploadStatus, setUploadStatus] = useState<{
+    status: string
+    processed_pages: number
+    total_pages?: number
+    processing_stage?: string
+    error_message?: string
+  } | null>(null)
+  const [uploadedReviewSheets, setUploadedReviewSheets] = useState<UploadReviewSheet[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const viewerSheetCacheRef = useRef<
+    Map<
+      string,
+      {
+        fileUrl: string | null
+        sheet: DrawingSheet
+        markups: DrawingMarkup[]
+        pins: DrawingPin[]
+      }
+    >
+  >(new Map())
 
   // Delete confirms
   const [setToDelete, setSetToDelete] = useState<DrawingSet | null>(null)
@@ -417,6 +472,25 @@ export function DrawingsSetsView({
     () => sets.find((s) => s.id === selectedSetId) ?? null,
     [sets, selectedSetId],
   )
+  const activeProcessingMessage = useMemo(
+    () => describeProcessingStage(activeSet),
+    [activeSet],
+  )
+  const uploadProcessingMessage = useMemo(() => {
+    if (!uploadStatus) return null
+    return describeProcessingStage({
+      id: uploadSetId ?? "",
+      org_id: "",
+      project_id: selectedProjectId ?? "",
+      title: uploadFile?.name ?? "Upload",
+      status: uploadStatus.status as DrawingSet["status"],
+      processed_pages: uploadStatus.processed_pages,
+      total_pages: uploadStatus.total_pages,
+      processing_stage: uploadStatus.processing_stage,
+      created_at: "",
+      updated_at: "",
+    } as DrawingSet)
+  }, [selectedProjectId, uploadFile?.name, uploadSetId, uploadStatus])
   const activeSheets = useMemo(
     () => (selectedSetId ? sheetsBySet.get(selectedSetId) ?? [] : []),
     [selectedSetId, sheetsBySet],
@@ -496,13 +570,11 @@ export function DrawingsSetsView({
       return
     }
     setUploadFile(file)
-    setUploadTitle(file.name.replace(/\.pdf$/i, ""))
-    setUploadSetType("general")
-    setUploadRevisionLabel("")
-    setUploadIssuedDate("")
-    setUploadSource("")
-    setUploadNotes("")
-    setRevisionOpen(false)
+    setUploadStep("prepare")
+    setUploadStatus(null)
+    setUploadedReviewSheets([])
+    setUploadSetId(null)
+    setUploadSourceFileId(null)
     setUploadDialogOpen(true)
   }
 
@@ -530,58 +602,98 @@ export function DrawingsSetsView({
       setUploadStage("Processing PDF…")
       const newSet = await createDrawingSetFromUpload({
         projectId: selectedProjectId,
-        title: uploadTitle,
-        setType: uploadSetType,
         fileName: uploadFile.name,
         storagePath,
         fileSize: uploadFile.size,
         mimeType: uploadFile.type,
       })
 
-      setSets((prev) => [newSet, ...prev])
+      setSets((prev) => {
+        const withoutCurrent = prev.filter((set) => set.id !== newSet.id)
+        return [newSet, ...withoutCurrent]
+      })
       setSelectedSetId((current) => current ?? newSet.id)
+      setUploadSetId(newSet.id)
+      setUploadSourceFileId(newSet.source_file_id ?? null)
+      setUploadStatus({
+        status: newSet.status,
+        processed_pages: newSet.processed_pages,
+        total_pages: newSet.total_pages,
+        processing_stage: newSet.processing_stage,
+      })
+      setUploadStep("processing")
 
-      const revisionLabel = uploadRevisionLabel.trim()
-      if (revisionLabel) {
-        try {
-          const noteParts: string[] = []
-          const src = uploadSource.trim()
-          const note = uploadNotes.trim()
-          if (src) noteParts.push(`From: ${src}`)
-          if (note) noteParts.push(note)
-          await createDrawingRevisionAction({
-            project_id: selectedProjectId,
-            drawing_set_id: newSet.id,
-            revision_label: revisionLabel,
-            issued_date: uploadIssuedDate || undefined,
-            notes: noteParts.join("\n\n") || undefined,
-          })
-        } catch (err) {
-          console.error("Failed to create initial revision:", err)
-          toast.warning("Plan set uploaded, but revision details failed to save.")
-        }
-      }
-
-      toast.success("Plan set uploaded — sheets processing in the background.")
-      setUploadDialogOpen(false)
-      setUploadFile(null)
-      setUploadTitle("")
-      setUploadSetType("general")
-      setUploadRevisionLabel("")
-      setUploadIssuedDate("")
-      setUploadSource("")
-      setUploadNotes("")
-      setRevisionOpen(false)
+      toast.success("Drawings uploaded — processing started.")
     } catch (err) {
       console.error("Upload failed:", err)
       toast.error(
-        err instanceof Error ? err.message : "Failed to upload plan set",
+        err instanceof Error ? err.message : "Failed to upload drawings",
       )
     } finally {
       setIsUploading(false)
       setUploadStage(null)
     }
   }
+
+  useEffect(() => {
+    if (!uploadDialogOpen || uploadStep !== "processing" || !uploadSetId) return
+
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const status = await getProcessingStatusAction(uploadSetId)
+        if (cancelled) return
+        setUploadStatus(status)
+
+        setSets((prev) =>
+          prev.map((set) =>
+            set.id === uploadSetId
+              ? {
+                  ...set,
+                  status: status.status as DrawingSet["status"],
+                  processed_pages: status.processed_pages,
+                  total_pages: status.total_pages,
+                  processing_stage: status.processing_stage,
+                  error_message: status.error_message,
+                }
+              : set,
+          ),
+        )
+
+        if (status.status === "ready") {
+          await Promise.all([refreshSets(), loadProjectSheets()])
+          if (uploadSourceFileId) {
+            const reviewSheets = await listUploadedSheetsAction(uploadSourceFileId)
+            if (cancelled) return
+            setUploadedReviewSheets(reviewSheets)
+          }
+          if (!cancelled) {
+            setUploadStep("review")
+          }
+        }
+      } catch (error) {
+        console.error("Failed to poll upload status:", error)
+      }
+    }
+
+    void poll()
+    const interval = setInterval(() => {
+      void poll()
+    }, 2500)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [
+    loadProjectSheets,
+    refreshSets,
+    uploadDialogOpen,
+    uploadSetId,
+    uploadSourceFileId,
+    uploadStep,
+  ])
 
   const handleDeleteSet = async () => {
     if (!setToDelete) return
@@ -787,6 +899,17 @@ export function DrawingsSetsView({
       const requestId = ++sheetOpenRequestIdRef.current
       const siblings = sheetsBySet.get(sheet.drawing_set_id) ?? [sheet]
       setViewerSheets(siblings)
+      const cached = viewerSheetCacheRef.current.get(sheet.id)
+      if (cached) {
+        setViewerSheet(cached.sheet)
+        setViewerHighlightedPinId(highlightPinId ?? null)
+        setViewerUrl(cached.fileUrl)
+        setViewerMarkups(cached.markups)
+        setViewerPins(cached.pins)
+        setViewerOpen(true)
+        return
+      }
+
       setViewerSheet(sheet)
       setViewerHighlightedPinId(highlightPinId ?? null)
       setViewerUrl(null)
@@ -838,6 +961,29 @@ export function DrawingsSetsView({
           return
         }
 
+        const resolvedSheet =
+          signedImages && !hasTiles
+            ? {
+                ...sheet,
+                image_thumbnail_url:
+                  signedImages.thumbnailUrl ?? sheet.image_thumbnail_url ?? null,
+                image_medium_url:
+                  signedImages.mediumUrl ?? sheet.image_medium_url ?? null,
+                image_full_url:
+                  signedImages.fullUrl ?? sheet.image_full_url ?? null,
+                image_width: signedImages.width ?? sheet.image_width ?? null,
+                image_height: signedImages.height ?? sheet.image_height ?? null,
+              }
+            : sheet
+
+        viewerSheetCacheRef.current.set(sheet.id, {
+          fileUrl: url,
+          sheet: resolvedSheet,
+          markups,
+          pins,
+        })
+
+        setViewerSheet(resolvedSheet)
         setViewerUrl(url)
         setViewerMarkups(markups)
         setViewerPins(pins)
@@ -869,6 +1015,15 @@ export function DrawingsSetsView({
     try {
       const created = await createDrawingMarkupAction(markup)
       setViewerMarkups((prev) => [...prev, created])
+      if (viewerSheet) {
+        const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
+        if (cached) {
+          viewerSheetCacheRef.current.set(viewerSheet.id, {
+            ...cached,
+            markups: [...cached.markups, created],
+          })
+        }
+      }
       toast.success("Markup saved")
     } catch (err) {
       console.error(err)
@@ -880,6 +1035,15 @@ export function DrawingsSetsView({
     try {
       await deleteDrawingMarkupAction(markupId)
       setViewerMarkups((prev) => prev.filter((m) => m.id !== markupId))
+      if (viewerSheet) {
+        const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
+        if (cached) {
+          viewerSheetCacheRef.current.set(viewerSheet.id, {
+            ...cached,
+            markups: cached.markups.filter((markup) => markup.id !== markupId),
+          })
+        }
+      }
       toast.success("Markup deleted")
     } catch (err) {
       console.error(err)
@@ -983,6 +1147,15 @@ export function DrawingsSetsView({
       })
 
       setViewerPins((prev) => [...prev, pin])
+      if (viewerSheet) {
+        const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
+        if (cached) {
+          viewerSheetCacheRef.current.set(viewerSheet.id, {
+            ...cached,
+            pins: [...cached.pins, pin],
+          })
+        }
+      }
       setCreateDialogOpen(false)
       setCreatePosition(null)
       setViewerHighlightedPinId(pin.id)
@@ -1103,11 +1276,19 @@ export function DrawingsSetsView({
       {activeSet && activeSetProcessing && (
         <div className="flex items-center gap-3 border-b bg-chart-1/5 px-4 py-2 text-xs">
           <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-chart-1" />
-          <span className="text-muted-foreground">
-            Processing <b className="font-medium text-foreground">{activeSet.title}</b>
-            {" — "}
-            {activeSet.processed_pages}/{activeSet.total_pages ?? "?"} sheets
-          </span>
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <div
+              key={`${activeSet.id}-${activeSet.processing_stage}-${activeSet.processed_pages}`}
+              className="animate-in slide-in-from-bottom-2 fade-in duration-300"
+            >
+              <div className="truncate text-muted-foreground">
+                <b className="font-medium text-foreground">{activeSet.title}</b>
+              </div>
+              <div className="truncate text-[11px] text-muted-foreground/90">
+                {activeProcessingMessage.detail}
+              </div>
+            </div>
+          </div>
           <Progress
             value={
               activeSet.total_pages && activeSet.total_pages > 0
@@ -1240,103 +1421,32 @@ export function DrawingsSetsView({
       </div>
 
       <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Upload plan set</DialogTitle>
+            <DialogTitle>
+              {uploadStep === "review"
+                ? "Review imported pages"
+                : sets.length > 0
+                  ? "Add drawings"
+                  : "Upload drawings"}
+            </DialogTitle>
             <DialogDescription>
-              Upload a PDF. It will be split into individual sheets
-              automatically.
+              {uploadStep === "review"
+                ? "The new pages are ready. Review them here and make any quick corrections before closing."
+                : sets.length > 0
+                  ? "Upload another PDF into this project's single drawing register. We'll process it, detect pages by trade, and keep the existing register intact while the import runs."
+                  : "Upload a PDF and we'll process it, detect page metadata, and separate the pages into trades automatically."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="upload-title">Title</Label>
-              <Input
-                id="upload-title"
-                value={uploadTitle}
-                onChange={(e) => setUploadTitle(e.target.value)}
-                placeholder="Plan set title"
-                disabled={isUploading}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="upload-type">Type</Label>
-              <Select
-                value={uploadSetType}
-                onValueChange={setUploadSetType}
-                disabled={isUploading}
-              >
-                <SelectTrigger id="upload-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SET_TYPE_OPTIONS.map((t) => (
-                    <SelectItem key={t.value} value={t.value}>
-                      {t.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Collapsible open={revisionOpen} onOpenChange={setRevisionOpen}>
-              <CollapsibleTrigger className="flex w-full items-center justify-between py-1 text-sm font-medium text-muted-foreground hover:text-foreground">
-                <span>Revision details (optional)</span>
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 transition-transform",
-                    revisionOpen && "rotate-180",
-                  )}
-                />
-              </CollapsibleTrigger>
-              <CollapsibleContent className="space-y-3 pt-2">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="upload-rev">Revision</Label>
-                    <Input
-                      id="upload-rev"
-                      value={uploadRevisionLabel}
-                      onChange={(e) => setUploadRevisionLabel(e.target.value)}
-                      placeholder="Permit Set, Rev 1, IFC…"
-                      disabled={isUploading}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="upload-date">Issue date</Label>
-                    <Input
-                      id="upload-date"
-                      type="date"
-                      value={uploadIssuedDate}
-                      onChange={(e) => setUploadIssuedDate(e.target.value)}
-                      disabled={isUploading}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="upload-source">From</Label>
-                  <Input
-                    id="upload-source"
-                    value={uploadSource}
-                    onChange={(e) => setUploadSource(e.target.value)}
-                    placeholder="Architect / engineer firm"
-                    disabled={isUploading}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="upload-notes">Notes</Label>
-                  <Textarea
-                    id="upload-notes"
-                    value={uploadNotes}
-                    onChange={(e) => setUploadNotes(e.target.value)}
-                    placeholder="Context for this revision…"
-                    rows={2}
-                    disabled={isUploading}
-                  />
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
+            {uploadStep !== "review" && (
+              <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+                The upload wizard now works off the project&apos;s single drawing register. We process the PDF first, then let you review the imported pages instead of asking for set-level metadata up front.
+              </div>
+            )}
 
             {uploadFile && (
-              <div className="flex items-center gap-3 border p-3">
+              <div className="flex items-center gap-3 rounded-lg border p-3">
                 <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
@@ -1348,34 +1458,199 @@ export function DrawingsSetsView({
                 </div>
               </div>
             )}
-            {uploadStage && (
-              <p className="text-xs text-muted-foreground">{uploadStage}</p>
+
+            {uploadStep === "processing" && uploadStatus && uploadProcessingMessage && (
+              <div className="space-y-4 rounded-xl border bg-muted/20 p-4">
+                <div className="flex items-start gap-3">
+                  <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-chart-1" />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      key={`${uploadStatus.processing_stage}-${uploadStatus.processed_pages}`}
+                      className="animate-in slide-in-from-bottom-2 fade-in duration-300"
+                    >
+                      <p className="text-sm font-medium">
+                        {uploadProcessingMessage.title}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {uploadProcessingMessage.detail}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <Progress
+                  value={
+                    uploadStatus.total_pages && uploadStatus.total_pages > 0
+                      ? (uploadStatus.processed_pages / uploadStatus.total_pages) * 100
+                      : 5
+                  }
+                  className="h-1.5"
+                />
+                {uploadStage && (
+                  <p className="text-xs text-muted-foreground">{uploadStage}</p>
+                )}
+                {uploadStatus.error_message && (
+                  <p className="text-xs text-destructive">
+                    {uploadStatus.error_message}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {uploadStep === "review" && (
+              <div className="space-y-4">
+                <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Review the imported pages below. You can rename a page or change its trade right here before closing.
+                </div>
+                <div className="max-h-[420px] overflow-auto rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Page</TableHead>
+                        <TableHead>Trade</TableHead>
+                        <TableHead className="w-[80px]" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {uploadedReviewSheets.length === 0 ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={3}
+                            className="py-8 text-center text-sm text-muted-foreground"
+                          >
+                            No imported pages were found for review.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        uploadedReviewSheets.map((sheet) => (
+                          <TableRow key={sheet.id}>
+                            <TableCell>
+                              <div className="flex flex-col">
+                                <span className="font-medium">
+                                  {sheet.sheet_number}
+                                </span>
+                                {sheet.sheet_title ? (
+                                  <span className="text-xs text-muted-foreground">
+                                    {sheet.sheet_title}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Select
+                                value={sheet.discipline ?? "X"}
+                                onValueChange={(value) => {
+                                  const nextDiscipline = value as DrawingDiscipline
+                                  setUploadedReviewSheets((prev) =>
+                                    prev.map((candidate) =>
+                                      candidate.id === sheet.id
+                                        ? { ...candidate, discipline: nextDiscipline }
+                                        : candidate,
+                                    ),
+                                  )
+                                  void handleDisciplineChange(sheet.id, nextDiscipline)
+                                }}
+                              >
+                                <SelectTrigger className="h-8 w-[180px]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {DISCIPLINE_ORDER.map((code) => (
+                                    <SelectItem key={code} value={code}>
+                                      {disciplineLabel(code)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  const liveSheet =
+                                    activeSheets.find((candidate) => candidate.id === sheet.id) ??
+                                    (({
+                                      ...sheet,
+                                      org_id: "",
+                                      project_id: selectedProjectId ?? "",
+                                      share_with_clients: false,
+                                      share_with_subs: false,
+                                      created_at: sheet.updated_at,
+                                    } as unknown) as DrawingSheet)
+                                  setSheetToRename(liveSheet)
+                                  setRenameSheetNumber(sheet.sheet_number)
+                                  setRenameSheetTitle(sheet.sheet_title ?? "")
+                                }}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
             )}
           </div>
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setUploadDialogOpen(false)}
-              disabled={isUploading}
+              onClick={() => {
+                setUploadDialogOpen(false)
+                setUploadFile(null)
+                setUploadStatus(null)
+                setUploadStep("prepare")
+                setUploadedReviewSheets([])
+                setUploadSetId(null)
+                setUploadSourceFileId(null)
+              }}
+              disabled={
+                isUploading ||
+                (uploadStep === "processing" &&
+                  (uploadStatus?.status ?? "processing") === "processing")
+              }
             >
-              Cancel
+              {uploadStep === "review" ? "Close" : "Cancel"}
             </Button>
-            <Button
-              onClick={handleUpload}
-              disabled={isUploading || !uploadTitle.trim()}
-            >
-              {isUploading ? (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Uploading…
-                </>
-              ) : (
-                <>
-                  <Upload className="mr-2 h-4 w-4" />
-                  Upload
-                </>
-              )}
-            </Button>
+            {uploadStep === "prepare" ? (
+              <Button onClick={handleUpload} disabled={isUploading}>
+                {isUploading ? (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    Uploading…
+                  </>
+                ) : (
+                  <>
+                    <Upload className="mr-2 h-4 w-4" />
+                    Start processing
+                  </>
+                )}
+              </Button>
+            ) : uploadStep === "review" ? (
+              <Button
+                onClick={() => {
+                  setUploadDialogOpen(false)
+                  setUploadFile(null)
+                  setUploadStatus(null)
+                  setUploadStep("prepare")
+                  setUploadedReviewSheets([])
+                  setUploadSetId(null)
+                  setUploadSourceFileId(null)
+                }}
+              >
+                Finish review
+              </Button>
+            ) : uploadStatus?.status === "failed" && uploadSetId ? (
+              <Button
+                onClick={() => {
+                  void handleRetry(uploadSetId)
+                }}
+              >
+                Retry import
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>

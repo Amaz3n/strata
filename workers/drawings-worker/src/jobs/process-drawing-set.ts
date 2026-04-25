@@ -12,6 +12,7 @@ import { uploadTileObject } from '../storage/tiles';
 const SHEET_NUMBER_MAX_LENGTH = 50;
 const SHEET_TITLE_MAX_LENGTH = 255;
 const PAGE_TEXT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+const TILE_RENDER_DPI = Number.parseInt(process.env.DRAWINGS_TILE_RENDER_DPI ?? '96', 10);
 
 const DISCIPLINE_CODES = new Set([
   'A',
@@ -62,6 +63,8 @@ type VisionSheetMetadata = {
   notes?: string[];
 };
 
+type VisionProvider = 'google' | 'openai';
+
 export async function processDrawingSet(supabase: SupabaseClient, job: Job): Promise<void> {
   const { drawingSetId, projectId, sourceFileId } = job.payload;
 
@@ -105,6 +108,13 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
   const tempPdfPath = join(tempDir, `pdf-${drawingSetId}-${Date.now()}.pdf`);
 
   try {
+    await updateSetStage(supabase, drawingSetId, {
+      status: 'processing',
+      processing_stage: 'downloading_pdf',
+      processed_pages: 0,
+      error_message: null,
+    });
+
     const pdfBytes = await downloadPdfObject({
       supabase,
       path: fileRecord.storage_path,
@@ -113,9 +123,16 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
     console.log(`Downloaded PDF: ${pdfBytes.length} bytes`);
 
     // Get page count using MuPDF
+    await updateSetStage(supabase, drawingSetId, {
+      processing_stage: 'counting_pages',
+    });
     const pageCount = getPdfPageCount(tempPdfPath);
     console.log(`PDF has ${pageCount} pages`);
 
+    await updateSetStage(supabase, drawingSetId, {
+      processing_stage: 'extracting_text',
+      total_pages: pageCount,
+    });
     const pageTexts = extractPdfTextByPage(tempPdfPath, pageCount);
     const pagesWithText = pageTexts.reduce((count, text) => (text.trim() ? count + 1 : count), 0);
     console.log(`Extracted searchable text for ${pagesWithText}/${pageCount} pages`);
@@ -147,6 +164,9 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
 
     // Extract all pages as PNGs using MuPDF (do this once for all pages)
     console.log(`Extracting and uploading ${pageCount} pages...`);
+    await updateSetStage(supabase, drawingSetId, {
+      processing_stage: 'rendering_pages',
+    });
     const tempPngDir = join(tempDir, `pages-${drawingSetId}`);
     await fs.mkdir(tempPngDir, { recursive: true });
 
@@ -160,7 +180,7 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
       try {
         // Extract single page with MuPDF (1-based indexing)
         execSync(
-          `mutool draw -r 100 -o "${localPngPath}" "${tempPdfPath}" ${pageIndex + 1}`,
+          `mutool draw -r ${Number.isFinite(TILE_RENDER_DPI) && TILE_RENDER_DPI > 0 ? TILE_RENDER_DPI : 96} -o "${localPngPath}" "${tempPdfPath}" ${pageIndex + 1}`,
           {
             timeout: 120000, // 2 minutes per page
             encoding: 'utf8',
@@ -194,6 +214,9 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
     console.log(`Processed ${tempPngPaths.length}/${pageCount} pages`);
 
     // Create drawing sheets and versions
+    await updateSetStage(supabase, drawingSetId, {
+      processing_stage: 'detecting_sheets',
+    });
     const sheetsCreated = [];
     const usedSheetNumbers = new Set<string>();
     for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
@@ -223,6 +246,11 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
       );
 
       // Create sheet record
+      if (pageIndex === 0) {
+        await updateSetStage(supabase, drawingSetId, {
+          processing_stage: 'creating_sheets',
+        });
+      }
       const { data: sheet, error: sheetError } = await supabase
         .from('drawing_sheets')
         .insert({
@@ -306,6 +334,7 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
         status: 'processing', // Still processing tiles
         total_pages: pageCount,
         processed_pages: 0, // Will be updated when tiles complete
+        processing_stage: 'generating_tiles',
       })
       .eq('id', drawingSetId);
 
@@ -335,10 +364,34 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
   }
 }
 
+async function updateSetStage(
+  supabase: SupabaseClient,
+  drawingSetId: string,
+  updates: {
+    status?: 'processing' | 'ready' | 'failed';
+    total_pages?: number | null;
+    processed_pages?: number;
+    processing_stage?: string | null;
+    error_message?: string | null;
+  }
+) {
+  const payload: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.total_pages !== undefined) payload.total_pages = updates.total_pages;
+  if (updates.processed_pages !== undefined) payload.processed_pages = updates.processed_pages;
+  if (updates.processing_stage !== undefined) payload.processing_stage = updates.processing_stage;
+  if (updates.error_message !== undefined) payload.error_message = updates.error_message;
+
+  await supabase.from('drawing_sets').update(payload).eq('id', drawingSetId);
+}
+
 function shouldUseVisionFallback(detected: DetectedSheetMetadata, pageText: string): boolean {
-  if (!process.env.OPENAI_API_KEY) return false;
+  if (!getVisionApiKey()) return false;
   if (!pageText.trim()) return true;
-  return detected.method === 'fallback' || detected.confidence === 'low';
+  return detected.method !== 'label' || detected.confidence === 'low';
 }
 
 async function detectSheetMetadataWithVision(input: {
@@ -349,15 +402,15 @@ async function detectSheetMetadataWithVision(input: {
   initial: DetectedSheetMetadata;
 }): Promise<VisionSheetMetadata | null> {
   const { localPngPath, pageText, setTitle, pageNumber, initial } = input;
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getVisionApiKey();
   if (!apiKey || !localPngPath) return null;
 
   try {
     const images = await buildVisionInputs(localPngPath);
     if (images.length === 0) return null;
 
-    const baseUrl = (process.env.OPENAI_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-    const model = process.env.OPENAI_DRAWINGS_VISION_MODEL || process.env.OPENAI_VISION_MODEL || 'gpt-4.1-mini';
+    const provider = getVisionProvider();
+    const model = getVisionModel(provider);
     const prompt = [
       'You are extracting metadata from one construction drawing page.',
       `Project set title: ${setTitle}`,
@@ -371,6 +424,103 @@ async function detectSheetMetadataWithVision(input: {
       'Prefer title block values like E1.1, A-101, S2.0, etc.',
     ].join('\n');
 
+    const rawText = await generateVisionResponseText({
+      provider,
+      apiKey,
+      model,
+      prompt,
+      images,
+      pageNumber,
+    });
+    if (!rawText) return null;
+
+    const parsed = parseVisionJson(rawText);
+    if (!parsed) return null;
+
+    const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? '');
+    const discipline =
+      typeof parsed.discipline === 'string' && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
+        ? parsed.discipline.toUpperCase()
+        : sheetNumber
+          ? detectDiscipline(sheetNumber)
+          : null;
+    const sheetTitle = sanitizeTitle(parsed.sheet_title ?? '');
+    const confidence = normalizeConfidence(parsed.confidence);
+    const notes = Array.isArray(parsed.notes)
+      ? parsed.notes.filter((note: unknown): note is string => typeof note === 'string').slice(0, 6)
+      : [];
+
+    return {
+      sheetNumber,
+      sheetTitle,
+      discipline,
+      confidence,
+      notes,
+    };
+  } catch (error) {
+    console.warn(`[Vision] Failed for page ${pageNumber}:`, error);
+    return null;
+  }
+}
+
+function getVisionProvider(): VisionProvider {
+  const configured = (
+    process.env.DRAWINGS_VISION_PROVIDER ||
+    process.env.AI_DRAWINGS_VISION_PROVIDER ||
+    process.env.AI_VISION_PROVIDER ||
+    'google'
+  )
+    .trim()
+    .toLowerCase();
+
+  return configured === 'openai' ? 'openai' : 'google';
+}
+
+function getVisionApiKey(): string | null {
+  const provider = getVisionProvider();
+  if (provider === 'openai') {
+    return process.env.OPENAI_API_KEY?.trim() || null;
+  }
+  return (
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
+    process.env.GEMINI_API_KEY?.trim() ||
+    null
+  );
+}
+
+function getVisionModel(provider: VisionProvider): string {
+  if (provider === 'openai') {
+    return (
+      process.env.DRAWINGS_VISION_MODEL ||
+      process.env.AI_DRAWINGS_VISION_MODEL ||
+      process.env.OPENAI_DRAWINGS_VISION_MODEL ||
+      process.env.OPENAI_VISION_MODEL ||
+      'gpt-4.1-mini'
+    );
+  }
+
+  return (
+    process.env.DRAWINGS_VISION_MODEL ||
+    process.env.AI_DRAWINGS_VISION_MODEL ||
+    process.env.GOOGLE_DRAWINGS_VISION_MODEL ||
+    process.env.GEMINI_VISION_MODEL ||
+    process.env.GOOGLE_VISION_MODEL ||
+    'gemini-2.5-flash-lite'
+  );
+}
+
+async function generateVisionResponseText(input: {
+  provider: VisionProvider;
+  apiKey: string;
+  model: string;
+  prompt: string;
+  images: Array<{ dataUrl: string }>;
+  pageNumber: number;
+}): Promise<string | null> {
+  const { provider, apiKey, model, prompt, images, pageNumber } = input;
+
+  if (provider === 'openai') {
+    const baseUrl = (process.env.OPENAI_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
     const response = await fetch(`${baseUrl}/responses`, {
       method: 'POST',
       headers: {
@@ -402,36 +552,56 @@ async function detectSheetMetadataWithVision(input: {
     }
 
     const payload = await response.json() as any;
-    const rawText = extractResponseText(payload);
-    if (!rawText) return null;
+    return extractOpenAiResponseText(payload);
+  }
 
-    const parsed = parseVisionJson(rawText);
-    if (!parsed) return null;
+  const normalizedModel = model.startsWith('models/') ? model : `models/${model}`;
+  const endpoint =
+    process.env.GEMINI_BASE_URL?.replace(/\/$/, '') ||
+    'https://generativelanguage.googleapis.com/v1beta';
 
-    const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? '');
-    const discipline =
-      typeof parsed.discipline === 'string' && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
-        ? parsed.discipline.toUpperCase()
-        : sheetNumber
-          ? detectDiscipline(sheetNumber)
-          : null;
-    const sheetTitle = sanitizeTitle(parsed.sheet_title ?? '');
-    const confidence = normalizeConfidence(parsed.confidence);
-    const notes = Array.isArray(parsed.notes)
-      ? parsed.notes.filter((note: unknown): note is string => typeof note === 'string').slice(0, 6)
-      : [];
+  const response = await fetch(
+    `${endpoint}/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              ...images.map((image) => {
+                const [, mimeType = 'image/webp', data = ''] =
+                  image.dataUrl.match(/^data:(.*?);base64,(.*)$/) || [];
+                return {
+                  inline_data: {
+                    mime_type: mimeType,
+                    data,
+                  },
+                };
+              }),
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+        },
+      }),
+    }
+  );
 
-    return {
-      sheetNumber,
-      sheetTitle,
-      discipline,
-      confidence,
-      notes,
-    };
-  } catch (error) {
-    console.warn(`[Vision] Failed for page ${pageNumber}:`, error);
+  if (!response.ok) {
+    const body = await response.text();
+    console.warn(`[Vision] Gemini request failed for page ${pageNumber}: ${response.status} ${body}`);
     return null;
   }
+
+  const payload = await response.json() as any;
+  return extractGeminiResponseText(payload);
 }
 
 async function buildVisionInputs(localPngPath: string): Promise<Array<{ dataUrl: string }>> {
@@ -472,7 +642,7 @@ async function buildVisionInputs(localPngPath: string): Promise<Array<{ dataUrl:
   }));
 }
 
-function extractResponseText(payload: any): string {
+function extractOpenAiResponseText(payload: any): string {
   if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
     return payload.output_text.trim();
   }
@@ -487,6 +657,22 @@ function extractResponseText(payload: any): string {
       }
     }
   }
+  return texts.join('\n').trim();
+}
+
+function extractGeminiResponseText(payload: any): string {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  const texts: string[] = [];
+
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    for (const part of parts) {
+      if (typeof part?.text === 'string' && part.text.trim()) {
+        texts.push(part.text.trim());
+      }
+    }
+  }
+
   return texts.join('\n').trim();
 }
 
@@ -517,7 +703,7 @@ function mergeDetectedSheetMetadata(
   if (!vision) return detected;
 
   const useVisionSheetNumber = Boolean(vision.sheetNumber) && (
-    detected.method === 'fallback' ||
+    detected.method !== 'label' ||
     detected.confidence === 'low' ||
     detected.sheetNumber === `${setTitle} - Page ${pageNumber}`
   );

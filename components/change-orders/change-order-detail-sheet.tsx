@@ -162,7 +162,7 @@ export function ChangeOrderDetailSheet({
         <SheetContent
           side="right"
           mobileFullscreen
-          className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation [&>button]:hidden"
+          className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation [&>button]:hidden"
           style={{
             animationDuration: "150ms",
             transitionDuration: "150ms",
