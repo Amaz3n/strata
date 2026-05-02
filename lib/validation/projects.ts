@@ -12,6 +12,8 @@ export const projectInputSchema = z.object({
   property_type: z.enum(["residential", "commercial"]).optional(),
   project_type: z.enum(["new_construction", "remodel", "addition", "renovation", "repair"]).optional(),
   total_value: z.number().optional(),
+  retainage_percent: z.number().min(0).max(100).optional(),
+  total_contract_value_cents: z.number().int().nonnegative().optional().nullable(),
 })
 
 export const projectUpdateSchema = projectInputSchema.partial()

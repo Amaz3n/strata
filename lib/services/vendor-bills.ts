@@ -1,3 +1,5 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
@@ -46,11 +48,33 @@ export interface VendorBillSummary {
   lien_waiver_status?: string
   lien_waiver_received_at?: string
   over_budget?: boolean
+  actual_cost_code_id?: string
+  actual_cost_code_code?: string
+  actual_cost_code_name?: string
+  actual_lines?: VendorBillActualLine[]
 }
 
-function mapVendorBill(row: any): VendorBillSummary {
+export interface VendorBillActualLine {
+  id?: string
+  cost_code_id: string
+  cost_code_code?: string
+  cost_code_name?: string
+  description?: string
+  amount_cents: number
+}
+
+export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
   const metadata = row?.metadata ?? {}
   const company = row?.commitment?.company ?? row?.company ?? {}
+  const actualLines = (billLines ?? []).map((line) => ({
+    id: line.id ?? undefined,
+    cost_code_id: line.cost_code_id,
+    cost_code_code: line.cost_code?.code ?? undefined,
+    cost_code_name: line.cost_code?.name ?? undefined,
+    description: line.description ?? undefined,
+    amount_cents: (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
+  }))
+  const firstActualLine = actualLines[0]
   const paidCents =
     typeof row.paid_cents === "number"
       ? row.paid_cents
@@ -88,6 +112,64 @@ function mapVendorBill(row: any): VendorBillSummary {
     lien_waiver_status: row.lien_waiver_status ?? undefined,
     lien_waiver_received_at: row.lien_waiver_received_at ?? undefined,
     over_budget: typeof metadata.over_budget === "boolean" ? metadata.over_budget : undefined,
+    actual_cost_code_id: firstActualLine?.cost_code_id ?? undefined,
+    actual_cost_code_code: firstActualLine?.cost_code_code ?? undefined,
+    actual_cost_code_name: firstActualLine?.cost_code_name ?? undefined,
+    actual_lines: actualLines,
+  }
+}
+
+async function replaceBillLineCoding(
+  supabase: SupabaseClient,
+  {
+    orgId,
+    billId,
+    lines,
+  }: {
+    orgId: string
+    billId: string
+    lines: Array<{ cost_code_id: string; description: string; amount_cents: number }>
+  },
+) {
+  if (lines.length === 0) return
+
+  const costCodeIds = Array.from(new Set(lines.map((line) => line.cost_code_id)))
+  const { data: costCodes, error: costCodeError } = await supabase
+    .from("cost_codes")
+    .select("id")
+    .eq("org_id", orgId)
+    .in("id", costCodeIds)
+
+  if (costCodeError || (costCodes ?? []).length !== costCodeIds.length) {
+    throw new Error("Cost code not found")
+  }
+
+  const { error: deleteError } = await supabase
+    .from("bill_lines")
+    .delete()
+    .eq("org_id", orgId)
+    .eq("bill_id", billId)
+
+  if (deleteError) {
+    throw new Error(`Failed to update bill coding: ${deleteError.message}`)
+  }
+
+  const rows = lines.map((line, index) => ({
+    org_id: orgId,
+    bill_id: billId,
+    cost_code_id: line.cost_code_id,
+    description: line.description,
+    quantity: 1,
+    unit: "LS",
+    unit_cost_cents: line.amount_cents,
+    sort_order: index,
+    metadata: { source: "ap_review" },
+  }))
+
+  const { error: insertError } = await supabase.from("bill_lines").insert(rows)
+
+  if (insertError) {
+    throw new Error(`Failed to update bill coding: ${insertError.message}`)
   }
 }
 
@@ -167,7 +249,31 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     throw new Error(`Failed to list vendor bills: ${error.message}`)
   }
 
-  return (data ?? []).map(mapVendorBill)
+  const bills = data ?? []
+  const billIds = bills.map((bill: any) => bill.id).filter(Boolean)
+
+  const { data: billLines, error: billLinesError } =
+    billIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("bill_lines")
+          .select("id, bill_id, cost_code_id, description, unit_cost_cents, quantity, cost_code:cost_codes(id, code, name)")
+          .eq("org_id", resolvedOrgId)
+          .in("bill_id", billIds)
+          .order("sort_order", { ascending: true })
+
+  if (billLinesError) {
+    throw new Error(`Failed to load bill coding: ${billLinesError.message}`)
+  }
+
+  const linesByBillId = new Map<string, any[]>()
+  for (const line of billLines ?? []) {
+    const current = linesByBillId.get(line.bill_id) ?? []
+    current.push(line)
+    linesByBillId.set(line.bill_id, current)
+  }
+
+  return bills.map((bill: any) => mapVendorBill(bill, linesByBillId.get(bill.id)))
 }
 
 export async function updateVendorBillStatus({
@@ -184,7 +290,7 @@ export async function updateVendorBillStatus({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, commitment_id, status, total_cents, currency, metadata, approved_at, paid_at, paid_cents, lien_waiver_status")
+    .select("id, org_id, project_id, commitment_id, bill_number, status, total_cents, currency, metadata, approved_at, paid_at, paid_cents, lien_waiver_status")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -275,6 +381,36 @@ export async function updateVendorBillStatus({
   if (parsed.status === "approved" && !existing.approved_at) {
     updateData.approved_at = new Date().toISOString()
     updateData.approved_by = userId
+  }
+
+  const actualLines =
+    parsed.actual_lines && parsed.actual_lines.length > 0
+      ? parsed.actual_lines.map((line) => ({
+          cost_code_id: line.cost_code_id,
+          description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
+          amount_cents: line.amount_cents,
+        }))
+      : parsed.cost_code_id
+        ? [
+            {
+              cost_code_id: parsed.cost_code_id,
+              description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
+              amount_cents: totalCents,
+            },
+          ]
+        : []
+
+  if (actualLines.length > 0) {
+    const actualTotal = actualLines.reduce((sum, line) => sum + line.amount_cents, 0)
+    if (actualTotal !== totalCents) {
+      throw new Error("Bill coding must equal the bill amount")
+    }
+
+    await replaceBillLineCoding(supabase, {
+      orgId: resolvedOrgId,
+      billId,
+      lines: actualLines,
+    })
   }
 
   const shouldProcessPayment = parsed.status === "paid" || (parsed.status === "partial" && parsed.payment_amount_cents != null)
@@ -375,6 +511,8 @@ export async function updateVendorBillStatus({
     entityId: billId,
     payload: {
       status: finalStatus,
+      cost_code_id: parsed.cost_code_id,
+      actual_lines: parsed.actual_lines,
       payment_reference: parsed.payment_reference,
       payment_method: parsed.payment_method,
       payment_amount_cents: parsed.payment_amount_cents,

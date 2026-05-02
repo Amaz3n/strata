@@ -109,8 +109,10 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
         const created = await createChangeOrderAction(values)
         setItems((prev) => [created, ...prev])
         setSheetOpen(false)
-        toast.success(published ? "Sent to client" : "Draft saved", {
-          description: published ? "Client can now view and approve." : "You can publish when ready.",
+        toast.success(published ? "Worksheet published" : "Draft saved", {
+          description: published
+            ? "Client can review the worksheet. Prepare the execution document to collect approval."
+            : "You can publish the worksheet or prepare the execution document when ready.",
         })
       } catch (error: any) {
         console.error(error)
@@ -344,7 +346,7 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
                               </DropdownMenuItem>
                               {!changeOrder.client_visible && (
                                 <DropdownMenuItem onClick={() => handlePublish(changeOrder.id)} disabled={isPending}>
-                                  Publish to client
+                                  Publish worksheet
                                 </DropdownMenuItem>
                               )}
                             </DropdownMenuContent>

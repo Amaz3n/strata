@@ -10,11 +10,27 @@ export const orgRoleKeySchema = z
 
 export const inviteMemberSchema = z.object({
   email: z.string().email("A valid email is required"),
-  role: orgRoleKeySchema.default("org_project_lead"),
+  role: orgRoleKeySchema.default("org_user"),
+  permissionOverrides: z
+    .array(
+      z.object({
+        permission_key: z.string().trim().min(1),
+        effect: z.enum(["grant", "deny"]),
+      }),
+    )
+    .default([]),
 })
 
 export const updateMemberRoleSchema = z.object({
   role: orgRoleKeySchema,
+  permissionOverrides: z
+    .array(
+      z.object({
+        permission_key: z.string().trim().min(1),
+        effect: z.enum(["grant", "deny"]),
+      }),
+    )
+    .optional(),
 })
 
 export const updateMemberProfileSchema = z.object({
@@ -46,7 +62,6 @@ export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>
 export type UpdateMemberProfileInput = z.infer<typeof updateMemberProfileSchema>
 export type MemberStatusInput = z.infer<typeof memberStatusSchema>
 export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>
-
 
 
 

@@ -106,6 +106,7 @@ export function FinancialsTabs({
   const [invoiceCostCodes, setInvoiceCostCodes] = useState<CostCode[]>([])
 
   const [vendorBills, setVendorBills] = useState<VendorBillSummary[]>([])
+  const [payableCostCodes, setPayableCostCodes] = useState<CostCode[]>([])
   const [complianceRules, setComplianceRules] = useState<ComplianceRules>({
     require_lien_waiver: false,
     block_payment_on_missing_docs: false,
@@ -182,6 +183,7 @@ export function FinancialsTabs({
       fetchPayablesTabDataAction(projectId)
         .then((data) => {
           setVendorBills(data.vendorBills)
+          setPayableCostCodes(data.costCodes)
           setComplianceRules(data.complianceRules)
           setComplianceStatusByCompanyId(data.complianceStatusByCompanyId ?? {})
           setHasFetchedPayables(true)
@@ -194,6 +196,16 @@ export function FinancialsTabs({
         })
     }
   }, [activeTab, hasFetchedPayables, loadingPayables, projectId])
+
+  useEffect(() => {
+    const invalidateFinancialsData = () => {
+      setHasFetchedBudget(false)
+      setHasFetchedPayables(false)
+    }
+
+    window.addEventListener("arc:financials-data-invalidated", invalidateFinancialsData)
+    return () => window.removeEventListener("arc:financials-data-invalidated", invalidateFinancialsData)
+  }, [])
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
@@ -289,6 +301,7 @@ export function FinancialsTabs({
           <PayablesTab
             projectId={projectId}
             vendorBills={vendorBills}
+            costCodes={payableCostCodes}
             complianceRules={complianceRules}
             complianceStatusByCompanyId={complianceStatusByCompanyId}
           />

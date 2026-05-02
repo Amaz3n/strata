@@ -54,6 +54,7 @@ export class AuthorizationError extends Error {
 type PermissionRow = { role?: { permissions?: { permission_key: string }[] } }
 
 type ProjectPermissionRow = PermissionRow & { org_id?: string }
+type MembershipOverrideRow = { permission_key: string; effect: "grant" | "deny" }
 
 function normalizePermissionRow(row?: any) {
   const role = Array.isArray(row?.role) ? row.role[0] : row?.role
@@ -100,7 +101,7 @@ async function fetchOrgPermissions({
 }) {
   const { data, error } = await supabase
     .from("memberships")
-    .select("role:roles!inner(permissions:role_permissions(permission_key))")
+    .select("id, role:roles!inner(permissions:role_permissions(permission_key))")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .eq("status", "active")
@@ -109,10 +110,47 @@ async function fetchOrgPermissions({
     throw new Error(`Unable to load org permissions: ${error.message}`)
   }
 
-  const permissions = unique(((data ?? []) as PermissionRow[]).flatMap((row) => normalizePermissionRow(row)))
+  const rows = (data ?? []) as (PermissionRow & { id?: string })[]
+  const permissions = unique(rows.flatMap((row) => normalizePermissionRow(row)))
+  const membershipIds = rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+  const overrides = await fetchMembershipPermissionOverrides({ supabase, membershipIds })
+
   return {
     permissions,
-    hasMembership: (data ?? []).length > 0,
+    grants: overrides.grants,
+    denies: overrides.denies,
+    hasMembership: rows.length > 0,
+  }
+}
+
+async function fetchMembershipPermissionOverrides({
+  supabase,
+  membershipIds,
+}: {
+  supabase: SupabaseClient
+  membershipIds: string[]
+}) {
+  if (membershipIds.length === 0) {
+    return { grants: [] as string[], denies: [] as string[] }
+  }
+
+  const { data, error } = await supabase
+    .from("membership_permission_overrides")
+    .select("permission_key, effect")
+    .in("membership_id", membershipIds)
+
+  if (error) {
+    const message = String(error.message ?? "")
+    if (message.includes("membership_permission_overrides")) {
+      return { grants: [] as string[], denies: [] as string[] }
+    }
+    throw new Error(`Unable to load permission overrides: ${error.message}`)
+  }
+
+  const rows = (data ?? []) as MembershipOverrideRow[]
+  return {
+    grants: unique(rows.filter((row) => row.effect === "grant").map((row) => row.permission_key)),
+    denies: unique(rows.filter((row) => row.effect === "deny").map((row) => row.permission_key)),
   }
 }
 
@@ -145,6 +183,14 @@ async function fetchProjectPermissions({
     hasMembership: rows.length > 0,
     orgId,
   }
+}
+
+async function fetchProjectOrgId({ supabase, projectId }: { supabase: SupabaseClient; projectId: string }) {
+  const { data, error } = await supabase.from("projects").select("org_id").eq("id", projectId).maybeSingle()
+  if (error) {
+    throw new Error(`Unable to resolve project organization: ${error.message}`)
+  }
+  return data?.org_id as string | undefined
 }
 
 async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
@@ -249,6 +295,8 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   const supabase = catalogSupabase
   const scopesEvaluated: string[] = []
   const permissionSet: string[] = []
+  const deniedPermissions: string[] = []
+  const orgPermissionSet: string[] = []
   let resolvedOrgId = input.orgId
   let hasOrgMembership = false
   let hasProjectMembership = false
@@ -262,7 +310,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
 
     scopesEvaluated.push("project")
     hasProjectMembership = projectResult.hasMembership
-    resolvedOrgId = resolvedOrgId ?? projectResult.orgId
+    resolvedOrgId = resolvedOrgId ?? projectResult.orgId ?? (await fetchProjectOrgId({ supabase, projectId: input.projectId }))
     permissionSet.push(...projectResult.permissions)
   }
 
@@ -274,7 +322,10 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     })
     scopesEvaluated.push("org")
     hasOrgMembership = orgResult.hasMembership
+    orgPermissionSet.push(...orgResult.permissions, ...orgResult.grants)
     permissionSet.push(...orgResult.permissions)
+    permissionSet.push(...orgResult.grants)
+    deniedPermissions.push(...orgResult.denies)
   }
 
   const platformResult = await fetchPlatformPermissions({ supabase, userId: input.userId })
@@ -283,8 +334,18 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     permissionSet.push(...platformResult.permissions)
   }
 
-  const permissions = unique(permissionSet)
-  const allowed = permissions.includes(input.permission) || permissions.includes("*")
+  const denied = unique(deniedPermissions)
+  const permissions = unique(permissionSet).filter((permission) => !denied.includes(permission))
+  const hasAllProjectAccess =
+    orgPermissionSet.includes("*") ||
+    orgPermissionSet.includes("org.admin") ||
+    orgPermissionSet.includes("project.read") ||
+    orgPermissionSet.includes("project.manage")
+  const blockedByProjectScope = Boolean(input.projectId && !hasProjectMembership && !hasAllProjectAccess)
+  const allowed =
+    !blockedByProjectScope &&
+    !denied.includes(input.permission) &&
+    (permissions.includes(input.permission) || permissions.includes("*"))
 
   let reasonCode: AuthorizationReasonCode = allowed ? "allow_permission" : "deny_missing_permission"
 

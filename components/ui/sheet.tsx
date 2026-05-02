@@ -90,6 +90,33 @@ function SheetContent({
   )
 }
 
+function SheetInlineContent({
+  className,
+  children,
+  side = 'right',
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Content> & {
+  side?: 'right' | 'left'
+}) {
+  return (
+    <SheetPrimitive.Content
+      data-slot="sheet-inline-content"
+      className={cn(
+        'bg-background data-[state=open]:animate-in data-[state=closed]:animate-out flex h-full min-h-0 flex-col shadow-lg outline-hidden transition ease-in-out data-[state=closed]:duration-300 data-[state=open]:duration-500',
+        side === 'right' &&
+          'data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right border-l',
+        side === 'left' &&
+          'data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left border-r',
+        className,
+      )}
+      {...props}
+    >
+      <SheetPrimitive.Title className="sr-only">Sheet</SheetPrimitive.Title>
+      {children}
+    </SheetPrimitive.Content>
+  )
+}
+
 function SheetHeader({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
@@ -141,6 +168,7 @@ export {
   SheetTrigger,
   SheetClose,
   SheetContent,
+  SheetInlineContent,
   SheetHeader,
   SheetFooter,
   SheetTitle,

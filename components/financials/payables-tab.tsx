@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
-import type { ComplianceRules, ComplianceStatusSummary } from "@/lib/types"
+import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ProjectPayablesClient } from "@/components/payables/project-payables-client"
 import { Card, CardContent } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 interface PayablesTabProps {
   projectId: string
   vendorBills: VendorBillSummary[]
+  costCodes: CostCode[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
 }
@@ -16,6 +17,7 @@ interface PayablesTabProps {
 export function PayablesTab({
   projectId,
   vendorBills,
+  costCodes,
   complianceRules,
   complianceStatusByCompanyId,
 }: PayablesTabProps) {
@@ -41,9 +43,9 @@ export function PayablesTab({
   }, [vendorBills])
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 h-full flex flex-col">
       {/* Summary Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 shrink-0">
         <SummaryCard label="Total Payables" value={formatCurrency(stats.total)} subtext={`${stats.billCount} bills`} />
         <SummaryCard label="Paid" value={formatCurrency(stats.paid)} variant="success" />
         <SummaryCard
@@ -56,12 +58,15 @@ export function PayablesTab({
       </div>
 
       {/* Main Payables Table */}
-      <ProjectPayablesClient
-        projectId={projectId}
-        vendorBills={vendorBills}
-        complianceRules={complianceRules}
-        complianceStatusByCompanyId={complianceStatusByCompanyId}
-      />
+      <div className="flex-1 min-h-[500px]">
+        <ProjectPayablesClient
+          projectId={projectId}
+          vendorBills={vendorBills}
+          costCodes={costCodes}
+          complianceRules={complianceRules}
+          complianceStatusByCompanyId={complianceStatusByCompanyId}
+        />
+      </div>
     </div>
   )
 }

@@ -12,6 +12,7 @@ export type BidSubmissionStatus = z.infer<typeof bidSubmissionStatusEnum>
 export const createBidPackageInputSchema = z.object({
   project_id: z.string().uuid(),
   title: z.string().min(1, "Title is required"),
+  cost_code_id: z.string().uuid().optional().nullable(),
   trade: z.string().optional().nullable(),
   scope: z.string().optional().nullable(),
   instructions: z.string().optional().nullable(),
@@ -21,6 +22,7 @@ export const createBidPackageInputSchema = z.object({
 
 export const updateBidPackageInputSchema = z.object({
   title: z.string().min(1).optional(),
+  cost_code_id: z.string().uuid().optional().nullable(),
   trade: z.string().optional().nullable(),
   scope: z.string().optional().nullable(),
   instructions: z.string().optional().nullable(),

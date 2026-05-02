@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { randomBytes } from "node:crypto"
 
-import type { TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
+import type { MemberPermissionOverride, PermissionOption, TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
 import { inviteMemberSchema, memberStatusSchema, updateMemberRoleSchema, type InviteMemberInput } from "@/lib/validation/team"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -33,14 +33,56 @@ function normalizeRoleLabel(label: string | null | undefined, roleKey: string) {
 
 function defaultRoleDescription(roleKey: string) {
   const descriptions: Record<string, string> = {
-    org_owner: "Full account control, including organization settings, billing, and team role management.",
-    org_office_admin: "Administrative control across projects and teams, including member management and business operations.",
-    org_project_lead: "Execution-focused access for project delivery, field workflows, and day-to-day coordination.",
-    org_viewer: "View-only access across shared data with no write or approval permissions.",
+    org_admin: "Full company access, including settings, billing, team, all projects, approvals, and financial workflows.",
+    org_user: "Internal team member. Access is scoped by project assignments and optional permission overrides.",
   }
 
   return descriptions[roleKey]
 }
+
+export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
+  { key: "project.create", label: "Create projects", category: "Project Access" },
+  { key: "project.archive", label: "Archive projects", category: "Project Access" },
+  { key: "project.settings.update", label: "Manage project settings", category: "Project Access" },
+  { key: "docs.share", label: "Share documents", category: "Documents & Sharing" },
+  { key: "docs.delete", label: "Delete documents", category: "Documents & Sharing" },
+  { key: "portal.access.manage", label: "Manage client/sub access", category: "Documents & Sharing" },
+  { key: "drawing.upload", label: "Upload drawings", category: "Field Operations" },
+  { key: "schedule.publish", label: "Publish schedule", category: "Field Operations" },
+  { key: "daily_log.approve", label: "Approve daily logs", category: "Field Operations" },
+  { key: "rfi.close", label: "Close RFIs", category: "Field Operations" },
+  { key: "submittal.review", label: "Review submittals", category: "Field Operations" },
+  { key: "submittal.approve", label: "Approve submittals", category: "Field Operations" },
+  { key: "punch.close", label: "Close punch items", category: "Field Operations" },
+  { key: "budget.read", label: "View budgets", category: "Financials" },
+  { key: "budget.write", label: "Edit budgets", category: "Financials" },
+  { key: "commitment.read", label: "View commitments", category: "Financials" },
+  { key: "commitment.write", label: "Manage commitments", category: "Financials" },
+  { key: "commitment.approve", label: "Approve commitments", category: "Financials" },
+  { key: "change_order.approve", label: "Approve change orders", category: "Financials" },
+  { key: "invoice.read", label: "View invoices", category: "Financials" },
+  { key: "invoice.write", label: "Create/edit invoices", category: "Financials" },
+  { key: "invoice.approve", label: "Approve invoices", category: "Financials" },
+  { key: "invoice.send", label: "Send invoices", category: "Financials" },
+  { key: "bill.read", label: "View bills/payables", category: "Financials" },
+  { key: "bill.write", label: "Create/edit bills", category: "Financials" },
+  { key: "bill.approve", label: "Approve bills", category: "Financials" },
+  { key: "payment.release", label: "Release payments", category: "Financials" },
+  { key: "draw.approve", label: "Approve draws", category: "Financials" },
+  { key: "retainage.manage", label: "Manage retainage", category: "Financials" },
+  { key: "pipeline.read", label: "View pipeline", category: "Business Ops" },
+  { key: "pipeline.write", label: "Manage pipeline", category: "Business Ops" },
+  { key: "directory.write", label: "Manage directory", category: "Business Ops" },
+  { key: "bid.read", label: "View bids", category: "Business Ops" },
+  { key: "bid.write", label: "Manage bids", category: "Business Ops" },
+  { key: "proposal.read", label: "View proposals", category: "Business Ops" },
+  { key: "proposal.write", label: "Manage proposals", category: "Business Ops" },
+  { key: "signature.read", label: "View signatures", category: "Business Ops" },
+  { key: "signature.send", label: "Send signatures", category: "Business Ops" },
+  { key: "report.read", label: "View reports", category: "Business Ops" },
+]
+
+const CUSTOMIZABLE_PERMISSION_KEYS = new Set(TEAM_PERMISSION_OPTIONS.map((option) => option.key))
 
 export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOption[]> {
   const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
@@ -77,7 +119,7 @@ export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOpt
     throw new Error(`Failed to load assignable org roles: ${error.message}`)
   }
 
-  const allowedRoleKeys = new Set(["org_owner", "org_office_admin", "org_project_lead", "org_viewer"])
+  const allowedRoleKeys = new Set(["org_admin", "org_user"])
   const options = (data ?? [])
     .filter((row: any) => typeof row?.key === "string" && allowedRoleKeys.has(row.key))
     .map((row: any) => ({
@@ -94,25 +136,11 @@ export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOpt
 
   return [
     {
-      key: "org_owner",
-      label: "Owner",
-      description: defaultRoleDescription("org_owner"),
+      key: "org_admin",
+      label: "Admin",
+      description: defaultRoleDescription("org_admin"),
     },
-    {
-      key: "org_office_admin",
-      label: "Office Admin",
-      description: defaultRoleDescription("org_office_admin"),
-    },
-    {
-      key: "org_project_lead",
-      label: "Project Lead",
-      description: defaultRoleDescription("org_project_lead"),
-    },
-    {
-      key: "org_viewer",
-      label: "Viewer",
-      description: defaultRoleDescription("org_viewer"),
-    },
+    { key: "org_user", label: "User", description: defaultRoleDescription("org_user") },
   ]
 }
 
@@ -176,6 +204,72 @@ async function mapMfaEnabledByUser(serviceClient: SupabaseClient, userIds: strin
   return output
 }
 
+async function mapPermissionOverrides(serviceClient: SupabaseClient, membershipIds: string[]) {
+  if (membershipIds.length === 0) return {}
+
+  const { data, error } = await serviceClient
+    .from("membership_permission_overrides")
+    .select("membership_id, permission_key, effect")
+    .in("membership_id", membershipIds)
+
+  if (error) {
+    const message = String(error.message ?? "")
+    if (message.includes("membership_permission_overrides")) {
+      return {}
+    }
+    throw new Error(`Failed to load permission overrides: ${error.message}`)
+  }
+
+  return (data ?? []).reduce<Record<string, MemberPermissionOverride[]>>((acc, row: any) => {
+    if (!row.membership_id || !CUSTOMIZABLE_PERMISSION_KEYS.has(row.permission_key)) return acc
+    acc[row.membership_id] = acc[row.membership_id] ?? []
+    acc[row.membership_id].push({ permission_key: row.permission_key, effect: row.effect })
+    return acc
+  }, {})
+}
+
+function normalizePermissionOverrides(input: MemberPermissionOverride[] | undefined) {
+  const byKey = new Map<string, MemberPermissionOverride>()
+  for (const override of input ?? []) {
+    if (!CUSTOMIZABLE_PERMISSION_KEYS.has(override.permission_key)) continue
+    if (override.effect !== "grant" && override.effect !== "deny") continue
+    byKey.set(override.permission_key, override)
+  }
+  return Array.from(byKey.values())
+}
+
+async function replacePermissionOverrides(
+  client: SupabaseClient,
+  membershipId: string,
+  overrides: MemberPermissionOverride[] | undefined,
+) {
+  const normalized = normalizePermissionOverrides(overrides)
+  const { error: deleteError } = await client
+    .from("membership_permission_overrides")
+    .delete()
+    .eq("membership_id", membershipId)
+
+  if (deleteError) {
+    const message = String(deleteError.message ?? "")
+    if (!message.includes("membership_permission_overrides")) {
+      throw new Error(`Failed to clear permission overrides: ${deleteError.message}`)
+    }
+  }
+
+  if (normalized.length === 0) return []
+
+  const { data, error } = await client
+    .from("membership_permission_overrides")
+    .insert(normalized.map((override) => ({ membership_id: membershipId, ...override })))
+    .select("permission_key, effect")
+
+  if (error) {
+    throw new Error(`Failed to save permission overrides: ${error.message}`)
+  }
+
+  return (data ?? []) as MemberPermissionOverride[]
+}
+
 function generateTempPassword() {
   return randomBytes(12).toString("base64url").slice(0, 16)
 }
@@ -216,7 +310,12 @@ async function createUserForInvite(client: SupabaseClient, email: string) {
   return { userId: data?.user?.id, isExisting: false }
 }
 
-function mapTeamMember(row: any, projectCounts: Record<string, number>, mfaEnabledByUser: Record<string, boolean>): TeamMember {
+function mapTeamMember(
+  row: any,
+  projectCounts: Record<string, number>,
+  mfaEnabledByUser: Record<string, boolean>,
+  permissionOverridesByMembership: Record<string, MemberPermissionOverride[]> = {},
+): TeamMember {
   const user = row.user || row.users
   const invitedBy = row.invited_by_user || row.invited_by
   const roleKey = row.role?.key ?? "org_project_lead"
@@ -231,6 +330,7 @@ function mapTeamMember(row: any, projectCounts: Record<string, number>, mfaEnabl
     },
     role: roleKey,
     role_label: normalizeRoleLabel((row.role?.label as string | null) ?? null, roleKey),
+    permission_overrides: permissionOverridesByMembership[row.id] ?? [],
     status: row.status ?? "invited",
     mfa_enabled: Boolean(user?.id ? mfaEnabledByUser[user.id] : false),
     project_count: projectCounts[user?.id] ?? 0,
@@ -300,8 +400,10 @@ export async function listTeamMembers(
     })
     .filter((id: string | undefined): id is string => Boolean(id))
   const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, userIds)
+  const membershipIds = (data ?? []).map((row: any) => row.id).filter(Boolean)
+  const permissionOverridesByMembership = await mapPermissionOverrides(serviceClient, membershipIds)
 
-  return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser))
+  return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser, permissionOverridesByMembership))
 }
 
 export async function updateMemberProfile({
@@ -454,6 +556,8 @@ export async function inviteTeamMember({
     throw new Error(`Failed to create membership: ${error?.message}`)
   }
 
+  const savedOverrides = await replacePermissionOverrides(serviceClient, data.id as string, parsed.permissionOverrides)
+
   // Send invite email with our token-based link
   const orgBrand = await getOrgBrand(serviceClient, resolvedOrgId)
   const inviteLink = getInviteLink(inviteToken)
@@ -487,19 +591,21 @@ export async function inviteTeamMember({
   const projectCounts = await mapProjectCounts(serviceClient, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
   const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
-  return mapTeamMember(data, projectCounts, mfaEnabledByUser)
+  return mapTeamMember(data, projectCounts, mfaEnabledByUser, { [data.id as string]: savedOverrides })
 }
 
 export async function updateMemberRole({
   membershipId,
   role,
+  permissionOverrides,
   orgId,
 }: {
   membershipId: string
   role: OrgRole
+  permissionOverrides?: MemberPermissionOverride[]
   orgId?: string
 }) {
-  const parsed = updateMemberRoleSchema.parse({ role })
+  const parsed = updateMemberRoleSchema.parse({ role, permissionOverrides })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
     permission: "org.admin",
@@ -542,6 +648,11 @@ export async function updateMemberRole({
     throw new Error(`Failed to update member role: ${error?.message}`)
   }
 
+  const savedOverrides =
+    parsed.permissionOverrides === undefined
+      ? await mapPermissionOverrides(serviceClient, [data.id as string]).then((map) => map[data.id as string] ?? [])
+      : await replacePermissionOverrides(serviceClient, data.id as string, parsed.permissionOverrides)
+
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -555,7 +666,7 @@ export async function updateMemberRole({
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
   const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
-  return mapTeamMember(data, projectCounts, mfaEnabledByUser)
+  return mapTeamMember(data, projectCounts, mfaEnabledByUser, { [data.id as string]: savedOverrides })
 }
 
 async function updateMemberStatus(membershipId: string, status: "active" | "invited" | "suspended", orgId?: string) {

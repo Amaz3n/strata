@@ -6,7 +6,7 @@ import { projectUpdateSchema } from "@/lib/validation/projects"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { ensureDefaultProjectFolders } from "@/lib/services/files"
 
 function mapProject(row: any): Project {
@@ -32,8 +32,32 @@ function mapProject(row: any): Project {
 }
 
 export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
-  const { supabase, orgId: resolvedOrgId } = context || await requireOrgContext(orgId)
-  return listProjectsWithClient(supabase, resolvedOrgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const canSeeAllProjects =
+    (await hasPermission("project.read", { supabase, orgId: resolvedOrgId, userId })) ||
+    (await hasPermission("project.manage", { supabase, orgId: resolvedOrgId, userId }))
+
+  if (canSeeAllProjects) {
+    return listProjectsWithClient(supabase, resolvedOrgId)
+  }
+
+  const { data, error } = await supabase
+    .from("project_members")
+    .select(`
+      project:projects!inner(id, org_id, name, status, start_date, end_date, location, client_id, property_type, project_type, description, total_value, created_at, updated_at)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("user_id", userId)
+    .eq("status", "active")
+
+  if (error) {
+    throw new Error(`Failed to list assigned projects: ${error.message}`)
+  }
+
+  return (data ?? [])
+    .map((row: any) => (Array.isArray(row.project) ? row.project[0] : row.project))
+    .filter(Boolean)
+    .map(mapProject)
 }
 
 export async function listProjectsWithClient(supabase: SupabaseClient, orgId: string): Promise<Project[]> {
@@ -183,5 +207,30 @@ export async function archiveProject(projectId: string, orgId?: string, context?
     orgId,
     context,
     input: { status: "cancelled" },
+  })
+}
+
+export async function deleteProject(projectId: string, orgId?: string, context?: OrgServiceContext) {
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const { error } = await supabase
+    .from("projects")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("id", projectId)
+
+  if (error) {
+    throw new Error(`Failed to delete project: ${error.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "project",
+    entityId: projectId,
+    before: { id: projectId },
+    after: null,
   })
 }

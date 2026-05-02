@@ -144,11 +144,17 @@ export function ChangeOrderDetailSheet({
 
   const handleApprove = async () => {
     if (!canApprove) return
+    const confirmed = window.confirm(
+      "Record this change order as approved without an Arc executed document? Use this only when the signed change-order document was completed outside Arc.",
+    )
+    if (!confirmed) return
     setApproving(true)
     try {
       const updated = await approveChangeOrderAction(changeOrder.id)
       onUpdate?.(updated)
-      toast.success("Change order approved")
+      toast.success("Offline approval recorded", {
+        description: "Use this only when the executed change-order document lives outside Arc.",
+      })
     } catch (error: any) {
       toast.error("Failed to approve", { description: error?.message ?? "Please try again." })
     } finally {
@@ -356,16 +362,16 @@ export function ChangeOrderDetailSheet({
             <div className="flex gap-2">
               <Button
                 type="button"
-                variant="outline"
+                variant="default"
                 onClick={() => setSignatureWizardOpen(true)}
                 className={canApprove ? "flex-1" : "w-1/2"}
                 disabled={!changeOrder.project_id}
               >
-                Request signature
+                Prepare execution document
               </Button>
               {canApprove && (
-                <Button onClick={handleApprove} disabled={approving} className="flex-1">
-                  {approving ? "Approving..." : "Mark approved"}
+                <Button onClick={handleApprove} disabled={approving} variant="outline" className="flex-1">
+                  {approving ? "Recording..." : "Record offline approval"}
                 </Button>
               )}
               <Button
@@ -391,7 +397,7 @@ export function ChangeOrderDetailSheet({
           document_type: "change_order",
         }}
         sourceLabel="Change order"
-        sheetTitle="Prepare change order for signature"
+        sheetTitle="Prepare change order execution document"
       />
     </>
   )

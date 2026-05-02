@@ -14,7 +14,12 @@ export async function GET(
     supabase.from("projects").select("id, name").eq("org_id", orgId).eq("id", id).maybeSingle(),
     supabase.from("closeout_packages").select("id, status").eq("org_id", orgId).eq("project_id", id).maybeSingle(),
     supabase.from("orgs").select("name").eq("id", orgId).maybeSingle(),
-    supabase.from("closeout_items").select("title, status").eq("org_id", orgId).eq("project_id", id).order("created_at", { ascending: true }),
+    supabase
+      .from("closeout_items")
+      .select("title, status, due_date, responsible_party, notes")
+      .eq("org_id", orgId)
+      .eq("project_id", id)
+      .order("created_at", { ascending: true }),
   ])
 
   if (projectResult.error || !projectResult.data) {
@@ -28,6 +33,9 @@ export async function GET(
     items: (itemsResult.data ?? []).map((item) => ({
       title: item.title,
       status: item.status ?? "missing",
+      dueDate: item.due_date ?? undefined,
+      responsibleParty: item.responsible_party ?? undefined,
+      notes: item.notes ?? undefined,
     })),
   })
 

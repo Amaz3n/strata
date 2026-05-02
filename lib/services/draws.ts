@@ -146,6 +146,26 @@ export async function invoiceDrawSchedule({
     throw new Error("Draw amount must be greater than $0 before invoicing.")
   }
 
+  const allocations = (draw.metadata as any)?.allocations as { cost_code_id: string; amount_cents: number; description?: string }[] | undefined
+  const lines = allocations && allocations.length > 0 
+    ? allocations.map((a) => ({
+        cost_code_id: a.cost_code_id,
+        description: a.description || draw.title,
+        quantity: 1,
+        unit: "draw",
+        unit_cost: a.amount_cents / 100,
+        taxable: false,
+      }))
+    : [
+        {
+          description: draw.title,
+          quantity: 1,
+          unit: "draw",
+          unit_cost: drawAmountCents / 100,
+          taxable: false,
+        },
+      ]
+
   const invoice = await createInvoice({
     input: {
       project_id: draw.project_id,
@@ -158,15 +178,7 @@ export async function invoiceDrawSchedule({
       notes: draw.description ?? undefined,
       client_visible: true,
       tax_rate: 0,
-      lines: [
-        {
-          description: draw.title,
-          quantity: 1,
-          unit: "draw",
-          unit_cost: drawAmountCents / 100,
-          taxable: false,
-        },
-      ],
+      lines,
     },
     orgId: resolvedOrgId,
   })

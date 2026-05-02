@@ -7,6 +7,7 @@ import { authorize, requireAuthorization } from "@/lib/services/authorization"
 import { isPlatformAdminId } from "@/lib/auth/platform"
 
 type PermissionRow = { role?: { permissions?: { permission_key: string }[] } }
+type MembershipPermissionRow = PermissionRow & { id?: string }
 
 interface PermissionContext extends OrgServiceContext {
   supabase: SupabaseClient
@@ -20,19 +21,46 @@ function normalizePermissionRow(row?: any) {
 async function fetchPermissions({ supabase, orgId, userId }: { supabase: SupabaseClient; orgId: string; userId: string }) {
   const { data, error } = await supabase
     .from("memberships")
-    .select("role:roles!inner(permissions:role_permissions(permission_key))")
+    .select("id, role:roles!inner(permissions:role_permissions(permission_key))")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .eq("status", "active")
     .order("created_at", { ascending: true })
-    .limit(1)
 
   if (error) {
     throw new Error(`Unable to load permissions: ${error.message}`)
   }
 
-  const row = Array.isArray(data) ? data[0] : (data as PermissionRow | null)
-  return normalizePermissionRow(row)
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as MembershipPermissionRow[]
+  const rolePermissions = rows.flatMap((row) => normalizePermissionRow(row))
+  const membershipIds = rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+
+  if (membershipIds.length === 0) {
+    return []
+  }
+
+  const { data: overrides, error: overrideError } = await supabase
+    .from("membership_permission_overrides")
+    .select("permission_key, effect")
+    .in("membership_id", membershipIds)
+
+  if (overrideError) {
+    const message = String(overrideError.message ?? "")
+    if (!message.includes("membership_permission_overrides")) {
+      throw new Error(`Unable to load permission overrides: ${overrideError.message}`)
+    }
+  }
+
+  const grants = (overrides ?? [])
+    .filter((row: any) => row.effect === "grant")
+    .map((row: any) => row.permission_key as string)
+  const denies = new Set(
+    (overrides ?? [])
+      .filter((row: any) => row.effect === "deny")
+      .map((row: any) => row.permission_key as string),
+  )
+
+  return Array.from(new Set([...rolePermissions, ...grants])).filter((permission) => !denies.has(permission))
 }
 
 async function resolveContext(ctx?: Partial<PermissionContext>): Promise<PermissionContext> {

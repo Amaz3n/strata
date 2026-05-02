@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { format, formatDistanceToNow, isPast } from "date-fns"
 import { toast } from "sonner"
 
-import type { Company, ProjectVendor } from "@/lib/types"
+import type { Company, CostCode, ProjectVendor } from "@/lib/types"
 import type { BidAddendum, BidInvite, BidPackage, BidSubmission } from "@/lib/services/bids"
 import type { BidPackageStatus } from "@/lib/validation/bids"
 import { cn } from "@/lib/utils"
@@ -438,6 +438,7 @@ interface BidPackageDetailClientProps {
   submissions: BidSubmission[]
   companies: Company[]
   projectVendors: ProjectVendor[]
+  costCodes: CostCode[]
 }
 
 export function BidPackageDetailClientNew({
@@ -448,6 +449,7 @@ export function BidPackageDetailClientNew({
   submissions,
   companies,
   projectVendors,
+  costCodes,
 }: BidPackageDetailClientProps) {
   // Core state
   const [current, setCurrent] = useState(bidPackage)
@@ -457,6 +459,7 @@ export function BidPackageDetailClientNew({
 
   // Edit form state
   const [title, setTitle] = useState(bidPackage.title)
+  const [costCodeId, setCostCodeId] = useState(bidPackage.cost_code_id ?? "__none__")
   const [trade, setTrade] = useState(bidPackage.trade?.trim() || NO_TRADE_VALUE)
   const [dueAt, setDueAt] = useState<Date | undefined>(
     bidPackage.due_at ? new Date(bidPackage.due_at) : undefined
@@ -905,6 +908,7 @@ export function BidPackageDetailClientNew({
       try {
         const updated = await updateBidPackageAction(bidPackage.id, projectId, {
           title: title.trim(),
+          cost_code_id: costCodeId === "__none__" ? null : costCodeId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
           due_at: dueAt ? dueAt.toISOString() : null,
           status,
@@ -913,6 +917,7 @@ export function BidPackageDetailClientNew({
         })
         setCurrent(updated)
         setTitle(updated.title)
+        setCostCodeId(updated.cost_code_id ?? "__none__")
         setTrade(updated.trade?.trim() || NO_TRADE_VALUE)
         setDueAt(updated.due_at ? new Date(updated.due_at) : undefined)
         setStatus(updated.status)
@@ -1551,6 +1556,24 @@ export function BidPackageDetailClientNew({
                   <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} />
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="cost-code">Cost code</Label>
+                  <Select value={costCodeId} onValueChange={setCostCodeId}>
+                    <SelectTrigger id="cost-code" className="w-full">
+                      <SelectValue placeholder="Select cost code" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">No cost code yet</SelectItem>
+                      {costCodes.map((code) => (
+                        <SelectItem key={code.id} value={code.id}>
+                          {code.code ? `${code.code} — ${code.name}` : code.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
                   <Label htmlFor="trade">Trade</Label>
                   <Select value={trade} onValueChange={setTrade}>
                     <SelectTrigger id="trade" className="w-full">
@@ -1566,49 +1589,49 @@ export function BidPackageDetailClientNew({
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="due">Due date</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          id="due"
+                          variant="outline"
+                          className={cn(
+                            "w-full justify-start text-left font-normal",
+                            !dueAt && "text-muted-foreground"
+                          )}
+                        >
+                          <CalendarDays className="mr-2 h-4 w-4" />
+                          {dueAt ? format(dueAt, "LLL dd, y") : "Pick a date"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={dueAt}
+                          onSelect={setDueAt}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="due">Due date</Label>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button
-                        id="due"
-                        variant="outline"
-                        className={cn(
-                          "w-full justify-start text-left font-normal",
-                          !dueAt && "text-muted-foreground"
-                        )}
-                      >
-                        <CalendarDays className="mr-2 h-4 w-4" />
-                        {dueAt ? format(dueAt, "LLL dd, y") : "Pick a date"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={dueAt}
-                        onSelect={setDueAt}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="status">Status</Label>
-                  <Select value={status} onValueChange={(value) => setStatus(value as BidPackageStatus)}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {statusOptions.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option[0].toUpperCase() + option.slice(1)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="status">Status</Label>
+                <Select value={status} onValueChange={(value) => setStatus(value as BidPackageStatus)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {statusOptions.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option[0].toUpperCase() + option.slice(1)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="scope">Scope of work</Label>
@@ -2017,6 +2040,12 @@ export function BidPackageDetailClientNew({
               <span className="inline-flex items-center gap-1.5">
                 <Building2 className="h-3.5 w-3.5" />
                 {current.trade || "No trade"}
+              </span>
+              <span className="text-border">|</span>
+              <span>
+                {current.cost_code_code
+                  ? `${current.cost_code_code}${current.cost_code_name ? ` · ${current.cost_code_name}` : ""}`
+                  : "No cost code"}
               </span>
               <span className="text-border">|</span>
               <span className="inline-flex items-center gap-1.5">
@@ -2586,7 +2615,7 @@ export function BidPackageDetailClientNew({
             <AlertDialogHeader>
               <AlertDialogTitle>Award this bid?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will award the bid to <span className="font-medium text-foreground">{selectedSubmission?.invite?.company?.name}</span> for <span className="font-medium text-foreground">{formatCurrency(selectedSubmission?.total_cents)}</span>. A commitment will be created automatically.
+                This will award the bid to <span className="font-medium text-foreground">{selectedSubmission?.invite?.company?.name}</span> for <span className="font-medium text-foreground">{formatCurrency(selectedSubmission?.total_cents)}</span>. A commitment will be created automatically{current.cost_code_code ? <> and allocated to <span className="font-medium text-foreground">{current.cost_code_code}</span></> : ""}.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

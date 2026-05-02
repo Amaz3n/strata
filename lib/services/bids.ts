@@ -21,6 +21,9 @@ export interface BidPackage {
   org_id: string
   project_id: string
   title: string
+  cost_code_id?: string | null
+  cost_code_code?: string | null
+  cost_code_name?: string | null
   trade?: string | null
   scope?: string | null
   instructions?: string | null
@@ -121,6 +124,9 @@ function mapBidPackage(row: any): BidPackage {
     org_id: row.org_id,
     project_id: row.project_id,
     title: row.title,
+    cost_code_id: row.cost_code_id ?? null,
+    cost_code_code: row.cost_code?.code ?? null,
+    cost_code_name: row.cost_code?.name ?? null,
     trade: row.trade ?? null,
     scope: row.scope ?? null,
     instructions: row.instructions ?? null,
@@ -280,7 +286,7 @@ async function ensureProjectInOrg(projectId: string, orgId: string, supabase: an
 async function ensureBidPackageInOrg(bidPackageId: string, orgId: string, supabase: any) {
   const { data: bidPackage, error } = await supabase
     .from("bid_packages")
-    .select("id, project_id")
+    .select("id, project_id, cost_code_id")
     .eq("org_id", orgId)
     .eq("id", bidPackageId)
     .maybeSingle()
@@ -288,6 +294,18 @@ async function ensureBidPackageInOrg(bidPackageId: string, orgId: string, supaba
     throw new Error("Bid package not found in this organization")
   }
   return bidPackage
+}
+
+async function ensureCostCodeInOrg(costCodeId: string, orgId: string, supabase: any) {
+  const { data: costCode, error } = await supabase
+    .from("cost_codes")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", costCodeId)
+    .maybeSingle()
+  if (error || !costCode) {
+    throw new Error("Cost code not found in this organization")
+  }
 }
 
 async function ensureCompanyInOrg(companyId: string, orgId: string, supabase: any) {
@@ -321,7 +339,8 @@ export async function listBidPackages(projectId: string, orgId?: string): Promis
   const { data, error } = await supabase
     .from("bid_packages")
     .select(`
-      id, org_id, project_id, title, trade, scope, instructions, due_at, status, created_by, created_at, updated_at,
+      id, org_id, project_id, title, cost_code_id, trade, scope, instructions, due_at, status, created_by, created_at, updated_at,
+      cost_code:cost_codes(code, name),
       bid_invites!bid_invites_org_package_fk(count)
     `)
     .eq("org_id", resolvedOrgId)
@@ -341,7 +360,10 @@ export async function getBidPackage(bidPackageId: string, orgId?: string): Promi
 
   const { data, error } = await supabase
     .from("bid_packages")
-    .select("id, org_id, project_id, title, trade, scope, instructions, due_at, status, created_by, created_at, updated_at")
+    .select(`
+      id, org_id, project_id, title, cost_code_id, trade, scope, instructions, due_at, status, created_by, created_at, updated_at,
+      cost_code:cost_codes(code, name)
+    `)
     .eq("org_id", resolvedOrgId)
     .eq("id", bidPackageId)
     .single()
@@ -364,6 +386,9 @@ export async function createBidPackage({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
   await ensureProjectInOrg(parsed.project_id, resolvedOrgId, supabase)
+  if (parsed.cost_code_id) {
+    await ensureCostCodeInOrg(parsed.cost_code_id, resolvedOrgId, supabase)
+  }
 
   const { data, error } = await supabase
     .from("bid_packages")
@@ -371,6 +396,7 @@ export async function createBidPackage({
       org_id: resolvedOrgId,
       project_id: parsed.project_id,
       title: parsed.title,
+      cost_code_id: parsed.cost_code_id ?? null,
       trade: parsed.trade ?? null,
       scope: parsed.scope ?? null,
       instructions: parsed.instructions ?? null,
@@ -378,7 +404,10 @@ export async function createBidPackage({
       status: parsed.status ?? "draft",
       created_by: userId,
     })
-    .select("id, org_id, project_id, title, trade, scope, instructions, due_at, status, created_by, created_at, updated_at")
+    .select(`
+      id, org_id, project_id, title, cost_code_id, trade, scope, instructions, due_at, status, created_by, created_at, updated_at,
+      cost_code:cost_codes(code, name)
+    `)
     .single()
 
   if (error || !data) {
@@ -429,10 +458,15 @@ export async function updateBidPackage({
     throw new Error("Bid package not found")
   }
 
+  if (parsed.cost_code_id) {
+    await ensureCostCodeInOrg(parsed.cost_code_id, resolvedOrgId, supabase)
+  }
+
   const updates: Record<string, any> = {
     updated_at: new Date().toISOString(),
   }
   if (parsed.title !== undefined) updates.title = parsed.title
+  if (parsed.cost_code_id !== undefined) updates.cost_code_id = parsed.cost_code_id
   if (parsed.trade !== undefined) updates.trade = parsed.trade
   if (parsed.scope !== undefined) updates.scope = parsed.scope
   if (parsed.instructions !== undefined) updates.instructions = parsed.instructions
@@ -444,7 +478,10 @@ export async function updateBidPackage({
     .update(updates)
     .eq("org_id", resolvedOrgId)
     .eq("id", bidPackageId)
-    .select("id, org_id, project_id, title, trade, scope, instructions, due_at, status, created_by, created_at, updated_at")
+    .select(`
+      id, org_id, project_id, title, cost_code_id, trade, scope, instructions, due_at, status, created_by, created_at, updated_at,
+      cost_code:cost_codes(code, name)
+    `)
     .single()
 
   if (error || !data) {

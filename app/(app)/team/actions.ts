@@ -55,7 +55,11 @@ export async function inviteTeamMemberAction(input: unknown) {
 export async function updateMemberRoleAction(membershipId: string, input: unknown) {
   try {
     const parsed = updateMemberRoleSchema.parse(input)
-    const member = await updateMemberRole({ membershipId, role: parsed.role })
+    const member = await updateMemberRole({
+      membershipId,
+      role: parsed.role,
+      permissionOverrides: parsed.permissionOverrides,
+    })
     revalidatePath("/team")
     revalidatePath("/settings")
     return member

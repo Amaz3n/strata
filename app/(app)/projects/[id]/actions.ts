@@ -48,7 +48,9 @@ import {
 import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule } from "@/lib/services/draws"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
+import { createInvoice } from "@/lib/services/invoices"
 import { AuthorizationError } from "@/lib/services/authorization"
+import { requireProjectPermission } from "@/lib/services/permissions"
 import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 import { z } from "zod"
 
@@ -154,7 +156,8 @@ function mapProject(row: any): Project {
 }
 
 export async function getProjectAction(projectId: string): Promise<Project | null> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "project.read")
 
   const { data, error } = await supabase
     .from("projects")
@@ -585,6 +588,11 @@ const drawUpsertSchema = z.object({
   due_date: z.string().nullable().optional(),
   milestone_id: z.string().uuid().nullable().optional(),
   due_trigger_label: z.string().nullable().optional(),
+  allocations: z.array(z.object({
+    cost_code_id: z.string().uuid(),
+    amount_cents: z.number().int().nonnegative(),
+    description: z.string().optional(),
+  })).optional(),
 })
 
 async function getLatestActiveProjectContractForDraws({
@@ -653,6 +661,9 @@ export async function createProjectDrawAction(projectId: string, input: unknown)
   const metadata: Record<string, any> = {}
   if (parsed.due_trigger === "approval" && parsed.due_trigger_label) {
     metadata.due_trigger_label = parsed.due_trigger_label
+  }
+  if (parsed.allocations) {
+    metadata.allocations = parsed.allocations
   }
 
   const { data, error } = await supabase
@@ -731,6 +742,11 @@ export async function updateProjectDrawAction(projectId: string, drawId: string,
     if (parsed.due_trigger_label) nextMetadata.due_trigger_label = parsed.due_trigger_label
   } else {
     delete nextMetadata.due_trigger_label
+  }
+  if (parsed.allocations) {
+    nextMetadata.allocations = parsed.allocations
+  } else {
+    delete nextMetadata.allocations
   }
 
   const updates: Record<string, any> = {
@@ -903,11 +919,99 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
   }
 }
 
+export async function releaseProjectRetainageAction(
+  projectId: string,
+  input: { amount_cents: number; title: string; notes?: string }
+) {
+  const { supabase, orgId } = await requireOrgContext()
+  
+  // 1. Get current held retainage
+  const { data: heldRows, error: heldError } = await supabase
+    .from("retainage")
+    .select("id, amount_cents")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "held")
+    .order("held_at", { ascending: true })
+
+  if (heldError) throw new Error(`Failed to fetch held retainage: ${heldError.message}`)
+  
+  const totalHeld = (heldRows ?? []).reduce((sum, r) => sum + r.amount_cents, 0)
+  if (input.amount_cents > totalHeld) {
+    throw new Error(`Cannot release ${input.amount_cents / 100} - only ${totalHeld / 100} is held.`)
+  }
+
+  // 2. Create Release Invoice
+  const next = await getNextInvoiceNumber(orgId)
+  const invoice = await createInvoice({
+    input: {
+      project_id: projectId,
+      invoice_number: next.number,
+      reservation_id: next.reservation_id,
+      title: input.title,
+      status: "sent",
+      issue_date: new Date().toISOString().split("T")[0],
+      notes: input.notes,
+      client_visible: true,
+      tax_rate: 0,
+      lines: [
+        {
+          description: input.title,
+          quantity: 1,
+          unit: "release",
+          unit_cost: input.amount_cents / 100,
+          taxable: false,
+        }
+      ],
+      source_type: "manual", // Specialized release
+    },
+    orgId,
+  })
+
+  // 3. Mark retainage records as released
+  // We release from the oldest records first (FIFO)
+  let remainingToRelease = input.amount_cents
+  for (const row of heldRows ?? []) {
+    if (remainingToRelease <= 0) break
+    
+    const releaseFromThisRow = Math.min(row.amount_cents, remainingToRelease)
+    const isFullRelease = releaseFromThisRow === row.amount_cents
+    
+    if (isFullRelease) {
+      await supabase
+        .from("retainage")
+        .update({
+          status: "invoiced",
+          released_at: new Date().toISOString(),
+          release_invoice_id: invoice.id,
+        })
+        .eq("id", row.id)
+    } else {
+      // Partial release of a specific row - mark it invoiced since it's now tied to a release event.
+      await supabase
+        .from("retainage")
+        .update({
+          status: "invoiced",
+          released_at: new Date().toISOString(),
+          release_invoice_id: invoice.id,
+        })
+        .eq("id", row.id)
+    }
+    
+    remainingToRelease -= releaseFromThisRow
+  }
+
+  revalidatePath(`/projects/${projectId}`)
+  revalidatePath(`/projects/${projectId}/financials`)
+
+  return { success: true, invoice_id: invoice.id }
+}
+
 export async function listProjectRetainageAction(projectId: string) {
   const { supabase, orgId } = await requireOrgContext()
   const { data, error } = await supabase
     .from("retainage")
-    .select("*")
+    .select("*, invoice:invoices(invoice_number, title), release_invoice:invoices!retainage_release_invoice_id_fkey(invoice_number, title)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("held_at", { ascending: false })
@@ -917,7 +1021,7 @@ export async function listProjectRetainageAction(projectId: string) {
     return []
   }
 
-  return (data ?? []) as Retainage[]
+  return (data ?? []) as (Retainage & { invoice?: { invoice_number: string; title: string }; release_invoice?: { invoice_number: string; title: string } })[]
 }
 
 export interface ProjectPunchItem {

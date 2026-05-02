@@ -291,12 +291,18 @@ export async function updateCommitment({
     resourceId: commitmentId,
   })
 
+  const lineRollup = await getCommitmentLineRollup(supabase, resolvedOrgId, commitmentId)
+  const nextTotalCents =
+    lineRollup.lineCount > 0
+      ? lineRollup.totalCents
+      : parsed.total_cents ?? existing.total_cents
+
   const { data, error } = await supabase
     .from("commitments")
     .update({
       title: parsed.title ?? existing.title,
       status: parsed.status ?? existing.status,
-      total_cents: parsed.total_cents ?? existing.total_cents,
+      total_cents: nextTotalCents,
       start_date: parsed.start_date ?? existing.start_date,
       end_date: parsed.end_date ?? existing.end_date,
     })
@@ -346,6 +352,50 @@ function mapCommitmentLine(row: any): CommitmentLine {
     total_cents: (row.quantity ?? 1) * row.unit_cost_cents,
     sort_order: row.sort_order ?? 0,
   }
+}
+
+async function getCommitmentLineRollup(
+  supabase: SupabaseClient,
+  orgId: string,
+  commitmentId: string,
+): Promise<{ lineCount: number; totalCents: number }> {
+  const { data, error } = await supabase
+    .from("commitment_lines")
+    .select("quantity, unit_cost_cents")
+    .eq("org_id", orgId)
+    .eq("commitment_id", commitmentId)
+
+  if (error) {
+    throw new Error(`Failed to load commitment line totals: ${error.message}`)
+  }
+
+  return {
+    lineCount: data?.length ?? 0,
+    totalCents: (data ?? []).reduce(
+      (sum, line) => sum + (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
+      0,
+    ),
+  }
+}
+
+async function syncCommitmentTotalFromLines(
+  supabase: SupabaseClient,
+  orgId: string,
+  commitmentId: string,
+) {
+  const rollup = await getCommitmentLineRollup(supabase, orgId, commitmentId)
+
+  const { error } = await supabase
+    .from("commitments")
+    .update({ total_cents: rollup.totalCents })
+    .eq("org_id", orgId)
+    .eq("id", commitmentId)
+
+  if (error) {
+    throw new Error(`Failed to sync commitment total: ${error.message}`)
+  }
+
+  return rollup
 }
 
 export async function listCommitmentLines(commitmentId: string): Promise<CommitmentLine[]> {
@@ -455,6 +505,8 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
     },
   })
 
+  await syncCommitmentTotalFromLines(supabase, orgId, commitmentId)
+
   return mapCommitmentLine(data)
 }
 
@@ -524,6 +576,8 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
     },
   })
 
+  await syncCommitmentTotalFromLines(supabase, orgId, data.commitment_id as string)
+
   return mapCommitmentLine(data)
 }
 
@@ -584,4 +638,10 @@ export async function deleteCommitmentLine(lineId: string): Promise<void> {
       commitment_line_id: lineId,
     },
   })
+
+  await syncCommitmentTotalFromLines(
+    supabase,
+    orgId,
+    (existing as any).commitment_id as string,
+  )
 }

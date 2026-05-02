@@ -220,26 +220,43 @@ async function resolveInvoiceSourceBillingContext(params: {
     contractId = activeContract?.id ?? null
   }
 
-  const retainagePercent = Number(contract?.retainage_percent ?? 0)
+  // Fallback to project-level settings if no contract found
+  let effectiveRetainagePercent = Number(contract?.retainage_percent ?? 0)
+  let effectiveContractTotalCents = contract?.total_cents ?? null
+
+  if (!contract && contractProjectId) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("retainage_percent, total_contract_value_cents")
+      .eq("org_id", orgId)
+      .eq("id", contractProjectId)
+      .maybeSingle()
+
+    if (project) {
+      effectiveRetainagePercent = Number(project.retainage_percent ?? 0)
+      effectiveContractTotalCents = project.total_contract_value_cents ?? null
+    }
+  }
+
   const effectiveBaseLines = stripSystemGeneratedBillingLines(baseLines)
   const grossAmountCents = effectiveBaseLines.reduce(
     (sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents),
     0,
   )
   const retainageAmountCents =
-    retainagePercent > 0 ? Math.round(Math.max(grossAmountCents, 0) * (retainagePercent / 100)) : 0
+    effectiveRetainagePercent > 0 ? Math.round(Math.max(grossAmountCents, 0) * (effectiveRetainagePercent / 100)) : 0
 
   return {
     contractId,
-    retainagePercent,
+    retainagePercent: effectiveRetainagePercent,
     retainageAmountCents,
     metadata: {
       ...sourceMetadata,
       contract_id: contractId,
-      contract_total_cents: contract?.total_cents ?? null,
+      contract_total_cents: effectiveContractTotalCents,
       approved_change_orders_cents: contract?.snapshot?.approved_change_orders_cents ?? null,
-      revised_contract_total_cents: contract?.snapshot?.revised_total_cents ?? contract?.total_cents ?? null,
-      retainage_percent: retainagePercent > 0 ? retainagePercent : null,
+      revised_contract_total_cents: contract?.snapshot?.revised_total_cents ?? effectiveContractTotalCents ?? null,
+      retainage_percent: effectiveRetainagePercent > 0 ? effectiveRetainagePercent : null,
       retainage_amount_cents: retainageAmountCents > 0 ? retainageAmountCents : null,
       gross_amount_cents: grossAmountCents,
     },

@@ -40,7 +40,7 @@ export function FinancialsTab({
           approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
           scheduleItems={scheduleItems}
         />
-        <RetainageTracker retainage={retainage} />
+        <RetainageTracker projectId={projectId} retainage={retainage} />
       </div>
     </div>
   )

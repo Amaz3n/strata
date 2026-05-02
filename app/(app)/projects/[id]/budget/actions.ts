@@ -30,6 +30,7 @@ export async function createProjectBudgetAction(input: unknown) {
     undefined,
   )
   revalidatePath(`/projects/${parsed.project_id}/budget`)
+  revalidatePath(`/projects/${parsed.project_id}/financials`)
   revalidatePath(`/projects/${parsed.project_id}`)
   return result
 }
@@ -38,6 +39,7 @@ export async function replaceProjectBudgetLinesAction(projectId: string, budgetI
   const lines = z.array(budgetLineInputSchema).parse(linesInput)
   const updated = await replaceBudgetLines({ budgetId, lines })
   revalidatePath(`/projects/${projectId}/budget`)
+  revalidatePath(`/projects/${projectId}/financials`)
   revalidatePath(`/projects/${projectId}`)
   return updated
 }

@@ -5,6 +5,16 @@ export const vendorBillStatusEnum = z.enum(["pending", "approved", "partial", "p
 
 export const vendorBillStatusUpdateSchema = z.object({
   status: vendorBillStatusEnum,
+  cost_code_id: z.string().uuid("Invalid cost code").nullable().optional(),
+  actual_lines: z
+    .array(
+      z.object({
+        cost_code_id: z.string().uuid("Invalid cost code"),
+        description: z.string().min(1).max(500).optional(),
+        amount_cents: z.number().int().min(0),
+      }),
+    )
+    .optional(),
   payment_method: paymentMethodInputSchema.optional(),
   payment_reference: z.string().max(200).optional(),
   payment_amount_cents: z.number().int().min(1).optional(),

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState, useTransition, type CSSProperties } from 
 import { useRouter } from "next/navigation"
 import {
   AlertTriangle,
-  CheckCircle2,
   ListOrdered,
   MoreHorizontal,
   Plus,
@@ -19,10 +18,8 @@ import { useToast } from "@/hooks/use-toast"
 import {
   acknowledgeVarianceAlertAction,
   createProjectBudgetAction,
-  duplicateProjectBudgetVersionAction,
   replaceProjectBudgetLinesAction,
   runVarianceScanAction,
-  updateProjectBudgetStatusAction,
 } from "@/app/(app)/projects/[id]/budget/actions"
 import { fetchBudgetBucketCommitmentsAction } from "@/app/(app)/projects/[id]/financials/actions"
 import {
@@ -41,7 +38,6 @@ import {
   uploadFileAction,
 } from "@/app/(app)/documents/actions"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -94,6 +90,12 @@ type CostBucketDraft = {
   description: string
   amountDollars: string
   lineIds?: string[]
+}
+
+type CommitmentCreateDraft = {
+  costCodeId: string | null
+  defaultAmountDollars: string
+  defaultScope: string
 }
 
 interface BudgetTabProps {
@@ -149,29 +151,6 @@ function statusTone(status?: string): "draft" | "approved" | "locked" | "complet
   return "draft"
 }
 
-function BudgetStatusBadge({ status }: { status?: string }) {
-  const tone = statusTone(status)
-  const map: Record<string, { label: string; cls: string }> = {
-    draft: { label: "Draft", cls: "bg-muted text-muted-foreground" },
-    approved: {
-      label: "Approved",
-      cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-    },
-    locked: { label: "Locked", cls: "bg-slate-500/10 text-slate-700 dark:text-slate-300" },
-  }
-  const entry = map[tone] ?? map.draft
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-        entry.cls,
-      )}
-    >
-      {entry.label}
-    </span>
-  )
-}
-
 function CommitmentStatusBadge({ status }: { status?: string }) {
   const tone = statusTone(status)
   const map: Record<string, { label: string; cls: string }> = {
@@ -213,7 +192,7 @@ export function BudgetTab({
 
   const currentBudget = budgetData?.budget ?? null
   const summary = budgetData?.summary ?? null
-  const editable = !currentBudget || (currentBudget.status ?? "draft") === "draft"
+  const editable = true // Always editable as a living document
 
   const [lines, setLines] = useState<EditableBudgetLine[]>(() =>
     currentBudget ? toLineState(currentBudget.lines) : [],
@@ -244,33 +223,6 @@ export function BudgetTab({
     return map
   }, [costCodes])
 
-  const lineErrors = useMemo(() => {
-    const errors = new Map<string, string>()
-    for (const line of lines) {
-      if (!line.description.trim()) {
-        errors.set(line.id, "Description required")
-        continue
-      }
-      const cents = dollarsToCents(line.amount_dollars)
-      if (cents == null || cents < 0) {
-        errors.set(line.id, "Invalid amount")
-      }
-    }
-    return errors
-  }, [lines])
-
-  const totalLinesCents = useMemo(() => {
-    let sum = 0
-    for (const line of lines) {
-      const cents = dollarsToCents(line.amount_dollars)
-      if (cents == null) continue
-      sum += cents
-    }
-    return sum
-  }, [lines])
-
-  const canSave = editable && lines.length > 0 && lineErrors.size === 0 && !isPending
-
   const openCreateBucket = () => {
     setEditingBucketDraft({
       costCodeId: null,
@@ -297,35 +249,20 @@ export function BudgetTab({
     setBucketEditorOpen(true)
   }
 
-  const upsertBucket = (draft: CostBucketDraft) => {
-    const nextLine: EditableBudgetLine = {
-      id: draft.lineIds?.[0] ?? crypto.randomUUID(),
-      cost_code_id: draft.costCodeId,
-      description: draft.description.trim(),
-      amount_dollars: draft.amountDollars.trim() || "0",
-    }
-
-    setLines((prev) => {
-      const removeIds = new Set(draft.lineIds ?? [])
-      const filtered = prev.filter((line) => !removeIds.has(line.id))
-      return [...filtered, nextLine]
-    })
-    setBucketEditorOpen(false)
-    setEditingBucketDraft(null)
-  }
-
-  const removeBucket = (lineIds: string[]) => {
-    const ids = new Set(lineIds)
-    setLines((prev) => prev.filter((line) => !ids.has(line.id)))
-  }
-
-  const save = () => {
+  const persistBudgetLines = (nextLines: EditableBudgetLine[], message: string) => {
     if (!editable) return
-    if (lines.length === 0) {
+    if (nextLines.length === 0) {
       toast({ title: "Add at least one cost bucket" })
       return
     }
-    if (lineErrors.size > 0) {
+
+    const nextErrors = nextLines.filter((line) => {
+      if (!line.description.trim()) return true
+      const cents = dollarsToCents(line.amount_dollars)
+      return cents == null || cents < 0
+    })
+
+    if (nextErrors.length > 0) {
       toast({
         title: "Fix cost bucket errors",
         description: "Some buckets are missing a scope note or have an invalid amount.",
@@ -333,7 +270,7 @@ export function BudgetTab({
       return
     }
 
-    const payloadLines = lines.map((line) => ({
+    const payloadLines = nextLines.map((line) => ({
       cost_code_id: line.cost_code_id,
       description: line.description.trim(),
       amount_cents: dollarsToCents(line.amount_dollars) ?? 0,
@@ -347,10 +284,10 @@ export function BudgetTab({
             status: "draft",
             lines: payloadLines,
           })
-          toast({ title: "Budget created" })
+          toast({ title: message })
         } else {
           await replaceProjectBudgetLinesAction(projectId, currentBudget.id, payloadLines)
-          toast({ title: "Budget updated" })
+          toast({ title: message })
         }
         router.refresh()
       } catch (error) {
@@ -359,33 +296,66 @@ export function BudgetTab({
     })
   }
 
-  const setStatus = (status: "draft" | "approved" | "locked") => {
-    if (!currentBudget) return
-    startTransition(async () => {
-      try {
-        await updateProjectBudgetStatusAction(projectId, currentBudget.id, status)
-        toast({ title: "Budget updated", description: `Status set to ${status}.` })
-        router.refresh()
-      } catch (error) {
-        toast({
-          title: "Unable to update budget status",
-          description: (error as Error).message,
-        })
-      }
-    })
+  const upsertBucket = (draft: CostBucketDraft) => {
+    const nextLine: EditableBudgetLine = {
+      id: draft.lineIds?.[0] ?? crypto.randomUUID(),
+      cost_code_id: draft.costCodeId,
+      description: draft.description.trim(),
+      amount_dollars: draft.amountDollars.trim() || "0",
+    }
+
+    const removeIds = new Set(draft.lineIds ?? [])
+    const existingLines = lines.filter((line) => removeIds.has(line.id))
+    const unchangedLines = lines.filter((line) => !removeIds.has(line.id))
+    const targetCents = dollarsToCents(draft.amountDollars) ?? 0
+
+    const replacementLines =
+      existingLines.length > 1
+        ? existingLines.map((line, index) => {
+            const currentBucketCents = existingLines.reduce(
+              (sum, item) => sum + (dollarsToCents(item.amount_dollars) ?? 0),
+              0,
+            )
+            const currentLineCents = dollarsToCents(line.amount_dollars) ?? 0
+            const scaledCents =
+              currentBucketCents > 0
+                ? Math.round((currentLineCents / currentBucketCents) * targetCents)
+                : index === 0
+                  ? targetCents
+                  : 0
+            const alreadyAllocated = existingLines
+              .slice(0, index)
+              .reduce((sum, item) => {
+                const itemCents = dollarsToCents(item.amount_dollars) ?? 0
+                return sum + (currentBucketCents > 0 ? Math.round((itemCents / currentBucketCents) * targetCents) : 0)
+              }, 0)
+            const nextLineCents =
+              index === existingLines.length - 1 ? Math.max(0, targetCents - alreadyAllocated) : scaledCents
+            return {
+              ...line,
+              cost_code_id: draft.costCodeId,
+              description: index === 0 ? draft.description.trim() : line.description,
+              amount_dollars: (nextLineCents / 100).toFixed(2),
+            }
+          })
+        : [nextLine]
+
+    const nextLines = [...unchangedLines, ...replacementLines]
+    setLines(nextLines)
+    setBucketEditorOpen(false)
+    setEditingBucketDraft(null)
+    persistBudgetLines(nextLines, draft.lineIds?.length ? "Cost bucket updated" : "Cost bucket added")
   }
 
-  const newVersion = () => {
-    if (!currentBudget) return
-    startTransition(async () => {
-      try {
-        await duplicateProjectBudgetVersionAction(projectId, currentBudget.id)
-        toast({ title: "New budget version created" })
-        router.refresh()
-      } catch (error) {
-        toast({ title: "Unable to create version", description: (error as Error).message })
-      }
-    })
+  const removeBucket = (lineIds: string[]) => {
+    const ids = new Set(lineIds)
+    const nextLines = lines.filter((line) => !ids.has(line.id))
+    if (nextLines.length === 0) {
+      toast({ title: "At least one cost bucket is required" })
+      return
+    }
+    setLines(nextLines)
+    persistBudgetLines(nextLines, "Cost bucket removed")
   }
 
   const acknowledge = (alertId: string, status: "acknowledged" | "resolved") => {
@@ -412,22 +382,6 @@ export function BudgetTab({
     })
 
   // ---------- Summary computations ----------
-  const adjustedBudget = summary?.adjusted_budget_cents ?? totalLinesCents
-  const committedTotal = summary?.total_committed_cents ?? 0
-  const actualTotal = summary?.total_actual_cents ?? 0
-  const invoicedTotal = summary?.total_invoiced_cents ?? 0
-  const varianceCents = summary?.total_variance_cents ?? 0
-  const variancePercent = summary?.variance_percent ?? 0
-  const remaining = Math.max(0, adjustedBudget - actualTotal)
-
-  const committedPct =
-    adjustedBudget > 0 ? Math.min(100, (committedTotal / adjustedBudget) * 100) : 0
-  const actualPct =
-    adjustedBudget > 0 ? Math.min(100, (actualTotal / adjustedBudget) * 100) : 0
-
-  const varianceTone: "ok" | "warning" | "danger" =
-    variancePercent > 100 ? "danger" : variancePercent > 90 ? "warning" : "ok"
-
   const activeAlerts = (varianceAlerts ?? []).filter((a) => a.status === "active")
 
   // ---------- Commitments state ----------
@@ -437,6 +391,8 @@ export function BudgetTab({
   )
 
   const [createOpen, setCreateOpen] = useState(false)
+  const [createCommitmentDraft, setCreateCommitmentDraft] =
+    useState<CommitmentCreateDraft | null>(null)
   const [editCommitment, setEditCommitment] = useState<CommitmentSummary | null>(null)
   const [linesCommitment, setLinesCommitment] = useState<CommitmentSummary | null>(null)
   const [filesCommitment, setFilesCommitment] = useState<CommitmentSummary | null>(null)
@@ -537,6 +493,25 @@ export function BudgetTab({
 
   const activeBucket = unifiedRows.find((row) => row.key === activeBucketKey) ?? null
 
+  const openCreateCommitment = (bucket?: {
+    costCodeId: string | null
+    budgetCents: number
+    committedCents: number
+    lines: EditableBudgetLine[]
+  } | null) => {
+    const remainingToBuyCents = bucket
+      ? Math.max(0, bucket.budgetCents - bucket.committedCents)
+      : 0
+
+    setCreateCommitmentDraft({
+      costCodeId: bucket?.costCodeId ?? costCodeOptions[0]?.id ?? null,
+      defaultAmountDollars:
+        remainingToBuyCents > 0 ? (remainingToBuyCents / 100).toFixed(2) : "",
+      defaultScope: bucket?.lines[0]?.description?.trim() || "",
+    })
+    setCreateOpen(true)
+  }
+
   useEffect(() => {
     if (!activeBucket) {
       setActiveBucketCommitments([])
@@ -565,416 +540,286 @@ export function BudgetTab({
 
   // ---------- Render ----------
   return (
-    <div className="space-y-6">
+    <div className="-mx-4 -mt-6 -mb-4 flex flex-col bg-card">
       {activeAlerts.length > 0 && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
-              <AlertTriangle className="h-4 w-4" />
-              {activeAlerts.length} active variance{" "}
-              {activeAlerts.length === 1 ? "alert" : "alerts"}
-            </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-amber-500/30 bg-amber-500/[0.04] px-6 py-2.5 text-sm">
+          <div className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-4 w-4" />
+            {activeAlerts.length} variance {activeAlerts.length === 1 ? "alert" : "alerts"}
+          </div>
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {activeAlerts.slice(0, 2).map((a, i) => (
+              <span key={a.id}>
+                {i > 0 && " · "}
+                <span className="capitalize">{a.alert_type?.replaceAll("_", " ") ?? "Alert"}</span>
+                {typeof a.current_percent === "number" ? ` (${a.current_percent}%)` : ""}
+              </span>
+            ))}
+            {activeAlerts.length > 2 && ` · +${activeAlerts.length - 2} more`}
+          </span>
+          <div className="ml-auto flex items-center gap-1">
+            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={runScan} disabled={isPending || !currentBudget}>
+              Refresh alerts
+            </Button>
             <Button
               variant="ghost"
               size="sm"
               className="h-7 text-xs"
-              onClick={runScan}
-              disabled={isPending || !currentBudget}
+              disabled={isPending}
+              onClick={() => activeAlerts.forEach((a) => acknowledge(a.id, "acknowledged"))}
             >
-              Run scan
+              Ack all
             </Button>
-          </div>
-          <div className="space-y-1.5">
-            {activeAlerts.slice(0, 3).map((alert) => (
-              <div
-                key={alert.id}
-                className="flex items-center justify-between gap-3 text-sm"
-              >
-                <div className="min-w-0 flex-1 truncate">
-                  <span className="font-medium capitalize">
-                    {alert.alert_type?.replaceAll("_", " ") ?? "Alert"}
-                  </span>
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {typeof alert.current_percent === "number"
-                      ? `${alert.current_percent}% of budget`
-                      : ""}
-                    {" · "}
-                    {formatCurrency(alert.actual_cents)} of{" "}
-                    {formatCurrency(alert.budget_cents)}
-                  </span>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    disabled={isPending}
-                    onClick={() => acknowledge(alert.id, "acknowledged")}
-                  >
-                    Ack
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    disabled={isPending}
-                    onClick={() => acknowledge(alert.id, "resolved")}
-                  >
-                    Resolve
-                  </Button>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       )}
 
-      {/* Hero summary */}
-      <div className="rounded-xl border bg-card p-6">
-        <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-              <span>Project budget</span>
-              {currentBudget && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span>Version {currentBudget.version ?? "1"}</span>
-                </>
-              )}
-            </div>
-            <div className="mt-1 flex items-baseline gap-3">
-              <span className="text-3xl font-semibold tracking-tight tabular-nums">
-                {formatCurrency(adjustedBudget)}
-              </span>
-              {currentBudget && <BudgetStatusBadge status={currentBudget.status} />}
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {currentBudget
-                ? editable
-                  ? "Draft budget — edits below will be saved as this version."
-                  : "This version is read-only. Create a new version to make changes."
-                : "No budget yet. Add lines below and save to create one."}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {currentBudget && (
-              <Button variant="outline" onClick={newVersion} disabled={isPending}>
-                New version
+      {/* Sticky controls bar - sits flush below the tab bar when scrolled */}
+      <div className="sticky top-11 z-[5] flex items-center gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+        <Input
+          placeholder="Search cost codes or scope..."
+          className="h-9 flex-1 sm:max-w-md"
+          value={budgetLineSearch}
+          onChange={(event) => setBudgetLineSearch(event.target.value)}
+        />
+        <div className="ml-auto flex items-center gap-2">
+          {editable && (
+            <Button size="sm" onClick={openCreateBucket}>
+              <Plus className="h-4 w-4" />
+              <span className="hidden sm:inline">Add bucket</span>
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" className="h-9 w-9 shrink-0">
+                <MoreHorizontal className="h-4 w-4" />
+                <span className="sr-only">Budget actions</span>
               </Button>
-            )}
-            {currentBudget?.status === "draft" && (
-              <Button
-                onClick={() => setStatus("approved")}
-                disabled={isPending || lines.length === 0 || lineErrors.size > 0}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => openCreateCommitment()}
+                disabled={companyOptions.length === 0}
               >
-                <CheckCircle2 className="h-4 w-4" />
-                Approve
-              </Button>
-            )}
-            {currentBudget?.status === "approved" && (
-              <Button variant="secondary" onClick={() => setStatus("locked")} disabled={isPending}>
-                Lock
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* Utilization bar */}
-        <div className="space-y-2">
-          <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-muted">
-            <div
-              className="absolute inset-y-0 left-0 bg-primary/40"
-              style={{ width: `${committedPct}%` }}
-            />
-            <div
-              className="absolute inset-y-0 left-0 bg-primary"
-              style={{ width: `${actualPct}%` }}
-            />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <div className="flex items-center gap-4">
-              <LegendDot className="bg-primary" label={`Actual ${actualPct.toFixed(0)}%`} />
-              <LegendDot
-                className="bg-primary/40"
-                label={`Committed ${committedPct.toFixed(0)}%`}
-              />
-              <LegendDot className="bg-muted-foreground/30" label="Remaining" />
-            </div>
-            <span className="tabular-nums">
-              {formatCurrency(remaining)} remaining
-            </span>
-          </div>
-        </div>
-
-        {/* Stat grid */}
-        <div className="mt-6 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
-          <HeroStat label="Committed" value={formatCurrency(committedTotal)} />
-          <HeroStat label="Actual" value={formatCurrency(actualTotal)} />
-          <HeroStat label="Invoiced" value={formatCurrency(invoicedTotal)} />
-          <HeroStat
-            label="Variance"
-            value={formatCurrency(varianceCents)}
-            meta={summary ? `${variancePercent}%` : undefined}
-            tone={varianceTone}
-          />
+                New commitment
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={runScan} disabled={isPending || !currentBudget}>
+                Refresh budget alerts
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
-      {/* Unified budget control table */}
-      <section>
-        <div className="overflow-hidden rounded-lg border bg-card">
-          <div className="flex flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold">Cost plan</h3>
-              <p className="text-xs text-muted-foreground">
-                One table for budget buckets, committed costs, actual spend, and variance.
-              </p>
-            </div>
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-              <Input
-                placeholder="Search cost codes, categories, or scope..."
-                className="w-full sm:w-72"
-                value={budgetLineSearch}
-                onChange={(event) => setBudgetLineSearch(event.target.value)}
-              />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="icon" className="self-end sm:self-auto">
-                    <MoreHorizontal className="h-4 w-4" />
-                    <span className="sr-only">Budget actions</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {editable && (
-                    <DropdownMenuItem onClick={openCreateBucket}>
-                      Add cost bucket
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuItem
-                    onClick={() => setCreateOpen(true)}
-                    disabled={companyOptions.length === 0}
-                  >
-                    New commitment
-                  </DropdownMenuItem>
-                  {editable && (
-                    <DropdownMenuItem onClick={save} disabled={!canSave}>
-                      {currentBudget ? "Save changes" : "Create budget"}
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+      {/* Mobile cards */}
+      <div className="border-t md:hidden">
+        {filteredUnifiedRows.length === 0 ? (
+          <div className="px-4 py-12">
+            <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
           </div>
-
-          <div className="md:hidden">
-            <div className="space-y-3 p-4">
-              {filteredUnifiedRows.map((row) => {
-                const budgetTone =
-                  row.status === "over"
-                    ? "border-destructive/30 bg-destructive/10 text-destructive"
-                    : row.status === "warning"
-                      ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                return (
+        ) : (
+          <ul className="divide-y">
+            {filteredUnifiedRows.map((row) => {
+              const rowRemainingToBuy = Math.max(0, row.budgetCents - row.committedCents)
+              const rowToneClass =
+                row.status === "over"
+                  ? "text-destructive"
+                  : row.status === "warning"
+                    ? "text-amber-600 dark:text-amber-400"
+                    : ""
+              const rowPct =
+                row.budgetCents > 0
+                  ? Math.min(100, (row.actualCents / row.budgetCents) * 100)
+                  : 0
+              const rowCommittedPct =
+                row.budgetCents > 0
+                  ? Math.min(100, (row.committedCents / row.budgetCents) * 100)
+                  : 0
+              return (
+                <li key={row.key}>
                   <button
-                    key={row.key}
                     type="button"
                     onClick={() => setActiveBucketKey(row.key)}
-                    className="block w-full rounded-lg border bg-card p-4 text-left transition-colors hover:bg-muted/50 active:bg-muted"
+                    className="block w-full px-4 py-4 text-left transition-colors hover:bg-muted/40 active:bg-muted"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant="outline" className="font-mono text-[10px] font-normal">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
                             {row.code ?? "Uncoded"}
-                          </Badge>
-                          <Badge variant="secondary" className={cn("text-[10px] font-normal", budgetTone)}>
-                            {row.variancePercent}% used
-                          </Badge>
+                          </span>
+                          {row.status === "over" && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+                          )}
+                          {row.status === "warning" && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                          )}
                         </div>
-                        <p className="mt-1 line-clamp-2 text-sm font-semibold">
-                          {row.name}
+                        <p className="mt-1.5 line-clamp-1 text-sm font-medium">{row.name}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-semibold tabular-nums">
+                          {formatCurrency(row.budgetCents, { compact: true })}
                         </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {row.lines.length > 0
-                            ? row.lines.length === 1
-                              ? row.lines[0].description
-                              : `${row.lines.length} budget lines`
-                            : "No budget lines yet"}
+                        <p className={cn("text-[11px] tabular-nums", rowToneClass || "text-muted-foreground")}>
+                          {row.variancePercent}%
                         </p>
                       </div>
+                    </div>
+                    <div className="relative mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="absolute inset-y-0 left-0 bg-primary/35"
+                        style={{ width: `${rowCommittedPct}%` }}
+                      />
+                      <div
+                        className="absolute inset-y-0 left-0 bg-primary"
+                        style={{ width: `${rowPct}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 flex justify-between text-[11px] tabular-nums text-muted-foreground">
+                      <span>Committed {formatCurrency(row.committedCents, { compact: true })}</span>
+                      <span>To buy {formatCurrency(rowRemainingToBuy, { compact: true })}</span>
+                      <span>Actual {formatCurrency(row.actualCents, { compact: true })}</span>
+                    </div>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Desktop unified table */}
+      <div className="hidden border-t md:block">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-b bg-muted/30 hover:bg-muted/30">
+              <TableHead className="w-[140px] px-4 text-xs uppercase tracking-wide">Code</TableHead>
+              <TableHead className="min-w-[280px] px-4 text-xs uppercase tracking-wide">Scope</TableHead>
+              <TableHead className="w-[220px] px-4 text-xs uppercase tracking-wide">Utilization</TableHead>
+              <TableHead className="hidden xl:table-cell w-[140px] px-4 text-right text-xs uppercase tracking-wide">Budget</TableHead>
+              <TableHead className="hidden xl:table-cell w-[140px] px-4 text-right text-xs uppercase tracking-wide">Committed</TableHead>
+              <TableHead className="w-[130px] px-4 text-right text-xs uppercase tracking-wide">To buy</TableHead>
+              <TableHead className="w-[130px] px-4 text-right text-xs uppercase tracking-wide">Actual</TableHead>
+              <TableHead className="w-[56px] px-2" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filteredUnifiedRows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="h-56 text-center hover:bg-transparent">
+                  <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
+                </TableCell>
+              </TableRow>
+            ) : (
+              filteredUnifiedRows.map((row) => {
+                const toneClass =
+                  row.status === "over"
+                    ? "text-destructive"
+                    : row.status === "warning"
+                      ? "text-amber-600 dark:text-amber-400"
+                      : ""
+                const rowRemainingToBuy = Math.max(0, row.budgetCents - row.committedCents)
+                const rowActualPct =
+                  row.budgetCents > 0
+                    ? Math.min(100, (row.actualCents / row.budgetCents) * 100)
+                    : 0
+                const rowCommittedPct =
+                  row.budgetCents > 0
+                    ? Math.min(100, (row.committedCents / row.budgetCents) * 100)
+                    : 0
+                return (
+                  <TableRow
+                    key={row.key}
+                    className="group h-[60px] cursor-pointer hover:bg-muted/30"
+                    onClick={() => setActiveBucketKey(row.key)}
+                  >
+                    <TableCell className="px-4">
+                      <div className="flex items-center gap-2">
+                        {row.status === "over" ? (
+                          <span className="h-1.5 w-1.5 rounded-full bg-destructive" aria-label="Over budget" />
+                        ) : row.status === "warning" ? (
+                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-label="Near budget" />
+                        ) : (
+                          <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />
+                        )}
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
+                          {row.code ?? "Uncoded"}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-0 px-4">
+                      <span className="block truncate text-sm font-medium">{row.name}</span>
+                      {row.lines.length > 0 && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {row.lines.length === 1
+                            ? row.lines[0].description
+                            : `${row.lines.length} budget lines`}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-4">
+                      <div className="flex items-center gap-2">
+                        <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="absolute inset-y-0 left-0 bg-primary/35"
+                            style={{ width: `${rowCommittedPct}%` }}
+                          />
+                          <div
+                            className="absolute inset-y-0 left-0 bg-primary"
+                            style={{ width: `${rowActualPct}%` }}
+                          />
+                        </div>
+                        <span className={cn("w-10 text-right text-xs tabular-nums", toneClass || "text-muted-foreground")}>
+                          {row.variancePercent}%
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden px-4 text-right tabular-nums xl:table-cell">
+                      <span className="text-sm font-medium">
+                        {formatCurrency(row.budgetCents)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
+                      <span className="text-sm">{formatCurrency(row.committedCents)}</span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums">
+                      <span className={cn("text-sm font-medium", toneClass)}>
+                        {formatCurrency(rowRemainingToBuy)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
+                      <span className="text-sm">{formatCurrency(row.actualCents)}</span>
+                    </TableCell>
+                    <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Row actions</span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                            aria-label="Row actions"
+                          >
+                            <MoreHorizontal className="h-3.5 w-3.5" />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setActiveBucketKey(row.key)
-                            }}
-                          >
+                          <DropdownMenuItem onClick={() => setActiveBucketKey(row.key)}>
                             Open details
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setCreateOpen(true)}>
+                          <DropdownMenuItem onClick={() => openCreateCommitment(row)}>
                             New commitment
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                    </div>
-                    <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                      <MobileMetric label="Budget" value={formatCurrency(row.budgetCents)} />
-                      <MobileMetric label="Committed" value={formatCurrency(row.committedCents)} />
-                      <MobileMetric label="Actual" value={formatCurrency(row.actualCents)} />
-                      <MobileMetric
-                        label="Variance"
-                        value={formatCurrency(row.varianceCents)}
-                        tone={row.status === "over" ? "danger" : row.status === "warning" ? "warning" : "ok"}
-                      />
-                    </div>
-                  </button>
+                    </TableCell>
+                  </TableRow>
                 )
-              })}
-              {filteredUnifiedRows.length === 0 && (
-                <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
-              )}
-            </div>
-          </div>
-
-          <div className="hidden md:block">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="w-[180px] px-4">Cost code</TableHead>
-                  <TableHead className="min-w-[320px] px-4">Scope</TableHead>
-                  <TableHead className="hidden lg:table-cell w-[150px] px-4 text-right">Budget</TableHead>
-                  <TableHead className="hidden lg:table-cell w-[150px] px-4 text-right">Committed</TableHead>
-                  <TableHead className="w-[150px] px-4 text-right">Actual</TableHead>
-                  <TableHead className="w-[150px] px-4 text-right">Variance</TableHead>
-                  <TableHead className="w-[72px] px-2" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredUnifiedRows.map((row) => {
-                  const toneClass =
-                    row.status === "over"
-                      ? "text-destructive"
-                      : row.status === "warning"
-                        ? "text-amber-600 dark:text-amber-400"
-                        : ""
-                  return (
-                    <TableRow
-                      key={row.key}
-                      className="group h-[64px] cursor-pointer hover:bg-muted/30"
-                      onClick={() => setActiveBucketKey(row.key)}
-                    >
-                      <TableCell className="px-4">
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-md bg-muted px-2 py-1 font-mono text-xs font-medium">
-                            {row.code ?? "Uncoded"}
-                          </span>
-                          {row.status === "over" && (
-                            <span className="h-1.5 w-1.5 rounded-full bg-destructive" aria-label="Over budget" />
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="min-w-0 px-4">
-                        <span className="block truncate text-sm font-medium">
-                          {row.name}
-                        </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {row.lines.length > 0
-                            ? row.lines.length === 1
-                              ? row.lines[0].description
-                              : `${row.lines.length} budget lines`
-                            : "No budget lines yet"}
-                        </span>
-                      </TableCell>
-                      <TableCell className="hidden px-4 text-right lg:table-cell">
-                        <span className="text-sm font-semibold tabular-nums">
-                          {formatCurrency(row.budgetCents)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="hidden px-4 text-right lg:table-cell">
-                        <span className="text-sm tabular-nums text-muted-foreground">
-                          {formatCurrency(row.committedCents)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="px-4 text-right">
-                        <span className="text-sm tabular-nums text-muted-foreground">
-                          {formatCurrency(row.actualCents)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="px-4 text-right">
-                        <span className={cn("text-sm font-semibold tabular-nums", toneClass)}>
-                          {formatCurrency(row.varianceCents)}
-                        </span>
-                        <span className="mt-0.5 block text-[10px] text-muted-foreground">
-                          {row.variancePercent}% used
-                        </span>
-                      </TableCell>
-                      <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
-                        <div className="flex items-center justify-end">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
-                                aria-label="Budget row actions"
-                              >
-                                <MoreHorizontal className="h-3.5 w-3.5" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => setActiveBucketKey(row.key)}>
-                                Open details
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => setCreateOpen(true)}>
-                                New commitment
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-                {filteredUnifiedRows.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6} className="h-48 text-center text-muted-foreground hover:bg-transparent">
-                      <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
-                    </TableCell>
-                  </TableRow>
-                )}
-                {unifiedRows.length > 0 && (
-                  <TableRow className="bg-muted/30 font-medium hover:bg-muted/30">
-                    <TableCell className="px-4 py-3" />
-                    <TableCell className="px-4 py-3 text-right text-xs uppercase tracking-wide text-muted-foreground">
-                      Total
-                    </TableCell>
-                    <TableCell className="hidden px-4 py-3 text-right tabular-nums lg:table-cell">
-                      {formatCurrency(totalLinesCents)}
-                    </TableCell>
-                    <TableCell className="hidden px-4 py-3 text-right tabular-nums lg:table-cell">
-                      {formatCurrency(committedTotal)}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 text-right tabular-nums">
-                      {formatCurrency(actualTotal)}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 text-right tabular-nums">
-                      {formatCurrency(varianceCents)}
-                    </TableCell>
-                    <TableCell />
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      </section>
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
 
       <CostBucketEditorSheet
         open={bucketEditorOpen}
@@ -1001,16 +846,21 @@ export function BudgetTab({
         commitments={activeBucketCommitments}
         commitmentsLoading={activeBucketCommitmentsLoading}
         onEditBucket={() => activeBucket && openEditBucket(activeBucket)}
-        onCreateCommitment={() => setCreateOpen(true)}
+        onCreateCommitment={() => openCreateCommitment(activeBucket)}
         onEditCommitment={(commitment) => setEditCommitment(commitment)}
         onCommitmentLines={(commitment) => setLinesCommitment(commitment)}
         onCommitmentFiles={(commitment) => setFilesCommitment(commitment)}
       />
       <CommitmentCreateDialog
         open={createOpen}
-        onOpenChange={setCreateOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open)
+          if (!open) setCreateCommitmentDraft(null)
+        }}
         projectId={projectId}
         companies={companyOptions}
+        costCodes={costCodeOptions}
+        draft={createCommitmentDraft}
       />
       <CommitmentEditDialog
         commitment={editCommitment}
@@ -1060,31 +910,6 @@ function UnifiedBudgetEmptyState({
   )
 }
 
-function MobileMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: string
-  tone?: "ok" | "warning" | "danger"
-}) {
-  return (
-    <div>
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p
-        className={cn(
-          "mt-1 text-sm font-semibold tabular-nums",
-          tone === "danger" && "text-destructive",
-          tone === "warning" && "text-amber-600 dark:text-amber-400",
-        )}
-      >
-        {value}
-      </p>
-    </div>
-  )
-}
-
 function BudgetBucketSheet({
   bucket,
   open,
@@ -1121,6 +946,10 @@ function BudgetBucketSheet({
   onCommitmentLines: (commitment: CommitmentSummary) => void
   onCommitmentFiles: (commitment: CommitmentSummary) => void
 }) {
+  const remainingToBuyCents = Math.max(
+    0,
+    (bucket?.budgetCents ?? 0) - (bucket?.committedCents ?? 0),
+  )
   const toneClass =
     bucket?.status === "over"
       ? "text-destructive"
@@ -1139,7 +968,7 @@ function BudgetBucketSheet({
         <div className="flex-1 overflow-y-auto px-4">
           <div className="pt-6 pb-4">
             <SheetTitle className="text-lg font-semibold leading-none tracking-tight">
-              {bucket?.name ?? "Cost bucket"}
+              {bucket?.name ?? "Cost code"}
             </SheetTitle>
             <SheetDescription className="text-sm text-muted-foreground">
               {bucket?.code ? `${bucket.code}` : "Uncoded"}{bucket?.category ? ` • ${bucket.category}` : ""}
@@ -1157,15 +986,19 @@ function BudgetBucketSheet({
                 <p className="mt-1 text-2xl font-semibold tabular-nums">{formatCurrency(bucket?.committedCents)}</p>
               </div>
               <div className="rounded-lg border bg-card p-4">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
-                <p className="mt-1 text-2xl font-semibold tabular-nums">{formatCurrency(bucket?.actualCents)}</p>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Remaining To Buy</p>
+                <p className={cn("mt-1 text-2xl font-semibold tabular-nums", toneClass)}>
+                  {formatCurrency(remainingToBuyCents)}
+                </p>
               </div>
               <div className="rounded-lg border bg-card p-4">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Variance</p>
-                <p className={cn("mt-1 text-2xl font-semibold tabular-nums", toneClass)}>
-                  {formatCurrency(bucket?.varianceCents)}
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">
+                  {formatCurrency(bucket?.actualCents)}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">{bucket?.variancePercent ?? 0}% used</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {bucket?.variancePercent ?? 0}% spent
+                </p>
               </div>
             </div>
 
@@ -1210,7 +1043,9 @@ function BudgetBucketSheet({
               <div className="flex items-center justify-between">
                 <div>
                   <h4 className="text-sm font-semibold">Commitments</h4>
-                  <p className="text-xs text-muted-foreground">Subcontracts and POs allocated to this code.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Subcontracts and POs bought against this cost code.
+                  </p>
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -1236,7 +1071,8 @@ function BudgetBucketSheet({
                       <TableRow className="bg-muted/40">
                         <TableHead className="px-4">Commitment</TableHead>
                         <TableHead className="hidden md:table-cell px-4">Company</TableHead>
-                        <TableHead className="w-[160px] px-4 text-right">Allocated</TableHead>
+                        <TableHead className="w-[120px] px-4 text-right">Contract</TableHead>
+                        <TableHead className="w-[120px] px-4 text-right">Allocated</TableHead>
                         <TableHead className="w-[72px] px-2" />
                       </TableRow>
                     </TableHeader>
@@ -1245,13 +1081,21 @@ function BudgetBucketSheet({
                         <TableRow key={c.id} className="group h-[56px] hover:bg-muted/30">
                           <TableCell className="px-4">
                             <span className="block truncate text-sm font-medium">{c.title}</span>
-                            <span className="block text-xs text-muted-foreground">
-                              {c.matching_line_count} {c.matching_line_count === 1 ? "allocation" : "allocations"}
-                            </span>
+                            <div className="mt-1 flex items-center gap-2">
+                              <CommitmentStatusBadge status={c.status} />
+                              <span className="block text-xs text-muted-foreground">
+                                {c.matching_line_count} {c.matching_line_count === 1 ? "allocation" : "allocations"}
+                              </span>
+                            </div>
                           </TableCell>
                           <TableCell className="hidden px-4 md:table-cell">
                             <span className="block truncate text-xs text-muted-foreground">
                               {c.company_name ?? "No company"}
+                            </span>
+                          </TableCell>
+                          <TableCell className="px-4 text-right">
+                            <span className="text-sm tabular-nums text-muted-foreground">
+                              {formatCurrency(c.total_cents)}
                             </span>
                           </TableCell>
                           <TableCell className="px-4 text-right">
@@ -1469,58 +1313,6 @@ function CostBucketEditorSheet({
   )
 }
 
-function LegendDot({ className, label }: { className: string; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span className={cn("h-2 w-2 rounded-full", className)} />
-      {label}
-    </span>
-  )
-}
-
-function HeroStat({
-  label,
-  value,
-  meta,
-  tone,
-}: {
-  label: string
-  value: string
-  meta?: string
-  tone?: "ok" | "warning" | "danger"
-}) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-      <div className="mt-1 flex items-baseline gap-2">
-        <p
-          className={cn(
-            "text-lg font-semibold tabular-nums",
-            tone === "danger" && "text-destructive",
-            tone === "warning" && "text-amber-600 dark:text-amber-400",
-          )}
-        >
-          {value}
-        </p>
-        {meta && (
-          <span
-            className={cn(
-              "text-xs",
-              tone === "danger"
-                ? "text-destructive"
-                : tone === "warning"
-                ? "text-amber-600 dark:text-amber-400"
-                : "text-muted-foreground",
-            )}
-          >
-            {meta}
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
 // ---- Commitment dialogs ----
 
 function CommitmentCreateDialog({
@@ -1528,53 +1320,76 @@ function CommitmentCreateDialog({
   onOpenChange,
   projectId,
   companies,
+  costCodes,
+  draft,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   projectId: string
   companies: Company[]
+  costCodes: CostCode[]
+  draft: CommitmentCreateDraft | null
 }) {
   const { toast } = useToast()
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
   const [companyId, setCompanyId] = useState<string>(companies[0]?.id ?? "")
+  const [costCodeId, setCostCodeId] = useState("")
   const [title, setTitle] = useState("")
-  const [totalDollars, setTotalDollars] = useState("")
-  const [status, setStatus] = useState("approved")
+  const [scope, setScope] = useState("")
+  const [amountDollars, setAmountDollars] = useState("")
+  const [status, setStatus] = useState("draft")
 
   useEffect(() => {
     if (open) {
       setCompanyId(companies[0]?.id ?? "")
+      setCostCodeId(draft?.costCodeId ?? costCodes[0]?.id ?? "")
       setTitle("")
-      setTotalDollars("")
-      setStatus("approved")
+      setScope(draft?.defaultScope ?? "")
+      setAmountDollars(draft?.defaultAmountDollars ?? "")
+      setStatus("draft")
     }
-  }, [open, companies])
+  }, [open, companies, costCodes, draft])
 
   const submit = () => {
     if (!companyId) {
       toast({ title: "Company required" })
       return
     }
+    if (!costCodeId) {
+      toast({ title: "Cost code required" })
+      return
+    }
     if (title.trim().length < 2) {
       toast({ title: "Title required" })
       return
     }
-    const n = Number(totalDollars)
-    if (!Number.isFinite(n) || n < 0) {
-      toast({ title: "Invalid total" })
+    const n = Number(amountDollars)
+    if (!Number.isFinite(n) || n <= 0) {
+      toast({ title: "Invalid amount" })
+      return
+    }
+    if (!scope.trim()) {
+      toast({ title: "Scope required" })
       return
     }
 
     startTransition(async () => {
       try {
-        await createProjectCommitmentAction(projectId, {
+        const commitment = await createProjectCommitmentAction(projectId, {
           project_id: projectId,
           company_id: companyId,
           title: title.trim(),
           total_cents: Math.round(n * 100),
           status,
+        })
+        await createCommitmentLineAction(commitment.id, {
+          cost_code_id: costCodeId,
+          description: scope.trim(),
+          quantity: 1,
+          unit: "LS",
+          unit_cost_cents: Math.round(n * 100),
         })
         toast({ title: "Commitment created" })
         onOpenChange(false)
@@ -1594,24 +1409,41 @@ function CommitmentCreateDialog({
         <DialogHeader>
           <DialogTitle>New commitment</DialogTitle>
           <DialogDescription>
-            Create a subcontract or PO to track spend against this project.
+            Create a subcontract or PO and allocate it to a cost code now.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label>Company</Label>
-            <Select value={companyId} onValueChange={setCompanyId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select company" />
-              </SelectTrigger>
-              <SelectContent>
-                {companies.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Company</Label>
+              <Select value={companyId} onValueChange={setCompanyId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent>
+                  {companies.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Cost code</Label>
+              <Select value={costCodeId} onValueChange={setCostCodeId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select cost code" />
+                </SelectTrigger>
+                <SelectContent>
+                  {costCodes.map((code) => (
+                    <SelectItem key={code.id} value={code.id}>
+                      {code.code ? `${code.code} — ${code.name}` : code.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label>Title</Label>
@@ -1621,12 +1453,20 @@ function CommitmentCreateDialog({
               placeholder="e.g., Plumbing subcontract"
             />
           </div>
+          <div className="space-y-1.5">
+            <Label>Allocated scope</Label>
+            <Input
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              placeholder="e.g., Rough plumbing labor and trim"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Total ($)</Label>
+              <Label>Initial commitment amount ($)</Label>
               <Input
-                value={totalDollars}
-                onChange={(e) => setTotalDollars(e.target.value)}
+                value={amountDollars}
+                onChange={(e) => setAmountDollars(e.target.value)}
                 inputMode="decimal"
                 placeholder="0.00"
               />
@@ -1736,6 +1576,9 @@ function CommitmentEditDialog({
                 onChange={(e) => setTotalDollars(e.target.value)}
                 inputMode="decimal"
               />
+              <p className="text-xs text-muted-foreground">
+                Once allocation lines exist, this total follows the line total.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label>Status</Label>
@@ -1938,6 +1781,7 @@ function CommitmentLineDialog({
   onSaved: () => void
 }) {
   const { toast } = useToast()
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
   const [costCodeId, setCostCodeId] = useState("")
@@ -1997,6 +1841,7 @@ function CommitmentLineDialog({
           await createCommitmentLineAction(commitmentId, payload)
         }
         onSaved()
+        router.refresh()
       } catch (error) {
         toast({
           title: "Unable to save line",
@@ -2012,6 +1857,7 @@ function CommitmentLineDialog({
       try {
         await deleteCommitmentLineAction(line.id)
         onSaved()
+        router.refresh()
       } catch (error) {
         toast({
           title: "Unable to remove line",

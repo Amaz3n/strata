@@ -75,8 +75,8 @@ export default async function ProposalPage({ params }: Params) {
       <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-12">
         <div className="text-center">
           <div className="mb-4 text-6xl">✓</div>
-          <h1 className="text-2xl font-bold text-green-600">Proposal Accepted</h1>
-          <p className="mt-2 text-gray-600">Thank you! Your contract has been generated.</p>
+          <h1 className="text-2xl font-bold text-green-600">Proposal Executed</h1>
+          <p className="mt-2 text-gray-600">Thank you. The executed document has been recorded.</p>
         </div>
       </div>
     )

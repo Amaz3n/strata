@@ -9,6 +9,7 @@ import {
 } from "../actions"
 import { BidPackageDetailClientNew } from "@/components/bids/bid-package-detail-client-new"
 import { listProjectVendors } from "@/lib/services/project-vendors"
+import { listCostCodes } from "@/lib/services/cost-codes"
 
 interface BidPackageDetailPageProps {
   params: Promise<{ id: string; packageId: string }>
@@ -26,12 +27,13 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
     notFound()
   }
 
-  const [invites, addenda, submissions, companies, projectVendors] = await Promise.all([
+  const [invites, addenda, submissions, companies, projectVendors, costCodes] = await Promise.all([
     listBidInvitesAction(bidPackage.id),
     listBidAddendaAction(bidPackage.id),
     listBidSubmissionsAction(bidPackage.id),
     getOrgCompaniesAction(),
     listProjectVendors(project.id),
+    listCostCodes().catch(() => []),
   ])
 
   return (
@@ -51,6 +53,7 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
         submissions={submissions}
         companies={companies}
         projectVendors={projectVendors}
+        costCodes={costCodes}
       />
     </PageLayout>
   )

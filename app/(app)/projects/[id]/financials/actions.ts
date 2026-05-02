@@ -62,12 +62,13 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
  * - Compliance rules for payment blocking
  */
 export async function fetchPayablesTabDataAction(projectId: string) {
-  const [vendorBills, complianceRules] = await Promise.all([
+  const [vendorBills, complianceRules, costCodes] = await Promise.all([
     listVendorBillsForProject(projectId).catch(() => []),
     getComplianceRules().catch(() => ({
       require_lien_waiver: false,
       block_payment_on_missing_docs: true,
     })),
+    listCostCodes().catch(() => []),
   ])
 
   const companyIds = Array.from(new Set(vendorBills.map((b) => b.company_id).filter(Boolean))) as string[]
@@ -77,6 +78,7 @@ export async function fetchPayablesTabDataAction(projectId: string) {
     vendorBills,
     complianceRules,
     complianceStatusByCompanyId,
+    costCodes,
   }
 }
 

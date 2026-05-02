@@ -11,6 +11,7 @@ import { getCurrentUserAction } from "../actions/user"
 import { getCrmDashboardStats } from "@/lib/services/crm"
 import { getOrgAccessState } from "@/lib/services/access"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
+import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
 export const dynamic = "force-dynamic"
 
@@ -20,11 +21,12 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess] = await Promise.all([
+  const [currentUser, crmStats, access, platformAccess, permissionResult] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch(() => ({ status: "unknown", locked: false })),
     getCurrentPlatformAccess().catch(() => ({ canAccessPlatform: false, roles: [], isEnvSuperadmin: false })),
+    getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
   ])
 
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
@@ -39,6 +41,7 @@ export default async function AppLayout({
         user={currentUser}
         pipelineBadgeCount={pipelineBadgeCount}
         canAccessPlatform={platformAccess.canAccessPlatform}
+        permissions={permissionResult.permissions}
       />
       <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
         <PageTitleProvider>

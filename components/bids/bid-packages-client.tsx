@@ -6,6 +6,7 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { BidPackage } from "@/lib/services/bids"
+import type { CostCode } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,6 +34,7 @@ interface BidPackagesClientProps {
   projectId: string
   packages: BidPackage[]
   tradeOptions: string[]
+  costCodes: CostCode[]
 }
 
 const NO_TRADE_VALUE = "__none__"
@@ -47,13 +49,19 @@ function combineDateAndTime(date: Date, time: string): Date {
   return next
 }
 
-export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPackagesClientProps) {
+export function BidPackagesClient({
+  projectId,
+  packages,
+  tradeOptions,
+  costCodes,
+}: BidPackagesClientProps) {
   const [items, setItems] = useState(packages)
   const [search, setSearch] = useState("")
   const [createOpen, setCreateOpen] = useState(false)
   const [isCreating, startCreating] = useTransition()
 
   const [title, setTitle] = useState("")
+  const [costCodeId, setCostCodeId] = useState("__none__")
   const [trade, setTrade] = useState(NO_TRADE_VALUE)
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
   const [dueTime, setDueTime] = useState("17:00")
@@ -70,6 +78,7 @@ export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPack
 
   const resetForm = () => {
     setTitle("")
+    setCostCodeId("__none__")
     setTrade(NO_TRADE_VALUE)
     setDueDate(undefined)
     setDueTime("17:00")
@@ -86,6 +95,7 @@ export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPack
       try {
         const payload = {
           title: title.trim(),
+          cost_code_id: costCodeId === "__none__" ? null : costCodeId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
@@ -125,6 +135,22 @@ export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPack
             <div className="space-y-2">
               <Label>Title</Label>
               <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Electrical - Rough & Trim" />
+            </div>
+            <div className="space-y-2">
+              <Label>Cost code</Label>
+              <Select value={costCodeId} onValueChange={setCostCodeId}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select cost code" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No cost code yet</SelectItem>
+                  {costCodes.map((code) => (
+                    <SelectItem key={code.id} value={code.id}>
+                      {code.code ? `${code.code} — ${code.name}` : code.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label>Trade</Label>
@@ -210,16 +236,17 @@ export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPack
           <TableHeader>
             <TableRow className="divide-x">
               <TableHead className="px-4 py-4">Package</TableHead>
-              <TableHead className="px-4 py-4">Trade</TableHead>
-              <TableHead className="px-4 py-4 text-center">Status</TableHead>
-              <TableHead className="px-4 py-4 text-center">Invites</TableHead>
-              <TableHead className="px-4 py-4 text-center">Due</TableHead>
+                  <TableHead className="px-4 py-4">Trade</TableHead>
+                  <TableHead className="px-4 py-4">Cost code</TableHead>
+                  <TableHead className="px-4 py-4 text-center">Status</TableHead>
+                  <TableHead className="px-4 py-4 text-center">Invites</TableHead>
+                  <TableHead className="px-4 py-4 text-center">Due</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={6} className="py-12 text-center text-muted-foreground">
                   No bid packages yet.
                 </TableCell>
               </TableRow>
@@ -232,6 +259,9 @@ export function BidPackagesClient({ projectId, packages, tradeOptions }: BidPack
                     </Link>
                   </TableCell>
                   <TableCell className="px-4 py-4 text-muted-foreground">{pkg.trade ?? "—"}</TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground">
+                    {pkg.cost_code_code ? `${pkg.cost_code_code} ${pkg.cost_code_name ? `· ${pkg.cost_code_name}` : ""}` : "—"}
+                  </TableCell>
                   <TableCell className="px-4 py-4 text-center">
                     <BidStatusBadge status={pkg.status} />
                   </TableCell>

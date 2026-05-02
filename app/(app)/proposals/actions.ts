@@ -113,7 +113,7 @@ export async function createProposalAction(input: ProposalInput) {
 }
 
 export async function sendProposalAction(proposalId: string) {
-  const proposal = await sendProposal(proposalId)
+  const proposal = await sendProposal(proposalId, undefined, { queueEmail: false })
   revalidatePath("/proposals")
   return proposal
 }

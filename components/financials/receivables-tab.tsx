@@ -129,11 +129,12 @@ export function ReceivablesTab({
             contract={contract}
             approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
             scheduleItems={scheduleItems}
+            costCodes={costCodes}
           />
         </TabsContent>
 
         <TabsContent value="retainage" className="mt-4">
-          <RetainageTracker retainage={safeRetainage} />
+          <RetainageTracker projectId={projectId} project={project} retainage={safeRetainage} />
         </TabsContent>
       </Tabs>
     </div>

@@ -19,7 +19,7 @@ export function ChangeOrderApprovalClient({ changeOrder, continueSigningUrl }: P
     <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-8">
       <div className="mx-auto max-w-3xl space-y-4">
         <div className="text-center space-y-2">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Change Order</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Change Order Worksheet</p>
           <h1 className="text-2xl font-bold">{changeOrder.title}</h1>
           <div className="flex justify-center gap-2">
             <Badge variant="secondary" className="capitalize">{changeOrder.status}</Badge>
@@ -51,11 +51,11 @@ export function ChangeOrderApprovalClient({ changeOrder, continueSigningUrl }: P
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Approval & Signature</CardTitle>
+            <CardTitle className="text-base">Execution Document</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Change order approvals now run through Arc's secure document-signing flow.
+              This page shows Arc's structured change-order worksheet. The official approval happens through the execution document.
             </p>
 
             {changeOrder.status === "approved" ? (
@@ -64,11 +64,11 @@ export function ChangeOrderApprovalClient({ changeOrder, continueSigningUrl }: P
               </div>
             ) : continueSigningUrl ? (
               <Button className="w-full" asChild>
-                <a href={continueSigningUrl}>Continue to secure signing</a>
+                <a href={continueSigningUrl}>Continue to execution document</a>
               </Button>
             ) : (
               <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                The signing link is not active yet. Please use the latest email from your builder.
+                The execution document is not active yet. Please use the latest signing email from your builder.
               </div>
             )}
           </CardContent>

@@ -13,13 +13,34 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Sheet, SheetInlineContent, SheetTitle } from "@/components/ui/sheet"
 import { NotificationPreferences } from "@/components/settings/notification-preferences"
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
 import { StripeConnectionCard } from "@/components/integrations/stripe-connection-card"
 import { Spinner } from "@/components/ui/spinner"
-import { Bell, Building2, CreditCard, Link2, Settings, Tag, User as UserIcon, Users } from "@/components/icons"
+import {
+  AlertTriangle,
+  ArrowRight,
+  Bell,
+  Building2,
+  Calendar,
+  Check,
+  Clock,
+  CreditCard,
+  ExternalLink,
+  Link2,
+  Receipt,
+  Settings,
+  Shield,
+  Sparkles,
+  Tag,
+  TrendingUp,
+  User as UserIcon,
+  Users,
+  Zap,
+} from "@/components/icons"
 import { Info } from "lucide-react"
 import { getQBOConnectionAction, getStripeConnectedAccountAction } from "@/app/(app)/settings/integrations/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
@@ -35,9 +56,11 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
-import type { ComplianceRequirementTemplateItem, ComplianceRules, CostCode, OrgRoleOption, TeamMember, User } from "@/lib/types"
+import type { ComplianceRequirementTemplateItem, ComplianceRules, CostCode, OrgRoleOption, PermissionOption, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
+import { MemberFormPanel } from "@/components/team/member-form-panel"
 import { MfaSettingsCard } from "@/components/settings/mfa-settings-card"
+import { SessionsSettingsCard } from "@/components/settings/sessions-settings-card"
 import Link from "next/link"
 import packageJson from "@/package.json"
 import { cn } from "@/lib/utils"
@@ -165,6 +188,7 @@ interface SettingsWindowProps {
   variant?: "page" | "dialog"
   teamMembers?: TeamMember[]
   roleOptions?: OrgRoleOption[]
+  permissionOptions?: PermissionOption[]
   canManageMembers?: boolean
   canEditRoles?: boolean
   initialBilling?: BillingDetails
@@ -192,6 +216,7 @@ export function SettingsWindow({
   variant = "page",
   teamMembers: initialTeamMembers,
   roleOptions: initialRoleOptions,
+  permissionOptions: initialPermissionOptions,
   canManageMembers: initialCanManageMembers,
   canEditRoles: initialCanEditRoles,
   initialBilling = null,
@@ -224,16 +249,20 @@ export function SettingsWindow({
   const [billingActionError, setBillingActionError] = useState<string | null>(null)
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(initialTeamMembers ?? [])
   const [roleOptions, setRoleOptions] = useState<OrgRoleOption[]>(initialRoleOptions ?? [])
+  const [permissionOptions, setPermissionOptions] = useState<PermissionOption[]>(initialPermissionOptions ?? [])
   const [canManageMembers, setCanManageMembers] = useState<boolean>(initialCanManageMembers ?? false)
   const [canEditRoles, setCanEditRoles] = useState<boolean>(initialCanEditRoles ?? false)
   const [hasFetchedTeam, setHasFetchedTeam] = useState<boolean>(
       initialTeamMembers !== undefined ||
       initialRoleOptions !== undefined ||
+      initialPermissionOptions !== undefined ||
       initialCanManageMembers !== undefined ||
       initialCanEditRoles !== undefined,
   )
   const [loadingTeam, setLoadingTeam] = useState(false)
   const [teamError, setTeamError] = useState<string | null>(null)
+  const [teamView, setTeamView] = useState<{ mode: "list" } | { mode: "invite" } | { mode: "edit"; member: TeamMember }>({ mode: "list" })
+  const isTeamFormOpen = teamView.mode !== "list"
   const [costCodes, setCostCodes] = useState<CostCode[]>([])
   const [hasFetchedCostCodes, setHasFetchedCostCodes] = useState(false)
   const [loadingCostCodes, setLoadingCostCodes] = useState(false)
@@ -462,6 +491,7 @@ export function SettingsWindow({
         if (!isMounted) return
         setTeamMembers(data?.teamMembers ?? [])
         setRoleOptions(data?.roleOptions ?? [])
+        setPermissionOptions(data?.permissionOptions ?? [])
         setCanManageMembers(Boolean(data?.canManageMembers))
         setCanEditRoles(Boolean(data?.canEditRoles))
         setHasFetchedTeam(true)
@@ -552,8 +582,47 @@ export function SettingsWindow({
   const isTrialing = billingStatus === "trialing"
   const isPastDue = billingStatus === "past_due"
   const needsSubscription = !isActive
-  const formattedRenewal = renewal ? new Date(renewal).toLocaleDateString() : "Not set"
-  const formattedTrialEnd = trialEndsAt ? new Date(trialEndsAt).toLocaleDateString() : "Not set"
+  const formattedRenewal = renewal
+    ? new Date(renewal).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+    : "Not set"
+  const formattedTrialEnd = trialEndsAt
+    ? new Date(trialEndsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+    : "Not set"
+
+  const renewalDate = renewal ? new Date(renewal) : null
+  const trialEndDate = trialEndsAt ? new Date(trialEndsAt) : null
+  const msPerDay = 1000 * 60 * 60 * 24
+  const daysUntilRenewal = renewalDate
+    ? Math.max(0, Math.ceil((renewalDate.getTime() - Date.now()) / msPerDay))
+    : null
+  const daysUntilTrialEnd = trialEndDate
+    ? Math.max(0, Math.ceil((trialEndDate.getTime() - Date.now()) / msPerDay))
+    : null
+  const cycleTotalDays =
+    interval === "yearly" || interval === "year"
+      ? 365
+      : interval === "weekly" || interval === "week"
+        ? 7
+        : 30
+  const cycleProgress =
+    daysUntilRenewal != null
+      ? Math.min(100, Math.max(0, ((cycleTotalDays - daysUntilRenewal) / cycleTotalDays) * 100))
+      : 0
+
+  const planAmountDisplay =
+    billing?.plan?.amount_cents != null ? `$${(billing.plan.amount_cents / 100).toFixed(0)}` : "Custom"
+  const planIntervalSuffix =
+    billing?.plan?.amount_cents != null && interval
+      ? `/${interval === "monthly" ? "mo" : interval === "yearly" ? "yr" : interval}`
+      : ""
+  const planCurrency = (billing?.plan?.currency ?? "usd").toUpperCase()
+  const planCodeStr = (billing?.subscription?.plan_code ?? billing?.org?.billing_model ?? "").toLowerCase()
+  const PlanTierIcon =
+    planCodeStr.includes("business") || planCodeStr.includes("enterprise")
+      ? Building2
+      : planCodeStr.includes("pro")
+        ? Zap
+        : Sparkles
 
   useEffect(() => {
     if (!selectedPlanCode && plans.length > 0) {
@@ -791,46 +860,58 @@ export function SettingsWindow({
       <div
         className={cn(
           containerHeight,
-          "relative min-h-0 overflow-hidden border border-border/80 bg-background/95 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)] backdrop-blur supports-[backdrop-filter]:bg-background/85",
+          "relative min-h-0 overflow-hidden bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+          "border border-border/80 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)]",
         )}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-primary/[0.07] to-transparent" />
         {!isMobile && (
           <div className="flex min-h-0 w-80 flex-col border-r border-border/70 bg-muted/20 p-4">
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
-              <div className="flex items-center gap-3 border border-border/70 bg-background/80 px-4 py-3 shadow-sm">
-                <Avatar className="h-12 w-12">
-                  <AvatarImage src={user?.avatar_url || "/placeholder.svg"} alt={user?.full_name} />
+            <button
+                type="button"
+                onClick={() => handleTabChange("profile")}
+                className={cn(
+                  "flex w-full items-center gap-3 border px-4 py-3 text-left transition-all",
+                  tab === "profile"
+                    ? "border-primary/30 bg-primary/5 ring-1 ring-primary/30"
+                    : "border-border/70 bg-background/80 hover:border-border/80 hover:bg-background",
+                )}
+              >
+                <Avatar className="h-12 w-12 border border-border/50">
+                  <AvatarImage src={user?.avatar_url ?? undefined} alt={user?.full_name} />
                   <AvatarFallback className="text-base font-semibold">{initials}</AvatarFallback>
                 </Avatar>
-                <div className="text-sm">
-                  <p className="font-semibold leading-tight">{user?.full_name ?? "Account"}</p>
-                  <p className="text-muted-foreground text-xs">{user?.email ?? "—"}</p>
+                <div className="flex-1 overflow-hidden">
+                  <p className="truncate font-semibold leading-tight">{user?.full_name ?? "Account"}</p>
+                  <p className="truncate text-xs text-muted-foreground">{user?.email ?? "—"}</p>
                 </div>
-              </div>
+              </button>
 
               <div className="mt-5">
                 <p className="mb-3 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   Workspace settings
                 </p>
                 <TabsPrimitive.List className="flex w-full flex-col gap-1.5 bg-transparent p-0">
-                  {sections.map((section) => (
-                    <TabsPrimitive.Trigger
-                      key={section.value}
-                      value={section.value}
-                      className="group w-full min-h-[64px] justify-start gap-3 border border-transparent bg-background/40 px-3.5 py-3 text-left transition-all hover:border-border/80 hover:bg-background/85 data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center border border-border/70 bg-background/70 text-muted-foreground transition-colors group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary">
-                          <section.icon className="h-4 w-4" />
+                  {sections
+                    .filter((section) => section.value !== "profile")
+                    .map((section) => (
+                      <TabsPrimitive.Trigger
+                        key={section.value}
+                        value={section.value}
+                        className="group w-full min-h-[64px] justify-start gap-3 border border-transparent bg-background/40 px-3.5 py-3 text-left transition-all hover:border-border/80 hover:bg-background/85 data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center border border-border/70 bg-background/70 text-muted-foreground transition-colors group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary">
+                            <section.icon className="h-4 w-4" />
+                          </div>
+                          <div className="space-y-0.5">
+                            <p className="text-sm font-medium leading-tight">{section.label}</p>
+                            <p className="text-xs leading-tight text-muted-foreground">{section.description}</p>
+                          </div>
                         </div>
-                        <div className="space-y-0.5">
-                          <p className="text-sm font-medium leading-tight">{section.label}</p>
-                          <p className="text-xs leading-tight text-muted-foreground">{section.description}</p>
-                        </div>
-                      </div>
-                    </TabsPrimitive.Trigger>
-                  ))}
+                      </TabsPrimitive.Trigger>
+                    ))}
                 </TabsPrimitive.List>
               </div>
             </div>
@@ -838,56 +919,455 @@ export function SettingsWindow({
         )}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="border-b border-border/70 bg-background/90 px-4 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 lg:px-6">
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex size-9 items-center justify-center border border-primary/30 bg-primary/5 text-primary">
-                <activeSection.icon className="h-4 w-4" />
+          <div
+            className={cn(
+              "border-b border-border/70 bg-background/90 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 lg:px-6",
+              tab === "billing" && !isMobile ? "py-2" : "py-4",
+            )}
+          >
+            {!(tab === "billing" && !isMobile) && (
+              <div className="mb-4 flex items-center gap-3">
+                <div className="flex size-9 items-center justify-center border border-primary/30 bg-primary/5 text-primary">
+                  <activeSection.icon className="h-4 w-4" />
+                </div>
+                <div>
+                  {tab !== "profile" && tab !== "organization" && tab !== "billing" && tab !== "team" && tab !== "about" && (
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Settings</p>
+                  )}
+                  <h1 className="text-lg font-semibold leading-tight">{activeSection.label}</h1>
+                  {tab !== "profile" && tab !== "organization" && tab !== "billing" && tab !== "team" && tab !== "about" && (
+                    <p className="text-sm text-muted-foreground">{activeSection.description}</p>
+                  )}
+                </div>
               </div>
-              <div>
-                {tab !== "profile" && tab !== "organization" && tab !== "billing" && tab !== "team" && tab !== "about" && (
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Settings</p>
-                )}
-                <h1 className="text-lg font-semibold leading-tight">{activeSection.label}</h1>
-                {tab !== "profile" && tab !== "organization" && tab !== "billing" && tab !== "team" && tab !== "about" && (
-                  <p className="text-sm text-muted-foreground">{activeSection.description}</p>
-                )}
-              </div>
-            </div>
+            )}
 
             {isMobile ? (
-              <TabsList className="h-auto w-full justify-start gap-2 overflow-x-auto bg-transparent p-0 pb-1">
-                {sections.map((section) => (
-                  <TabsTrigger
-                    key={section.value}
-                    value={section.value}
-                    className="h-9 shrink-0 gap-2 border border-border/70 bg-background/70 px-3 text-xs font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5 data-[state=active]:text-primary"
-                  >
-                    <section.icon className="h-3.5 w-3.5" />
-                    {section.label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            ) : (
+              <div className="flex items-center gap-2 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => handleTabChange("profile")}
+                  className={cn(
+                    "flex shrink-0 items-center justify-center rounded-full border transition-all",
+                    tab === "profile"
+                      ? "border-primary/30 bg-primary/10 ring-2 ring-primary/20"
+                      : "border-border/70 bg-background/70",
+                  )}
+                >
+                  <Avatar className="h-9 w-9">
+                    <AvatarImage src={user?.avatar_url || "/placeholder.svg"} alt={user?.full_name} />
+                    <AvatarFallback className="text-xs font-semibold">{initials}</AvatarFallback>
+                  </Avatar>
+                </button>
+                <TabsList className="h-auto flex-1 justify-start gap-2 overflow-x-auto bg-transparent p-0 pb-1 no-scrollbar">
+                  {sections
+                    .filter((section) => section.value !== "profile")
+                    .map((section) => (
+                      <TabsTrigger
+                        key={section.value}
+                        value={section.value}
+                        className="h-9 shrink-0 gap-2 border border-border/70 bg-background/70 px-3 text-xs font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5 data-[state=active]:text-primary"
+                      >
+                        <section.icon className="h-3.5 w-3.5" />
+                        {section.label}
+                      </TabsTrigger>
+                    ))}
+                </TabsList>
+              </div>
+            ) : tab === "billing" ? null : (
               <p className="text-sm text-muted-foreground">Manage your account and workspace preferences.</p>
             )}
           </div>
 
           <ScrollArea className="flex-1">
-            <div className="mx-auto w-full max-w-6xl space-y-8 p-5 lg:p-8">
-              <TabsContent value="profile" className="m-0 mt-0">
-                <div className="space-y-7">
+            <TabsContent value="billing" className="m-0 mt-0 outline-none focus-visible:outline-none">
+              {!canManageBilling ? (
+                <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
+                  <Shield className="h-10 w-10 text-muted-foreground/40" />
+                  <p className="mt-4 max-w-sm text-sm text-muted-foreground">
+                    You do not have permission to view billing for this organization.
+                  </p>
+                </div>
+              ) : loadingBilling ? (
+                <div className="flex h-64 items-center justify-center gap-3 text-muted-foreground">
+                  <Spinner className="h-4 w-4" />
+                  <span className="text-sm">Loading billing details…</span>
+                </div>
+              ) : billingError ? (
+                <div className="px-6 py-12 text-center text-sm text-destructive">{billingError}</div>
+              ) : (
+                <div className="flex flex-col">
+                  {/* HERO */}
+                  <div className="relative overflow-hidden border-b border-border/70 bg-gradient-to-br from-primary/[0.08] via-background to-background">
+                    <div
+                      className="pointer-events-none absolute inset-0"
+                      style={{
+                        backgroundImage:
+                          "radial-gradient(circle at 100% 0%, var(--primary), transparent 50%), radial-gradient(circle at 0% 100%, var(--chart-2), transparent 50%)",
+                        opacity: 0.07,
+                      }}
+                    />
+                    <div className="pointer-events-none absolute inset-0 [background-image:linear-gradient(to_right,oklch(0.5_0_0/0.05)_1px,transparent_1px),linear-gradient(to_bottom,oklch(0.5_0_0/0.05)_1px,transparent_1px)] [background-size:32px_32px] [mask-image:radial-gradient(ellipse_at_center,black,transparent_75%)]" />
+                    <div className="relative grid gap-8 px-6 py-8 md:grid-cols-[1.5fr_1fr] md:gap-10 md:px-10 md:py-12 lg:gap-14 lg:px-12 lg:py-14">
+                      <div className="space-y-6">
+                        <div className="flex items-center gap-3">
+                          <div className="flex size-9 items-center justify-center border border-primary/30 bg-background/80 text-primary backdrop-blur">
+                            <PlanTierIcon className="h-4 w-4" />
+                          </div>
+                          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                            Current plan
+                          </span>
+                          <Badge
+                            variant={isActive ? "default" : isPastDue ? "destructive" : "outline"}
+                            className="ml-auto h-6 px-2 text-[11px] font-medium uppercase tracking-wide"
+                          >
+                            {billingStatus}
+                          </Badge>
+                        </div>
+                        <div>
+                          <h2 className="text-3xl font-semibold leading-tight tracking-tight text-foreground md:text-4xl">
+                            {planName}
+                          </h2>
+                          <div className="mt-3 flex items-baseline gap-1.5">
+                            <span className="text-5xl font-semibold tabular-nums tracking-tight text-foreground md:text-6xl">
+                              {planAmountDisplay}
+                            </span>
+                            {planIntervalSuffix && (
+                              <span className="text-lg font-medium text-muted-foreground md:text-xl">
+                                {planIntervalSuffix}
+                              </span>
+                            )}
+                            {billing?.plan?.amount_cents != null && (
+                              <span className="ml-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+                                {planCurrency}
+                              </span>
+                            )}
+                          </div>
+                          {billing?.org?.name && (
+                            <p className="mt-3 text-sm text-muted-foreground">
+                              Billed to <span className="text-foreground">{billing.org.name}</span>
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isActive && (
+                            <Button onClick={handleManageBilling} disabled={portalLoading} className="gap-2">
+                              {portalLoading ? "Opening…" : "Manage billing"}
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {needsSubscription && (
+                            <Button
+                              onClick={handleSubscribe}
+                              disabled={!selectedPlanCode || checkoutLoading}
+                              className="gap-2"
+                            >
+                              {checkoutLoading
+                                ? "Redirecting…"
+                                : isTrialing
+                                  ? "Add payment method"
+                                  : "Subscribe now"}
+                              <ArrowRight className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {isActive && (
+                            <Button variant="outline" onClick={handleManageBilling} disabled={portalLoading}>
+                              Change plan
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="md:border-l md:border-border/40 md:pl-10 lg:pl-12">
+                        {renewalDate ? (
+                          <div className="relative overflow-hidden border border-border/60 bg-background/60 p-5 backdrop-blur-sm">
+                            <div
+                              className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full"
+                              style={{
+                                background:
+                                  "radial-gradient(circle, var(--primary) 0%, transparent 70%)",
+                                opacity: 0.18,
+                              }}
+                            />
+                            <div className="relative flex items-center gap-2 text-muted-foreground">
+                              <Calendar className="h-3.5 w-3.5" />
+                              <span className="text-[11px] font-medium uppercase tracking-[0.18em]">
+                                {isTrialing ? "Trial ends" : "Next renewal"}
+                              </span>
+                            </div>
+                            <div className="relative mt-4 flex items-baseline gap-2">
+                              <span className="text-5xl font-semibold tabular-nums leading-none text-foreground">
+                                {daysUntilRenewal}
+                              </span>
+                              <span className="text-base font-medium text-muted-foreground">
+                                {daysUntilRenewal === 1 ? "day" : "days"}
+                              </span>
+                            </div>
+                            <div className="relative mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/50 pt-3 text-xs text-muted-foreground">
+                              <span className="text-foreground">{formattedRenewal}</span>
+                              <span className="opacity-50">·</span>
+                              <span className="capitalize">{interval} billing</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="border border-dashed border-border/60 bg-background/40 p-5 text-muted-foreground">
+                            <Calendar className="mb-2 h-5 w-5" />
+                            <p className="text-sm text-foreground">No active subscription</p>
+                            <p className="mt-1 text-xs">Pick a plan below to get started.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Inline alerts */}
+                  {(isTrialing || isPastDue || billingActionError) && (
+                    <div className="space-y-2 border-b border-border/70 px-6 py-4 lg:px-12">
+                      {isTrialing && trialEndDate && (
+                        <div className="flex items-start gap-3 border border-primary/25 bg-primary/[0.04] px-4 py-3 text-sm">
+                          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                          <div className="flex-1">
+                            <p className="font-medium text-foreground">
+                              {daysUntilTrialEnd === 0
+                                ? "Your trial ends today."
+                                : `Your trial ends in ${daysUntilTrialEnd} day${daysUntilTrialEnd === 1 ? "" : "s"}.`}
+                            </p>
+                            <p className="text-muted-foreground">
+                              Add a payment method to keep your workspace active after {formattedTrialEnd}.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                      {isPastDue && (
+                        <div className="flex items-start gap-3 border border-destructive/30 bg-destructive/[0.05] px-4 py-3 text-sm">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                          <div className="flex-1">
+                            <p className="font-medium text-foreground">Payment past due</p>
+                            <p className="text-muted-foreground">
+                              Update your billing details to restore full access to your workspace.
+                            </p>
+                          </div>
+                          <Button size="sm" variant="outline" onClick={handleManageBilling} disabled={portalLoading}>
+                            Update payment
+                          </Button>
+                        </div>
+                      )}
+                      {billingActionError && (
+                        <div className="border border-destructive/30 bg-destructive/[0.05] px-4 py-3 text-sm text-destructive">
+                          {billingActionError}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Plan picker (only when needed) */}
+                  {needsSubscription && (
+                    <div className="border-b border-border/70 px-6 py-10 lg:px-12 lg:py-14">
+                      <div className="mb-8">
+                        <h3 className="text-xl font-semibold text-foreground">Choose your plan</h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {isTrialing
+                            ? "Pick a plan to keep your workspace active after the trial."
+                            : "Activate your workspace by selecting a plan."}
+                        </p>
+                      </div>
+                      {loadingPlans ? (
+                        <div className="flex items-center gap-3 text-muted-foreground">
+                          <Spinner className="h-4 w-4" />
+                          <span className="text-sm">Loading plans…</span>
+                        </div>
+                      ) : plans.length === 0 ? (
+                        <div className="border border-border/70 bg-muted/20 px-4 py-6 text-sm text-muted-foreground">
+                          No active plans are available. Please contact support.
+                        </div>
+                      ) : (
+                        <>
+                          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                            {plans.map((plan, idx) => {
+                              const code = plan.code.toLowerCase()
+                              const isSelected = selectedPlanCode === plan.code
+                              const TierIcon =
+                                code.includes("business") || code.includes("enterprise")
+                                  ? Building2
+                                  : code.includes("pro")
+                                    ? Zap
+                                    : Sparkles
+                              const planAmount =
+                                plan.amountCents != null ? `$${(plan.amountCents / 100).toFixed(0)}` : "Custom"
+                              const planSuffix =
+                                plan.amountCents != null && plan.interval
+                                  ? `/${plan.interval === "monthly" ? "mo" : plan.interval === "yearly" ? "yr" : plan.interval}`
+                                  : ""
+                              const isFeatured = idx === Math.min(1, plans.length - 1) && plans.length > 1
+                              return (
+                                <button
+                                  key={plan.code}
+                                  type="button"
+                                  onClick={() => setSelectedPlanCode(plan.code)}
+                                  className={cn(
+                                    "group relative overflow-hidden border px-5 py-6 text-left transition-all",
+                                    isSelected
+                                      ? "border-primary bg-primary/[0.04] shadow-[0_0_0_1px_var(--primary)]"
+                                      : "border-border/70 bg-background/60 hover:border-primary/40 hover:bg-background",
+                                  )}
+                                >
+                                  {isFeatured && (
+                                    <span className="absolute right-3 top-3 inline-flex items-center bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+                                      Popular
+                                    </span>
+                                  )}
+                                  <div className="flex size-10 items-center justify-center border border-border/70 bg-background text-muted-foreground transition-colors group-hover:border-primary/40 group-hover:text-primary">
+                                    <TierIcon className="h-4 w-4" />
+                                  </div>
+                                  <p className="mt-5 text-base font-semibold text-foreground">{plan.name}</p>
+                                  <div className="mt-2 flex items-baseline gap-1">
+                                    <span className="text-3xl font-semibold tabular-nums text-foreground">
+                                      {planAmount}
+                                    </span>
+                                    {planSuffix && (
+                                      <span className="text-sm text-muted-foreground">{planSuffix}</span>
+                                    )}
+                                  </div>
+                                  <div
+                                    className={cn(
+                                      "mt-5 flex items-center gap-2 text-sm font-medium transition-colors",
+                                      isSelected
+                                        ? "text-primary"
+                                        : "text-muted-foreground group-hover:text-foreground",
+                                    )}
+                                  >
+                                    {isSelected ? (
+                                      <>
+                                        <Check className="h-4 w-4" /> Selected
+                                      </>
+                                    ) : (
+                                      <>
+                                        Select plan
+                                        <ArrowRight className="h-3.5 w-3.5" />
+                                      </>
+                                    )}
+                                  </div>
+                                </button>
+                              )
+                            })}
+                          </div>
+                          <div className="mt-8 flex flex-wrap items-center gap-3">
+                            <Button
+                              onClick={handleSubscribe}
+                              disabled={!selectedPlanCode || checkoutLoading}
+                              size="lg"
+                              className="gap-2"
+                            >
+                              {checkoutLoading
+                                ? "Redirecting…"
+                                : `Continue with ${plans.find((p) => p.code === selectedPlanCode)?.name ?? "selected plan"}`}
+                              <ArrowRight className="h-4 w-4" />
+                            </Button>
+                            <p className="text-xs text-muted-foreground">Secure checkout powered by Stripe.</p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Account / portal split */}
+                  {isActive && (
+                    <div className="grid gap-px bg-border/40 sm:grid-cols-3">
+                      <div className="bg-background px-6 py-6 lg:px-12">
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Receipt className="h-4 w-4" />
+                          <span className="text-[11px] font-medium uppercase tracking-wider">Invoices</span>
+                        </div>
+                        <p className="mt-2 text-sm text-foreground">
+                          View invoices, receipts, and download payment history.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleManageBilling}
+                          disabled={portalLoading}
+                          className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+                        >
+                          {portalLoading ? "Opening…" : "Open billing portal"}
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="bg-background px-6 py-6 lg:px-12">
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <CreditCard className="h-4 w-4" />
+                          <span className="text-[11px] font-medium uppercase tracking-wider">Payment method</span>
+                        </div>
+                        <p className="mt-2 text-sm text-foreground">
+                          Manage saved cards and update billing details.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleManageBilling}
+                          disabled={portalLoading}
+                          className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+                        >
+                          Update payment
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="bg-background px-6 py-6 lg:px-12">
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <TrendingUp className="h-4 w-4" />
+                          <span className="text-[11px] font-medium uppercase tracking-wider">Need more?</span>
+                        </div>
+                        <p className="mt-2 text-sm text-foreground">
+                          Talk to us about annual billing or custom plans.
+                        </p>
+                        <a
+                          href="mailto:billing@arc.build"
+                          className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+                        >
+                          Contact billing
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Quiet metadata footer */}
+                  {(billing?.subscription?.external_customer_id ||
+                    billing?.subscription?.external_subscription_id) && (
+                    <div className="bg-muted/20 px-6 py-4 lg:px-12">
+                      <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {billing.subscription?.external_customer_id && (
+                          <span>cus · {billing.subscription.external_customer_id}</span>
+                        )}
+                        {billing.subscription?.external_subscription_id && (
+                          <span>sub · {billing.subscription.external_subscription_id}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+
+            <div className="w-full">
+              <TabsContent value="profile" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <div className="mx-auto max-w-6xl space-y-7">
                   <div className="rounded-xl border border-border/80 bg-background/75 p-5 shadow-sm lg:p-6">
                     <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
                       <div className="flex items-center gap-4">
                         <Avatar className="h-20 w-20 border border-border/80">
                           <AvatarImage
-                            src={profilePhotoPreviewUrl ?? user?.avatar_url ?? "/placeholder.svg"}
+                            src={profilePhotoPreviewUrl ?? user?.avatar_url ?? undefined}
                             alt={user?.full_name}
                           />
                           <AvatarFallback className="text-xl font-semibold">{initials}</AvatarFallback>
                         </Avatar>
                         <div className="space-y-1">
-                          <p className="text-base font-semibold">{user?.full_name ?? "Your profile"}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-base font-semibold">{user?.full_name ?? "Your profile"}</p>
+                            {userRoleLabel && (
+                              <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-medium uppercase tracking-wider">
+                                {userRoleLabel}
+                              </Badge>
+                            )}
+                          </div>
                           <p className="text-sm text-muted-foreground">{user?.email ?? "—"}</p>
                           <div className="flex items-center gap-2 pt-2">
                             <input
@@ -899,9 +1379,6 @@ export function SettingsWindow({
                             />
                             <Button type="button" variant="outline" size="sm" onClick={() => profilePhotoInputRef.current?.click()}>
                               Change photo
-                            </Button>
-                            <Button type="button" variant="ghost" size="sm" onClick={handleProfilePhotoRemove}>
-                              Remove
                             </Button>
                           </div>
                         </div>
@@ -921,648 +1398,477 @@ export function SettingsWindow({
                     )}
                   </div>
 
-                  <div className="overflow-hidden rounded-xl border border-border/80 bg-background/75 shadow-sm">
-                    <div className="border-b border-border/70 px-5 py-4 lg:px-6">
-                      <h2 className="text-base font-semibold">Personal details</h2>
-                      <p className="text-sm text-muted-foreground">Update your basic account information.</p>
+                  <MfaSettingsCard />
+                  <SessionsSettingsCard />
+                </div>
+              </TabsContent>
+
+              <TabsContent value="organization" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <div className="space-y-8">
+                  {loadingOrganization ? (
+                    <div className="flex items-center gap-3 text-muted-foreground p-6">
+                      <Spinner className="h-4 w-4" />
+                      <span className="text-sm">Loading organization settings...</span>
                     </div>
-                    <div className="space-y-6 px-5 py-5 lg:px-6 lg:py-6">
-                      <div className="grid gap-6 lg:grid-cols-2">
-                        <div className="space-y-3">
-                          <Label htmlFor="name" className="text-sm font-medium">Full name</Label>
-                          <Input id="name" defaultValue={user?.full_name} placeholder="Alex Contractor" className="h-11" />
+                  ) : (
+                    <div className="space-y-8">
+                      <div className="flex flex-col gap-4 border-b border-border/70 pb-6 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-4">
+                          <Avatar className="h-14 w-14 rounded-lg border">
+                            <AvatarImage src={organizationSettings?.logoUrl ?? undefined} alt="Organization logo" className="object-cover" />
+                            <AvatarFallback className="rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                              <Building2 className="h-6 w-6" />
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <p className="text-sm font-semibold">Organization logo</p>
+                            <p className="text-xs text-muted-foreground">Used in the org switcher and customer-facing headers.</p>
+                          </div>
                         </div>
-                        <div className="space-y-3">
-                          <Label htmlFor="email" className="text-sm font-medium">Email</Label>
-                          <Input id="email" type="email" defaultValue={user?.email} placeholder="you@company.com" className="h-11" />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            ref={logoInputRef}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                            className="hidden"
+                            onChange={(event) => handleLogoFileSelection(event.target.files?.[0] ?? null)}
+                            disabled={!organizationSettings?.canManageOrganization || isUpdatingLogo}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => logoInputRef.current?.click()}
+                            disabled={!organizationSettings?.canManageOrganization || isUpdatingLogo}
+                          >
+                            {isUpdatingLogo ? "Uploading..." : "Upload logo"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleLogoRemove}
+                            disabled={!organizationSettings?.canManageOrganization || isUpdatingLogo || !organizationSettings?.logoUrl}
+                          >
+                            Remove
+                          </Button>
                         </div>
                       </div>
+                      {!organizationSettings?.canManageOrganization && (
+                        <p className="-mt-2 text-xs text-muted-foreground px-1">
+                          Only organization admins can update branding.
+                        </p>
+                      )}
 
                       <div className="grid gap-6 lg:grid-cols-2">
                         <div className="space-y-3">
-                          <Label htmlFor="phone" className="text-sm font-medium">Phone</Label>
-                          <Input id="phone" type="tel" placeholder="(503) 555-0123" className="h-11" />
+                          <Label htmlFor="company" className="text-sm font-medium">Company name</Label>
+                          <Input
+                            id="company"
+                            value={organizationForm.name}
+                            onChange={(event) => handleOrganizationFieldChange("name", event.target.value)}
+                            placeholder="Company name"
+                            className="h-11"
+                            disabled={!organizationSettings?.canManageOrganization}
+                          />
                         </div>
                         <div className="space-y-3">
-                          <Label htmlFor="role-readonly" className="text-sm font-medium">Role</Label>
+                          <Label htmlFor="billing-email" className="text-sm font-medium">Billing email</Label>
                           <Input
-                            id="role-readonly"
-                            value={userRoleLabel ?? (loadingTeam ? "Loading role..." : "Unknown role")}
-                            readOnly
-                            aria-readonly
-                            className="h-11 border-dashed bg-muted/30 text-muted-foreground"
+                            id="billing-email"
+                            type="email"
+                            value={organizationForm.billingEmail}
+                            onChange={(event) => handleOrganizationFieldChange("billingEmail", event.target.value)}
+                            placeholder="billing@company.com"
+                            className="h-11"
+                            disabled={!organizationSettings?.canManageOrganization}
                           />
                         </div>
                       </div>
 
-                      <div className="flex justify-start">
-                        <Button size="sm">Save changes</Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <MfaSettingsCard />
-                </div>
-              </TabsContent>
-
-              <TabsContent value="organization" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={cn(tabPanelBodyClass, "space-y-8")}>
-                    {loadingOrganization ? (
-                      <div className="flex items-center gap-3 text-muted-foreground">
-                        <Spinner className="h-4 w-4" />
-                        <span className="text-sm">Loading organization settings...</span>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex flex-col gap-4 border-b border-border/70 pb-6 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="flex items-center gap-4">
-                            <Avatar className="h-14 w-14 rounded-lg border">
-                              <AvatarImage src={organizationSettings?.logoUrl ?? undefined} alt="Organization logo" className="object-cover" />
-                              <AvatarFallback className="rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                                <Building2 className="h-6 w-6" />
-                              </AvatarFallback>
-                            </Avatar>
-                            <div>
-                              <p className="text-sm font-semibold">Organization logo</p>
-                              <p className="text-xs text-muted-foreground">Used in the org switcher and customer-facing headers.</p>
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              ref={logoInputRef}
-                              type="file"
-                              accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                              className="hidden"
-                              onChange={(event) => handleLogoFileSelection(event.target.files?.[0] ?? null)}
-                              disabled={!organizationSettings?.canManageOrganization || isUpdatingLogo}
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => logoInputRef.current?.click()}
-                              disabled={!organizationSettings?.canManageOrganization || isUpdatingLogo}
-                            >
-                              {isUpdatingLogo ? "Uploading..." : "Upload logo"}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={handleLogoRemove}
-                              disabled={!organizationSettings?.canManageOrganization || isUpdatingLogo || !organizationSettings?.logoUrl}
-                            >
-                              Remove
-                            </Button>
-                          </div>
-                        </div>
-                        {!organizationSettings?.canManageOrganization && (
-                          <p className="-mt-2 text-xs text-muted-foreground">
-                            Only organization admins can update branding.
-                          </p>
-                        )}
-
-                        <div className="grid gap-6 lg:grid-cols-2">
-                          <div className="space-y-3">
-                            <Label htmlFor="company" className="text-sm font-medium">Company name</Label>
+                      <div className="space-y-4 rounded-lg border border-border/70 bg-muted/20 p-4">
+                        <p className="text-sm font-semibold text-foreground">Billing address</p>
+                        <div className="grid gap-4 lg:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label htmlFor="address-line-1" className="text-sm font-medium">Address line 1</Label>
                             <Input
-                              id="company"
-                              value={organizationForm.name}
-                              onChange={(event) => handleOrganizationFieldChange("name", event.target.value)}
-                              placeholder="Company name"
+                              id="address-line-1"
+                              value={organizationForm.addressLine1}
+                              onChange={(event) => handleOrganizationFieldChange("addressLine1", event.target.value)}
+                              placeholder="123 Main St"
                               className="h-11"
                               disabled={!organizationSettings?.canManageOrganization}
                             />
-                          </div>
-                          <div className="space-y-3">
-                            <Label htmlFor="billing-email" className="text-sm font-medium">Billing email</Label>
-                            <Input
-                              id="billing-email"
-                              type="email"
-                              value={organizationForm.billingEmail}
-                              onChange={(event) => handleOrganizationFieldChange("billingEmail", event.target.value)}
-                              placeholder="billing@company.com"
-                              className="h-11"
-                              disabled={!organizationSettings?.canManageOrganization}
-                            />
-                          </div>
-                        </div>
-
-                        <div className="space-y-4 rounded-lg border border-border/70 bg-muted/20 p-4">
-                          <p className="text-sm font-semibold text-foreground">Billing address</p>
-                          <div className="grid gap-4 lg:grid-cols-2">
-                            <div className="space-y-2">
-                              <Label htmlFor="address-line-1" className="text-sm font-medium">Address line 1</Label>
-                              <Input
-                                id="address-line-1"
-                                value={organizationForm.addressLine1}
-                                onChange={(event) => handleOrganizationFieldChange("addressLine1", event.target.value)}
-                                placeholder="123 Main St"
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="address-line-2" className="text-sm font-medium">Address line 2</Label>
-                              <Input
-                                id="address-line-2"
-                                value={organizationForm.addressLine2}
-                                onChange={(event) => handleOrganizationFieldChange("addressLine2", event.target.value)}
-                                placeholder="Suite, floor, unit (optional)"
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
-                          </div>
-                          <div className="grid gap-4 lg:grid-cols-4">
-                            <div className="space-y-2 lg:col-span-2">
-                              <Label htmlFor="address-city" className="text-sm font-medium">City</Label>
-                              <Input
-                                id="address-city"
-                                value={organizationForm.city}
-                                onChange={(event) => handleOrganizationFieldChange("city", event.target.value)}
-                                placeholder="Naples"
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="address-state" className="text-sm font-medium">State</Label>
-                              <Input
-                                id="address-state"
-                                value={organizationForm.state}
-                                onChange={(event) => handleOrganizationFieldChange("state", event.target.value)}
-                                placeholder="FL"
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="address-postal" className="text-sm font-medium">ZIP</Label>
-                              <Input
-                                id="address-postal"
-                                value={organizationForm.postalCode}
-                                onChange={(event) => handleOrganizationFieldChange("postalCode", event.target.value)}
-                                placeholder="34102"
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
                           </div>
                           <div className="space-y-2">
-                            <Label htmlFor="address-country" className="text-sm font-medium">Country</Label>
+                            <Label htmlFor="address-line-2" className="text-sm font-medium">Address line 2</Label>
                             <Input
-                              id="address-country"
-                              value={organizationForm.country}
-                              onChange={(event) => handleOrganizationFieldChange("country", event.target.value)}
-                              placeholder="United States"
+                              id="address-line-2"
+                              value={organizationForm.addressLine2}
+                              onChange={(event) => handleOrganizationFieldChange("addressLine2", event.target.value)}
+                              placeholder="Suite, floor, unit (optional)"
                               className="h-11"
                               disabled={!organizationSettings?.canManageOrganization}
                             />
                           </div>
                         </div>
-
-                        <div className="space-y-4 rounded-lg border border-border/70 bg-background/60 p-4">
-                          <p className="text-sm font-semibold text-foreground">Billing defaults</p>
-                          <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-                            <div className="space-y-2">
-                              <Label htmlFor="default-net-terms" className="text-sm font-medium">Default net terms</Label>
-                              <Input
-                                id="default-net-terms"
-                                type="number"
-                                min={0}
-                                max={365}
-                                value={organizationForm.defaultPaymentTermsDays}
-                                onChange={(event) =>
-                                  handleOrganizationFieldChange("defaultPaymentTermsDays", Number(event.target.value || 0))
-                                }
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="default-invoice-note" className="text-sm font-medium">Default payment details</Label>
-                              <Textarea
-                                id="default-invoice-note"
-                                value={organizationForm.defaultInvoiceNote}
-                                onChange={(event) => handleOrganizationFieldChange("defaultInvoiceNote", event.target.value)}
-                                placeholder={"Bank: Example Bank, IBAN: XXXX 0000 0000 0000 0000\nReference: Invoice number"}
-                                className="min-h-[88px]"
-                                disabled={!organizationSettings?.canManageOrganization}
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="space-y-4 rounded-lg border border-border/70 bg-background/60 p-4">
-                          <p className="text-sm font-semibold text-foreground">AI defaults</p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant="secondary" className="rounded-md">
-                              {useInheritedAiDefaults ? "Inherited" : "Org override"}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">
-                              {useInheritedAiDefaults
-                                ? `Using ${aiSourceLabel}`
-                                : "Custom provider/model for this org"}
-                            </span>
-                            {aiSettingsDirty && <span className="text-xs text-amber-600">Unsaved AI change</span>}
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {useInheritedAiDefaults
-                              ? "Inherited mode follows Arc-wide defaults from the Platform console."
-                              : "Override mode pins this organization to a custom provider/model."}
-                          </p>
-                          <div>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleUseInheritedAiDefaults(!useInheritedAiDefaults)}
+                        <div className="grid gap-4 lg:grid-cols-4">
+                          <div className="space-y-2 lg:col-span-2">
+                            <Label htmlFor="address-city" className="text-sm font-medium">City</Label>
+                            <Input
+                              id="address-city"
+                              value={organizationForm.city}
+                              onChange={(event) => handleOrganizationFieldChange("city", event.target.value)}
+                              placeholder="Naples"
+                              className="h-11"
                               disabled={!organizationSettings?.canManageOrganization}
-                            >
-                              {useInheritedAiDefaults ? "Set org override" : "Use inherited default"}
-                            </Button>
+                            />
                           </div>
-                          <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-                            <div className="space-y-2">
-                              <Label htmlFor="ai-provider" className="text-sm font-medium">Provider</Label>
-                              <Select
-                                value={organizationForm.aiProvider}
-                                onValueChange={handleAiProviderChange}
-                                disabled={!organizationSettings?.canManageOrganization || useInheritedAiDefaults}
-                              >
-                                <SelectTrigger id="ai-provider" className="h-11">
-                                  <SelectValue placeholder="Select provider" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="openai">{AI_PROVIDER_LABELS.openai}</SelectItem>
-                                  <SelectItem value="anthropic">{AI_PROVIDER_LABELS.anthropic}</SelectItem>
-                                  <SelectItem value="google">{AI_PROVIDER_LABELS.google}</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="ai-model" className="text-sm font-medium">Model</Label>
-                              <Input
-                                id="ai-model"
-                                value={organizationForm.aiModel}
-                                onChange={(event) => handleAiModelChange(event.target.value)}
-                                placeholder={AI_PROVIDER_DEFAULT_MODELS[organizationForm.aiProvider]}
-                                className="h-11"
-                                disabled={!organizationSettings?.canManageOrganization || useInheritedAiDefaults}
-                              />
-                              <div className="flex flex-wrap gap-2">
-                                {AI_PROVIDER_PRESET_MODELS[organizationForm.aiProvider].map((modelOption) => (
-                                  <button
-                                    key={modelOption}
-                                    type="button"
-                                    onClick={() => handleAiModelChange(modelOption)}
-                                    className={cn(
-                                      "rounded-md border px-2.5 py-1 text-xs transition-colors",
-                                      organizationForm.aiModel === modelOption
-                                        ? "border-primary/40 bg-primary/10 text-primary"
-                                        : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground",
-                                    )}
-                                    disabled={!organizationSettings?.canManageOrganization || useInheritedAiDefaults}
-                                  >
-                                    {modelOption}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="address-state" className="text-sm font-medium">State</Label>
+                            <Input
+                              id="address-state"
+                              value={organizationForm.state}
+                              onChange={(event) => handleOrganizationFieldChange("state", event.target.value)}
+                              placeholder="FL"
+                              className="h-11"
+                              disabled={!organizationSettings?.canManageOrganization}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="address-postal" className="text-sm font-medium">ZIP</Label>
+                            <Input
+                              id="address-postal"
+                              value={organizationForm.postalCode}
+                              onChange={(event) => handleOrganizationFieldChange("postalCode", event.target.value)}
+                              placeholder="34102"
+                              className="h-11"
+                              disabled={!organizationSettings?.canManageOrganization}
+                            />
                           </div>
                         </div>
-
-                        <div className="flex justify-start">
-                          <Button
-                            size="sm"
-                            onClick={handleOrganizationSave}
-                            disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}
-                          >
-                            {isSavingOrganization ? "Saving..." : "Save changes"}
-                          </Button>
-                        </div>
-                      </>
-                    )}
-
-                    {(organizationError || organizationNotice) && (
-                      <div
-                        className={cn(
-                          "rounded-md border px-3 py-2 text-sm",
-                          organizationError
-                            ? "border-destructive/30 bg-destructive/5 text-destructive"
-                            : "border-primary/30 bg-primary/5 text-primary",
-                        )}
-                      >
-                        {organizationError ?? organizationNotice}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="billing" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={cn(tabPanelBodyClass, "space-y-4")}>
-                    {!canManageBilling ? (
-                      <div className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-                        You do not have permission to view billing for this organization.
-                      </div>
-                    ) : loadingBilling ? (
-                      <div className="flex items-center gap-3 text-muted-foreground">
-                        <Spinner className="h-4 w-4" />
-                        <span className="text-sm">Loading billing details...</span>
-                      </div>
-                    ) : billingError ? (
-                      <div className="text-sm text-destructive">{billingError}</div>
-                    ) : billing ? (
-                      <>
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
-                            <p className="text-xs uppercase tracking-wide text-muted-foreground">Current plan</p>
-                            <p className="mt-2 text-base font-semibold text-foreground">{planName}</p>
-                            <p className="text-sm text-muted-foreground">{amount}</p>
-                          </div>
-                          <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
-                            <p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p>
-                            <div className="mt-2">
-                              <Badge variant={billingStatus === "active" ? "default" : "outline"} className="capitalize">
-                                {billingStatus}
-                              </Badge>
-                            </div>
-                            <p className="mt-2 text-sm text-muted-foreground">Billing cycle: {interval}</p>
-                          </div>
-                          <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
-                            <p className="text-xs uppercase tracking-wide text-muted-foreground">Renewal</p>
-                            <p className="mt-2 text-base font-semibold text-foreground">{formattedRenewal}</p>
-                            {trialEndsAt && (
-                              <p className="text-sm text-muted-foreground">Trial ends: {formattedTrialEnd}</p>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-border/70 bg-background/60 p-4">
-                          <p className="text-sm font-medium text-foreground">Billing details</p>
-                          <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                            <div>Pricing model: {billing.plan?.pricing_model ?? "subscription"}</div>
-                            {billing.subscription?.external_customer_id && (
-                              <div>Customer ID: {billing.subscription.external_customer_id}</div>
-                            )}
-                            {billing.subscription?.external_subscription_id && (
-                              <div>Subscription ID: {billing.subscription.external_subscription_id}</div>
-                            )}
-                          </div>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">No billing details available.</div>
-                    )}
-
-                    {billingActionError && (
-                      <div className="text-sm text-destructive">{billingActionError}</div>
-                    )}
-
-                    {needsSubscription && (
-                      <div className="rounded-lg border border-border/70 bg-background/60 p-4">
-                        <p className="text-base font-semibold text-foreground">Choose a plan</p>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                            {isTrialing
-                              ? "Keep your workspace active by choosing a plan."
-                              : "Choose a plan to activate your workspace."}
-                        </p>
-                        <div className="mt-4 space-y-4">
-                          {loadingPlans ? (
-                            <div className="flex items-center gap-3 text-muted-foreground">
-                              <Spinner className="h-4 w-4" />
-                              <span className="text-sm">Loading plans...</span>
-                            </div>
-                          ) : plans.length === 0 ? (
-                            <div className="text-sm text-muted-foreground">
-                              No active plans are available. Please contact support.
-                            </div>
-                          ) : (
-                            <div className="grid gap-3 md:grid-cols-2">
-                              {plans.map((plan) => {
-                                const isSelected = selectedPlanCode === plan.code
-                                const planAmount =
-                                  plan.amountCents != null
-                                    ? `$${(plan.amountCents / 100).toFixed(0)}${plan.interval ? `/${plan.interval}` : ""}`
-                                    : "Custom pricing"
-                                return (
-                                  <button
-                                    key={plan.code}
-                                    type="button"
-                                    onClick={() => setSelectedPlanCode(plan.code)}
-                                    className={cn(
-                                      "rounded-lg border px-4 py-3 text-left transition-colors",
-                                      isSelected
-                                        ? "border-primary/40 bg-primary/5"
-                                        : "border-border/70 bg-muted/20 hover:border-primary/25 hover:bg-primary/[0.03]",
-                                    )}
-                                  >
-                                    <p className="text-sm font-semibold text-foreground">{plan.name}</p>
-                                    <p className="text-sm text-muted-foreground">{planAmount}</p>
-                                    <p className="mt-1 text-xs text-muted-foreground capitalize">{plan.pricingModel}</p>
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          )}
-                          <div className="flex items-center gap-3">
-                            <Button onClick={handleSubscribe} disabled={!selectedPlanCode || checkoutLoading}>
-                              {checkoutLoading ? "Redirecting..." : "Subscribe"}
-                            </Button>
-                            {selectedPlanCode && (
-                              <span className="text-xs text-muted-foreground">
-                                Selected: {plans.find((plan) => plan.code === selectedPlanCode)?.name}
-                              </span>
-                            )}
-                          </div>
-                          {isPastDue && (
-                            <div className="text-xs text-muted-foreground">
-                              Your subscription is past due. Update billing to keep access active.
-                            </div>
-                          )}
+                        <div className="space-y-2">
+                          <Label htmlFor="address-country" className="text-sm font-medium">Country</Label>
+                          <Input
+                            id="address-country"
+                            value={organizationForm.country}
+                            onChange={(event) => handleOrganizationFieldChange("country", event.target.value)}
+                            placeholder="United States"
+                            className="h-11"
+                            disabled={!organizationSettings?.canManageOrganization}
+                          />
                         </div>
                       </div>
-                    )}
 
-                    {isActive && (
-                      <div className="rounded-lg border border-border/70 bg-background/60 p-4">
-                        <p className="text-sm font-medium text-foreground">Payment and invoices</p>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          Open the billing portal to update card details, download invoices, and manage subscription settings.
-                        </p>
-                        <div className="mt-3 flex justify-start">
-                          <Button variant="outline" onClick={handleManageBilling} disabled={portalLoading}>
-                            {portalLoading ? "Opening portal..." : "Open billing portal"}
-                          </Button>
+                      <div className="space-y-4 rounded-lg border border-border/70 bg-background/60 p-4">
+                        <p className="text-sm font-semibold text-foreground">Billing defaults</p>
+                        <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
+                          <div className="space-y-2">
+                            <Label htmlFor="default-net-terms" className="text-sm font-medium">Default net terms</Label>
+                            <Input
+                              id="default-net-terms"
+                              type="number"
+                              min={0}
+                              max={365}
+                              value={organizationForm.defaultPaymentTermsDays}
+                              onChange={(event) =>
+                                handleOrganizationFieldChange("defaultPaymentTermsDays", Number(event.target.value || 0))
+                              }
+                              className="h-11"
+                              disabled={!organizationSettings?.canManageOrganization}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="default-invoice-note" className="text-sm font-medium">Default payment details</Label>
+                            <Textarea
+                              id="default-invoice-note"
+                              value={organizationForm.defaultInvoiceNote}
+                              onChange={(event) => handleOrganizationFieldChange("defaultInvoiceNote", event.target.value)}
+                              placeholder={"Bank: Example Bank, IBAN: XXXX 0000 0000 0000 0000\nReference: Invoice number"}
+                              className="min-h-[88px]"
+                              disabled={!organizationSettings?.canManageOrganization}
+                            />
+                          </div>
                         </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-              </TabsContent>
 
-              <TabsContent value="notifications" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={tabPanelHeaderClass}>
-                    <div>
-                      <h2 className="text-base font-semibold">Notifications</h2>
-                      <p className="text-sm text-muted-foreground">Configure how and when you receive updates.</p>
+                      <div className="flex justify-start">
+                        <Button
+                          size="sm"
+                          onClick={handleOrganizationSave}
+                          disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}
+                        >
+                          {isSavingOrganization ? "Saving..." : "Save changes"}
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                  <div className={tabPanelBodyClass}>
-                    <div className="max-w-2xl">
-                      <NotificationPreferences />
+                  )}
+
+                  {(organizationError || organizationNotice) && (
+                    <div
+                      className={cn(
+                        "mt-4 rounded-md border px-3 py-2 text-sm",
+                        organizationError
+                          ? "border-destructive/30 bg-destructive/5 text-destructive"
+                          : "border-primary/30 bg-primary/5 text-primary",
+                      )}
+                    >
+                      {organizationError ?? organizationNotice}
                     </div>
-                  </div>
+                  )}
                 </div>
               </TabsContent>
 
-              <TabsContent value="integrations" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={cn(tabPanelHeaderClass, "gap-2")}>
-                    <div>
-                      <h2 className="text-base font-semibold">Integrations</h2>
-                      <p className="text-sm text-muted-foreground">Connect your tools to automate workflows</p>
-                    </div>
-                  </div>
-                  <div className={tabPanelBodyClass}>
-                    {loadingIntegrations ? (
-                      <div className="flex items-center justify-center gap-3 text-muted-foreground py-10">
-                        <Spinner className="h-5 w-5" />
-                        <span className="text-sm">Loading integrations...</span>
-                      </div>
-                    ) : (
-                      <div className="grid gap-6">
-                        <StripeConnectionCard
-                          connection={stripeConnection}
-                          canManage={Boolean(organizationSettings?.canManageOrganization)}
-                          onConnectionChange={setStripeConnection}
-                        />
-                        <QBOConnectionCard connection={qboConnection} onConnectionChange={setQboConnection} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="team" className="m-0 mt-0">
-                {loadingTeam ? (
-                  <div className="flex items-center gap-3 text-muted-foreground">
-                    <Spinner className="h-4 w-4" />
-                    <span className="text-sm">Loading team members...</span>
-                  </div>
-                ) : teamError ? (
-                  <div className="text-sm text-destructive">{teamError}</div>
-                ) : (
-                  <TeamTable
-                    members={teamMembers}
-                    roleOptions={roleOptions}
-                    canManageMembers={canManageMembers}
-                    canEditRoles={canEditRoles}
-                    showProjectCounts={false}
-                    onMemberChange={refreshTeam}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="cost-codes" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={tabPanelHeaderClass}>
-                    <div>
-                      <h2 className="text-base font-semibold">Cost Codes</h2>
-                      <p className="text-sm text-muted-foreground">Manage your org-wide cost code library for financial workflows.</p>
-                    </div>
-                  </div>
-                  <div className={tabPanelBodyClass}>
-                    {loadingCostCodes ? (
-                      <div className="flex items-center gap-3 text-muted-foreground">
-                        <Spinner className="h-4 w-4" />
-                        <span className="text-sm">Loading cost codes...</span>
-                      </div>
-                    ) : costCodesError ? (
-                      <div className="text-sm text-destructive">{costCodesError}</div>
-                    ) : (
-                      <CostCodeManager
-                        costCodes={costCodes}
-                        canManage={Boolean(organizationSettings?.canManageOrganization)}
-                        onCostCodesChange={setCostCodes}
-                      />
-                    )}
-                  </div>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="compliance" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={tabPanelHeaderClass}>
-                    <div>
-                      <h2 className="text-base font-semibold">Payables</h2>
-                      <p className="text-sm text-muted-foreground">Configure payment gating and compliance requirements.</p>
-                    </div>
-                  </div>
-                  <div className={tabPanelBodyClass}>
-                    <ComplianceSettings
-                      initialRules={initialComplianceRules}
-                      initialRequirementDefaults={initialComplianceRequirementDefaults}
-                      canManage={canManageCompliance}
-                    />
-                  </div>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="about" className="m-0 mt-0">
-                <div className={tabPanelClass}>
-                  <div className={cn(tabPanelBodyClass, "space-y-6 text-sm text-muted-foreground")}>
-                    <div className="flex items-center gap-4">
-                      <div className="h-12 w-12 rounded-lg border bg-background/80 flex items-center justify-center overflow-hidden">
-                        <img src={appInfo.logoUrl} alt={`${appInfo.name} logo`} className="h-10 w-10 object-contain" />
-                      </div>
+              <TabsContent value="notifications" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <div className="mx-auto max-w-6xl">
+                  <div className={tabPanelClass}>
+                    <div className={tabPanelHeaderClass}>
                       <div>
-                        <p className="text-foreground font-semibold leading-tight">{appInfo.name}</p>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Version {appInfo.version}</p>
-                        <p className="text-xs text-muted-foreground">By {appInfo.company}</p>
+                        <h2 className="text-base font-semibold">Notifications</h2>
+                        <p className="text-sm text-muted-foreground">Configure how and when you receive updates.</p>
+                      </div>
+                    </div>
+                    <div className={tabPanelBodyClass}>
+                      <div className="max-w-2xl">
+                        <NotificationPreferences />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="integrations" className="m-0 mt-0 outline-none focus-visible:outline-none">
+                <div className="flex flex-col">
+                  {/* Modern Header */}
+                  <div className="relative overflow-hidden border-b border-border/70 bg-gradient-to-br from-indigo-500/[0.05] via-background to-background px-6 py-10 md:px-10 md:py-12 lg:px-12 lg:py-14">
+                    <div className="pointer-events-none absolute inset-0 [background-image:linear-gradient(to_right,oklch(0.5_0_0/0.03)_1px,transparent_1px),linear-gradient(to_bottom,oklch(0.5_0_0/0.03)_1px,transparent_1px)] [background-size:24px_24px]" />
+                    <div className="relative max-w-4xl">
+                      <div className="flex items-center gap-3 text-indigo-600">
+                        <Link2 className="h-5 w-5" />
+                        <span className="text-[11px] font-bold uppercase tracking-[0.2em]">External Connections</span>
+                      </div>
+                      <h2 className="mt-4 text-3xl font-semibold tracking-tight text-foreground md:text-4xl">Integrations</h2>
+                      <p className="mt-3 text-lg text-muted-foreground leading-relaxed">
+                        Connect Arc with your accounting and payment tools to automate your entire financial workflow.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Spacious Grid */}
+                  <div className="px-6 py-8 md:px-10 md:py-10 lg:px-12 lg:py-12">
+                    {loadingIntegrations ? (
+                      <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+                        <Spinner className="h-8 w-8 mb-4 text-indigo-500/50" />
+                        <span className="text-sm font-medium tracking-wide">Syncing integration status...</span>
+                      </div>
+                    ) : (
+                      <div className="mx-auto max-w-6xl">
+                        <div className="grid gap-8 lg:grid-cols-2">
+                          <StripeConnectionCard
+                            connection={stripeConnection}
+                            canManage={Boolean(organizationSettings?.canManageOrganization)}
+                            onConnectionChange={setStripeConnection}
+                          />
+                          <QBOConnectionCard 
+                            connection={qboConnection} 
+                            onConnectionChange={setQboConnection} 
+                          />
+                        </div>
+
+                        {/* Future integrations placeholder */}
+                        <div className="mt-12 rounded-2xl border border-dashed border-border/60 bg-muted/20 p-8 text-center">
+                          <p className="text-sm font-medium text-muted-foreground">
+                            Looking for another integration? 
+                            <a href="mailto:support@arc.build" className="ml-1 text-primary hover:underline">Let us know</a>
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </TabsContent>
+
+
+              <TabsContent
+                value="team"
+                className="m-0 mt-0 h-full min-h-[calc(100vh-11rem)] flex flex-col"
+              >
+                <div className="flex flex-col gap-3 border-b border-border/70 bg-background/50 p-5 backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between lg:px-8">
+                  <div>
+                    <h2 className="text-base font-semibold">Team directory</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Manage internal teammates, role assignments, MFA status, and invite workflow.
+                    </p>
+                  </div>
+                  <Button
+                    disabled={!canManageMembers}
+                    onClick={() => setTeamView({ mode: "invite" })}
+                    size="sm"
+                  >
+                    <Users className="h-4 w-4 mr-2" />
+                    Invite member
+                  </Button>
+                </div>
+                
+                <div className="flex-1 min-h-0 overflow-auto">
+                  {loadingTeam ? (
+                    <div className="flex items-center gap-3 p-8 text-muted-foreground">
+                      <Spinner className="h-4 w-4" />
+                      <span className="text-sm">Loading team members...</span>
+                    </div>
+                  ) : teamError ? (
+                    <div className="p-8 text-sm text-destructive">{teamError}</div>
+                  ) : (
+                    <TeamTable
+                      members={teamMembers}
+                      canManageMembers={canManageMembers}
+                      canEditRoles={canEditRoles}
+                      showProjectCounts={false}
+                      onMemberChange={refreshTeam}
+                      onInviteMember={() => setTeamView({ mode: "invite" })}
+                      onEditMember={(member) => setTeamView({ mode: "edit", member })}
+                    />
+                  )}
+                </div>
+
+                <Sheet
+                  open={isTeamFormOpen}
+                  onOpenChange={(open) => {
+                    if (!open) setTeamView({ mode: "list" })
+                  }}
+                >
+                  <SheetContent className="w-full sm:max-w-md lg:max-w-xl overflow-y-auto p-0">
+                    <SheetHeader className="sr-only">
+                      <SheetTitle>
+                        {teamView.mode === "edit" ? "Edit team member" : "Invite team member"}
+                      </SheetTitle>
+                    </SheetHeader>
+                    <MemberFormPanel
+                      mode={teamView.mode}
+                      member={teamView.mode === "edit" ? teamView.member : undefined}
+                      roleOptions={roleOptions}
+                      permissionOptions={permissionOptions}
+                      canManageMembers={canManageMembers}
+                      canEditRoles={canEditRoles}
+                      onCancel={() => setTeamView({ mode: "list" })}
+                      onSuccess={() => {
+                        setTeamView({ mode: "list" })
+                        refreshTeam()
+                      }}
+                    />
+                  </SheetContent>
+                </Sheet>
+              </TabsContent>
+
+              <TabsContent value="cost-codes" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <div className="mx-auto max-w-6xl">
+                  <div className={tabPanelClass}>
+                    <div className={tabPanelHeaderClass}>
+                      <div>
+                        <h2 className="text-base font-semibold">Cost Codes</h2>
+                        <p className="text-sm text-muted-foreground">Manage your org-wide cost code library for financial workflows.</p>
+                      </div>
+                    </div>
+                    <div className={tabPanelBodyClass}>
+                      {loadingCostCodes ? (
+                        <div className="flex items-center gap-3 text-muted-foreground">
+                          <Spinner className="h-4 w-4" />
+                          <span className="text-sm">Loading cost codes...</span>
+                        </div>
+                      ) : costCodesError ? (
+                        <div className="text-sm text-destructive">{costCodesError}</div>
+                      ) : (
+                        <CostCodeManager
+                          costCodes={costCodes}
+                          canManage={Boolean(organizationSettings?.canManageOrganization)}
+                          onCostCodesChange={setCostCodes}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="compliance" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <div className="mx-auto max-w-6xl">
+                  <div className={tabPanelClass}>
+                    <div className={tabPanelHeaderClass}>
+                      <div>
+                        <h2 className="text-base font-semibold">Payables</h2>
+                        <p className="text-sm text-muted-foreground">Configure payment gating and compliance requirements.</p>
+                      </div>
+                    </div>
+                    <div className={tabPanelBodyClass}>
+                      <ComplianceSettings
+                        initialRules={initialComplianceRules}
+                        initialRequirementDefaults={initialComplianceRequirementDefaults}
+                        canManage={canManageCompliance}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="about" className="m-0 mt-0 h-full">
+                <div className="flex flex-col min-h-[calc(100vh-20rem)] py-16 lg:py-24">
+                  <div className="flex-1 space-y-24">
+                    <div className="flex flex-col items-center justify-center space-y-10 text-center">
+                      <div className="relative">
+                        <div className="absolute -inset-6 rounded-full bg-primary/5 blur-3xl" />
+                        <div className="relative flex h-40 w-40 items-center justify-center rounded-3xl border border-border/50 bg-background/80 shadow-xl transition-all duration-500 hover:scale-105">
+                          <img src={appInfo.logoUrl} alt={`${appInfo.name} logo`} className="h-24 w-24 object-contain" />
+                        </div>
+                      </div>
+                      <div className="space-y-4">
+                        <h2 className="text-4xl font-extrabold tracking-tight text-foreground">{appInfo.name}</h2>
+                        <p className="text-sm font-semibold tracking-widest uppercase text-muted-foreground/60">Version {appInfo.version}</p>
                       </div>
                     </div>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-foreground font-medium">Workspace</span>
-                        <span>{organizationSettings?.name ?? billing?.org?.name ?? "Workspace"}</span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-foreground font-medium">Workspace ID</span>
-                        <span className="font-mono text-xs">{organizationSettings?.id ?? "—"}</span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-foreground font-medium">Signed-in account</span>
-                        <span>{user?.email ?? "—"}</span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-foreground font-medium">Your role</span>
-                        <span>{userRoleLabel ?? (loadingTeam ? "Loading role..." : "Unknown role")}</span>
+                    <div className="mx-auto w-full max-w-2xl px-4">
+                      <div className="grid gap-px overflow-hidden rounded-2xl border border-border/60 bg-border/60 shadow-2xl sm:grid-cols-2">
+                        <div className="bg-background/95 p-8 space-y-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Workspace</span>
+                          <p className="text-lg font-semibold text-foreground">{organizationSettings?.name ?? billing?.org?.name ?? "Workspace"}</p>
+                        </div>
+                        <div className="bg-background/95 p-8 space-y-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Workspace ID</span>
+                          <p className="font-mono text-xs text-foreground/80 break-all">{organizationSettings?.id ?? "—"}</p>
+                        </div>
+                        <div className="bg-background/95 p-8 space-y-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Account</span>
+                          <p className="text-lg font-semibold text-foreground break-all">{user?.email ?? "—"}</p>
+                        </div>
+                        <div className="bg-background/95 p-8 space-y-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Your Role</span>
+                          <p className="text-lg font-semibold text-foreground">{userRoleLabel ?? (loadingTeam ? "Loading..." : "Member")}</p>
+                        </div>
                       </div>
                     </div>
+                  </div>
 
-                    <div className="rounded-lg border border-border/70 bg-background/60 p-4">
-                      <p className="text-sm font-medium text-foreground">Resources</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
-                        <Link href={appInfo.termsUrl} className="text-primary hover:underline font-medium">
+                  <div className="mt-24 pt-12 border-t border-border/40">
+                    <div className="mx-auto max-w-2xl flex flex-col items-center justify-center space-y-8 px-4">
+                      <nav className="flex items-center justify-center gap-x-8 text-sm font-semibold">
+                        <Link href="https://arcnaples.com" target="_blank" className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
+                          Website
+                        </Link>
+                        <Link href={appInfo.termsUrl} className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
                           Terms
                         </Link>
-                        <Link href="/settings/support" className="text-primary hover:underline font-medium">
+                        <Link href="/settings/support" className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
                           Support
                         </Link>
-                      </div>
+                      </nav>
+
+                      <p className="text-xs font-medium text-muted-foreground/40 tracking-widest uppercase">
+                        &copy; {new Date().getFullYear()} {appInfo.company}. Built for builders.
+                      </p>
                     </div>
                   </div>
                 </div>
               </TabsContent>
-
-            </div>
+             </div>
           </ScrollArea>
         </div>
       </div>

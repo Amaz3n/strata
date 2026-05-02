@@ -114,7 +114,7 @@ export function ProposalCreateSheet({
             New Proposal
           </SheetTitle>
           <SheetDescription>
-            Draft a proposal and get a shareable link.
+            Build the structured worksheet Arc uses for pricing and conversion. Use your company document for execution.
           </SheetDescription>
         </SheetHeader>
 

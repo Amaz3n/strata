@@ -203,6 +203,8 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     requires_signature: input.requires_signature ?? true,
     client_visible: input.client_visible ?? false,
     metadata: {
+      execution_method: "byo_document",
+      worksheet_source: "arc_native",
       lines: normalizedLines,
       totals,
       tax_rate: input.tax_rate,
@@ -485,7 +487,11 @@ export async function approveChangeOrder({
       status: "approved",
       approved_at: nowIso,
       approved_by: userId,
-      metadata: { ...(existing.metadata ?? {}), approved_by_user: userId },
+      metadata: {
+        ...(existing.metadata ?? {}),
+        approval_method: "manual_offline",
+        approved_by_user: userId,
+      },
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)

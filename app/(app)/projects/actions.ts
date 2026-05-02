@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
-import { createProject, listProjects, updateProject, archiveProject } from "@/lib/services/projects"
+import { createProject, listProjects, updateProject, archiveProject, deleteProject } from "@/lib/services/projects"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
 
@@ -35,4 +35,11 @@ export async function archiveProjectAction(projectId: string) {
   revalidatePath("/projects")
   revalidatePath("/")
   return project
+}
+
+export async function deleteProjectAction(projectId: string) {
+  const context = await requireOrgContext()
+  await deleteProject(projectId, undefined, context)
+  revalidatePath("/projects")
+  revalidatePath("/")
 }

@@ -8,12 +8,18 @@ export const closeoutItemInputSchema = z.object({
   title: z.string().min(1, "Title is required").max(200),
   status: closeoutItemStatusSchema.optional(),
   file_id: z.string().uuid().optional().nullable(),
+  due_date: z.string().date().optional().nullable(),
+  responsible_party: z.string().max(120).optional().nullable(),
+  notes: z.string().max(1000).optional().nullable(),
 })
 
 export const closeoutItemUpdateSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   status: closeoutItemStatusSchema.optional(),
   file_id: z.string().uuid().optional().nullable(),
+  due_date: z.string().date().optional().nullable(),
+  responsible_party: z.string().max(120).optional().nullable(),
+  notes: z.string().max(1000).optional().nullable(),
 })
 
 export type CloseoutItemInput = z.infer<typeof closeoutItemInputSchema>

@@ -255,7 +255,7 @@ export function ChangeOrderForm({
             New Change Order
           </SheetTitle>
           <SheetDescription className="text-sm text-muted-foreground">
-            Capture scope, pricing, taxes, markup, and publish to the client when ready.
+            Capture the structured worksheet Arc uses for budget, schedule, and reporting. Use your company document for execution.
           </SheetDescription>
         </SheetHeader>
 
@@ -556,7 +556,7 @@ export function ChangeOrderForm({
                     <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-primary">
                       <DollarSign className="h-4 w-4" />
                     </div>
-                    <h4 className="font-semibold text-sm">Totals preview</h4>
+                    <h4 className="font-semibold text-sm">Worksheet totals</h4>
                   </div>
                   <Badge variant="secondary" className="font-mono text-[10px] tracking-wider uppercase">
                     Calculated
@@ -631,7 +631,7 @@ export function ChangeOrderForm({
                   disabled={isSubmitting}
                   onClick={() => setSubmitMode("publish")}
                 >
-                  Publish to client
+                  Publish worksheet
                 </Button>
               </div>
             </SheetFooter>

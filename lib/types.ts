@@ -20,6 +20,16 @@ export interface User {
   avatar_url?: string
 }
 
+export interface Session {
+  id: string
+  created_at: string
+  updated_at: string
+  last_active_at: string
+  user_agent: string
+  ip_address: string
+  is_current: boolean
+}
+
 export interface Membership {
   id: string
   user_id: string
@@ -122,6 +132,7 @@ export interface TeamMember {
   user: User
   role: OrgRole
   role_label?: string
+  permission_overrides?: MemberPermissionOverride[]
   status: "active" | "invited" | "suspended"
   mfa_enabled?: boolean
   project_count?: number
@@ -134,6 +145,20 @@ export interface OrgRoleOption {
   key: string
   label: string
   description?: string
+}
+
+export type PermissionOverrideEffect = "grant" | "deny"
+
+export interface MemberPermissionOverride {
+  permission_key: string
+  effect: PermissionOverrideEffect
+}
+
+export interface PermissionOption {
+  key: string
+  label: string
+  description?: string
+  category: string
 }
 
 export interface Project {
@@ -150,6 +175,8 @@ export interface Project {
   property_type?: ProjectPropertyType
   project_type?: ProjectWorkType
   description?: string
+  retainage_percent?: number
+  total_contract_value_cents?: number
   created_at: string
   updated_at: string
 }
@@ -859,6 +886,9 @@ export interface Retainage {
   metadata?: Record<string, any>
   created_at?: string
   updated_at?: string
+  // Joined data
+  invoice?: { invoice_number: string; title: string }
+  release_invoice?: { invoice_number: string; title: string }
 }
 
 export interface LienWaiver {
@@ -1316,6 +1346,10 @@ export interface CloseoutItem {
   title: string
   status: string
   file_id?: string | null
+  due_date?: string | null
+  responsible_party?: string | null
+  notes?: string | null
+  attachment_count?: number
   created_at: string
   updated_at?: string
 }

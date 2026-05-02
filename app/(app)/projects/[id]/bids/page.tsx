@@ -3,6 +3,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { getOrgCompaniesAction, getProjectAction } from "../actions"
 import { listBidPackagesAction } from "./actions"
 import { BidPackagesClient } from "@/components/bids/bid-packages-client"
+import { listCostCodes } from "@/lib/services/cost-codes"
 
 interface ProjectBidsPageProps {
   params: Promise<{ id: string }>
@@ -11,10 +12,11 @@ interface ProjectBidsPageProps {
 export default async function ProjectBidsPage({ params }: ProjectBidsPageProps) {
   const { id } = await params
 
-  const [project, packages, companies] = await Promise.all([
+  const [project, packages, companies, costCodes] = await Promise.all([
     getProjectAction(id),
     listBidPackagesAction(id),
     getOrgCompaniesAction(),
+    listCostCodes().catch(() => []),
   ])
 
   if (!project) {
@@ -40,7 +42,12 @@ export default async function ProjectBidsPage({ params }: ProjectBidsPageProps) 
         { label: "Bids" },
       ]}
     >
-      <BidPackagesClient projectId={project.id} packages={packages} tradeOptions={tradeOptions} />
+      <BidPackagesClient
+        projectId={project.id}
+        packages={packages}
+        tradeOptions={tradeOptions}
+        costCodes={costCodes}
+      />
     </PageLayout>
   )
 }

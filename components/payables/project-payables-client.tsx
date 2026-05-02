@@ -1,149 +1,134 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
+import { format } from "date-fns"
+import { 
+  FileText, 
+  Receipt, 
+  CheckCircle2, 
+  Plus, 
+  Trash2, 
+  ExternalLink,
+  ChevronRight,
+  Paperclip,
+  Loader2
+} from "lucide-react"
 
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import type { ComplianceRules, ComplianceStatusSummary } from "@/lib/types"
+import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { updateProjectVendorBillStatusAction } from "@/app/(app)/projects/[id]/payables/actions"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useToast } from "@/hooks/use-toast"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter, SheetDescription } from "@/components/ui/sheet"
+import { Label } from "@/components/ui/label"
+import { toast } from "sonner"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
+import { PayablesExplorer } from "./payables-explorer"
+import { AddPayableSheet } from "./add-payable-sheet"
 
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
+function dollarsToCents(input: string) {
+  const normalized = input.replaceAll(",", "").trim()
+  if (!normalized) return 0
+  const amount = Number(normalized)
+  if (!Number.isFinite(amount)) return null
+  return Math.round(amount * 100)
+}
+
 function billBadge(status?: string) {
   const normalized = (status ?? "pending").toLowerCase()
-  if (normalized === "paid") return <Badge variant="secondary">Paid</Badge>
-  if (normalized === "partial") return <Badge variant="outline">Partial</Badge>
-  if (normalized === "approved") return <Badge variant="outline">Approved</Badge>
-  return <Badge variant="outline">Pending</Badge>
-}
-
-function complianceWarnings(
-  bill: VendorBillSummary,
-  rules: ComplianceRules,
-  status?: ComplianceStatusSummary
-) {
-  const warnings: string[] = []
-
-  // Compliance is driven by company-specific requirements + uploaded docs.
-  if (status) {
-    if (status.missing.length > 0) warnings.push(`${status.missing.length} missing required doc(s)`)
-    if (status.expired.length > 0) warnings.push(`${status.expired.length} expired doc(s)`)
-    if (status.deficiencies.length > 0) warnings.push(`${status.deficiencies.length} doc(s) need updates`)
-    if (status.pending_review.length > 0) warnings.push(`${status.pending_review.length} pending review`)
-    if (status.expiring_soon.length > 0) warnings.push(`${status.expiring_soon.length} expiring soon`)
+  const map: Record<string, { label: string; tone: string }> = {
+    paid: { label: "Paid", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
+    partial: { label: "Partial", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
+    approved: { label: "Approved", tone: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20" },
+    pending: { label: "Pending", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
   }
-
-  if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") {
-    warnings.push("Lien waiver required")
-  }
-
-  return warnings
-}
-
-function hasBlockingComplianceIssues(
-  bill: VendorBillSummary,
-  rules: ComplianceRules,
-  status?: ComplianceStatusSummary
-) {
-  if (!rules.block_payment_on_missing_docs) return false
-
-  if (status && !status.is_compliant) return true
-
-  if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") return true
-
-  return false
+  const config = map[normalized] ?? map.pending
+  return (
+    <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-tight ${config.tone}`}>
+      {config.label}
+    </Badge>
+  )
 }
 
 export function ProjectPayablesClient({
   projectId,
   vendorBills,
+  costCodes,
   complianceRules,
   complianceStatusByCompanyId,
 }: {
   projectId: string
   vendorBills: VendorBillSummary[]
+  costCodes: CostCode[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
 }) {
-  const { toast } = useToast()
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
-  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "approved" | "partial" | "paid">("all")
-  const [search, setSearch] = useState("")
+  const [addPayableOpen, setAddPayableOpen] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState<Record<string, string>>({})
   const [paymentRef, setPaymentRef] = useState<Record<string, string>>({})
   const [paymentMethod, setPaymentMethod] = useState<Record<string, string>>({})
+  const [billCostCode, setBillCostCode] = useState<Record<string, string>>({})
 
-  const [attachmentsOpen, setAttachmentsOpen] = useState(false)
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [selectedBill, setSelectedBill] = useState<VendorBillSummary | null>(null)
   const [billDetailOpen, setBillDetailOpen] = useState(false)
   const [detailRetainage, setDetailRetainage] = useState("")
   const [detailLienWaiver, setDetailLienWaiver] = useState("not_required")
+  const [detailActualLines, setDetailActualLines] = useState<
+    Array<{ id: string; costCodeId: string; description: string; amountDollars: string }>
+  >([])
 
-  const totals = useMemo(() => {
-    const total = vendorBills.reduce((sum, b) => sum + (b.total_cents ?? 0), 0)
-    const paid = vendorBills.reduce((sum, b) => sum + (b.paid_cents ?? (b.status === "paid" ? b.total_cents ?? 0 : 0)), 0)
-    const open = Math.max(0, total - paid)
-    return { total, open, paid }
-  }, [vendorBills])
+  const sortedCostCodes = useMemo(
+    () => [...costCodes].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "")),
+    [costCodes],
+  )
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase()
-    return vendorBills.filter((b) => {
-      if (statusFilter !== "all" && String(b.status) !== statusFilter) return false
-      if (!term) return true
-      const haystack = [
-        b.company_name,
-        b.commitment_title,
-        b.bill_number,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-      return haystack.includes(term)
-    })
-  }, [vendorBills, statusFilter, search])
-
-  const setStatus = (billId: string, status: "pending" | "approved" | "partial" | "paid") => {
+  const setStatus = (
+    billId: string,
+    status: "pending" | "approved" | "partial" | "paid",
+    costCodeId?: string,
+  ) => {
     startTransition(async () => {
       try {
         const amountInput = paymentAmount[billId]?.trim()
         const amountCents = amountInput ? Math.round(Number(amountInput) * 100) : undefined
-        if ((status === "paid" || status === "partial") && amountInput) {
-          if (amountCents === undefined || !Number.isFinite(amountCents) || amountCents <= 0) {
-            toast({ title: "Invalid payment amount", description: "Enter a positive amount." })
-            return
-          }
-        }
+        
         await updateProjectVendorBillStatusAction(projectId, billId, {
           status,
+          cost_code_id: costCodeId ?? billCostCode[billId] ?? undefined,
           payment_method: paymentMethod[billId] || undefined,
           payment_reference: paymentRef[billId] || undefined,
           payment_amount_cents: status === "paid" || status === "partial" ? amountCents : undefined,
         })
-        toast({ title: "Bill updated" })
+        toast.success("Bill updated successfully")
+        router.refresh()
       } catch (error) {
-        toast({ title: "Unable to update bill", description: (error as Error).message })
+        toast.error((error as Error).message)
       }
     })
   }
 
+  // Load attachments whenever selectedBill changes
   useEffect(() => {
-    if (!attachmentsOpen || !selectedBill) return
+    if (!billDetailOpen || !selectedBill) {
+      setAttachments([])
+      return
+    }
+    
     setAttachmentsLoading(true)
     listAttachmentsAction("vendor_bill", selectedBill.id)
       .then((links) =>
@@ -163,7 +148,7 @@ export function ProjectPayablesClient({
       )
       .catch((error) => console.error("Failed to load vendor bill attachments", error))
       .finally(() => setAttachmentsLoading(false))
-  }, [attachmentsOpen, selectedBill])
+  }, [billDetailOpen, selectedBill])
 
   useEffect(() => {
     if (!selectedBill) return
@@ -171,7 +156,25 @@ export function ProjectPayablesClient({
       selectedBill.retainage_percent != null ? String(selectedBill.retainage_percent) : ""
     )
     setDetailLienWaiver(selectedBill.lien_waiver_status ?? "not_required")
-  }, [selectedBill])
+    const existingLines = selectedBill.actual_lines ?? []
+    setDetailActualLines(
+      existingLines.length > 0
+        ? existingLines.map((line) => ({
+            id: line.id ?? crypto.randomUUID(),
+            costCodeId: line.cost_code_id,
+            description: line.description ?? selectedBill.bill_number ?? "Vendor bill",
+            amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
+          }))
+        : [
+            {
+              id: crypto.randomUUID(),
+              costCodeId: selectedBill.actual_cost_code_id ?? sortedCostCodes[0]?.id ?? "",
+              description: selectedBill.bill_number ?? "Vendor bill",
+              amountDollars: ((selectedBill.total_cents ?? 0) / 100).toFixed(2),
+            },
+          ],
+    )
+  }, [selectedBill, sortedCostCodes])
 
   const handleAttach = async (files: File[], linkRole?: string) => {
     if (!selectedBill) return
@@ -221,464 +224,385 @@ export function ProjectPayablesClient({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Payables</p>
-          <p className="text-xs text-muted-foreground">Project-level AP queue: approve bills and record payments.</p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search company, contract, bill..." className="h-9 w-full sm:w-72" />
-          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as any)}>
-            <SelectTrigger className="h-9 w-full sm:w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
-              <SelectItem value="approved">Approved</SelectItem>
-              <SelectItem value="partial">Partial</SelectItem>
-              <SelectItem value="paid">Paid</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+    <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-hidden border rounded-xl bg-card shadow-sm">
+        <PayablesExplorer
+          projectId={projectId}
+          vendorBills={vendorBills}
+          costCodes={costCodes}
+          complianceRules={complianceRules}
+          complianceStatusByCompanyId={complianceStatusByCompanyId}
+          onAddPayable={() => setAddPayableOpen(true)}
+          onViewDetails={(bill) => {
+            setSelectedBill(bill)
+            setBillDetailOpen(true)
+          }}
+          onViewFiles={(bill) => {
+            setSelectedBill(bill)
+            setBillDetailOpen(true) // Now opens the same sheet
+          }}
+          onApprove={(bill) => {
+            setStatus(bill.id, "approved", bill.actual_cost_code_id)
+          }}
+          onRecordPayment={(bill) => {
+            setSelectedBill(bill)
+            setBillDetailOpen(true)
+          }}
+          onDelete={(bill) => {
+            toast.info("Action restricted", { description: "Deletion must be handled by an administrator." })
+          }}
+        />
       </div>
 
-      <div className="rounded-lg border overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="divide-x">
-              <TableHead className="px-4 py-3">Due</TableHead>
-              <TableHead className="px-4 py-3">Company</TableHead>
-              <TableHead className="px-4 py-3">Commitment</TableHead>
-              <TableHead className="px-4 py-3">Bill #</TableHead>
-              <TableHead className="px-4 py-3">Status</TableHead>
-              <TableHead className="px-4 py-3 text-right">Amount</TableHead>
-              <TableHead className="px-4 py-3">Compliance</TableHead>
-              <TableHead className="w-28 px-4 py-3 text-right">Pay amount</TableHead>
-              <TableHead className="w-32 px-4 py-3">Method</TableHead>
-              <TableHead className="w-56 px-4 py-3">Payment ref</TableHead>
-              <TableHead className="w-32 px-4 py-3 text-right">Attachments</TableHead>
-              <TableHead className="w-44 px-4 py-3">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.map((bill) => {
-              const status = bill.company_id ? complianceStatusByCompanyId[bill.company_id] : undefined
-              const warnings = complianceWarnings(bill, complianceRules, status)
-              const paidCents = bill.paid_cents ?? (bill.status === "paid" ? bill.total_cents ?? 0 : 0)
-              const remainingCents = Math.max(0, (bill.total_cents ?? 0) - paidCents)
-              const blocking = hasBlockingComplianceIssues(bill, complianceRules, status)
-              return (
-                <TableRow key={bill.id} className="divide-x align-top hover:bg-muted/40">
-                  <TableCell className="text-sm px-4 py-3">{bill.due_date ?? "—"}</TableCell>
-                  <TableCell className="text-sm px-4 py-3">{bill.company_name ?? "—"}</TableCell>
-                  <TableCell className="text-sm px-4 py-3">
-                    <div className="space-y-1">
-                      <p className="truncate">{bill.commitment_title ?? "—"}</p>
-                      {bill.over_budget ? <Badge variant="destructive">Over budget</Badge> : null}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-sm px-4 py-3">{bill.bill_number ?? "—"}</TableCell>
-                  <TableCell className="px-4 py-3">{billBadge(bill.status)}</TableCell>
-                  <TableCell className="text-right px-4 py-3">
-                    <div>{formatMoneyFromCents(bill.total_cents)}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Paid {formatMoneyFromCents(paidCents)} • Rem {formatMoneyFromCents(remainingCents)}
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-4 py-3">
-                    {warnings.length > 0 || bill.lien_waiver_status ? (
-                      <div className="space-y-1">
-                        {bill.lien_waiver_status ? (
-                          <Badge variant="outline">Lien waiver: {bill.lien_waiver_status}</Badge>
-                        ) : null}
-                        {warnings.slice(0, 2).map((w) => (
-                          <Badge key={w} variant="outline">
-                            {w}
-                          </Badge>
-                        ))}
-                        {warnings.length > 2 ? (
-                          <span className="text-xs text-muted-foreground">+{warnings.length - 2} more</span>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="px-4 py-3 text-right">
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={paymentAmount[bill.id] ?? ""}
-                      onChange={(e) => setPaymentAmount((prev) => ({ ...prev, [bill.id]: e.target.value }))}
-                      placeholder={(remainingCents / 100).toFixed(2)}
-                      className="h-9 text-right"
-                    />
-                  </TableCell>
-                  <TableCell className="px-4 py-3">
-                    <Select
-                      value={paymentMethod[bill.id] ?? bill.payment_method ?? "check"}
-                      onValueChange={(value) => setPaymentMethod((prev) => ({ ...prev, [bill.id]: value }))}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="check">Check</SelectItem>
-                        <SelectItem value="ach">ACH</SelectItem>
-                        <SelectItem value="wire">Wire</SelectItem>
-                        <SelectItem value="card">Card</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell className="px-4 py-3">
-                    <Input
-                      value={paymentRef[bill.id] ?? bill.payment_reference ?? ""}
-                      onChange={(e) => setPaymentRef((prev) => ({ ...prev, [bill.id]: e.target.value }))}
-                      placeholder="Check/ACH/QBO ref"
-                      className="h-9"
-                    />
-                  </TableCell>
-                  <TableCell className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setSelectedBill(bill)
-                          setBillDetailOpen(true)
-                        }}
-                      >
-                        Details
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setSelectedBill(bill)
-                          setAttachmentsOpen(true)
-                        }}
-                      >
-                        Files
-                      </Button>
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-4 py-3">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={isPending || bill.status === "approved" || bill.status === "paid"}
-                        onClick={() => setStatus(bill.id, "approved")}
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={isPending || (bill.status !== "approved" && bill.status !== "partial") || blocking || remainingCents <= 0}
-                        onClick={() => setStatus(bill.id, "paid")}
-                        title={blocking ? "Cannot mark paid due to compliance issues" : undefined}
-                      >
-                        Record payment
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )
-            })}
+      <AddPayableSheet
+        projectId={projectId}
+        open={addPayableOpen}
+        onOpenChange={setAddPayableOpen}
+        onSuccess={() => router.refresh()}
+      />
 
-            {filtered.length > 0 && (
-              <TableRow className="divide-x bg-muted/40 font-medium">
-                <TableCell className="px-4 py-3 text-sm text-muted-foreground">Totals</TableCell>
-                <TableCell className="px-4 py-3" />
-                <TableCell className="px-4 py-3" />
-                <TableCell className="px-4 py-3" />
-                <TableCell className="px-4 py-3" />
-              <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(totals.total)}</TableCell>
-              <TableCell className="px-4 py-3 text-xs text-muted-foreground">Open {formatMoneyFromCents(totals.open)}</TableCell>
-              <TableCell className="px-4 py-3" />
-              <TableCell className="px-4 py-3" />
-              <TableCell className="px-4 py-3" />
-              <TableCell className="px-4 py-3" />
-              <TableCell className="px-4 py-3 text-right text-muted-foreground">Paid {formatMoneyFromCents(totals.paid)}</TableCell>
-            </TableRow>
-          )}
-
-          {filtered.length === 0 && (
-            <TableRow className="divide-x">
-              <TableCell colSpan={12} className="text-center text-muted-foreground py-10">
-                No bills found.
-              </TableCell>
-            </TableRow>
-          )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <Dialog
-        open={attachmentsOpen}
-        onOpenChange={(nextOpen) => {
-          setAttachmentsOpen(nextOpen)
-          if (!nextOpen) {
-            setSelectedBill(null)
-            setAttachments([])
-          }
+      {/* Unified Bill Details Sheet */}
+      <Sheet 
+        open={billDetailOpen} 
+        onOpenChange={(open) => {
+          setBillDetailOpen(open)
+          if (!open) setSelectedBill(null)
         }}
       >
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{selectedBill?.bill_number ? `Bill ${selectedBill.bill_number}` : "Bill files"}</DialogTitle>
-            <DialogDescription>Attach vendor invoices and supporting documentation.</DialogDescription>
-          </DialogHeader>
+        <SheetContent side="right" className="sm:max-w-xl w-full flex flex-col p-0 shadow-2xl border-l">
           {selectedBill && (
-            <EntityAttachments
-              entityType="vendor_bill"
-              entityId={selectedBill.id}
-              projectId={projectId}
-              attachments={attachments}
-              onAttach={handleAttach}
-              onDetach={handleDetach}
-              readOnly={attachmentsLoading}
-              compact
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+            <>
+              <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
+                <SheetTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5 text-primary" />
+                  {selectedBill.bill_number ? `Bill ${selectedBill.bill_number}` : "Bill Details"}
+                </SheetTitle>
+                <SheetDescription>
+                  {selectedBill.company_name} • {selectedBill.commitment_title}
+                </SheetDescription>
+              </SheetHeader>
 
-      {/* Bill Detail Dialog */}
-      <Dialog open={billDetailOpen} onOpenChange={setBillDetailOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {selectedBill?.bill_number ? `Bill ${selectedBill.bill_number}` : "Bill Details"}
-            </DialogTitle>
-            <DialogDescription>
-              {selectedBill?.company_name} • {selectedBill?.commitment_title}
-            </DialogDescription>
-          </DialogHeader>
+              <div className="flex-1 overflow-y-auto px-6 py-6 space-y-8">
+                {/* Status Hero */}
+                <div className="flex items-center justify-between p-5 rounded-xl border bg-muted/5 shadow-inner">
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Current Status</p>
+                    <div className="mt-1">{billBadge(selectedBill.status)}</div>
+                  </div>
+                  <div className="text-right space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Total Amount</p>
+                    <p className="text-3xl font-bold tabular-nums tracking-tight">{formatMoneyFromCents(selectedBill.total_cents)}</p>
+                  </div>
+                </div>
 
-          {selectedBill && (
-            <div className="space-y-6">
-              {/* Bill Summary */}
-              <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
-                <div>
-                  <p className="text-sm font-medium">Amount</p>
-                  <p className="text-lg font-bold">{formatMoneyFromCents(selectedBill.total_cents)}</p>
+                {/* Attachments Section (NEW - Integrated) */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+                      <Paperclip className="h-3.5 w-3.5" />
+                      Documents & Invoices
+                    </h4>
+                    {attachmentsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                  </div>
+                  
+                  <div className="rounded-xl border bg-muted/5 p-4 shadow-inner">
+                    <EntityAttachments
+                      entityType="vendor_bill"
+                      entityId={selectedBill.id}
+                      projectId={projectId}
+                      attachments={attachments}
+                      onAttach={handleAttach}
+                      onDetach={handleDetach}
+                      readOnly={attachmentsLoading}
+                      compact
+                    />
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-medium">Status</p>
-                  <p className="text-lg">{billBadge(selectedBill.status)}</p>
+
+                {/* Main Details Grid */}
+                <div className="grid grid-cols-2 gap-x-8 gap-y-6 pt-4 border-t">
+                  <div className="space-y-1">
+                    <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Bill Date</Label>
+                    <p className="text-sm font-semibold">{selectedBill.bill_date ? format(new Date(selectedBill.bill_date), "PPP") : "—"}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Due Date</Label>
+                    <p className="text-sm font-semibold">{selectedBill.due_date ? format(new Date(selectedBill.due_date), "PPP") : "—"}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Amount Paid</Label>
+                    <p className="text-sm font-semibold text-emerald-600">{formatMoneyFromCents(selectedBill.paid_cents)}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Balance Remaining</Label>
+                    <p className="text-sm font-semibold text-amber-600">
+                      {formatMoneyFromCents(Math.max(0, (selectedBill.total_cents ?? 0) - (selectedBill.paid_cents ?? 0)))}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-medium">Bill Date</p>
-                  <p className="text-sm">{selectedBill.bill_date ? new Date(selectedBill.bill_date).toLocaleDateString() : "—"}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Due Date</p>
-                  <p className="text-sm">{selectedBill.due_date ? new Date(selectedBill.due_date).toLocaleDateString() : "—"}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Paid</p>
-                  <p className="text-sm">{formatMoneyFromCents(selectedBill.paid_cents)}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Remaining</p>
-                  <p className="text-sm">
-                    {formatMoneyFromCents(Math.max(0, (selectedBill.total_cents ?? 0) - (selectedBill.paid_cents ?? 0)))}
-                  </p>
+
+                {/* Quick Actions for Pending/Approved */}
+                {(selectedBill.status === "pending" || selectedBill.status === "approved" || selectedBill.status === "partial") && (
+                  <div className="space-y-4 pt-6 border-t">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Workflow Actions</h4>
+                    <div className="flex flex-col gap-4">
+                      {selectedBill.status === "pending" && (
+                        <Button 
+                          className="w-full h-11 shadow-sm justify-between group" 
+                          variant="outline"
+                          onClick={() => setStatus(selectedBill.id, "approved", selectedBill.actual_cost_code_id)}
+                          disabled={isPending}
+                        >
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                            <span>Approve for Payment</span>
+                          </div>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+                        </Button>
+                      )}
+                      {(selectedBill.status === "approved" || selectedBill.status === "partial") && (
+                        <div className="w-full space-y-4 p-5 rounded-xl border bg-blue-50/30 dark:bg-blue-900/10 border-blue-100 dark:border-blue-900/30 shadow-sm">
+                          <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 font-bold text-xs uppercase tracking-wider">
+                            <Receipt className="h-3.5 w-3.5" />
+                            Record Payment
+                          </div>
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Amount</Label>
+                              <div className="relative">
+                                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                                  <span className="text-muted-foreground text-xs">$</span>
+                                </div>
+                                <Input
+                                  className="pl-7 h-10 font-semibold"
+                                  placeholder="0.00"
+                                  value={paymentAmount[selectedBill.id] ?? ""}
+                                  onChange={(e) => setPaymentAmount(prev => ({ ...prev, [selectedBill.id]: e.target.value }))}
+                                />
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Method</Label>
+                              <Select
+                                value={paymentMethod[selectedBill.id] ?? selectedBill.payment_method ?? "check"}
+                                onValueChange={(v) => setPaymentMethod(prev => ({ ...prev, [selectedBill.id]: v }))}
+                              >
+                                <SelectTrigger className="h-10 w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="check">Check</SelectItem>
+                                  <SelectItem value="ach">ACH</SelectItem>
+                                  <SelectItem value="wire">Wire</SelectItem>
+                                  <SelectItem value="card">Card</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Reference / Confirmation #</Label>
+                            <Input
+                              className="h-10"
+                              placeholder="Check # or Transaction ID"
+                              value={paymentRef[selectedBill.id] ?? selectedBill.payment_reference ?? ""}
+                              onChange={(e) => setPaymentRef(prev => ({ ...prev, [selectedBill.id]: e.target.value }))}
+                            />
+                          </div>
+                          <Button 
+                            className="w-full h-10 shadow-md bg-blue-600 hover:bg-blue-700" 
+                            disabled={isPending}
+                            onClick={() => setStatus(selectedBill.id, "paid")}
+                          >
+                            {isPending ? "Processing..." : "Post Payment"}
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Cost Coding Split section */}
+                <div className="space-y-4 pt-6 border-t">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Actual Cost Coding</h4>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs shadow-sm"
+                      onClick={() =>
+                        setDetailActualLines((prev) => [
+                          ...prev,
+                          {
+                            id: crypto.randomUUID(),
+                            costCodeId: sortedCostCodes[0]?.id ?? "",
+                            description: selectedBill.bill_number ?? "Vendor bill",
+                            amountDollars: "0.00",
+                          },
+                        ])
+                      }
+                    >
+                      <Plus className="h-3 w-3 mr-1" />
+                      Add Split
+                    </Button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {detailActualLines.map((line, index) => (
+                      <div key={line.id} className="flex flex-col gap-3 p-4 rounded-xl border bg-background shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1">
+                            <Select
+                              value={line.costCodeId}
+                              onValueChange={(value) =>
+                                setDetailActualLines((prev) =>
+                                  prev.map((item) => (item.id === line.id ? { ...item, costCodeId: value } : item)),
+                                )
+                              }
+                            >
+                              <SelectTrigger className="h-9 text-xs w-full">
+                                <SelectValue placeholder="Select cost code" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {sortedCostCodes.map((code) => (
+                                  <SelectItem key={code.id} value={code.id} className="text-xs">
+                                    {code.code ? `${code.code} - ${code.name}` : code.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="relative w-36 shrink-0">
+                            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                              <span className="text-muted-foreground text-[10px] font-bold">$</span>
+                            </div>
+                            <Input
+                              value={line.amountDollars}
+                              onChange={(event) =>
+                                setDetailActualLines((prev) =>
+                                  prev.map((item) => (item.id === line.id ? { ...item, amountDollars: event.target.value } : item)),
+                                )
+                              }
+                              inputMode="decimal"
+                              className="h-9 pl-7 text-right tabular-nums text-xs font-semibold"
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/5"
+                            disabled={detailActualLines.length === 1}
+                            onClick={() => setDetailActualLines((prev) => prev.filter((item) => item.id !== line.id))}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <Input
+                          value={line.description}
+                          onChange={(event) =>
+                            setDetailActualLines((prev) =>
+                              prev.map((item) => (item.id === line.id ? { ...item, description: event.target.value } : item)),
+                            )
+                          }
+                          placeholder="Split description..."
+                          className="h-8 text-xs bg-muted/20 border-dashed"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Financial Meta terms */}
+                  <div className="grid grid-cols-2 gap-6 pt-4">
+                    <div className="space-y-2">
+                      <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Retainage %</Label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          step="0.1"
+                          value={detailRetainage}
+                          onChange={(e) => setDetailRetainage(e.target.value)}
+                          placeholder="0"
+                          className="h-10 pr-8 font-semibold"
+                        />
+                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+                          <span className="text-muted-foreground text-xs">%</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Lien Waiver</Label>
+                      <Select value={detailLienWaiver} onValueChange={setDetailLienWaiver}>
+                        <SelectTrigger className="h-10 w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="not_required">Not required</SelectItem>
+                          <SelectItem value="requested">Requested</SelectItem>
+                          <SelectItem value="received">Received</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Retainage %</p>
-                  <Input
-                    type="number"
-                    step="0.1"
-                    value={detailRetainage}
-                    onChange={(e) => setDetailRetainage(e.target.value)}
-                    placeholder="0"
-                    className="h-9"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Retained {formatMoneyFromCents(
-                      (() => {
-                        if (!detailRetainage.trim()) return selectedBill.retainage_cents ?? 0
-                        const percent = Number(detailRetainage)
-                        if (!Number.isFinite(percent)) return selectedBill.retainage_cents ?? 0
-                        return Math.round(((selectedBill.total_cents ?? 0) * percent) / 100)
-                      })(),
-                    )}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Lien waiver</p>
-                  <Select value={detailLienWaiver} onValueChange={setDetailLienWaiver}>
-                    <SelectTrigger className="h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="not_required">Not required</SelectItem>
-                      <SelectItem value="requested">Requested</SelectItem>
-                      <SelectItem value="received">Received</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="flex justify-end">
+              <SheetFooter className="p-6 border-t bg-muted/10 grid grid-cols-2 gap-4">
+                <Button variant="outline" className="h-11" onClick={() => setBillDetailOpen(false)}>Cancel</Button>
                 <Button
-                  variant="outline"
+                  className="h-11 shadow-lg"
                   disabled={isPending}
                   onClick={() => {
                     const retainagePercent = detailRetainage.trim() ? Number(detailRetainage) : undefined
                     if (detailRetainage.trim()) {
                       if (retainagePercent === undefined || !Number.isFinite(retainagePercent) || retainagePercent < 0) {
-                        toast({ title: "Invalid retainage", description: "Enter a valid percentage." })
+                        toast.error("Invalid retainage percentage")
                         return
                       }
                     }
                     startTransition(async () => {
                       try {
+                        const actualLines = detailActualLines.map((line) => ({
+                          cost_code_id: line.costCodeId,
+                          description: line.description.trim() || selectedBill.bill_number || "Vendor bill",
+                          amount_cents: dollarsToCents(line.amountDollars) ?? -1,
+                        }))
+                        if (actualLines.some((line) => !line.cost_code_id || line.amount_cents < 0)) {
+                          toast.error("Invalid cost coding. Each split needs a cost code and amount.")
+                          return
+                        }
+                        const actualTotal = actualLines.reduce((sum, line) => sum + line.amount_cents, 0)
+                        if (actualTotal !== (selectedBill.total_cents ?? 0)) {
+                          toast.error(`Coding total (${formatMoneyFromCents(actualTotal)}) must match bill total (${formatMoneyFromCents(selectedBill.total_cents)})`)
+                          return
+                        }
+
                         await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
                           status: selectedBill.status as any,
+                          actual_lines: actualLines,
                           retainage_percent: retainagePercent,
                           lien_waiver_status: detailLienWaiver as any,
                         })
-                        toast({ title: "AP details updated" })
+                        setBillCostCode((prev) => ({
+                          ...prev,
+                          [selectedBill.id]: actualLines[0]?.cost_code_id ?? "",
+                        }))
+                        toast.success("AP details updated")
+                        router.refresh()
+                        setBillDetailOpen(false)
                       } catch (error: any) {
-                        toast({ title: "Unable to update AP details", description: error?.message ?? "Try again." })
+                        toast.error(error?.message ?? "Failed to update details")
                       }
                     })
                   }}
                 >
-                  Save AP details
+                  Save Changes
                 </Button>
-              </div>
-
-              {/* Approval & Payment History */}
-              <div>
-                <h3 className="text-sm font-medium mb-3">History</h3>
-                <div className="space-y-3">
-                  {selectedBill.approved_at && (
-                    <div className="flex items-center justify-between p-3 border rounded">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                        <span className="text-sm font-medium">Approved</span>
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {new Date(selectedBill.approved_at).toLocaleString()}
-                      </span>
-                    </div>
-                  )}
-
-                  {selectedBill.paid_at && (
-                    <div className="flex items-center justify-between p-3 border rounded">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                        <span className="text-sm font-medium">Paid</span>
-                        {selectedBill.payment_reference && (
-                          <span className="text-xs text-muted-foreground">({selectedBill.payment_reference})</span>
-                        )}
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {new Date(selectedBill.paid_at).toLocaleString()}
-                      </span>
-                    </div>
-                  )}
-
-                  {!selectedBill.approved_at && !selectedBill.paid_at && (
-                    <p className="text-sm text-muted-foreground text-center py-4">
-                      No approval or payment history yet
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Compliance Warnings */}
-              {(() => {
-                const status = selectedBill.company_id
-                  ? complianceStatusByCompanyId[selectedBill.company_id]
-                  : undefined
-                const warnings = complianceWarnings(selectedBill, complianceRules, status)
-                const blocking = hasBlockingComplianceIssues(selectedBill, complianceRules, status)
-
-                if (warnings.length === 0) return null
-
-                return (
-                <div>
-                  <h3 className="text-sm font-medium mb-3">
-                    Compliance Issues
-                    {blocking && (
-                      <span className="ml-2 text-xs bg-red-100 text-red-800 px-2 py-1 rounded">
-                        Blocking Payment
-                      </span>
-                    )}
-                  </h3>
-                  <div className="space-y-2">
-                    {warnings.map((warning, index) => {
-                      const isBlocking = warning.includes("expired") || warning.includes("missing")
-                      return (
-                        <div key={index} className={`flex items-center gap-2 p-2 border rounded text-sm ${isBlocking ? 'bg-red-50 border-red-200' : 'bg-yellow-50 border-yellow-200'}`}>
-                          <span className={isBlocking ? "text-red-600" : "text-yellow-600"}>⚠️</span>
-                          <span className={isBlocking ? "text-red-800" : "text-yellow-800"}>{warning}</span>
-                          {isBlocking && <span className="ml-auto text-xs text-red-600 font-medium">Blocks Payment</span>}
-                        </div>
-                      )
-                    })}
-                  </div>
-
-                  {status && (
-                    <div className="mt-3 rounded-lg border bg-muted/20 p-3 text-sm">
-                      {status.missing.length > 0 && (
-                        <div className="space-y-1">
-                          <p className="font-medium">Missing required documents</p>
-                          <div className="flex flex-wrap gap-2">
-                            {status.missing.map((dt) => (
-                              <Badge key={dt.id} variant="outline">
-                                {dt.name}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {status.expired.length > 0 && (
-                        <div className={status.missing.length > 0 ? "mt-3 space-y-1" : "space-y-1"}>
-                          <p className="font-medium">Expired documents</p>
-                          <div className="flex flex-wrap gap-2">
-                            {status.expired.map((doc) => (
-                              <Badge key={doc.id} variant="outline">
-                                {doc.document_type?.name ?? "Document"}{doc.expiry_date ? ` (exp ${doc.expiry_date})` : ""}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {status.pending_review.length > 0 && (
-                        <div className={status.missing.length > 0 || status.expired.length > 0 ? "mt-3 space-y-1" : "space-y-1"}>
-                          <p className="font-medium">Pending review</p>
-                          <div className="flex flex-wrap gap-2">
-                            {status.pending_review.map((doc) => (
-                              <Badge key={doc.id} variant="outline">
-                                {doc.document_type?.name ?? "Document"}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                )
-              })()}
-            </div>
+              </SheetFooter>
+            </>
           )}
-        </DialogContent>
-      </Dialog>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

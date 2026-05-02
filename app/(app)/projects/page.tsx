@@ -9,7 +9,9 @@ export default async function ProjectsPage() {
 
   return (
     <PageLayout title="Projects">
-      <ProjectsClient projects={projects} />
+      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+        <ProjectsClient projects={projects} />
+      </div>
     </PageLayout>
   )
 }

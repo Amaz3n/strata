@@ -34,6 +34,10 @@ function mapItem(row: any): CloseoutItem {
     title: row.title,
     status: row.status ?? "missing",
     file_id: row.file_id ?? undefined,
+    due_date: row.due_date ?? undefined,
+    responsible_party: row.responsible_party ?? undefined,
+    notes: row.notes ?? undefined,
+    attachment_count: row.attachment_count ?? 0,
     created_at: row.created_at,
     updated_at: row.updated_at ?? row.created_at,
   }
@@ -81,7 +85,7 @@ export async function getCloseoutPackage(projectId: string, orgId?: string): Pro
 
   const { data, error } = await supabase
     .from("closeout_items")
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, created_at, updated_at")
+    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("closeout_package_id", pkg.id)
     .order("created_at", { ascending: true })
@@ -90,7 +94,32 @@ export async function getCloseoutPackage(projectId: string, orgId?: string): Pro
     throw new Error(`Failed to load closeout items: ${error.message}`)
   }
 
-  return { package: pkg, items: (data ?? []).map(mapItem) }
+  const itemRows = data ?? []
+  const itemIds = itemRows.map((item) => item.id as string)
+  const attachmentCounts = new Map<string, number>()
+
+  if (itemIds.length > 0) {
+    const { data: links, error: linksError } = await supabase
+      .from("file_links")
+      .select("entity_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("entity_type", "closeout_item")
+      .in("entity_id", itemIds)
+
+    if (linksError) {
+      throw new Error(`Failed to load closeout file counts: ${linksError.message}`)
+    }
+
+    for (const link of links ?? []) {
+      const entityId = link.entity_id as string
+      attachmentCounts.set(entityId, (attachmentCounts.get(entityId) ?? 0) + 1)
+    }
+  }
+
+  return {
+    package: pkg,
+    items: itemRows.map((item) => mapItem({ ...item, attachment_count: attachmentCounts.get(item.id as string) ?? 0 })),
+  }
 }
 
 export async function createCloseoutItem({
@@ -117,8 +146,11 @@ export async function createCloseoutItem({
       title: parsed.title,
       status: parsed.status ?? "missing",
       file_id: parsed.file_id ?? null,
+      due_date: parsed.due_date ?? null,
+      responsible_party: parsed.responsible_party?.trim() || null,
+      notes: parsed.notes?.trim() || null,
     })
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, created_at, updated_at")
+    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
     .single()
 
   if (error || !data) {
@@ -160,7 +192,7 @@ export async function updateCloseoutItem({
 
   const { data: existing, error: existingError } = await supabase
     .from("closeout_items")
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, created_at, updated_at")
+    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
     .maybeSingle()
@@ -173,6 +205,9 @@ export async function updateCloseoutItem({
   if (parsed.title !== undefined) updateData.title = parsed.title
   if (parsed.status !== undefined) updateData.status = parsed.status
   if (parsed.file_id !== undefined) updateData.file_id = parsed.file_id
+  if (parsed.due_date !== undefined) updateData.due_date = parsed.due_date
+  if (parsed.responsible_party !== undefined) updateData.responsible_party = parsed.responsible_party?.trim() || null
+  if (parsed.notes !== undefined) updateData.notes = parsed.notes?.trim() || null
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await supabase
@@ -180,7 +215,7 @@ export async function updateCloseoutItem({
     .update(updateData)
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, created_at, updated_at")
+    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
     .single()
 
   if (error || !data) {

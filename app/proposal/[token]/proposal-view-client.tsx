@@ -84,7 +84,7 @@ export function ProposalViewClient({ proposal, continueSigningUrl }: Props) {
         <header className="rounded-lg bg-card p-6 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="space-y-2">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Proposal</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Proposal worksheet</p>
               <h1 className="text-2xl font-semibold text-foreground">
                 {proposal.title ?? proposal.number ?? "Project Proposal"}
               </h1>
@@ -119,7 +119,7 @@ export function ProposalViewClient({ proposal, continueSigningUrl }: Props) {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Scope & Pricing</CardTitle>
+            <CardTitle className="text-base">Worksheet Scope & Pricing</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             {sortedLines.length === 0 ? (
@@ -204,22 +204,22 @@ export function ProposalViewClient({ proposal, continueSigningUrl }: Props) {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Signature</CardTitle>
+              <CardTitle className="text-base">Execution Document</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 {requiresSignature
-                  ? "This proposal now uses Arc's secure document-signing flow."
-                  : "This proposal uses Arc's secure document-signing flow when signature is required."}
+                  ? "This page is a pricing worksheet. The official proposal is executed through your builder's document."
+                  : "This page is a pricing worksheet. Your builder may send a separate execution document if needed."}
               </p>
 
               {continueSigningUrl ? (
                 <Button className="w-full" asChild>
-                  <a href={continueSigningUrl}>Continue to secure signing</a>
+                  <a href={continueSigningUrl}>Continue to execution document</a>
                 </Button>
               ) : (
                 <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  The signing link is not active yet. Please use the latest email from your builder.
+                  The execution document is not active yet. Please use the latest signing email from your builder.
                 </div>
               )}
 

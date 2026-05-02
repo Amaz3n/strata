@@ -3,6 +3,9 @@ import { Document, Page, StyleSheet, Text, View, renderToBuffer } from "@react-p
 type CloseoutPdfItem = {
   title: string
   status: string
+  dueDate?: string
+  responsibleParty?: string
+  notes?: string
 }
 
 type CloseoutPdfData = {
@@ -32,8 +35,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: "#f0f0f0",
   },
-  cellTitle: { flexGrow: 1 },
-  cellStatus: { width: 120, textAlign: "right" },
+  cellTitle: { width: 210 },
+  cellOwner: { width: 110 },
+  cellDue: { width: 80 },
+  cellStatus: { width: 80, textAlign: "right" },
+  notes: { color: "#6b6b6b", fontSize: 9, marginTop: 2 },
 })
 
 function CloseoutDocument({ data }: { data: CloseoutPdfData }) {
@@ -51,11 +57,18 @@ function CloseoutDocument({ data }: { data: CloseoutPdfData }) {
           <Text style={styles.label}>Items</Text>
           <View style={styles.tableHeader}>
             <Text style={styles.cellTitle}>Item</Text>
+            <Text style={styles.cellOwner}>Responsible</Text>
+            <Text style={styles.cellDue}>Due</Text>
             <Text style={styles.cellStatus}>Status</Text>
           </View>
           {data.items.map((item, idx) => (
             <View key={`${item.title}-${idx}`} style={styles.row}>
-              <Text style={styles.cellTitle}>{item.title}</Text>
+              <View style={styles.cellTitle}>
+                <Text>{item.title}</Text>
+                {item.notes ? <Text style={styles.notes}>{item.notes}</Text> : null}
+              </View>
+              <Text style={styles.cellOwner}>{item.responsibleParty ?? ""}</Text>
+              <Text style={styles.cellDue}>{item.dueDate ?? ""}</Text>
               <Text style={styles.cellStatus}>{item.status}</Text>
             </View>
           ))}

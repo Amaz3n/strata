@@ -71,6 +71,8 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
   const [propertyType, setPropertyType] = useState<Project["property_type"] | undefined>(project.property_type)
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
   const [clientId, setClientId] = useState<string | null | undefined>(project.client_id)
+  const [retainagePercent, setRetainagePercent] = useState<string>(String(project.retainage_percent ?? "0"))
+  const [totalContractValue, setTotalContractValue] = useState<string>(project.total_contract_value_cents ? (project.total_contract_value_cents / 100).toString() : "")
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
@@ -89,6 +91,8 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
       project_type: projectType,
       client_id: clientId ?? null,
       location: address ? { formatted: address, address } : undefined,
+      retainage_percent: Number.parseFloat(retainagePercent) || 0,
+      total_contract_value_cents: totalContractValue ? Math.round(Number.parseFloat(totalContractValue) * 100) : null,
     }
 
     setSaving(true)
@@ -287,6 +291,43 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
                 </Select>
                 <p className="text-sm text-muted-foreground">
                   Selecting a client links portal access and simplifies signatures.
+                </p>
+              </div>
+
+              <div className="pt-4 border-t">
+                <h4 className="text-sm font-semibold mb-4 uppercase tracking-wider text-muted-foreground">Financial Terms</h4>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Total Contract Value</Label>
+                    <div className="relative">
+                      <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                        <span className="text-muted-foreground sm:text-sm">$</span>
+                      </div>
+                      <Input
+                        className="pl-7"
+                        placeholder="0.00"
+                        value={totalContractValue}
+                        onChange={(e) => setTotalContractValue(e.target.value.replace(/[^\d.]/g, ""))}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Default Retainage %</Label>
+                    <div className="relative">
+                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+                        <span className="text-muted-foreground sm:text-sm">%</span>
+                      </div>
+                      <Input
+                        className="pr-7"
+                        placeholder="0"
+                        value={retainagePercent}
+                        onChange={(e) => setRetainagePercent(e.target.value.replace(/[^\d.]/g, ""))}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-3">
+                  These terms are used as a fallback if no signed Contract is active in Arc.
                 </p>
               </div>
             </div>

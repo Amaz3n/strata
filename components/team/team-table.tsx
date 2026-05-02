@@ -18,8 +18,6 @@ import {
 } from "@/components/ui/dropdown-menu"
 import type { TeamMember } from "@/lib/types"
 import { MemberRoleBadge } from "@/components/team/member-role-badge"
-import { EditMemberDialog } from "@/components/team/edit-member-dialog"
-import { InviteMemberDialog } from "@/components/team/invite-member-dialog"
 import {
   reactivateMemberAction,
   resetMemberMfaAction,
@@ -30,7 +28,6 @@ import {
 import { Lock, MoreHorizontal, UserPlus, Users } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import type { OrgRoleOption } from "@/lib/types"
 
 const statusColors: Record<string, string> = {
   active: "bg-success/20 text-success border-success/30",
@@ -58,18 +55,20 @@ interface TeamTableProps {
   members: TeamMember[]
   canManageMembers?: boolean
   canEditRoles?: boolean
-  roleOptions?: OrgRoleOption[]
   showProjectCounts?: boolean
   onMemberChange?: () => void
+  onInviteMember?: () => void
+  onEditMember?: (member: TeamMember) => void
 }
 
 export function TeamTable({
   members,
   canManageMembers = false,
   canEditRoles = false,
-  roleOptions = [],
   showProjectCounts = true,
   onMemberChange,
+  onInviteMember,
+  onEditMember,
 }: TeamTableProps) {
   const [isPending, startTransition] = useTransition()
   const [view, setView] = useState<"active" | "archived">("active")
@@ -206,24 +205,18 @@ export function TeamTable({
             <SelectItem value="archived">Archived ({archivedMembers.length})</SelectItem>
           </SelectContent>
         </Select>
-        <InviteMemberDialog
-          canInvite={canManageMembers}
-          roleOptions={roleOptions}
-          onSuccess={refreshData}
-          trigger={
-            <Button
-              size="icon"
-              variant="default"
-              disabled={!canManageMembers}
-              className="h-9 w-9"
-            >
-              <UserPlus className="h-4 w-4" />
-              <span className="sr-only">Invite member</span>
-            </Button>
-          }
-        />
+        <Button
+          size="icon"
+          variant="default"
+          disabled={!canManageMembers}
+          className="h-9 w-9"
+          onClick={() => onInviteMember?.()}
+        >
+          <UserPlus className="h-4 w-4" />
+          <span className="sr-only">Invite member</span>
+        </Button>
       </div>
-      <div className="rounded-lg border px-6 py-3">
+      <div className="overflow-x-auto rounded-lg border px-6 py-3">
         <TooltipProvider delayDuration={200}>
           <Table>
             <TableHeader>
@@ -313,18 +306,15 @@ export function TeamTable({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <EditMemberDialog
-                          member={member}
-                          canManageMembers={canManageMembers}
-                          canEditRoles={canEditRoles}
-                          roleOptions={roleOptions}
-                          onSuccess={refreshData}
-                          trigger={
-                            <DropdownMenuItem disabled={!canManageMembers && !canEditRoles}>
-                              Edit member
-                            </DropdownMenuItem>
-                          }
-                        />
+                        <DropdownMenuItem
+                          disabled={!canManageMembers && !canEditRoles}
+                          onSelect={(event) => {
+                            event.preventDefault()
+                            onEditMember?.(member)
+                          }}
+                        >
+                          Edit member
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         {member.status === "suspended" ? (
                           <DropdownMenuItem disabled={isPending || !canManageMembers} onClick={() => reactivate(member.id)}>

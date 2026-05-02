@@ -185,18 +185,15 @@ export function ProposalsClient({
   async function handleCreate(input: ProposalInput) {
     startCreating(async () => {
       try {
-        const { proposal, viewUrl, token } = await createProposalAction(input)
+        const { proposal, token } = await createProposalAction(input)
         setItems((prev) => [
           { ...proposal, token, project_name: projects.find((project) => project.id === proposal.project_id)?.name },
           ...prev,
         ])
         setCreateOpen(false)
-        if (navigator?.clipboard) {
-          await navigator.clipboard.writeText(viewUrl)
-          toast.success("Proposal created", { description: "Link copied to clipboard." })
-        } else {
-          toast.success("Proposal created", { description: viewUrl })
-        }
+        toast.success("Proposal worksheet created", {
+          description: "Prepare an execution document when ready.",
+        })
       } catch (error: any) {
         console.error(error)
         toast.error("Failed to create proposal", { description: error?.message ?? "Please try again." })
@@ -209,7 +206,7 @@ export function ProposalsClient({
     try {
       const updated = await sendProposalAction(id)
       setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...updated } : item)))
-      toast.success("Proposal marked as sent")
+      toast.success("Proposal worksheet marked sent")
     } catch (error: any) {
       console.error(error)
       toast.error("Failed to send", { description: error?.message ?? "Please try again." })
@@ -236,7 +233,7 @@ export function ProposalsClient({
 
   const handleOpenPrepare = (proposal: ProposalListItem) => {
     if (!canPrepareProposalForSignature(proposal)) {
-      toast.error("This proposal already has an executed signature and cannot be re-prepared.")
+      toast.error("This proposal already has an executed document and cannot be re-prepared.")
       return
     }
     if (!proposal.project_id) {
@@ -441,16 +438,16 @@ export function ProposalsClient({
                             disabled={!canPrepareProposalForSignature(proposal)}
                           >
                             {canPrepareProposalForSignature(proposal)
-                              ? "Prepare for signature"
-                              : "Signature already executed"}
+                              ? "Prepare execution document"
+                              : "Execution document complete"}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => void handleCopyLink(proposal.id, proposal.token)}>
                             <Copy className="mr-2 h-4 w-4" />
-                            Copy link
+                            Copy review link
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleSend(proposal.id)} disabled={sendingId === proposal.id}>
                             <Mail className="mr-2 h-4 w-4" />
-                            {sendingId === proposal.id ? "Sending..." : "Mark sent"}
+                            {sendingId === proposal.id ? "Sending..." : "Mark worksheet sent"}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -510,7 +507,7 @@ export function ProposalsClient({
               <div className="rounded-lg border p-4 text-sm text-muted-foreground">Loading status...</div>
             ) : !statusSheetData?.document ? (
               <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                No signature envelope has been prepared for this proposal yet.
+                No execution document has been prepared for this proposal yet.
               </div>
             ) : (
               <>
@@ -613,7 +610,7 @@ export function ProposalsClient({
         }}
         sourceEntity={wizardSourceEntity}
         sourceLabel="Proposal"
-        sheetTitle="Prepare proposal for signature"
+        sheetTitle="Prepare proposal execution document"
         onEnvelopeSent={handleEnvelopeSent}
       />
     </div>

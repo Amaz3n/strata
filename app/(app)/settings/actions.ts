@@ -7,7 +7,7 @@ import { NotificationService } from '@/lib/services/notifications'
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createStripeBillingPortalSession, createStripeCheckoutSession, createStripeCustomer, getAppBaseUrl } from "@/lib/integrations/payments/stripe"
 import { getCurrentUserPermissions, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
-import { listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
+import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getOrgAccessState } from "@/lib/services/access"
 import { AI_PROVIDER_VALUES, defaultModelForProvider, getOrgAiSearchConfig, normalizeAiProvider } from "@/lib/services/ai-config"
 
@@ -321,6 +321,7 @@ export async function getTeamSettingsDataAction() {
     return {
       teamMembers: [],
       roleOptions: [],
+      permissionOptions: [],
       canManageMembers: false,
       canEditRoles: false,
       locked: true,
@@ -334,6 +335,7 @@ export async function getTeamSettingsDataAction() {
   return {
     teamMembers,
     roleOptions,
+    permissionOptions: TEAM_PERMISSION_OPTIONS,
     canManageMembers: permissions.includes("members.manage"),
     canEditRoles: permissions.includes("org.admin"),
     locked: false,

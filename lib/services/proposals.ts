@@ -114,6 +114,8 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
       token_hash: tokenHash,
       status: "draft",
       snapshot: {
+        execution_method: "byo_document",
+        worksheet_source: "arc_native",
         markup_percent: markup,
         tax_rate: taxRate,
         subtotal_cents: totals.subtotal,
@@ -190,7 +192,11 @@ export async function generateProposalLink(proposalId: string, orgId?: string) {
   return { token, url: `${appUrl}/proposal/${token}`, proposalId: data.id as string }
 }
 
-export async function sendProposal(proposalId: string, orgId?: string) {
+export async function sendProposal(
+  proposalId: string,
+  orgId?: string,
+  options: { queueEmail?: boolean } = {},
+) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
   const { data: proposal, error } = await supabase
@@ -205,15 +211,17 @@ export async function sendProposal(proposalId: string, orgId?: string) {
     throw new Error(`Failed to send proposal: ${error?.message}`)
   }
 
-  await supabase.from("outbox").insert({
-    org_id: resolvedOrgId,
-    job_type: "send_proposal_email",
-    payload: {
-      proposal_id: proposalId,
-      recipient_email: proposal.recipient?.email,
-      recipient_name: proposal.recipient?.full_name,
-    },
-  })
+  if (options.queueEmail === true) {
+    await supabase.from("outbox").insert({
+      org_id: resolvedOrgId,
+      job_type: "send_proposal_email",
+      payload: {
+        proposal_id: proposalId,
+        recipient_email: proposal.recipient?.email,
+        recipient_name: proposal.recipient?.full_name,
+      },
+    })
+  }
 
   return proposal
 }

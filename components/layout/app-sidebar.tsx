@@ -37,6 +37,7 @@ interface AppSidebarProps {
   user?: User | null
   pipelineBadgeCount?: number
   canAccessPlatform?: boolean
+  permissions?: string[]
 }
 
 type SidebarNavItem = {
@@ -46,6 +47,7 @@ type SidebarNavItem = {
   isActive?: boolean
   badge?: number
   disabled?: boolean
+  requiredAny?: string[]
 }
 
 type SidebarNavGroup = {
@@ -83,6 +85,21 @@ function getProjectSection(pathname: string): string {
   return "overview"
 }
 
+function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) {
+  if (!requiredAny || requiredAny.length === 0) return true
+  if (permissions.has("*") || permissions.has("org.admin")) return true
+  return requiredAny.some((permission) => permissions.has(permission))
+}
+
+function filterNavigation(groups: SidebarNavGroup[], permissions: Set<string>) {
+  return groups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => canAccess(item.requiredAny, permissions)),
+    }))
+    .filter((group) => group.items.length > 0)
+}
+
 function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, canAccessPlatform?: boolean): SidebarNavGroup[] {
   const workspaceItems: SidebarNavItem[] = [
     {
@@ -96,6 +113,7 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, ca
       url: "/projects",
       icon: FolderOpen,
       isActive: pathname === "/projects",
+      requiredAny: ["org.member", "project.read"],
     },
     {
       title: "Pipeline",
@@ -103,18 +121,21 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, ca
       icon: Contact,
       isActive: pathname === "/pipeline",
       badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
+      requiredAny: ["pipeline.read", "pipeline.write"],
     },
     {
       title: "Messages",
       url: "/messages",
       icon: MessageSquare,
       isActive: pathname.startsWith("/messages"),
+      requiredAny: ["message.read", "message.write"],
     },
     {
       title: "Directory",
       url: "/directory",
       icon: Building2,
       isActive: pathname.startsWith("/directory"),
+      requiredAny: ["directory.read", "directory.write"],
     },
   ]
 
@@ -150,6 +171,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: LayoutDashboard,
           isActive: hasProject && section === "overview",
           disabled: !hasProject,
+          requiredAny: ["org.member", "project.read"],
         },
         {
           title: "Documents",
@@ -157,6 +179,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: FileText,
           isActive: hasProject && section === "documents",
           disabled: !hasProject,
+          requiredAny: ["docs.read"],
         },
         {
           title: "Drawings",
@@ -164,6 +187,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: Layers,
           isActive: hasProject && section === "drawings",
           disabled: !hasProject,
+          requiredAny: ["drawing.read", "docs.read"],
         },
         {
           title: "Schedule",
@@ -171,6 +195,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: CalendarDays,
           isActive: hasProject && section === "schedule",
           disabled: !hasProject,
+          requiredAny: ["schedule.read"],
         },
         {
           title: "RFIs",
@@ -178,6 +203,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: MessageSquare,
           isActive: hasProject && section === "rfis",
           disabled: !hasProject,
+          requiredAny: ["rfi.read"],
         },
         {
           title: "Submittals",
@@ -185,6 +211,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: ClipboardCheck,
           isActive: hasProject && section === "submittals",
           disabled: !hasProject,
+          requiredAny: ["submittal.read"],
         },
         {
           title: "Decisions",
@@ -192,6 +219,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: CheckSquare,
           isActive: hasProject && section === "decisions",
           disabled: !hasProject,
+          requiredAny: ["decision.read", "decision.write"],
         },
         {
           title: "Daily Logs",
@@ -199,6 +227,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: Camera,
           isActive: hasProject && section === "daily-logs",
           disabled: !hasProject,
+          requiredAny: ["daily_log.read"],
         },
         {
           title: "Punch",
@@ -206,6 +235,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: ClipboardList,
           isActive: hasProject && section === "punch",
           disabled: !hasProject,
+          requiredAny: ["punch.read", "punch.write"],
         },
         {
           title: "Financials",
@@ -213,6 +243,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: Receipt,
           isActive: hasProject && financialSections.includes(section),
           disabled: !hasProject,
+          requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"],
         },
         {
           title: "Change Orders",
@@ -220,6 +251,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: ClipboardList,
           isActive: hasProject && section === "change-orders",
           disabled: !hasProject,
+          requiredAny: ["change_order.read"],
         },
         {
           title: "Signatures",
@@ -227,6 +259,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: ClipboardCheck,
           isActive: hasProject && section === "signatures",
           disabled: !hasProject,
+          requiredAny: ["signature.read", "signature.send"],
         },
         {
           title: "Bids",
@@ -234,6 +267,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: ClipboardList,
           isActive: hasProject && section === "bids",
           disabled: !hasProject,
+          requiredAny: ["bid.read", "bid.write"],
         },
         {
           title: "Proposals",
@@ -241,6 +275,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: FileText,
           isActive: hasProject && section === "proposals",
           disabled: !hasProject,
+          requiredAny: ["proposal.read", "proposal.write"],
         },
         {
           title: "Closeout",
@@ -248,6 +283,7 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: CheckSquare,
           isActive: hasProject && section === "closeout",
           disabled: !hasProject,
+          requiredAny: ["closeout.read", "closeout.write"],
         },
         {
           title: "Warranty",
@@ -255,18 +291,23 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
           icon: ClipboardCheck,
           isActive: hasProject && section === "warranty",
           disabled: !hasProject,
+          requiredAny: ["warranty.read", "warranty.write"],
         },
       ],
     },
   ]
 }
 
-export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform }: AppSidebarProps) {
+export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permissions = [] }: AppSidebarProps) {
   const pathname = usePathname()
   const projectId = getProjectIdFromPath(pathname)
   const section = getProjectSection(pathname)
+  const permissionSet = new Set(permissions)
 
-  const navMain = [...buildGlobalNavigation(pathname, pipelineBadgeCount, canAccessPlatform), ...buildProjectNavigation(projectId, section)].map((group) => ({
+  const navMain = filterNavigation(
+    [...buildGlobalNavigation(pathname, pipelineBadgeCount, canAccessPlatform), ...buildProjectNavigation(projectId, section)],
+    permissionSet,
+  ).map((group) => ({
     ...group,
     items: group.items.map((item) => ({
       ...item,
