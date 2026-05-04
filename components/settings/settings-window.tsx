@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { useSearchParams } from "next/navigation"
 
 import * as TabsPrimitive from "@radix-ui/react-tabs"
@@ -1379,7 +1379,15 @@ export function SettingsWindow({
                         if (!open) setTeamView({ mode: "list" })
                       }}
                     >
-                      <SheetContent className="w-full gap-0 overflow-hidden p-0 sm:max-w-lg data-[state=closed]:duration-150 data-[state=open]:duration-200">
+                      <SheetContent
+                        side="right"
+                        mobileFullscreen
+                        className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
+                        style={{
+                          animationDuration: '150ms',
+                          transitionDuration: '150ms'
+                        } as CSSProperties}
+                      >
                         <SheetHeader className="sr-only">
                           <SheetTitle>{lastTeamFormView.mode === "edit" ? "Edit team member" : "Invite team member"}</SheetTitle>
                         </SheetHeader>

@@ -66,7 +66,8 @@ export interface VendorBillActualLine {
 export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
   const metadata = row?.metadata ?? {}
   const company = row?.commitment?.company ?? row?.company ?? {}
-  const actualLines = (billLines ?? []).map((line) => ({
+  const lines = Array.isArray(billLines) ? billLines : []
+  const actualLines = lines.map((line) => ({
     id: line.id ?? undefined,
     cost_code_id: line.cost_code_id,
     cost_code_code: line.cost_code?.code ?? undefined,
@@ -215,7 +216,7 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
     throw new Error(`Failed to list vendor bills: ${error.message}`)
   }
 
-  return (data ?? []).map(mapVendorBill)
+  return (data ?? []).map((row: any) => mapVendorBill(row))
 }
 
 export async function listVendorBillsForProject(projectId: string, orgId?: string): Promise<VendorBillSummary[]> {

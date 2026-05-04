@@ -246,6 +246,26 @@ export async function createDrawingSetFromUpload(input: {
 
   if (existingSets && existingSets.length > 0) {
     const existingSetId = existingSets[0].id as string
+    const { error: deleteSheetsError } = await supabase
+      .from("drawing_sheets")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("drawing_set_id", existingSetId)
+
+    if (deleteSheetsError) {
+      throw new Error(`Failed to clear previous drawing sheets: ${deleteSheetsError.message}`)
+    }
+
+    const { error: deleteRevisionsError } = await supabase
+      .from("drawing_revisions")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("drawing_set_id", existingSetId)
+
+    if (deleteRevisionsError) {
+      throw new Error(`Failed to clear previous drawing revisions: ${deleteRevisionsError.message}`)
+    }
+
     const { error: updateError } = await supabase
       .from("drawing_sets")
       .update({
@@ -320,6 +340,14 @@ export async function createDrawingSetFromUpload(input: {
       const trigger = await triggerDrawingsWorker({ reason: "drawing_set_uploaded" })
       if (!trigger.triggered) {
         console.warn("[Upload] Failed to trigger drawings worker:", trigger.error)
+        await supabase
+          .from("drawing_sets")
+          .update({
+            processing_stage: "worker_unavailable",
+            error_message: `Drawing worker could not be reached: ${trigger.error ?? `HTTP ${trigger.status}`}`,
+          })
+          .eq("org_id", orgId)
+          .eq("id", drawingSet.id)
       }
     }
   } catch (error) {
@@ -444,6 +472,14 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
       const trigger = await triggerDrawingsWorker({ reason: "drawing_set_retry" })
       if (!trigger.triggered) {
         console.warn("[Retry] Failed to trigger drawings worker:", trigger.error)
+        await supabase
+          .from("drawing_sets")
+          .update({
+            processing_stage: "worker_unavailable",
+            error_message: `Drawing worker could not be reached: ${trigger.error ?? `HTTP ${trigger.status}`}`,
+          })
+          .eq("org_id", orgId)
+          .eq("id", set.id)
       }
     }
   } catch (error) {

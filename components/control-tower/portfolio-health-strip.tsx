@@ -1,179 +1,218 @@
-"use client"
+"use client";
 
+import type { LucideIcon } from "lucide-react";
 import {
-  FolderKanban,
+  Activity,
   AlertTriangle,
-  Banknote,
+  Wallet,
   ShieldAlert,
-  CalendarClock,
-} from "lucide-react"
-import type { PortfolioHealth } from "@/lib/services/dashboard"
+  Clock,
+} from "lucide-react";
+
+import type { PortfolioHealth } from "@/lib/services/dashboard";
+import { cn } from "@/lib/utils";
+
+type Status = "good" | "warn" | "critical" | "neutral";
+
+type HealthCell = {
+  id: string;
+  label: string;
+  value: string | number;
+  status: Status;
+  icon: LucideIcon;
+  fill?: number;
+  sub?: string;
+  pulse?: boolean;
+};
 
 function formatCompact(cents: number): string {
-  const dollars = cents / 100
-  if (dollars >= 1_000_000) return `$${(dollars / 1_000_000).toFixed(1)}M`
-  if (dollars >= 1_000) return `$${(dollars / 1_000).toFixed(0)}K`
-  return `$${dollars.toFixed(0)}`
+  const dollars = cents / 100;
+  if (dollars >= 1_000_000) return `$${(dollars / 1_000_000).toFixed(1)}M`;
+  if (dollars >= 1_000) return `$${(dollars / 1_000).toFixed(0)}K`;
+  return `$${Math.round(dollars)}`;
 }
 
-type Severity = "green" | "amber" | "red"
+const valueText: Record<Status, string> = {
+  good: "text-foreground",
+  warn: "text-amber-700 dark:text-amber-300",
+  critical: "text-rose-700 dark:text-rose-300",
+  neutral: "text-foreground",
+};
 
-interface KPI {
-  label: string
-  value: string | number
-  sub: string
-  icon: typeof FolderKanban
-  severity: Severity
-}
+const iconText: Record<Status, string> = {
+  good: "text-emerald-600 dark:text-emerald-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  critical: "text-rose-600 dark:text-rose-400",
+  neutral: "text-muted-foreground",
+};
 
-const severityConfig = {
-  green: {
-    bg: "from-emerald-500/10 to-emerald-500/5 dark:from-emerald-400/15 dark:to-emerald-400/5",
-    iconBg: "bg-emerald-500/15 dark:bg-emerald-400/20",
-    iconColor: "text-emerald-600 dark:text-emerald-400",
-    valueColor: "text-emerald-700 dark:text-emerald-300",
-    ring: "ring-emerald-500/20 dark:ring-emerald-400/20",
-    dot: "bg-emerald-500 dark:bg-emerald-400",
-    glow: "shadow-emerald-500/10 dark:shadow-emerald-400/10",
-  },
-  amber: {
-    bg: "from-amber-500/10 to-amber-500/5 dark:from-amber-400/15 dark:to-amber-400/5",
-    iconBg: "bg-amber-500/15 dark:bg-amber-400/20",
-    iconColor: "text-amber-600 dark:text-amber-400",
-    valueColor: "text-amber-700 dark:text-amber-300",
-    ring: "ring-amber-500/20 dark:ring-amber-400/20",
-    dot: "bg-amber-500 dark:bg-amber-400",
-    glow: "shadow-amber-500/10 dark:shadow-amber-400/10",
-  },
-  red: {
-    bg: "from-red-500/10 to-red-500/5 dark:from-red-400/15 dark:to-red-400/5",
-    iconBg: "bg-red-500/15 dark:bg-red-400/20",
-    iconColor: "text-red-600 dark:text-red-400",
-    valueColor: "text-red-700 dark:text-red-300",
-    ring: "ring-red-500/20 dark:ring-red-400/20",
-    dot: "bg-red-500 dark:bg-red-400",
-    glow: "shadow-red-500/10 dark:shadow-red-400/10",
-  },
-}
+const accentBg: Record<Status, string> = {
+  good: "bg-emerald-500",
+  warn: "bg-amber-500",
+  critical: "bg-rose-500",
+  neutral: "bg-slate-400",
+};
 
-function getSeverity(value: number, thresholds: [number, number]): Severity {
-  if (value <= thresholds[0]) return "green"
-  if (value <= thresholds[1]) return "amber"
-  return "red"
-}
-
-function KPICell({ kpi, index }: { kpi: KPI; index: number }) {
-  const config = severityConfig[kpi.severity]
-  const Icon = kpi.icon
-
-  return (
-    <div
-      className="group relative flex-1 min-w-0"
-      style={{ animationDelay: `${index * 80}ms` }}
-    >
-      {/* Card */}
-      <div
-        className={`
-          relative overflow-hidden
-          bg-gradient-to-br ${config.bg}
-          ring-1 ${config.ring}
-          px-5 py-4
-          transition-all duration-300 ease-out
-          hover:scale-[1.02] hover:shadow-lg ${config.glow}
-          cursor-default
-        `}
-      >
-        {/* Subtle background pattern */}
-        <div className="absolute inset-0 opacity-[0.03] dark:opacity-[0.05]"
-          style={{
-            backgroundImage: `radial-gradient(circle at 1px 1px, currentColor 0.5px, transparent 0)`,
-            backgroundSize: '16px 16px',
-          }}
-        />
-
-        {/* Top row: icon + severity dot */}
-        <div className="relative flex items-center justify-between mb-3">
-          <div className={`flex h-8 w-8 items-center justify-center ${config.iconBg} transition-transform duration-300 group-hover:scale-110`}>
-            <Icon className={`h-4 w-4 ${config.iconColor}`} strokeWidth={2} />
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className={`h-1.5 w-1.5 rounded-full ${config.dot} ${kpi.severity === "red" ? "health-pulse" : ""}`} />
-          </div>
-        </div>
-
-        {/* Value */}
-        <div className="relative">
-          <p className={`text-2xl font-semibold tracking-tight leading-none ${config.valueColor} tabular-nums`}>
-            {kpi.value}
-          </p>
-        </div>
-
-        {/* Label + sub */}
-        <div className="relative mt-2 space-y-0.5">
-          <p className="text-[13px] font-medium text-foreground/80 leading-tight">
-            {kpi.label}
-          </p>
-          <p className="text-[11px] text-muted-foreground/70 leading-tight">
-            {kpi.sub}
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
+const cellSurface: Record<Status, string> = {
+  good: "border-emerald-500/35 bg-gradient-to-br from-emerald-500/18 via-emerald-500/8 to-card",
+  warn: "border-amber-500/40 bg-gradient-to-br from-amber-500/20 via-amber-500/9 to-card",
+  critical:
+    "border-rose-500/40 bg-gradient-to-br from-rose-500/20 via-rose-500/9 to-card",
+  neutral:
+    "border-slate-400/35 bg-gradient-to-br from-slate-400/16 via-slate-400/8 to-card",
+};
 
 export function PortfolioHealthStrip({ data }: { data: PortfolioHealth }) {
-  const kpis: KPI[] = [
+  const riskRatio =
+    data.activeProjects > 0
+      ? Math.min(data.projectsAtRisk / data.activeProjects, 1)
+      : 0;
+
+  const items: HealthCell[] = [
     {
-      label: "Active Projects",
+      id: "active",
+      label: "Live Projects",
       value: data.activeProjects,
-      sub: data.activeProjects === 1 ? "1 project in progress" : `${data.activeProjects} projects in progress`,
-      icon: FolderKanban,
-      severity: data.activeProjects > 0 ? "green" : "amber",
+      status: data.activeProjects > 0 ? "good" : "neutral",
+      icon: Activity,
+      pulse: data.activeProjects > 0,
+      sub:
+        data.projectsAtRisk > 0
+          ? `${data.projectsAtRisk} need attention`
+          : "All steady",
+      fill: 1 - riskRatio,
     },
     {
-      label: "Projects at Risk",
+      id: "risk",
+      label: "At Risk",
       value: data.projectsAtRisk,
-      sub: data.projectsAtRisk === 0
-        ? "All projects on track"
-        : `Schedule or cost issues`,
+      status: data.projectsAtRisk > 0 ? "critical" : "good",
       icon: AlertTriangle,
-      severity: getSeverity(data.projectsAtRisk, [0, 1]),
+      sub:
+        data.activeProjects > 0
+          ? `${Math.round(riskRatio * 100)}% of portfolio`
+          : "—",
+      fill: riskRatio,
     },
     {
+      id: "exposure",
       label: "Cash Exposure",
       value: data.cashRiskCents > 0 ? formatCompact(data.cashRiskCents) : "$0",
-      sub: data.cashRiskCents === 0
-        ? "No outstanding risk"
-        : `${formatCompact(data.overdueARCents)} AR + ${formatCompact(data.unpaidApprovedBillsCents)} AP`,
-      icon: Banknote,
-      severity: getSeverity(data.cashRiskCents, [0, 500_000]),
+      status:
+        data.cashRiskCents > 500_000
+          ? "warn"
+          : data.cashRiskCents > 0
+            ? "neutral"
+            : "good",
+      icon: Wallet,
+      sub: `AR ${formatCompact(data.overdueARCents)} · Bills ${formatCompact(data.unpaidApprovedBillsCents)}`,
     },
     {
+      id: "blockers",
       label: "Blockers",
       value: data.totalBlockers,
-      sub: data.totalBlockers === 0
-        ? "Nothing waiting on you"
-        : `Decisions needed`,
+      status: data.totalBlockers > 0 ? "critical" : "good",
       icon: ShieldAlert,
-      severity: getSeverity(data.totalBlockers, [0, 3]),
+      sub: data.totalBlockers > 0 ? "Critical-path threats" : "No blockers",
     },
     {
-      label: "Due This Week",
+      id: "due",
+      label: "Due in 7 Days",
       value: data.itemsDueNext7Days,
-      sub: data.itemsDueNext7Days === 0
-        ? "Clear schedule ahead"
-        : `Items in the next 7 days`,
-      icon: CalendarClock,
-      severity: getSeverity(data.itemsDueNext7Days, [5, 15]),
+      status:
+        data.itemsDueNext7Days > 10
+          ? "warn"
+          : data.itemsDueNext7Days > 0
+            ? "neutral"
+            : "good",
+      icon: Clock,
+      sub:
+        data.itemsDueNext7Days > 0 ? "Across all projects" : "Clear week ahead",
     },
-  ]
+  ];
 
   return (
-    <div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-3 lg:grid-cols-5 lg:gap-px overflow-hidden ring-1 ring-border">
-      {kpis.map((kpi, i) => (
-        <KPICell key={kpi.label} kpi={kpi} index={i} />
-      ))}
+    <div className="grid gap-px bg-border/70 p-px sm:grid-cols-2 lg:grid-cols-5">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <div
+            key={item.id}
+            className={cn(
+              "group relative min-h-[100px] overflow-hidden border bg-card px-4 py-3 shadow-sm transition-colors hover:border-foreground/20",
+              cellSurface[item.status],
+            )}
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/70">
+                  <Icon className={cn("h-3 w-3", iconText[item.status])} />
+                </span>
+                <span className="truncate text-[11px] font-medium text-muted-foreground">
+                  {item.label}
+                </span>
+              </div>
+              {item.pulse ? (
+                <span className="relative mt-2 flex h-2 w-2 shrink-0">
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "absolute inline-flex h-full w-full animate-ping rounded-full opacity-60",
+                      accentBg[item.status],
+                    )}
+                  />
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "relative inline-flex h-2 w-2 rounded-full",
+                      accentBg[item.status],
+                    )}
+                  />
+                </span>
+              ) : null}
+            </div>
+
+            <div className="flex items-end justify-between gap-3">
+              <span
+                className={cn(
+                  "text-2xl font-semibold leading-none tracking-tight tabular-nums",
+                  valueText[item.status],
+                )}
+              >
+                {item.value}
+              </span>
+              {typeof item.fill === "number" ? (
+                <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                  {Math.round(item.fill * 100)}%
+                </span>
+              ) : null}
+            </div>
+
+            {typeof item.fill === "number" ? (
+              <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-background/80">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all duration-500",
+                    accentBg[item.status],
+                  )}
+                  style={{ width: `${Math.round(item.fill * 100)}%` }}
+                />
+              </div>
+            ) : null}
+
+            {item.sub ? (
+              <p
+                className={cn(
+                  "mt-2 truncate text-[11px] leading-4 text-muted-foreground",
+                  typeof item.fill === "number" ? "min-h-4" : "min-h-4",
+                )}
+              >
+                {item.sub}
+              </p>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
-  )
+  );
 }

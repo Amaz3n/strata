@@ -12,7 +12,12 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import {
-  ArrowLeft,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet"
+import {
   Briefcase,
   HardHat,
   Search,
@@ -20,6 +25,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Users,
   Wallet,
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
@@ -375,35 +381,20 @@ export function MemberFormPanel({
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-background", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-border/70 px-5 py-4 lg:px-6">
-        <div className="flex min-w-0 items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onCancel} className="h-8 w-8 shrink-0">
-            <ArrowLeft className="h-4 w-4" />
-            <span className="sr-only">Back to team</span>
-          </Button>
-          <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold">
-              {isEdit ? "Edit team member" : "Invite team member"}
-            </h2>
-            <p className="truncate text-xs text-muted-foreground">
-              {isEdit
-                ? `${member?.user.full_name ?? member?.user.email ?? "Member"} · ${member?.user.email ?? ""}`
-                : "Send an invite, set their role, and pick a permission preset."}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onCancel} disabled={isPending}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={submitDisabled}>
-            {isPending ? (isEdit ? "Saving..." : "Sending...") : isEdit ? "Save changes" : "Send invite"}
-          </Button>
-        </div>
-      </div>
+      <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
+        <SheetTitle className="flex items-center gap-2">
+          <Users className="h-4 w-4 text-primary" />
+          {isEdit ? "Edit team member" : "Invite team member"}
+        </SheetTitle>
+        <SheetDescription className="text-sm text-muted-foreground text-left">
+          {isEdit
+            ? `${member?.user.full_name ?? member?.user.email ?? "Member"} · ${member?.user.email ?? ""}`
+            : "Send an invite, set their role, and pick a permission preset."}
+        </SheetDescription>
+      </SheetHeader>
 
       <ScrollArea className="flex-1 min-h-0">
-        <div className="mx-auto w-full max-w-3xl space-y-8 px-5 py-6 lg:px-6 lg:py-8">
+        <div className="px-6 py-4 space-y-6">
           <section className="space-y-4">
             <SectionHeader title="Profile" description="Basic account details for this teammate." />
             <div className="grid gap-4 sm:grid-cols-2">
@@ -623,13 +614,22 @@ export function MemberFormPanel({
           ) : null}
         </div>
       </ScrollArea>
+
+      <SheetFooter className="border-t bg-background/80 px-6 py-4 flex flex-row gap-2">
+        <Button variant="outline" className="flex-1" onClick={onCancel} disabled={isPending}>
+          Cancel
+        </Button>
+        <Button className="flex-1" onClick={submit} disabled={submitDisabled}>
+          {isPending ? (isEdit ? "Saving..." : "Sending...") : isEdit ? "Save changes" : "Send invite"}
+        </Button>
+      </SheetFooter>
     </div>
   )
 }
 
 function SectionHeader({ title, description }: { title: string; description?: string }) {
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 text-left">
       <h3 className="text-sm font-semibold">{title}</h3>
       {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
     </div>
@@ -646,7 +646,7 @@ function FieldBlock({
   className?: string
 }) {
   return (
-    <div className={cn("space-y-1.5", className)}>
+    <div className={cn("space-y-1.5 text-left", className)}>
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
       {children}
     </div>
@@ -761,7 +761,7 @@ function PermissionMatrix({
                           disabled={disabled}
                           className="mt-0.5"
                         />
-                        <span className="flex-1">
+                        <span className="flex-1 text-left">
                           <span className="block font-medium leading-snug">{option.label}</span>
                           {option.description ? (
                             <span className="block text-[11px] text-muted-foreground">{option.description}</span>

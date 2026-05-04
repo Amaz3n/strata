@@ -1011,7 +1011,9 @@ export async function listProjectRetainageAction(projectId: string) {
   const { supabase, orgId } = await requireOrgContext()
   const { data, error } = await supabase
     .from("retainage")
-    .select("*, invoice:invoices(invoice_number, title), release_invoice:invoices!retainage_release_invoice_id_fkey(invoice_number, title)")
+    .select(
+      "*, invoice:invoices!retainage_invoice_id_fkey(invoice_number, title), release_invoice:invoices!retainage_release_invoice_id_fkey(invoice_number, title)",
+    )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("held_at", { ascending: false })

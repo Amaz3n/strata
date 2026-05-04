@@ -72,6 +72,7 @@ import {
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
+  DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
 import {
   AlertDialog,
@@ -1104,20 +1105,22 @@ function TaskCard({ task, onClick, onStatusChange, isDragging }: TaskCardProps) 
                   <Flag className="mr-2 h-4 w-4" />
                   Change Status
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  {STATUS_ORDER.map((status) => (
-                    <DropdownMenuItem
-                      key={status}
-                      onClick={() => onStatusChange(task, status)}
-                      disabled={task.status === status}
-                    >
-                      <span className={cn("mr-2", STATUS_CONFIG[status].color)}>
-                        {STATUS_CONFIG[status].icon}
-                      </span>
-                      {STATUS_CONFIG[status].label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuSubContent>
+                <DropdownMenuPortal>
+                  <DropdownMenuSubContent>
+                    {STATUS_ORDER.map((status) => (
+                      <DropdownMenuItem
+                        key={status}
+                        onClick={() => onStatusChange(task, status)}
+                        disabled={task.status === status}
+                      >
+                        <span className={cn("mr-2", STATUS_CONFIG[status].color)}>
+                          {STATUS_CONFIG[status].icon}
+                        </span>
+                        {STATUS_CONFIG[status].label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuPortal>
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>

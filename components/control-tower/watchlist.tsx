@@ -1,171 +1,180 @@
-"use client"
+"use client";
 
-import Link from "next/link"
+import Link from "next/link";
+
+import type { WatchlistProject } from "@/lib/services/dashboard";
+import { Badge } from "@/components/ui/badge";
 import {
-  CalendarClock,
-  DollarSign,
-  FileCheck,
-  ChevronRight,
-  Eye,
-} from "lucide-react"
-import type { WatchlistProject, WatchlistSignal } from "@/lib/services/dashboard"
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
-const signalConfig: Record<
-  WatchlistSignal["key"],
-  { icon: typeof CalendarClock; label: string }
-> = {
-  schedule: { icon: CalendarClock, label: "Schedule" },
-  cost: { icon: DollarSign, label: "Cost" },
-  docs: { icon: FileCheck, label: "Docs" },
-}
-
-const statusStyles = {
-  ok: {
-    dot: "bg-emerald-500 dark:bg-emerald-400",
-    text: "text-emerald-700 dark:text-emerald-300",
-    bg: "",
-  },
-  warn: {
-    dot: "bg-amber-500 dark:bg-amber-400",
-    text: "text-amber-700 dark:text-amber-300",
-    bg: "",
-  },
-  critical: {
-    dot: "bg-red-500 dark:bg-red-400",
-    text: "text-red-700 dark:text-red-300",
-    bg: "",
-  },
-}
-
-function SignalPill({ signal }: { signal: WatchlistSignal }) {
-  const config = signalConfig[signal.key]
-  const styles = statusStyles[signal.status]
-  const Icon = config.icon
-
-  return (
-    <div className="flex items-center gap-2 min-w-0 flex-1">
-      <div className="flex items-center gap-1.5 shrink-0">
-        <div className={`h-1.5 w-1.5 rounded-full ${styles.dot} ${signal.status === "critical" ? "health-pulse" : ""}`} />
-        <Icon className="h-3 w-3 text-muted-foreground/60" strokeWidth={1.75} />
-      </div>
-      <div className="min-w-0">
-        <p className={`text-[10px] font-semibold uppercase tracking-wider ${styles.text} leading-none`}>
-          {config.label}
-        </p>
-        <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate">
-          {signal.detail}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function ProjectRow({ project, rank }: { project: WatchlistProject; rank: number }) {
-  const worstSignal = project.signals.reduce((worst, s) => {
-    const order = { critical: 0, warn: 1, ok: 2 }
-    return order[s.status] < order[worst.status] ? s : worst
-  }, project.signals[0])
-
-  const borderColor =
-    worstSignal.status === "critical"
-      ? "border-l-red-500 dark:border-l-red-400"
-      : worstSignal.status === "warn"
-        ? "border-l-amber-400 dark:border-l-amber-500"
-        : "border-l-emerald-500 dark:border-l-emerald-400"
-
-  return (
-    <Link
-      href={`/projects/${project.id}`}
-      className={`
-        group flex items-stretch border-b border-border/50 last:border-b-0
-        border-l-2 ${borderColor}
-        transition-colors hover:bg-muted/40
-      `}
-    >
-      {/* Rank + name */}
-      <div className="flex items-center gap-3 px-4 py-3 w-[200px] shrink-0 border-r border-border/30">
-        <span className="text-[11px] font-bold text-muted-foreground/40 tabular-nums w-4 text-right">
-          {rank}
-        </span>
-        <div className="min-w-0">
-          <p className="text-[13px] font-medium text-foreground truncate leading-snug">
-            {project.name}
-          </p>
-          <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-            Risk score: {project.riskScore}
-          </p>
-        </div>
-      </div>
-
-      {/* 3 signal columns */}
-      <div className="flex-1 grid grid-cols-3 divide-x divide-border/30">
-        {project.signals.map((signal) => (
-          <div key={signal.key} className="flex items-center px-3.5 py-2.5">
-            <SignalPill signal={signal} />
-          </div>
-        ))}
-      </div>
-
-      {/* Arrow */}
-      <div className="flex items-center px-3 shrink-0">
-        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
-      </div>
-    </Link>
-  )
-}
+const signalStyles: Record<"warn" | "critical" | "ok", string> = {
+  ok: "border-muted bg-muted text-muted-foreground",
+  warn: "border-chart-4/35 bg-chart-4/15 text-foreground",
+  critical: "border-destructive/35 bg-destructive/15 text-foreground",
+};
 
 export function Watchlist({ projects }: { projects: WatchlistProject[] }) {
+  const criticalCount = projects.filter((project) =>
+    project.signals.some((signal) => signal.status === "critical"),
+  ).length;
+  const warningCount = projects.filter(
+    (project) =>
+      !project.signals.some((signal) => signal.status === "critical") &&
+      project.signals.some((signal) => signal.status === "warn"),
+  ).length;
+  const topRisk = projects.reduce(
+    (max, project) => Math.max(max, project.riskScore),
+    0,
+  );
+
   return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h2 className="text-[15px] font-semibold text-foreground tracking-tight">
-            Watchlist
-          </h2>
-          <p className="text-[12px] text-muted-foreground mt-0.5">
-            {projects.length === 0
-              ? "All projects healthy — nothing to watch"
-              : `${projects.length} project${projects.length !== 1 ? "s" : ""} with elevated risk`}
-          </p>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="ring-1 ring-border overflow-hidden bg-card">
-        {/* Column headers */}
-        <div className="flex items-center border-b border-border bg-muted/30 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-          <div className="w-[200px] shrink-0 px-4 py-2 border-r border-border/30">
-            Project
+    <section className="border-b border-border/70 bg-card">
+      <header className="border-b border-border/70 bg-gradient-to-r from-destructive/10 via-card to-chart-4/10 px-4 py-4 sm:px-6">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              Active Radar
+            </p>
+            <h2 className="text-lg font-semibold tracking-tight">Watchlist</h2>
           </div>
-          <div className="flex-1 grid grid-cols-3 divide-x divide-border/30">
-            {(["schedule", "cost", "docs"] as const).map((key) => {
-              const config = signalConfig[key]
-              const Icon = config.icon
-              return (
-                <div key={key} className="flex items-center gap-1.5 px-3.5 py-2">
-                  <Icon className="h-3 w-3" strokeWidth={1.75} />
-                  {config.label}
-                </div>
-              )
-            })}
-          </div>
-          <div className="w-[44px] shrink-0" />
+          <Badge variant="outline" className="bg-background/70">
+            {projects.length} flagged
+          </Badge>
         </div>
-
-        {projects.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10">
-            <Eye className="h-8 w-8 text-muted-foreground/15 mb-2" strokeWidth={1} />
-            <p className="text-[12px] text-muted-foreground/50 font-medium">
-              Nothing on watch
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Critical
+            </p>
+            <p className="text-lg font-semibold tabular-nums text-destructive">
+              {criticalCount}
             </p>
           </div>
-        ) : (
-          projects.map((project, i) => (
-            <ProjectRow key={project.id} project={project} rank={i + 1} />
-          ))
-        )}
+          <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Warning
+            </p>
+            <p className="text-lg font-semibold tabular-nums">{warningCount}</p>
+          </div>
+          <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Top risk
+            </p>
+            <p className="text-lg font-semibold tabular-nums">{topRisk}</p>
+          </div>
+        </div>
+      </header>
+
+      <div className="px-4 py-3 sm:px-6">
+        <Table>
+          <TableHeader className="bg-muted/35">
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-[72px] text-muted-foreground">
+                Rank
+              </TableHead>
+              <TableHead className="text-muted-foreground">Project</TableHead>
+              <TableHead className="w-[96px] text-right text-muted-foreground">
+                Risk
+              </TableHead>
+              <TableHead className="w-[220px] text-right text-muted-foreground">
+                Signals
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {projects.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={4}
+                  className="h-24 text-center text-muted-foreground"
+                >
+                  All projects steady
+                </TableCell>
+              </TableRow>
+            ) : (
+              projects.map((project, index) => {
+                const hasCritical = project.signals.some(
+                  (signal) => signal.status === "critical",
+                );
+                const activeSignals = project.signals.filter(
+                  (signal) => signal.status !== "ok",
+                );
+
+                return (
+                  <TableRow
+                    key={project.id}
+                    className={cn(
+                      "group border-border/60",
+                      hasCritical
+                        ? "bg-destructive/[0.035] hover:bg-destructive/[0.075]"
+                        : "hover:bg-accent/35",
+                    )}
+                  >
+                    <TableCell className="relative text-muted-foreground tabular-nums">
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "absolute inset-y-2 left-0 w-1 rounded-r-full",
+                          hasCritical ? "bg-destructive" : "bg-chart-4",
+                        )}
+                      />
+                      {String(index + 1).padStart(2, "0")}
+                    </TableCell>
+                    <TableCell className="min-w-0">
+                      <Link
+                        href={`/projects/${project.id}`}
+                        className="block min-w-0 hover:underline"
+                      >
+                        <span className="block truncate font-medium">
+                          {project.name}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {hasCritical
+                            ? "Critical signal present"
+                            : "Needs monitoring"}
+                        </span>
+                      </Link>
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "text-right font-semibold tabular-nums",
+                        hasCritical
+                          ? "text-destructive"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {project.riskScore}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        {activeSignals.map((signal) => (
+                          <Badge
+                            key={signal.key}
+                            variant="outline"
+                            className={cn(
+                              "font-medium uppercase",
+                              signalStyles[signal.status],
+                            )}
+                          >
+                            {signal.key}
+                          </Badge>
+                        ))}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
       </div>
-    </div>
-  )
+    </section>
+  );
 }

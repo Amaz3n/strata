@@ -74,6 +74,12 @@ async function processDrawingSet(supabase, job) {
     const tempDir = (0, os_1.tmpdir)();
     const tempPdfPath = (0, path_1.join)(tempDir, `pdf-${drawingSetId}-${Date.now()}.pdf`);
     try {
+        await updateSetStage(supabase, drawingSetId, {
+            status: 'processing',
+            processing_stage: 'downloading_pdf',
+            processed_pages: 0,
+            error_message: null,
+        });
         const pdfBytes = await (0, pdfs_1.downloadPdfObject)({
             supabase,
             path: fileRecord.storage_path,
@@ -81,8 +87,15 @@ async function processDrawingSet(supabase, job) {
         await fs_1.promises.writeFile(tempPdfPath, pdfBytes);
         console.log(`Downloaded PDF: ${pdfBytes.length} bytes`);
         // Get page count using MuPDF
+        await updateSetStage(supabase, drawingSetId, {
+            processing_stage: 'counting_pages',
+        });
         const pageCount = getPdfPageCount(tempPdfPath);
         console.log(`PDF has ${pageCount} pages`);
+        await updateSetStage(supabase, drawingSetId, {
+            processing_stage: 'extracting_text',
+            total_pages: pageCount,
+        });
         const pageTexts = extractPdfTextByPage(tempPdfPath, pageCount);
         const pagesWithText = pageTexts.reduce((count, text) => (text.trim() ? count + 1 : count), 0);
         console.log(`Extracted searchable text for ${pagesWithText}/${pageCount} pages`);
@@ -109,6 +122,9 @@ async function processDrawingSet(supabase, job) {
         const basePath = `${drawingSet.org_id}/${hash}`;
         // Extract all pages as PNGs using MuPDF (do this once for all pages)
         console.log(`Extracting and uploading ${pageCount} pages...`);
+        await updateSetStage(supabase, drawingSetId, {
+            processing_stage: 'rendering_pages',
+        });
         const tempPngDir = (0, path_1.join)(tempDir, `pages-${drawingSetId}`);
         await fs_1.promises.mkdir(tempPngDir, { recursive: true });
         // Extract pages one-by-one (more reliable, doesn't timeout)
@@ -149,6 +165,9 @@ async function processDrawingSet(supabase, job) {
         }
         console.log(`Processed ${tempPngPaths.length}/${pageCount} pages`);
         // Create drawing sheets and versions
+        await updateSetStage(supabase, drawingSetId, {
+            processing_stage: 'detecting_sheets',
+        });
         const sheetsCreated = [];
         const usedSheetNumbers = new Set();
         for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
@@ -171,6 +190,11 @@ async function processDrawingSet(supabase, job) {
             const sheetTitle = truncateValue(resolvedSheet.sheetTitle || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH);
             console.log(`[SheetDetect] Page ${pageNumber}: ${resolvedSheet.sheetNumber} (${resolvedSheet.method}, ${resolvedSheet.confidence})`);
             // Create sheet record
+            if (pageIndex === 0) {
+                await updateSetStage(supabase, drawingSetId, {
+                    processing_stage: 'creating_sheets',
+                });
+            }
             const { data: sheet, error: sheetError } = await supabase
                 .from('drawing_sheets')
                 .insert({
@@ -246,6 +270,7 @@ async function processDrawingSet(supabase, job) {
             status: 'processing', // Still processing tiles
             total_pages: pageCount,
             processed_pages: 0, // Will be updated when tiles complete
+            processing_stage: 'generating_tiles',
         })
             .eq('id', drawingSetId);
         // Refresh the materialized view
@@ -273,6 +298,22 @@ async function processDrawingSet(supabase, job) {
             console.warn('Failed to clean up temp PNG directory:', e);
         }
     }
+}
+async function updateSetStage(supabase, drawingSetId, updates) {
+    const payload = {
+        updated_at: new Date().toISOString(),
+    };
+    if (updates.status !== undefined)
+        payload.status = updates.status;
+    if (updates.total_pages !== undefined)
+        payload.total_pages = updates.total_pages;
+    if (updates.processed_pages !== undefined)
+        payload.processed_pages = updates.processed_pages;
+    if (updates.processing_stage !== undefined)
+        payload.processing_stage = updates.processing_stage;
+    if (updates.error_message !== undefined)
+        payload.error_message = updates.error_message;
+    await supabase.from('drawing_sets').update(payload).eq('id', drawingSetId);
 }
 function shouldUseVisionFallback(detected, pageText) {
     if (!getVisionApiKey())
@@ -372,7 +413,7 @@ function getVisionModel(provider) {
         process.env.GOOGLE_DRAWINGS_VISION_MODEL ||
         process.env.GEMINI_VISION_MODEL ||
         process.env.GOOGLE_VISION_MODEL ||
-        'gemini-2.0-flash');
+        'gemini-2.5-flash-lite');
 }
 async function generateVisionResponseText(input) {
     const { provider, apiKey, model, prompt, images, pageNumber } = input;

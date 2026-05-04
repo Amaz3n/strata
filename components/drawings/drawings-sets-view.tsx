@@ -211,6 +211,11 @@ function describeProcessingStage(set: DrawingSet | null) {
         title: "Queued for processing",
         detail: "Waiting for the drawings worker to pick up this upload.",
       }
+    case "worker_unavailable":
+      return {
+        title: "Drawing worker unavailable",
+        detail: set?.error_message ?? "The upload is queued, but the background worker could not be reached.",
+      }
     case "downloading_pdf":
       return {
         title: "Preparing upload",
@@ -828,7 +833,7 @@ export function DrawingsSetsView({
     try {
       const updates = {
         sheet_number: renameSheetNumber.trim() || sheetToRename.sheet_number,
-        sheet_title: renameSheetTitle.trim() || null,
+        sheet_title: renameSheetTitle.trim() || undefined,
       }
 
       await updateDrawingSheetAction(sheetToRename.id, updates)

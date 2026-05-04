@@ -45,7 +45,11 @@ export async function triggerDrawingsWorker(options: TriggerOptions): Promise<Tr
 
   const url = `${normalizeBaseUrl(baseUrl)}${processPath.startsWith("/") ? processPath : `/${processPath}`}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -76,6 +80,13 @@ export async function triggerDrawingsWorker(options: TriggerOptions): Promise<Tr
       status: response.status,
     };
   } catch (error) {
+    if (timedOut) {
+      return {
+        triggered: true,
+        error: `Timed out waiting for worker response after ${timeoutMs}ms`,
+      };
+    }
+
     return {
       triggered: false,
       error: error instanceof Error ? error.message : String(error),

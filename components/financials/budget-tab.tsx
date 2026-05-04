@@ -105,6 +105,7 @@ interface BudgetTabProps {
   varianceAlerts: any[]
   commitments: CommitmentSummary[]
   companies: Company[]
+  budgetBucketCompanies: Record<string, string[]>
 }
 
 function dollarsToCents(input: string) {
@@ -185,6 +186,7 @@ export function BudgetTab({
   varianceAlerts,
   commitments,
   companies,
+  budgetBucketCompanies,
 }: BudgetTabProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -422,6 +424,7 @@ export function BudgetTab({
         varianceCents: number
         variancePercent: number
         status: string
+        assignedCompanies: string[]
       }
     >()
 
@@ -443,6 +446,7 @@ export function BudgetTab({
         varianceCents: breakdown?.variance_cents ?? 0,
         variancePercent: breakdown?.variance_percent ?? 0,
         status: breakdown?.status ?? "ok",
+        assignedCompanies: budgetBucketCompanies[key] ?? [],
       }
       existing.lines.push(line)
       existing.budgetCents += dollarsToCents(line.amount_dollars) ?? 0
@@ -466,6 +470,7 @@ export function BudgetTab({
         varianceCents: breakdown.variance_cents ?? 0,
         variancePercent: breakdown.variance_percent ?? 0,
         status: breakdown.status ?? "ok",
+        assignedCompanies: budgetBucketCompanies[key] ?? [],
       })
     }
 
@@ -474,7 +479,7 @@ export function BudgetTab({
       const codeB = b.code ?? "zzz"
       return codeA.localeCompare(codeB) || a.name.localeCompare(b.name)
     })
-  }, [breakdownByCostCode, costCodeById, lines])
+  }, [breakdownByCostCode, budgetBucketCompanies, costCodeById, lines])
 
   const filteredUnifiedRows = useMemo(() => {
     const term = budgetLineSearch.trim().toLowerCase()
@@ -484,6 +489,7 @@ export function BudgetTab({
         row.code,
         row.name,
         row.category,
+        ...row.assignedCompanies,
         ...row.lines.map((line) => line.description),
       ]
         .filter(Boolean)
@@ -656,6 +662,11 @@ export function BudgetTab({
                           )}
                         </div>
                         <p className="mt-1.5 line-clamp-1 text-sm font-medium">{row.name}</p>
+                        {row.assignedCompanies.length > 0 && (
+                          <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+                            {row.assignedCompanies.join(", ")}
+                          </p>
+                        )}
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-semibold tabular-nums">
@@ -696,6 +707,7 @@ export function BudgetTab({
             <TableRow className="border-b bg-muted/30 hover:bg-muted/30">
               <TableHead className="w-[140px] px-4 text-xs uppercase tracking-wide">Code</TableHead>
               <TableHead className="min-w-[280px] px-4 text-xs uppercase tracking-wide">Scope</TableHead>
+              <TableHead className="w-[180px] px-4 text-xs uppercase tracking-wide">Assigned</TableHead>
               <TableHead className="w-[220px] px-4 text-xs uppercase tracking-wide">Utilization</TableHead>
               <TableHead className="hidden xl:table-cell w-[140px] px-4 text-right text-xs uppercase tracking-wide">Budget</TableHead>
               <TableHead className="hidden xl:table-cell w-[140px] px-4 text-right text-xs uppercase tracking-wide">Committed</TableHead>
@@ -707,7 +719,7 @@ export function BudgetTab({
           <TableBody>
             {filteredUnifiedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-56 text-center hover:bg-transparent">
+                <TableCell colSpan={9} className="h-56 text-center hover:bg-transparent">
                   <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
                 </TableCell>
               </TableRow>
@@ -756,6 +768,15 @@ export function BudgetTab({
                             ? row.lines[0].description
                             : `${row.lines.length} budget lines`}
                         </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-4">
+                      {row.assignedCompanies.length > 0 ? (
+                        <span className="block truncate text-sm text-muted-foreground">
+                          {row.assignedCompanies.join(", ")}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-muted-foreground/60">Unassigned</span>
                       )}
                     </TableCell>
                     <TableCell className="px-4">

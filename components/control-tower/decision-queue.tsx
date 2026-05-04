@@ -1,222 +1,187 @@
-"use client"
+"use client";
 
-import Link from "next/link"
+import Link from "next/link";
+
+import type { DecisionItem, DecisionType } from "@/lib/services/dashboard";
+import { Badge } from "@/components/ui/badge";
 import {
-  FileText,
-  HelpCircle,
-  ClipboardCheck,
-  Receipt,
-  Send,
-  Wrench,
-  Clock,
-  ArrowRight,
-  DollarSign,
-  CalendarDays,
-  Inbox,
-} from "lucide-react"
-import type { DecisionItem, DecisionType } from "@/lib/services/dashboard"
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
-const typeConfig: Record<
-  DecisionType,
-  { icon: typeof FileText; color: string; bg: string }
-> = {
-  change_order: {
-    icon: FileText,
-    color: "text-amber-600 dark:text-amber-400",
-    bg: "bg-amber-500/10 dark:bg-amber-400/15",
-  },
-  rfi: {
-    icon: HelpCircle,
-    color: "text-blue-600 dark:text-blue-400",
-    bg: "bg-blue-500/10 dark:bg-blue-400/15",
-  },
-  submittal: {
-    icon: ClipboardCheck,
-    color: "text-violet-600 dark:text-violet-400",
-    bg: "bg-violet-500/10 dark:bg-violet-400/15",
-  },
-  vendor_bill: {
-    icon: Receipt,
-    color: "text-emerald-600 dark:text-emerald-400",
-    bg: "bg-emerald-500/10 dark:bg-emerald-400/15",
-  },
-  proposal: {
-    icon: Send,
-    color: "text-sky-600 dark:text-sky-400",
-    bg: "bg-sky-500/10 dark:bg-sky-400/15",
-  },
-  punch_item: {
-    icon: Wrench,
-    color: "text-rose-600 dark:text-rose-400",
-    bg: "bg-rose-500/10 dark:bg-rose-400/15",
-  },
-}
+const typeStyles: Partial<Record<DecisionType, string>> = {
+  vendor_bill: "border-chart-2/30 bg-chart-2/15 text-foreground",
+  change_order: "border-chart-4/35 bg-chart-4/15 text-foreground",
+  punch_item: "border-destructive/30 bg-destructive/15 text-foreground",
+  rfi: "border-chart-1/30 bg-chart-1/15 text-foreground",
+  submittal: "border-chart-3/30 bg-chart-3/15 text-foreground",
+  proposal: "border-chart-5/30 bg-chart-5/15 text-foreground",
+};
 
-function formatAge(days: number): string {
-  if (days === 0) return "Today"
-  if (days === 1) return "1d"
-  if (days < 7) return `${days}d`
-  if (days < 30) return `${Math.floor(days / 7)}w`
-  return `${Math.floor(days / 30)}mo`
-}
-
-function AgeBadge({ days }: { days: number }) {
-  const isUrgent = days > 7
-  const isCritical = days > 14
-  return (
-    <div
-      className={`
-        flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold tabular-nums
-        ${isCritical
-          ? "bg-red-500/10 text-red-600 dark:bg-red-400/15 dark:text-red-400"
-          : isUrgent
-            ? "bg-amber-500/10 text-amber-600 dark:bg-amber-400/15 dark:text-amber-400"
-            : "bg-muted text-muted-foreground"
-        }
-      `}
-    >
-      <Clock className="h-3 w-3" />
-      {formatAge(days)}
-    </div>
-  )
-}
-
-function DecisionRow({ item }: { item: DecisionItem }) {
-  const config = typeConfig[item.type]
-  const Icon = config.icon
-
-  return (
-    <Link
-      href={item.href}
-      className="group flex items-center gap-0 border-b border-border/50 last:border-b-0 transition-colors hover:bg-muted/40"
-    >
-      {/* Type icon */}
-      <div className="flex items-center justify-center w-12 shrink-0 self-stretch border-r border-border/30">
-        <div className={`flex h-7 w-7 items-center justify-center ${config.bg}`}>
-          <Icon className={`h-3.5 w-3.5 ${config.color}`} strokeWidth={2} />
-        </div>
-      </div>
-
-      {/* Main content */}
-      <div className="flex-1 min-w-0 flex items-center gap-3 px-3.5 py-2.5">
-        {/* Issue + project */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-semibold uppercase tracking-wider ${config.color} shrink-0`}>
-              {item.typeLabel}
-            </span>
-            {item.projectName && (
-              <>
-                <span className="text-muted-foreground/30 text-[10px]">/</span>
-                <span className="text-[10px] text-muted-foreground truncate">
-                  {item.projectName}
-                </span>
-              </>
-            )}
-          </div>
-          <p className="text-[13px] font-medium text-foreground truncate mt-0.5 leading-snug">
-            {item.title}
-          </p>
-        </div>
-
-        {/* Age */}
-        <AgeBadge days={item.ageDays} />
-
-        {/* Impact */}
-        <div className="hidden sm:flex items-center gap-1.5 min-w-[120px] justify-end">
-          {item.impactCents !== undefined && item.impactCents > 0 && (
-            <span className="flex items-center gap-0.5 text-[11px] font-medium text-foreground/70">
-              <DollarSign className="h-3 w-3 text-muted-foreground/60" />
-              {(item.impactCents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-            </span>
-          )}
-          {item.impactDays !== undefined && item.impactDays > 0 && (
-            <span className="flex items-center gap-0.5 text-[11px] font-medium text-foreground/70">
-              <CalendarDays className="h-3 w-3 text-muted-foreground/60" />
-              {item.impactDays}d
-            </span>
-          )}
-          {!item.impactCents && !item.impactDays && (
-            <span className="text-[11px] text-muted-foreground/50">
-              {item.impactLabel}
-            </span>
-          )}
-        </div>
-
-        {/* CTA */}
-        <div
-          className={`
-            hidden md:flex items-center gap-1 px-2.5 py-1
-            text-[11px] font-semibold
-            ${config.bg} ${config.color}
-            opacity-70 group-hover:opacity-100
-            transition-opacity
-          `}
-        >
-          {item.ctaLabel}
-          <ArrowRight className="h-3 w-3" />
-        </div>
-      </div>
-    </Link>
-  )
+function formatCurrency(cents: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(cents / 100);
 }
 
 export function DecisionQueue({ items }: { items: DecisionItem[] }) {
+  const urgentCount = items.filter(
+    (item) => item.severity === "high" || item.ageDays > 7,
+  ).length;
+  const costImpact = items.reduce(
+    (sum, item) => sum + (item.impactCents ?? 0),
+    0,
+  );
+  const scheduleImpact = items.reduce(
+    (sum, item) => sum + (item.impactDays ?? 0),
+    0,
+  );
+
   return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h2 className="text-[15px] font-semibold text-foreground tracking-tight">
-            Decision Queue
-          </h2>
-          <p className="text-[12px] text-muted-foreground mt-0.5">
-            {items.length === 0
-              ? "No decisions pending — you're all caught up"
-              : `${items.length} item${items.length !== 1 ? "s" : ""} waiting on your decision`}
-          </p>
-        </div>
-
-        {/* Severity summary pills */}
-        {items.length > 0 && (
-          <div className="hidden sm:flex items-center gap-1.5">
-            {(() => {
-              const high = items.filter((i) => i.severity === "high").length
-              const med = items.filter((i) => i.severity === "medium").length
-              return (
-                <>
-                  {high > 0 && (
-                    <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold bg-red-500/10 text-red-600 dark:bg-red-400/15 dark:text-red-400">
-                      {high} urgent
-                    </span>
-                  )}
-                  {med > 0 && (
-                    <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:bg-amber-400/15 dark:text-amber-400">
-                      {med} aging
-                    </span>
-                  )}
-                </>
-              )
-            })()}
+    <section className="border-b border-border/70 bg-card">
+      <header className="border-b border-border/70 bg-gradient-to-r from-chart-1/10 via-card to-chart-4/10 px-4 py-4 sm:px-6">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              Action Queue
+            </p>
+            <h2 className="text-lg font-semibold tracking-tight">
+              Needs your decision
+            </h2>
           </div>
-        )}
-      </div>
-
-      {/* Queue */}
-      <div className="ring-1 ring-border overflow-hidden bg-card">
-        {items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12">
-            <Inbox className="h-10 w-10 text-muted-foreground/20 mb-3" strokeWidth={1} />
-            <p className="text-[13px] text-muted-foreground/50 font-medium">
-              Nothing needs your attention
+          <Badge variant="outline" className="bg-background/70">
+            {items.length} pending
+          </Badge>
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Urgent
+            </p>
+            <p className="text-lg font-semibold tabular-nums text-destructive">
+              {urgentCount}
             </p>
           </div>
-        ) : (
-          items.map((item) => (
-            <DecisionRow key={item.id} item={item} />
-          ))
-        )}
+          <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Cost
+            </p>
+            <p className="text-lg font-semibold tabular-nums">
+              {formatCurrency(costImpact)}
+            </p>
+          </div>
+          <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Days
+            </p>
+            <p className="text-lg font-semibold tabular-nums">
+              {scheduleImpact}
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <div className="px-4 py-3 sm:px-6">
+        <Table>
+          <TableHeader className="bg-muted/35">
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-[130px] text-muted-foreground">
+                Type
+              </TableHead>
+              <TableHead className="text-muted-foreground">Item</TableHead>
+              <TableHead className="w-[110px] text-right text-muted-foreground">
+                Age
+              </TableHead>
+              <TableHead className="w-[140px] text-right text-muted-foreground">
+                Impact
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {items.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={4}
+                  className="h-24 text-center text-muted-foreground"
+                >
+                  No pending decisions
+                </TableCell>
+              </TableRow>
+            ) : (
+              items.map((item) => {
+                const isUrgent = item.severity === "high" || item.ageDays > 7;
+
+                return (
+                  <TableRow
+                    key={item.id}
+                    className={cn(
+                      "group border-border/60",
+                      isUrgent
+                        ? "bg-destructive/[0.035] hover:bg-destructive/[0.075]"
+                        : "hover:bg-accent/35",
+                    )}
+                  >
+                    <TableCell className="relative">
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "absolute inset-y-2 left-0 w-1 rounded-r-full",
+                          isUrgent ? "bg-destructive" : "bg-chart-1",
+                        )}
+                      />
+                      <Badge
+                        variant="outline"
+                        className={cn("font-medium", typeStyles[item.type])}
+                      >
+                        {item.typeLabel}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="min-w-0">
+                      <Link
+                        href={item.href}
+                        className="block min-w-0 hover:underline"
+                      >
+                        <span className="block truncate font-medium">
+                          {item.title}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {item.projectName ?? "System"}
+                        </span>
+                      </Link>
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "text-right font-medium tabular-nums",
+                        isUrgent ? "text-destructive" : "text-muted-foreground",
+                      )}
+                    >
+                      {item.ageDays === 0 ? "Today" : `${item.ageDays}d`}
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground">
+                      {item.impactCents
+                        ? formatCurrency(item.impactCents)
+                        : null}
+                      {item.impactCents && item.impactDays ? " / " : null}
+                      {item.impactDays ? `${item.impactDays}d` : null}
+                      {!item.impactCents && !item.impactDays
+                        ? item.impactLabel
+                        : null}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
       </div>
-    </div>
-  )
+    </section>
+  );
 }

@@ -27,13 +27,47 @@ export async function fetchBudgetTabDataAction(projectId: string) {
     listCompanies().catch(() => []),
   ])
 
+  const budgetBucketCompanies = await buildBudgetBucketCompanies(commitments)
+
   return {
     budgetData,
     costCodes,
     varianceAlerts,
     commitments,
     companies,
+    budgetBucketCompanies,
   }
+}
+
+async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof listProjectCommitments>>) {
+  if (commitments.length === 0) return {}
+
+  const companyNamesByBucket = new Map<string, Set<string>>()
+  const commitmentLines = await Promise.all(
+    commitments.map(async (commitment) => ({
+      commitment,
+      lines: await listCommitmentLines(commitment.id).catch(() => []),
+    })),
+  )
+
+  for (const { commitment, lines } of commitmentLines) {
+    const companyName = commitment.company_name?.trim()
+    if (!companyName) continue
+
+    for (const line of lines) {
+      const key = line.cost_code_id ?? "uncoded"
+      const names = companyNamesByBucket.get(key) ?? new Set<string>()
+      names.add(companyName)
+      companyNamesByBucket.set(key, names)
+    }
+  }
+
+  return Object.fromEntries(
+    Array.from(companyNamesByBucket.entries()).map(([key, names]) => [
+      key,
+      Array.from(names).sort((a, b) => a.localeCompare(b)),
+    ]),
+  )
 }
 
 /**

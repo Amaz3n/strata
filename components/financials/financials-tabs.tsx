@@ -100,6 +100,7 @@ export function FinancialsTabs({
   const [varianceAlerts, setVarianceAlerts] = useState<any[]>([])
   const [commitments, setCommitments] = useState<CommitmentSummary[]>([])
   const [companies, setCompanies] = useState<Company[]>([])
+  const [budgetBucketCompanies, setBudgetBucketCompanies] = useState<Record<string, string[]>>({})
 
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [contacts, setContacts] = useState<Contact[]>([])
@@ -145,6 +146,7 @@ export function FinancialsTabs({
           setVarianceAlerts(data.varianceAlerts)
           setCommitments(data.commitments)
           setCompanies(data.companies)
+          setBudgetBucketCompanies(data.budgetBucketCompanies)
           setHasFetchedBudget(true)
         })
         .catch((error) => {
@@ -270,6 +272,7 @@ export function FinancialsTabs({
             varianceAlerts={varianceAlerts}
             commitments={commitments}
             companies={companies}
+            budgetBucketCompanies={budgetBucketCompanies}
           />
         ) : null}
       </TabsContent>

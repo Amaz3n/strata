@@ -223,10 +223,22 @@ async function checkAndUpdateDrawingSetStatus(supabase, orgId) {
                     .update({
                     status: 'ready',
                     processed_pages: totalSheets,
-                    processed_at: new Date().toISOString()
+                    processed_at: new Date().toISOString(),
+                    processing_stage: 'ready',
                 })
                     .eq('id', set.id);
                 console.log(`Updated drawing set ${set.id} to ready (${readySheets}/${totalSheets} sheets)`);
+            }
+            else if (totalSheets > 0) {
+                await supabase
+                    .from('drawing_sets')
+                    .update({
+                    status: 'processing',
+                    processed_pages: readySheets,
+                    total_pages: totalSheets,
+                    processing_stage: 'generating_tiles',
+                })
+                    .eq('id', set.id);
             }
         }
         await supabase.rpc('refresh_drawing_sheets_list');

@@ -1,38 +1,40 @@
-import { PageLayout } from "@/components/layout/page-layout"
-import { getControlTowerData, getLifecycleBoard, getDecisionQueue, getDriftTrend, getWatchlist } from "@/lib/services/dashboard"
-import { PortfolioHealthStrip } from "@/components/control-tower/portfolio-health-strip"
-import { LifecycleBoard } from "@/components/control-tower/lifecycle-board"
-import { DecisionQueue } from "@/components/control-tower/decision-queue"
-import { DriftTrend as DriftTrendComponent } from "@/components/control-tower/drift-trend"
-import { Watchlist } from "@/components/control-tower/watchlist"
+import { PageLayout } from "@/components/layout/page-layout";
+import {
+  getControlTowerData,
+  getDecisionQueue,
+  getWatchlist,
+} from "@/lib/services/dashboard";
+import { PortfolioHealthStrip } from "@/components/control-tower/portfolio-health-strip";
+import { DecisionQueue } from "@/components/control-tower/decision-queue";
+import { Watchlist } from "@/components/control-tower/watchlist";
+import { FinancialSummary } from "@/components/control-tower/financial-summary";
+import { ActivePipelineSummary } from "@/components/control-tower/active-pipeline-summary";
 
 export default async function HomePage() {
-  const [data, lifecycleStages, decisionItems, driftTrend, watchlistProjects] = await Promise.all([
+  const [data, decisionItems, watchlistProjects] = await Promise.all([
     getControlTowerData(),
-    getLifecycleBoard(),
     getDecisionQueue(),
-    getDriftTrend(),
     getWatchlist(),
-  ])
+  ]);
 
   return (
     <PageLayout title="Control Tower">
-      <div className="space-y-6 p-2">
-        {/* Portfolio Health Strip */}
-        <PortfolioHealthStrip data={data.portfolioHealth} />
+      <div className="-mx-4 -mt-6 -mb-4 flex min-h-[calc(100svh-3.5rem)] flex-col bg-background">
+        <div className="border-b border-border/70 bg-card">
+          <PortfolioHealthStrip data={data.portfolioHealth} />
+        </div>
 
-        {/* Lifecycle Stage Board */}
-        <LifecycleBoard stages={lifecycleStages} />
-
-        {/* Decision Queue */}
-        <DecisionQueue items={decisionItems} />
-
-        {/* 14-Day Drift */}
-        <DriftTrendComponent data={driftTrend} />
-
-        {/* Watchlist */}
-        <Watchlist projects={watchlistProjects} />
+        <FinancialSummary financials={data.financials} />
+        <div className="grid border-b border-border/70 bg-border/70 lg:grid-cols-[minmax(0,1fr)_minmax(360px,430px)]">
+          <div className="min-w-0 bg-card">
+            <DecisionQueue items={decisionItems} />
+            <Watchlist projects={watchlistProjects} />
+          </div>
+          <aside className="min-w-0 border-t border-border/70 bg-card lg:border-t-0 lg:border-l">
+            <ActivePipelineSummary pipeline={data.pipeline} />
+          </aside>
+        </div>
       </div>
     </PageLayout>
-  )
+  );
 }

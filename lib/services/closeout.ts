@@ -14,6 +14,20 @@ const defaultItems = [
   "Closeout punch list",
 ]
 
+const baseCloseoutItemSelect =
+  "id, org_id, project_id, closeout_package_id, title, status, file_id, created_at, updated_at"
+const extendedCloseoutItemSelect =
+  "id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at"
+
+function isMissingCloseoutOptionalColumnError(error: { message?: string } | null | undefined) {
+  const message = error?.message ?? ""
+  return (
+    message.includes("column closeout_items.due_date does not exist") ||
+    message.includes("column closeout_items.responsible_party does not exist") ||
+    message.includes("column closeout_items.notes does not exist")
+  )
+}
+
 function mapPackage(row: any): CloseoutPackage {
   return {
     id: row.id,
@@ -83,18 +97,27 @@ export async function getCloseoutPackage(projectId: string, orgId?: string): Pro
 
   const pkg = await ensurePackage(projectId, resolvedOrgId)
 
-  const { data, error } = await supabase
-    .from("closeout_items")
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
-    .eq("org_id", resolvedOrgId)
-    .eq("closeout_package_id", pkg.id)
-    .order("created_at", { ascending: true })
+  const loadItems = async (selectClause: string) =>
+    supabase
+      .from("closeout_items")
+      .select(selectClause)
+      .eq("org_id", resolvedOrgId)
+      .eq("closeout_package_id", pkg.id)
+      .order("created_at", { ascending: true })
+
+  let { data, error } = await loadItems(extendedCloseoutItemSelect)
+
+  if (error && isMissingCloseoutOptionalColumnError(error)) {
+    const fallback = await loadItems(baseCloseoutItemSelect)
+    data = fallback.data
+    error = fallback.error
+  }
 
   if (error) {
     throw new Error(`Failed to load closeout items: ${error.message}`)
   }
 
-  const itemRows = data ?? []
+  const itemRows = (data as any[]) ?? []
   const itemIds = itemRows.map((item) => item.id as string)
   const attachmentCounts = new Map<string, number>()
 
@@ -137,7 +160,7 @@ export async function createCloseoutItem({
     ? { id: parsed.closeout_package_id }
     : await ensurePackage(parsed.project_id, resolvedOrgId)
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("closeout_items")
     .insert({
       org_id: resolvedOrgId,
@@ -152,6 +175,28 @@ export async function createCloseoutItem({
     })
     .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
     .single()
+
+  if (error && isMissingCloseoutOptionalColumnError(error)) {
+    const fallback = await supabase
+      .from("closeout_items")
+      .insert({
+        org_id: resolvedOrgId,
+        project_id: parsed.project_id,
+        closeout_package_id: pkg.id,
+        title: parsed.title,
+        status: parsed.status ?? "missing",
+        file_id: parsed.file_id ?? null,
+      })
+      .select(baseCloseoutItemSelect)
+      .single()
+
+    if (fallback.error || !fallback.data) {
+      throw new Error(`Failed to create closeout item: ${fallback.error?.message ?? error.message}`)
+    }
+
+    data = fallback.data as any
+    error = null as any
+  }
 
   if (error || !data) {
     throw new Error(`Failed to create closeout item: ${error?.message}`)
@@ -192,12 +237,26 @@ export async function updateCloseoutItem({
 
   const { data: existing, error: existingError } = await supabase
     .from("closeout_items")
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
+    .select(extendedCloseoutItemSelect)
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
     .maybeSingle()
 
-  if (existingError || !existing) {
+  let existingItem = existing
+  let lookupError = existingError
+  if (lookupError && isMissingCloseoutOptionalColumnError(lookupError)) {
+    const fallback = await supabase
+      .from("closeout_items")
+      .select(baseCloseoutItemSelect)
+      .eq("org_id", resolvedOrgId)
+      .eq("id", itemId)
+      .maybeSingle()
+
+    existingItem = fallback.data as any
+    lookupError = fallback.error
+  }
+
+  if (lookupError || !existingItem) {
     throw new Error("Closeout item not found")
   }
 
@@ -215,19 +274,40 @@ export async function updateCloseoutItem({
     .update(updateData)
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
+    .select(extendedCloseoutItemSelect)
     .single()
 
-  if (error || !data) {
-    throw new Error(`Failed to update closeout item: ${error?.message}`)
-  }
+  let updatedItem = data
+  let updateError = error
+  if (updateError && isMissingCloseoutOptionalColumnError(updateError)) {
+    const fallbackData = { ...updateData }
+    delete fallbackData.due_date
+    delete fallbackData.responsible_party
+    delete fallbackData.notes
+
+    const fallback = await supabase
+      .from("closeout_items")
+      .update(fallbackData)
+      .eq("org_id", resolvedOrgId)
+      .eq("id", itemId)
+      .select(baseCloseoutItemSelect)
+      .single()
+
+      updatedItem = fallback.data as any
+      updateError = fallback.error
+      }
+
+      if (updateError || !updatedItem) {
+      throw new Error(`Failed to update closeout item: ${updateError?.message}`)
+      }
+
 
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "closeout_item_updated",
     entityType: "closeout_item",
-    entityId: data.id as string,
-    payload: { project_id: data.project_id, status: data.status },
+    entityId: updatedItem.id as string,
+    payload: { project_id: updatedItem.project_id, status: updatedItem.status },
   })
 
   await recordAudit({
@@ -235,17 +315,17 @@ export async function updateCloseoutItem({
     actorId: userId,
     action: "update",
     entityType: "closeout_item",
-    entityId: data.id as string,
-    before: existing,
-    after: data,
+    entityId: updatedItem.id as string,
+    before: existingItem,
+    after: updatedItem,
   })
 
-  if (data.closeout_package_id) {
+  if (updatedItem.closeout_package_id) {
     const { data: items } = await supabase
       .from("closeout_items")
       .select("status")
       .eq("org_id", resolvedOrgId)
-      .eq("closeout_package_id", data.closeout_package_id)
+      .eq("closeout_package_id", updatedItem.closeout_package_id)
 
     const total = items?.length ?? 0
     const completed = (items ?? []).filter((item) => item.status === "complete").length
@@ -255,8 +335,8 @@ export async function updateCloseoutItem({
       .from("closeout_packages")
       .update({ status: nextStatus, updated_at: new Date().toISOString() })
       .eq("org_id", resolvedOrgId)
-      .eq("id", data.closeout_package_id)
+      .eq("id", updatedItem.closeout_package_id)
   }
 
-  return mapItem(data)
+  return mapItem(updatedItem)
 }

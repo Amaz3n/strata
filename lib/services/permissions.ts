@@ -78,7 +78,7 @@ export async function getUserPermissions(userId: string, orgId: string, supabase
   }
 
   // Always use service role to bypass restrictive RLS on role_permissions.
-  const client = supabase ?? createServiceSupabaseClient()
+  const client = createServiceSupabaseClient()
   return fetchPermissions({ supabase: client, orgId, userId })
 }
 

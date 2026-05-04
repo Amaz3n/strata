@@ -15,10 +15,9 @@ interface PortalRoadmapTabProps {
 }
 
 export function PortalRoadmapTab({ data }: PortalRoadmapTabProps) {
-  const scheduleItems = data.schedule ?? []
-
   // Filter only milestones and phases for the client roadmap view
   const roadmapItems = useMemo(() => {
+    const scheduleItems = data.schedule ?? []
     return scheduleItems
       .filter((item) => item.item_type === "milestone" || item.item_type === "phase")
       .sort((a, b) => {
@@ -26,7 +25,7 @@ export function PortalRoadmapTab({ data }: PortalRoadmapTabProps) {
         const dateB = b.end_date || b.start_date || ""
         return dateA.localeCompare(dateB)
       })
-  }, [scheduleItems])
+  }, [data.schedule])
 
   // Compute overall progress based on roadmap items
   const completedCount = roadmapItems.filter(i => i.status === "completed").length

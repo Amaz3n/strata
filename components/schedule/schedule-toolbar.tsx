@@ -20,6 +20,7 @@ import {
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
+  DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
 import {
   Tooltip,
@@ -60,7 +61,7 @@ const GROUP_BY_OPTIONS: GroupByOption[] = ["none", "phase", "trade", "status"]
 export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToolbarProps) {
   const isMobile = useIsMobile()
   const { viewState, setViewState, scrollToToday } = useSchedule()
-  const [isExporting, setIsExporting] = useState<"pdf" | "csv" | null>(null)
+  const [isExporting, setIsExporting] = useState<"pdf" | "csv" | "gantt-pdf" | null>(null)
 
   const handleExport = async (exportFormat: "pdf" | "gantt-pdf" | "csv") => {
     if (!projectId) {
@@ -68,7 +69,7 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
       return
     }
 
-    setIsExporting(exportFormat === "gantt-pdf" ? "pdf" : exportFormat)
+    setIsExporting(exportFormat)
     try {
       const response = await fetch(`/api/projects/${projectId}/reports/schedule?format=${exportFormat}`)
       if (!response.ok) throw new Error("Failed to generate export")
@@ -268,33 +269,43 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
                   <Download className="mr-2 h-3.5 w-3.5" />
                   Export
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuItem
-                    onClick={() => handleExport("gantt-pdf")}
-                    disabled={!projectId || isExporting !== null}
-                  >
-                    {isExporting ? (
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <GanttChart className="mr-2 h-3.5 w-3.5" />
-                    )}
-                    Gantt chart (PDF)
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => handleExport("pdf")}
-                    disabled={!projectId || isExporting !== null}
-                  >
-                    <FileText className="mr-2 h-3.5 w-3.5" />
-                    Table (PDF)
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => handleExport("csv")}
-                    disabled={!projectId || isExporting !== null}
-                  >
-                    <FileSpreadsheet className="mr-2 h-3.5 w-3.5" />
-                    Spreadsheet (CSV)
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
+                <DropdownMenuPortal>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuItem
+                      onSelect={() => handleExport("gantt-pdf")}
+                      disabled={!projectId || isExporting !== null}
+                    >
+                      {isExporting === "gantt-pdf" ? (
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <GanttChart className="mr-2 h-3.5 w-3.5" />
+                      )}
+                      Gantt chart (PDF)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => handleExport("pdf")}
+                      disabled={!projectId || isExporting !== null}
+                    >
+                      {isExporting === "pdf" ? (
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <FileText className="mr-2 h-3.5 w-3.5" />
+                      )}
+                      Table (PDF)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => handleExport("csv")}
+                      disabled={!projectId || isExporting !== null}
+                    >
+                      {isExporting === "csv" ? (
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <FileSpreadsheet className="mr-2 h-3.5 w-3.5" />
+                      )}
+                      Spreadsheet (CSV)
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuPortal>
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>

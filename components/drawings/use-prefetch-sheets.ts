@@ -166,10 +166,14 @@ export function usePrefetchAdjacentSheets(
               } as IdleDeadline)
             }, 1800)
 
-    const cancelIdleWarm =
-      typeof window !== "undefined" && "cancelIdleCallback" in window
-        ? window.cancelIdleCallback.bind(window)
-        : window.clearTimeout
+    const cancelIdleWarm = (handle: any) => {
+      if (typeof window === "undefined") return
+      if ("cancelIdleCallback" in window) {
+        (window as any).cancelIdleCallback(handle)
+      } else {
+        (window as any).clearTimeout(handle)
+      }
+    }
 
     const idleHandle = scheduleIdleWarm(() => {
       remainingSheets.slice(0, 4).forEach((sheet) => {

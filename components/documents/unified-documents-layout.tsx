@@ -46,6 +46,7 @@ import { DocumentsProvider, useDocuments } from "./documents-context";
 import { DocumentsExplorer } from "./documents-explorer";
 import { DocumentsToolbar } from "./documents-toolbar";
 import { DocumentsContent } from "./documents-content";
+import { formatFileSize } from "./documents-table";
 import { SheetsContent } from "./sheets-content";
 import { FilePropertiesPanel } from "./file-properties-panel";
 import { UploadDialog } from "./upload-dialog";
@@ -1841,7 +1842,6 @@ function UnifiedDocumentsLayoutInner() {
           isDownloadingSelected={isDownloadingSelected}
           explorerOpen={explorerOpen}
           onToggleExplorer={() => setExplorerOpen((open) => !open)}
-          activeFile={propertiesFile}
         />
       </div>
 

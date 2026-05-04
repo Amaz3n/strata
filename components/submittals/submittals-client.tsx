@@ -74,9 +74,9 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
         [String(item.submittal_number ?? ""), item.title ?? "", item.description ?? ""].some((value) =>
           value.toLowerCase().includes(term),
         )
-      return matchesStatus && matchesSearch
+      return matchesProject && matchesStatus && matchesSearch
     })
-  }, [items, search, statusFilter])
+  }, [items, search, statusFilter, filterProjectId])
 
 
   async function handleCreate(values: SubmittalInput) {

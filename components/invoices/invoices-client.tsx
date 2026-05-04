@@ -36,6 +36,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
+  DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
 import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw } from "@/components/icons"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
@@ -388,16 +389,18 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                     <Building2 className="mr-2 h-4 w-4" />
                     By project
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                    <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
-                      <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
-                      {projects.map((project) => (
-                        <DropdownMenuRadioItem key={project.id} value={project.id}>
-                          {project.name}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuSubContent>
+                  <DropdownMenuPortal>
+                    <DropdownMenuSubContent className="w-56" sideOffset={8}>
+                      <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
+                        <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
+                        {projects.map((project) => (
+                          <DropdownMenuRadioItem key={project.id} value={project.id}>
+                            {project.name}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuPortal>
                 </DropdownMenuSub>
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
@@ -405,14 +408,16 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                     <Calendar className="mr-2 h-4 w-4" />
                     By due date
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                    <DropdownMenuRadioGroup value={dueFilter} onValueChange={(value) => setDueFilter(value as DueFilter)}>
-                      <DropdownMenuRadioItem value="any">Any due date</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="due_soon">Due in next 7 days</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="no_due">No due date</DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuSubContent>
+                  <DropdownMenuPortal>
+                    <DropdownMenuSubContent className="w-56" sideOffset={8}>
+                      <DropdownMenuRadioGroup value={dueFilter} onValueChange={(value) => setDueFilter(value as DueFilter)}>
+                        <DropdownMenuRadioItem value="any">Any due date</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="due_soon">Due in next 7 days</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="no_due">No due date</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuPortal>
                 </DropdownMenuSub>
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
@@ -420,19 +425,21 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                     <List className="mr-2 h-4 w-4" />
                     Status
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                    <DropdownMenuRadioGroup
-                      value={statusFilter}
-                      onValueChange={(value) => setStatusFilter(value as StatusFilter)}
-                    >
-                      <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
-                      {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
-                        <DropdownMenuRadioItem key={status} value={status}>
-                          {statusLabels[status]}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuSubContent>
+                  <DropdownMenuPortal>
+                    <DropdownMenuSubContent className="w-56" sideOffset={8}>
+                      <DropdownMenuRadioGroup
+                        value={statusFilter}
+                        onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+                      >
+                        <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
+                        {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
+                          <DropdownMenuRadioItem key={status} value={status}>
+                            {statusLabels[status]}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuPortal>
                 </DropdownMenuSub>
               </DropdownMenuContent>
             </DropdownMenu>

@@ -410,7 +410,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
               <div className="mt-4 space-y-4 rounded-xl border border-border/50 bg-muted/40 p-5">
                 <div className="flex items-center justify-between">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Technical Health</p>
-                  <Button variant="ghost" size="xs" onClick={loadDiagnostics} disabled={loadingDiagnostics} className="h-6 text-[10px]">
+                  <Button variant="ghost" size="sm" onClick={loadDiagnostics} disabled={loadingDiagnostics} className="h-6 text-[10px]">
                     {loadingDiagnostics ? "Refreshing..." : "Refresh Stats"}
                   </Button>
                 </div>

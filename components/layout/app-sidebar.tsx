@@ -25,7 +25,7 @@ import {
   Settings,
   Shield,
   Tag,
-  User,
+  User as UserIcon,
   Users,
 } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
@@ -71,7 +71,7 @@ type SidebarNavGroup = {
 }
 
 const settingsItems: SidebarNavItem[] = [
-  { title: "Profile", url: "/settings?tab=profile", icon: User },
+  { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
   { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
   { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
   { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },

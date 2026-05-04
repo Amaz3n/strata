@@ -35,6 +35,15 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 // TYPES
 // ============================================================================
 
+async function refreshDrawingSheetsListView() {
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase.rpc("refresh_drawing_sheets_list")
+
+  if (error) {
+    throw new Error(`Failed to refresh drawing sheets list: ${error.message}`)
+  }
+}
+
 export interface DrawingSet {
   id: string
   org_id: string
@@ -124,6 +133,9 @@ export interface DrawingSheetVersion {
   drawing_sheet_id: string
   drawing_revision_id: string
   revision_label?: string
+  version_number?: number | string
+  creator_name?: string
+  change_description?: string
   file_id?: string
   thumbnail_file_id?: string
   page_index?: number
@@ -301,13 +313,17 @@ function mapDrawingSheetVersion(row: any): DrawingSheetVersion {
   const thumbPath = row.thumb_path ?? row.image_thumbnail_path ?? row.image_thumb_path ?? null
   const mediumPath = row.medium_path ?? row.image_medium_path ?? null
   const fullPath = row.full_path ?? row.image_full_path ?? null
+  const revision = row.drawing_revisions as any
 
   return {
     id: row.id,
     org_id: row.org_id,
     drawing_sheet_id: row.drawing_sheet_id,
     drawing_revision_id: row.drawing_revision_id,
-    revision_label: (row.drawing_revisions as any)?.revision_label ?? undefined,
+    revision_label: revision?.revision_label ?? undefined,
+    version_number: revision?.revision_label ?? undefined,
+    creator_name: revision?.creator_name ?? undefined,
+    change_description: revision?.notes ?? undefined,
     file_id: row.file_id ?? undefined,
     thumbnail_file_id: row.thumbnail_file_id ?? undefined,
     page_index: row.page_index ?? undefined,
@@ -1165,6 +1181,8 @@ export async function updateDrawingSheet(
     after: data,
   })
 
+  await refreshDrawingSheetsListView()
+
   return mapDrawingSheet(data)
 }
 
@@ -1262,8 +1280,9 @@ export async function listSheetVersions(
       file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
       thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
       thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
-      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label)
+      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label, creator_name, notes)
     `)
+
     .eq("org_id", resolvedOrgId)
     .eq("drawing_sheet_id", sheetId)
     .order("created_at", { ascending: false })
@@ -1293,7 +1312,7 @@ export async function listSheetVersionsWithUrls(
       file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
       thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
       thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
-      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label),
+      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label, creator_name, notes),
       files!drawing_sheet_versions_file_id_fkey(storage_path),
       thumbnail:files!drawing_sheet_versions_thumbnail_file_id_fkey(storage_path)
     `)
