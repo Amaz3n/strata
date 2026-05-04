@@ -37,19 +37,26 @@ import { cn } from "@/lib/utils"
 export function SessionsSettingsCard() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
+  const [sessionsUnavailable, setSessionsUnavailable] = useState(false)
   const supabase = createClient()
 
   const fetchSessions = useCallback(async () => {
     try {
+      setSessionsUnavailable(false)
       const { data, error } = await supabase.rpc("get_user_sessions")
       if (error) {
-        console.error("Supabase RPC error:", error)
         throw error
       }
       setSessions(data || [])
     } catch (error: any) {
-      console.error("Failed to fetch sessions:", error?.message || error)
-      toast.error("Failed to load active sessions")
+      const message = error?.message || String(error)
+      if (message.includes("structure of query does not match function result type")) {
+        setSessions([])
+        setSessionsUnavailable(true)
+      } else {
+        console.error("Failed to fetch sessions:", message)
+        toast.error("Failed to load active sessions")
+      }
     } finally {
       setLoading(false)
     }
@@ -135,7 +142,9 @@ export function SessionsSettingsCard() {
         <div className="divide-y divide-border/60">
           {sessions.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">
-              No active sessions found.
+              {sessionsUnavailable
+                ? "Active session details are temporarily unavailable."
+                : "No active sessions found."}
             </div>
           ) : (
             sessions.map((session) => (

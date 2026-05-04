@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { usePathname } from "next/navigation"
 
 import { CommandSearch } from "@/components/layout/command-search"
 import { GlobalTasksSheet } from "@/components/tasks/global-tasks-sheet"
@@ -30,6 +31,7 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
+  const pathname = usePathname()
   const { title: contextTitle, breadcrumbs: contextBreadcrumbs } = usePageTitle()
   const effectiveTitle = title || contextTitle
   const effectiveBreadcrumbs = breadcrumbs || contextBreadcrumbs
@@ -37,6 +39,8 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
 
   // Get current page title for mobile display
   const currentPage = breadcrumbItems.length > 0 ? breadcrumbItems[breadcrumbItems.length - 1] : null
+
+  if (pathname.startsWith("/settings")) return null
 
   return (
     <header

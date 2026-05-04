@@ -1,7 +1,9 @@
 "use client"
 
-import { usePathname } from "next/navigation"
+import { useEffect, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
+  ArrowLeft,
   Home,
   LayoutDashboard,
   FileText,
@@ -17,6 +19,14 @@ import {
   FolderOpen,
   Building2,
   Contact,
+  Bell,
+  CreditCard,
+  Link2,
+  Settings,
+  Shield,
+  Tag,
+  User,
+  Users,
 } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
 import { NavMain } from "./nav-main"
@@ -27,7 +37,12 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar"
@@ -54,6 +69,18 @@ type SidebarNavGroup = {
   label?: string
   items: SidebarNavItem[]
 }
+
+const settingsItems: SidebarNavItem[] = [
+  { title: "Profile", url: "/settings?tab=profile", icon: User },
+  { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
+  { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
+  { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },
+  { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
+  { title: "Team", url: "/settings?tab=team", icon: Users },
+  { title: "Cost Codes", url: "/settings?tab=cost-codes", icon: Tag },
+  { title: "Payables", url: "/settings?tab=compliance", icon: Settings },
+  { title: "About", url: "/settings?tab=about", icon: Shield },
+]
 
 function getProjectIdFromPath(pathname: string): string | null {
   const match = pathname.match(/^\/projects\/([^/]+)/)
@@ -300,6 +327,32 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
 
 export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permissions = [] }: AppSidebarProps) {
   const pathname = usePathname()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const isSettings = pathname.startsWith("/settings")
+  const [activeSettingsTab, setActiveSettingsTab] = useState(searchParams.get("tab") ?? "profile")
+  const settingsReturnTo = searchParams.get("returnTo") || "/"
+  const settingsHref = (tab: string) => {
+    const params = new URLSearchParams()
+    params.set("tab", tab)
+    if (settingsReturnTo) params.set("returnTo", settingsReturnTo)
+    return `/settings?${params.toString()}`
+  }
+  const switchSettingsTab = (tab: string) => {
+    setActiveSettingsTab(tab)
+    window.history.replaceState(null, "", settingsHref(tab))
+    window.dispatchEvent(new CustomEvent("arc-settings-tab-change", { detail: tab }))
+  }
+  useEffect(() => {
+    setActiveSettingsTab(searchParams.get("tab") ?? "profile")
+  }, [searchParams])
+  useEffect(() => {
+    const handleSettingsTabChange = (event: Event) => {
+      setActiveSettingsTab((event as CustomEvent<string>).detail)
+    }
+    window.addEventListener("arc-settings-tab-change", handleSettingsTabChange)
+    return () => window.removeEventListener("arc-settings-tab-change", handleSettingsTabChange)
+  }, [])
   const projectId = getProjectIdFromPath(pathname)
   const section = getProjectSection(pathname)
   const permissionSet = new Set(permissions)
@@ -324,14 +377,53 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="h-14 flex items-center justify-center p-2">
-        <OrgSwitcher org={orgData} />
+        {isSettings ? (
+          <SidebarMenu className="w-full">
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                tooltip="Back"
+                onClick={() => {
+                  router.push(settingsReturnTo)
+                }}
+                className="h-10"
+              >
+                <ArrowLeft />
+                <span>Back</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        ) : (
+          <OrgSwitcher org={orgData} />
+        )}
       </SidebarHeader>
       <SidebarSeparator className="mx-0" />
-      <div className="px-2 py-2">
-        <SidebarProjectSwitcher projectId={projectId ?? undefined} />
-      </div>
+      {!isSettings && (
+        <div className="px-2 py-2">
+          <SidebarProjectSwitcher projectId={projectId ?? undefined} />
+        </div>
+      )}
       <SidebarContent>
-        <NavMain items={navMain} />
+        {isSettings ? (
+          <SidebarGroup>
+            <SidebarGroupLabel>Settings</SidebarGroupLabel>
+            <SidebarMenu>
+              {settingsItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton
+                    tooltip={item.title}
+                    isActive={activeSettingsTab === new URLSearchParams(item.url.split("?")[1] ?? "").get("tab")}
+                    onClick={() => switchSettingsTab(new URLSearchParams(item.url.split("?")[1] ?? "").get("tab") ?? "profile")}
+                  >
+                    {item.icon && <item.icon />}
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
+        ) : (
+          <NavMain items={navMain} />
+        )}
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={user} />

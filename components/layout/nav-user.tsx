@@ -1,6 +1,8 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useTransition } from "react"
+import Link from "next/link"
+import { usePathname, useSearchParams } from "next/navigation"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   ChevronsUpDown,
@@ -29,7 +31,6 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import type { User } from "@/lib/types"
-import { SettingsDialog } from "@/components/settings/settings-dialog"
 import { useHydrated } from "@/hooks/use-hydrated"
 
 export function NavUser({
@@ -38,21 +39,18 @@ export function NavUser({
   user?: User | null
 }) {
   const { isMobile, state } = useSidebar()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const [signingOut, startSignOut] = useTransition()
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<string>("profile")
   const hydrated = useHydrated()
+  const currentUrl = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
+  const settingsHref = `/settings?tab=profile&returnTo=${encodeURIComponent(currentUrl)}`
 
   const initials =
     user?.full_name
       ?.split(" ")
       .map((n) => n[0])
       .join("") || "?"
-
-  const openSettings = (targetTab: string) => {
-    setSettingsTab(targetTab)
-    setSettingsOpen(true)
-  }
 
   if (!hydrated) {
     return (
@@ -125,15 +123,11 @@ export function NavUser({
               </div>
             </DropdownMenuLabel>
             <DropdownMenuGroup>
-              <DropdownMenuItem
-                className="rounded-none px-2.5 py-2.5"
-                onSelect={(event) => {
-                  event.preventDefault()
-                  openSettings("profile")
-                }}
-              >
-                <Settings />
-                Settings
+              <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
+                <Link href={settingsHref}>
+                  <Settings />
+                  Settings
+                </Link>
               </DropdownMenuItem>
               <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
                 <a href="mailto:support@arcnaples.com">
@@ -157,12 +151,6 @@ export function NavUser({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <SettingsDialog
-          user={user ?? null}
-          open={settingsOpen}
-          initialTab={settingsTab}
-          onOpenChange={setSettingsOpen}
-        />
       </SidebarMenuItem>
     </SidebarMenu>
   )

@@ -1,4 +1,3 @@
-import { PageLayout } from "@/components/layout/page-layout"
 export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getQBOConnection } from "@/lib/services/qbo-connection"
@@ -56,7 +55,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
     : await getDefaultComplianceRequirements().catch(() => [])
 
   return (
-    <PageLayout title="Settings">
+    <div className="-m-4 -mt-6 h-svh min-h-0 overflow-hidden">
       <SettingsWindow
         user={currentUser}
         initialTab={initialTab}
@@ -73,6 +72,6 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
         canManageCompliance={canManageCompliance}
         initialComplianceRequirementDefaults={complianceRequirementDefaults}
       />
-    </PageLayout>
+    </div>
   )
 }
