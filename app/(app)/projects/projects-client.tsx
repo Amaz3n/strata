@@ -397,7 +397,9 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
                               : "—"}
                       </TableCell>
                       <TableCell className="text-right text-sm py-3">
-                        {project.budget ? `$${project.budget.toLocaleString()}` : "—"}
+                        {typeof (project.total_value ?? project.budget) === "number"
+                          ? `$${(project.total_value ?? project.budget)!.toLocaleString()}`
+                          : "—"}
                       </TableCell>
                       <TableCell className="pr-4 py-3">
                         <ProjectRowMenu project={project} onEdit={openEditSheet} onDelete={openDeleteDialog} />

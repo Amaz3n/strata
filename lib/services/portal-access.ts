@@ -107,17 +107,20 @@ export async function createPortalAccessToken({
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
   const serviceClient = createServiceSupabaseClient()
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     org_id: resolvedOrgId,
     project_id: projectId,
     portal_type: portalType,
     contact_id: contactId ?? null,
     company_id: companyId ?? null,
-    scoped_rfi_id: scopedRfiId ?? null,
     expires_at: expiresAt ?? null,
     require_account: requireAccount ?? false,
     created_by: userId,
     ...permissionsToColumns(permissions),
+  }
+
+  if (scopedRfiId) {
+    payload.scoped_rfi_id = scopedRfiId
   }
 
   const { data, error } = await serviceClient
