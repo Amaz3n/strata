@@ -134,6 +134,10 @@ export interface TeamMember {
   role_label?: string
   permission_overrides?: MemberPermissionOverride[]
   status: "active" | "invited" | "suspended"
+  labor_cost_rate_cents?: number
+  labor_bill_rate_cents?: number
+  labor_burden_multiplier?: number
+  labor_is_billable_default?: boolean
   mfa_enabled?: boolean
   project_count?: number
   last_active_at?: string
@@ -177,6 +181,7 @@ export interface Project {
   description?: string
   retainage_percent?: number
   total_contract_value_cents?: number
+  billing_contract?: Contract | null
   created_at: string
   updated_at: string
 }
@@ -210,10 +215,16 @@ export interface Contract {
   number?: string
   title: string
   status: "draft" | "active" | "amended" | "completed" | "terminated"
-  contract_type?: "fixed_price" | "cost_plus" | "time_materials" | "unit_price"
+  contract_type?: "fixed" | "fixed_price" | "cost_plus" | "time_materials" | "unit_price"
   total_cents?: number
   currency: string
   markup_percent?: number
+  gmp_cents?: number | null
+  savings_split_owner_pct?: number | null
+  savings_split_builder_pct?: number | null
+  labor_burden_multiplier?: number | null
+  requires_client_cost_approval?: boolean | null
+  open_book?: boolean | null
   retainage_percent?: number
   retainage_release_trigger?: string
   terms?: string
@@ -228,31 +239,6 @@ export interface Contract {
   snapshot: Record<string, any>
   created_at: string
   updated_at: string
-}
-
-export type ConversationChannel = "internal" | "client" | "sub"
-
-export interface Conversation {
-  id: string
-  org_id: string
-  project_id?: string
-  subject?: string | null
-  channel: ConversationChannel
-  created_by?: string
-  created_at: string
-}
-
-export interface PortalMessage {
-  id: string
-  org_id: string
-  conversation_id: string
-  sender_id?: string
-  message_type: string
-  body?: string | null
-  payload?: Record<string, any>
-  sent_at: string
-  sender_name?: string
-  sender_avatar_url?: string
 }
 
 export interface TaskChecklistItem {
@@ -489,9 +475,6 @@ export interface NavSection {
 
 export interface PortalView {
   project: Project
-  channel: ConversationChannel
-  conversation: Conversation
-  messages: PortalMessage[]
   recentLogs: DailyLog[]
   sharedFiles: FileMetadata[]
   schedule: ScheduleItem[]
@@ -507,7 +490,6 @@ export interface PortalPermissions {
   can_approve_change_orders: boolean
   can_submit_selections: boolean
   can_create_punch_items: boolean
-  can_message: boolean
   can_view_invoices?: boolean
   can_pay_invoices?: boolean
   can_view_rfis?: boolean
@@ -630,8 +612,27 @@ export interface CostCode {
   standard?: string | null
   unit?: string | null
   default_unit_cost_cents?: number | null
+  default_markup_percent?: number | null
+  is_reimbursable_default?: boolean | null
   is_active?: boolean | null
   metadata?: Record<string, any>
+}
+
+export type ProgressBasis = "manual" | "cost_to_cost" | "schedule_linked"
+
+export interface ProjectCostCodeProgress {
+  id: string
+  org_id: string
+  project_id: string
+  cost_code_id: string
+  percent_complete?: number | null
+  basis: ProgressBasis
+  estimate_remaining_cents?: number | null
+  notes?: string | null
+  recorded_by_user_id: string
+  recorded_at: string
+  created_at: string
+  updated_at: string
 }
 
 export interface ChangeOrder {
@@ -668,6 +669,10 @@ export interface InvoiceLine {
   taxable?: boolean | null
   qbo_income_account_id?: string | null
   qbo_income_account_name?: string | null
+  billable_cost_ids?: string[]
+  cost_cents?: number | null
+  markup_cents?: number | null
+  markup_percent?: number | null
 }
 
 export interface InvoiceTotals {
@@ -1162,7 +1167,6 @@ export interface ClientPortalData {
   submittals: Submittal[]
   recentLogs: DailyLog[]
   sharedFiles: FileMetadata[]
-  messages: PortalMessage[]
   punchItems: PunchItem[]
   financialSummary?: PortalFinancialSummary
 }
@@ -1224,7 +1228,6 @@ export interface SubPortalData {
   rfis: Rfi[]                        // Assigned to this company
   submittals: Submittal[]            // Assigned to this company
   sharedFiles: FileMetadata[]        // Shared with sub portal
-  messages: PortalMessage[]
   pendingRfiCount: number
   pendingSubmittalCount: number
   complianceStatus?: ComplianceStatusSummary  // Compliance document status

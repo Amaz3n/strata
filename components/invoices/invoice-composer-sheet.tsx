@@ -12,6 +12,7 @@ import {
   generateInvoicePdfAction,
   getInvoiceComposerContextAction,
 } from "@/app/(app)/invoices/actions"
+import { generateInvoiceFromCostsAction } from "@/app/(app)/projects/[id]/financials/actions"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -45,9 +46,10 @@ type Props = {
   }
   contacts?: Contact[]
   costCodes?: CostCode[]
+  enableApprovedCostsSource?: boolean
 }
 
-type BillingSource = "manual" | "draw" | "change_order"
+type BillingSource = "manual" | "draw" | "change_order" | "from_costs"
 
 type ComposerLine = {
   id: string
@@ -59,6 +61,10 @@ type ComposerLine = {
   cost_code_id: string | null
   qbo_income_account_id: string | null
   qbo_income_account_name: string | null
+  billable_cost_ids?: string[]
+  cost_cents?: number | null
+  markup_cents?: number | null
+  markup_percent?: number | null
 }
 
 type DrawOption = {
@@ -76,6 +82,13 @@ type QBOIncomeAccountOption = {
   id: string
   name: string
   fullyQualifiedName?: string
+}
+
+type QBOCustomerOption = {
+  id: string
+  name: string
+  email?: string | null
+  billingAddress?: string | null
 }
 
 type ComposerSettings = {
@@ -422,6 +435,7 @@ export function InvoiceComposerSheet({
   builderInfo,
   contacts = [],
   costCodes = [],
+  enableApprovedCostsSource = false,
 }: Props) {
   const initialProjectId = defaultProjectId ?? invoice?.project_id ?? projects[0]?.id
   const initialProjectName = projects.find((project) => project.id === initialProjectId)?.name ?? "Project"
@@ -434,15 +448,23 @@ export function InvoiceComposerSheet({
   const [changeOrderOptions, setChangeOrderOptions] = useState<ChangeOrder[]>([])
   const [qboConnected, setQboConnected] = useState(false)
   const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
+  const [qboCustomers, setQboCustomers] = useState<QBOCustomerOption[]>([])
   const [qboDefaultIncomeAccountId, setQboDefaultIncomeAccountId] = useState<string | null>(null)
   const [qboDiagnostics, setQboDiagnostics] = useState<QboDiagnostics | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
+  const [approvedCostsLoading, setApprovedCostsLoading] = useState(false)
+  const [approvedCostsSummary, setApprovedCostsSummary] = useState<{
+    costCount: number
+    totalBillableCents: number
+  } | null>(null)
 
   const [invoiceNumber, setInvoiceNumber] = useState(invoice?.invoice_number ?? "")
   const [title, setTitle] = useState(invoice?.title ?? initialProjectName)
   const [issueDate, setIssueDate] = useState(invoice?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
   const [dueDate, setDueDate] = useState(invoice?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
-  const [customerId, setCustomerId] = useState<string>(invoice?.metadata?.customer_id ?? "none")
+  const [customerId, setCustomerId] = useState<string>(
+    invoice?.metadata?.qbo_customer_id ? `qbo:${invoice.metadata.qbo_customer_id}` : (invoice?.metadata?.customer_id ?? "none"),
+  )
   const [customerDetails, setCustomerDetails] = useState(
     buildPartyDetailsBlock({
       name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
@@ -484,6 +506,10 @@ export function InvoiceComposerSheet({
   )
 
   const selectedContact = useMemo(() => contactsSorted.find((contact) => contact.id === customerId), [contactsSorted, customerId])
+  const selectedQboCustomer = useMemo(
+    () => (customerId.startsWith("qbo:") ? qboCustomers.find((customer) => `qbo:${customer.id}` === customerId) : undefined),
+    [customerId, qboCustomers],
+  )
   const selectedProjectName = useMemo(
     () => projects.find((project) => project.id === projectId)?.name ?? "Project",
     [projectId, projects],
@@ -551,6 +577,7 @@ export function InvoiceComposerSheet({
     setSource("manual")
     setSourceDrawId("none")
     setSourceChangeOrderId("none")
+    setApprovedCostsSummary(null)
     setTitle(selectedProjectName)
     setIssueDate(format(new Date(), "yyyy-MM-dd"))
     setDueDate(format(addDays(new Date(), composerSettings.defaultPaymentTermsDays), "yyyy-MM-dd"))
@@ -586,6 +613,8 @@ export function InvoiceComposerSheet({
     if (!draw) return
     setSource("draw")
     setSourceDrawId(drawId)
+    setSourceChangeOrderId("none")
+    setApprovedCostsSummary(null)
     setDueDate(draw.due_date ?? dueDate)
     setLines([
       {
@@ -607,7 +636,9 @@ export function InvoiceComposerSheet({
     if (!changeOrder) return
 
     setSource("change_order")
+    setSourceDrawId("none")
     setSourceChangeOrderId(changeOrderId)
+    setApprovedCostsSummary(null)
 
     if (Array.isArray(changeOrder.lines) && changeOrder.lines.length > 0) {
       setLines(
@@ -640,6 +671,68 @@ export function InvoiceComposerSheet({
     }
   }
 
+  const applyApprovedCostsToInvoice = async () => {
+    if (!projectId) {
+      toast.error("Pick a project before linking approved costs")
+      return
+    }
+    if (!enableApprovedCostsSource) {
+      toast.error("Approved-cost invoicing is available for cost-plus or T&M projects")
+      return
+    }
+
+    setApprovedCostsLoading(true)
+    try {
+      const today = format(new Date(), "yyyy-MM-dd")
+      const result = await generateInvoiceFromCostsAction({
+        projectId,
+        dateRange: { from: "1970-01-01", to: today },
+        groupBy: "cost_code",
+        includeAllowanceVariances: true,
+        dryRun: true,
+      })
+
+      const previewLines = result.invoicePreview?.lines ?? []
+      if (previewLines.length === 0) {
+        setApprovedCostsSummary(null)
+        toast.info("No approved costs are ready to invoice")
+        return
+      }
+
+      setSource("from_costs")
+      setSourceDrawId("none")
+      setSourceChangeOrderId("none")
+      setTaxRate(0)
+      setTitle(`Approved costs through ${format(new Date(), "MMM d, yyyy")}`)
+      setApprovedCostsSummary({
+        costCount: result.costCount ?? 0,
+        totalBillableCents: result.totalBillableCents ?? 0,
+      })
+      setLines(
+        previewLines.map((line: any) => ({
+          id: crypto.randomUUID(),
+          description: String(line.description ?? "Approved costs"),
+          quantity: "1",
+          unit: "LS",
+          unit_cost: ((Number(line.billable_cents ?? 0)) / 100).toFixed(2),
+          taxable: false,
+          cost_code_id: line.cost_code_id ?? null,
+          qbo_income_account_id: null,
+          qbo_income_account_name: null,
+          billable_cost_ids: Array.isArray(line.billable_cost_ids) ? line.billable_cost_ids : [],
+          cost_cents: Number(line.cost_cents ?? 0),
+          markup_cents: Number(line.markup_cents ?? 0),
+          markup_percent: typeof line.markup_percent === "number" ? line.markup_percent : null,
+        })),
+      )
+    } catch (error: any) {
+      setApprovedCostsSummary(null)
+      toast.error("Could not load approved costs", { description: error?.message ?? "Try again." })
+    } finally {
+      setApprovedCostsLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!open) return
 
@@ -654,11 +747,16 @@ export function InvoiceComposerSheet({
     setSource(((invoice?.metadata?.source_type as BillingSource | undefined) ?? "manual"))
     setSourceDrawId((invoice?.metadata?.source_draw_id as string | undefined) ?? "none")
     setSourceChangeOrderId((invoice?.metadata?.source_change_order_id as string | undefined) ?? "none")
+    setApprovedCostsSummary(null)
     setInvoiceNumber(invoice?.invoice_number ?? "")
     setTitle(invoice?.title ?? "Invoice")
     setIssueDate(invoice?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
     setDueDate(invoice?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
-    setCustomerId((invoice?.metadata?.customer_id as string) ?? "none")
+    setCustomerId(
+      invoice?.metadata?.qbo_customer_id
+        ? `qbo:${invoice.metadata.qbo_customer_id}`
+        : ((invoice?.metadata?.customer_id as string) ?? "none"),
+    )
     setCustomerDetails(
       buildPartyDetailsBlock({
         name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
@@ -704,6 +802,7 @@ export function InvoiceComposerSheet({
         setChangeOrderOptions(result.changeOrders ?? [])
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
+        setQboCustomers(result.qboCustomers ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
         const defaultIncomeAccountId =
           typeof result.qboDefaultIncomeAccountId === "string" ? result.qboDefaultIncomeAccountId : null
@@ -727,6 +826,7 @@ export function InvoiceComposerSheet({
         setChangeOrderOptions([])
         setQboConnected(false)
         setQboIncomeAccounts([])
+        setQboCustomers([])
         setQboDiagnostics(null)
         setQboDefaultIncomeAccountId(null)
         setComposerSettings({ defaultPaymentTermsDays: 15, defaultInvoiceNote: "" })
@@ -793,6 +893,19 @@ export function InvoiceComposerSheet({
     }
   }
 
+  const selectQboCustomer = (qboCustomerId: string) => {
+    const customer = qboCustomers.find((item) => item.id === qboCustomerId)
+    if (!customer) return
+    setCustomerId(`qbo:${customer.id}`)
+    setCustomerDetails(
+      buildPartyDetailsBlock({
+        name: customer.name,
+        email: customer.email ?? "",
+        address: formatAddressBlock(customer.billingAddress ?? ""),
+      }),
+    )
+  }
+
   const handleCreateQboIncomeAccount = useCallback(
     async (name: string): Promise<QBOIncomeAccountOption> => {
       const created = await createQBOIncomeAccountAction(name)
@@ -848,6 +961,10 @@ export function InvoiceComposerSheet({
           selectedLineAccount?.name ??
           line.qbo_income_account_name ??
           undefined,
+        billable_cost_ids: line.billable_cost_ids,
+        cost_cents: line.cost_cents ?? undefined,
+        markup_cents: line.markup_cents ?? undefined,
+        markup_percent: line.markup_percent ?? undefined,
       }
     })
 
@@ -878,9 +995,11 @@ export function InvoiceComposerSheet({
     const payload: InvoiceInput = {
       project_id: projectId,
       invoice_number: invoiceNumber.trim(),
-      customer_id: customerId === "none" ? undefined : customerId,
-      customer_name: parsedCustomerDetails.name.trim() || selectedContact?.full_name || undefined,
+      customer_id: customerId === "none" || customerId.startsWith("qbo:") ? undefined : customerId,
+      customer_name: parsedCustomerDetails.name.trim() || selectedContact?.full_name || selectedQboCustomer?.name || undefined,
       customer_address: parsedCustomerDetails.address.trim() || undefined,
+      qbo_customer_id: selectedQboCustomer?.id,
+      qbo_customer_name: selectedQboCustomer?.name,
       from_name: parsedFromDetails.name.trim() || undefined,
       from_email: parsedFromDetails.email.trim() || undefined,
       from_address: parsedFromDetails.address.trim() || undefined,
@@ -959,13 +1078,20 @@ export function InvoiceComposerSheet({
     ? sourceDrawId
     : source === "change_order" && sourceChangeOrderId !== "none"
       ? sourceChangeOrderId
-      : "none"
+      : source === "from_costs"
+        ? "approved_costs"
+        : "none"
 
   const handleSourceChange = (value: string) => {
     if (value === "none") {
       setSource("manual")
       setSourceDrawId("none")
       setSourceChangeOrderId("none")
+      setApprovedCostsSummary(null)
+      return
+    }
+    if (value === "approved_costs") {
+      void applyApprovedCostsToInvoice()
       return
     }
     const draw = drawOptions.find((d) => d.id === value)
@@ -994,6 +1120,7 @@ export function InvoiceComposerSheet({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">No linked source</SelectItem>
+              {enableApprovedCostsSource ? <SelectItem value="approved_costs">Approved costs</SelectItem> : null}
               {drawOptions.length > 0 && (
                 <>
                   <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Draws</div>
@@ -1017,7 +1144,12 @@ export function InvoiceComposerSheet({
             </SelectContent>
           </Select>
 
-          {contextLoading && <Badge variant="outline" className="text-xs h-6">Loading...</Badge>}
+          {(contextLoading || approvedCostsLoading) && <Badge variant="outline" className="text-xs h-6">Loading...</Badge>}
+          {source === "from_costs" && approvedCostsSummary ? (
+            <Badge variant="secondary" className="h-6 text-xs">
+              {approvedCostsSummary.costCount} costs / {formatMoney(approvedCostsSummary.totalBillableCents / 100)}
+            </Badge>
+          ) : null}
         </div>
         {showQboWarning && (
           <div className="border-b bg-amber-50/60 px-4 py-2 text-xs text-amber-900">
@@ -1099,6 +1231,10 @@ export function InvoiceComposerSheet({
                       setCustomerDetails("")
                       return
                     }
+                    if (value.startsWith("qbo:")) {
+                      selectQboCustomer(value.slice(4))
+                      return
+                    }
                     selectContact(value)
                   }}
                 >
@@ -1112,6 +1248,16 @@ export function InvoiceComposerSheet({
                         {contact.full_name}
                       </SelectItem>
                     ))}
+                    {qboCustomers.length > 0 && (
+                      <>
+                        {financialContacts.length > 0 ? <SelectItem value="__qbo_header" disabled>QuickBooks customers</SelectItem> : null}
+                        {qboCustomers.map((customer) => (
+                          <SelectItem key={`qbo-${customer.id}`} value={`qbo:${customer.id}`}>
+                            {customer.name}
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
               )}

@@ -10,7 +10,9 @@ import { Switch } from "@/components/ui/switch"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Checkbox } from "@/components/ui/checkbox"
 import { DollarSign } from "@/components/icons"
+import { BILLING_FEATURE_CATALOG } from "@/lib/billing-feature-catalog"
 
 interface PlanCreateSheetProps {
   open: boolean
@@ -31,9 +33,13 @@ export function PlanCreateSheet({
   const [interval, setInterval] = useState("monthly")
   const [amountCents, setAmountCents] = useState("")
   const [currency, setCurrency] = useState("usd")
+  const [packageType, setPackageType] = useState<"full_access" | "custom">("full_access")
+  const [publicName, setPublicName] = useState("Arc Full Access")
+  const [internalNotes, setInternalNotes] = useState("")
   const [description, setDescription] = useState("")
   const [isActive, setIsActive] = useState(true)
   const [stripePriceId, setStripePriceId] = useState("")
+  const [featureKeys, setFeatureKeys] = useState<string[]>(BILLING_FEATURE_CATALOG.map((feature) => feature.key))
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -47,9 +53,14 @@ export function PlanCreateSheet({
     }
     formData.append("amountCents", amountCents)
     formData.append("currency", currency)
+    formData.append("packageType", packageType)
+    formData.append("publicName", publicName)
+    formData.append("internalNotes", internalNotes)
     formData.append("stripePriceId", stripePriceId)
     formData.append("description", description)
     formData.append("isActive", isActive.toString())
+    const selectedFeatures = packageType === "full_access" ? BILLING_FEATURE_CATALOG.map((feature) => feature.key) : featureKeys
+    selectedFeatures.forEach((featureKey) => formData.append("featureKeys", featureKey))
 
     await onCreate(formData)
   }
@@ -61,9 +72,19 @@ export function PlanCreateSheet({
     setInterval("monthly")
     setAmountCents("")
     setCurrency("usd")
+    setPackageType("full_access")
+    setPublicName("Arc Full Access")
+    setInternalNotes("")
     setStripePriceId("")
     setDescription("")
     setIsActive(true)
+    setFeatureKeys(BILLING_FEATURE_CATALOG.map((feature) => feature.key))
+  }
+
+  const toggleFeature = (featureKey: string, checked: boolean) => {
+    setFeatureKeys((current) =>
+      checked ? Array.from(new Set([...current, featureKey])) : current.filter((key) => key !== featureKey),
+    )
   }
 
   return (
@@ -135,6 +156,36 @@ export function PlanCreateSheet({
                 </p>
               </div>
 
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="packageType">Package Scope *</Label>
+                  <Select value={packageType} onValueChange={(value) => setPackageType(value as "full_access" | "custom")}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select package scope" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="full_access">Full access</SelectItem>
+                      <SelectItem value="custom">Custom package</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Full access includes every module. Custom packages include only selected features.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="publicName">Client-facing name</Label>
+                  <Input
+                    id="publicName"
+                    value={publicName}
+                    onChange={(e) => setPublicName(e.target.value)}
+                    placeholder="Arc Full Access"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Use neutral names here; keep discount logic internal.
+                  </p>
+                </div>
+              </div>
+
               {pricingModel === "subscription" && (
                 <div className="space-y-2">
                   <Label htmlFor="interval">Billing Interval *</Label>
@@ -193,6 +244,44 @@ export function PlanCreateSheet({
                 <p className="text-xs text-muted-foreground">
                   Brief description of the plan features and benefits
                 </p>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <Label>Included Features</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    These drive internal package entitlements for the client org.
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {BILLING_FEATURE_CATALOG.map((feature) => {
+                    const checked = packageType === "full_access" || featureKeys.includes(feature.key)
+                    return (
+                      <label key={feature.key} className="flex cursor-pointer items-start gap-3 rounded-md border bg-background p-3">
+                        <Checkbox
+                          checked={checked}
+                          disabled={packageType === "full_access"}
+                          onCheckedChange={(value) => toggleFeature(feature.key, value === true)}
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">{feature.name}</span>
+                          <span className="block text-xs text-muted-foreground">{feature.category}</span>
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="internalNotes">Internal notes</Label>
+                <Textarea
+                  id="internalNotes"
+                  value={internalNotes}
+                  onChange={(e) => setInternalNotes(e.target.value)}
+                  rows={3}
+                  placeholder="Negotiated because client only wants scheduling + daily logs."
+                />
               </div>
 
               <div className="space-y-2">

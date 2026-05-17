@@ -1,14 +1,14 @@
 "use client"
 
-import { useMemo } from "react"
 import type { Contact, CostCode, Contract, DrawSchedule, Invoice, Project, Retainage } from "@/lib/types"
 import { InvoicesClient } from "@/components/invoices/invoices-client"
 import { DrawScheduleManager } from "@/components/projects/draw-schedule-manager"
 import { RetainageTracker } from "@/components/projects/retainage-tracker"
-import { Card, CardContent } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Receipt, Calendar, Percent } from "lucide-react"
-import { useState } from "react"
+import { AlertTriangle, Receipt, Calendar, Percent } from "lucide-react"
+import { useMemo, useState } from "react"
+import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
 
 interface ReceivablesTabProps {
   projectId: string
@@ -26,6 +26,7 @@ interface ReceivablesTabProps {
     email?: string | null
     address?: string | null
   }
+  loadErrors?: string[]
 }
 
 export function ReceivablesTab({
@@ -40,144 +41,104 @@ export function ReceivablesTab({
   approvedChangeOrdersTotalCents,
   scheduleItems,
   builderInfo,
+  loadErrors = [],
 }: ReceivablesTabProps) {
   const [subTab, setSubTab] = useState<"invoices" | "draws" | "retainage">("invoices")
   const safeRetainage = useMemo(() => (Array.isArray(retainage) ? retainage : []), [retainage])
   const safeInvoices = useMemo(() => (Array.isArray(invoices) ? invoices : []), [invoices])
+  const enableApprovedCostsSource = supportsApprovedCostInvoicing(contract)
 
-  // Calculate summary stats
-  const stats = useMemo(() => {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
+  const tabCounts = {
+    invoices: safeInvoices.length,
+    draws: draws.length,
+    retainage: safeRetainage.length,
+  }
 
-    const summarizeInvoice = (inv: Invoice) => {
-      const total = inv.total_cents ?? inv.totals?.total_cents ?? 0
-      const balance = inv.balance_due_cents ?? inv.totals?.balance_due_cents ?? total
-      const collected = Math.max(total - balance, 0)
-      const dueDate = inv.due_date ? new Date(inv.due_date) : null
-      if (dueDate) dueDate.setHours(0, 0, 0, 0)
-      const isOverdue = Boolean(dueDate && dueDate < today && balance > 0)
-      return { total, balance, collected, isOverdue }
-    }
-
-    const invoiceSummaries = safeInvoices.map(summarizeInvoice)
-    const totalInvoiced = invoiceSummaries.reduce((sum, row) => sum + row.total, 0)
-    const totalCollected = invoiceSummaries.reduce((sum, row) => sum + row.collected, 0)
-    const totalOutstanding = invoiceSummaries.reduce((sum, row) => sum + row.balance, 0)
-    const overdueInvoices = invoiceSummaries.filter((row) => row.isOverdue)
-    const totalOverdue = overdueInvoices.reduce((sum, row) => sum + row.balance, 0)
-
-    const totalRetainageHeld = safeRetainage.reduce((sum, r) => sum + (r.status === "held" ? r.amount_cents : 0), 0)
-
-    return {
-      totalInvoiced,
-      totalCollected,
-      totalOverdue,
-      totalOutstanding,
-      invoiceCount: safeInvoices.length,
-      overdueCount: overdueInvoices.length,
-      totalRetainageHeld,
-    }
-  }, [safeInvoices, safeRetainage])
+  function renderTabList() {
+    return (
+      <TabsList className="h-auto min-h-14 w-full justify-start overflow-x-auto rounded-none bg-transparent p-0 sm:w-auto">
+        <TabsTrigger
+          value="invoices"
+          className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+        >
+          <Receipt className="h-4 w-4" />
+          Invoices
+          <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+            {tabCounts.invoices}
+          </Badge>
+        </TabsTrigger>
+        <TabsTrigger
+          value="draws"
+          className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+        >
+          <Calendar className="h-4 w-4" />
+          Draw Schedule
+          <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+            {tabCounts.draws}
+          </Badge>
+        </TabsTrigger>
+        <TabsTrigger
+          value="retainage"
+          className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+        >
+          <Percent className="h-4 w-4" />
+          Retainage
+          <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+            {tabCounts.retainage}
+          </Badge>
+        </TabsTrigger>
+      </TabsList>
+    )
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <SummaryCard label="Total Invoiced" value={formatCurrency(stats.totalInvoiced)} subtext={`${stats.invoiceCount} invoices`} />
-        <SummaryCard label="Collected" value={formatCurrency(stats.totalCollected)} variant="success" />
-        <SummaryCard
-          label="Outstanding"
-          value={formatCurrency(stats.totalOutstanding)}
-          subtext={stats.overdueCount > 0 ? `${stats.overdueCount} overdue` : undefined}
-          variant={stats.overdueCount > 0 ? "warning" : "default"}
-        />
-        <SummaryCard label="Retainage Held" value={formatCurrency(stats.totalRetainageHeld)} />
-      </div>
-
-      {/* Sub-tabs */}
-      <Tabs value={subTab} onValueChange={(v) => setSubTab(v as "invoices" | "draws" | "retainage")}>
-        <TabsList className="grid w-full max-w-lg grid-cols-3">
-          <TabsTrigger value="invoices" className="gap-2">
-            <Receipt className="h-4 w-4" />
-            Invoices
-          </TabsTrigger>
-          <TabsTrigger value="draws" className="gap-2">
-            <Calendar className="h-4 w-4" />
-            Draw Schedule
-          </TabsTrigger>
-          <TabsTrigger value="retainage" className="gap-2">
-            <Percent className="h-4 w-4" />
-            Retainage
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="invoices" className="mt-4">
+    <div className="w-full">
+      {loadErrors.length > 0 ? (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6 lg:px-8">
+          <div className="flex gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">Some receivable data could not load.</p>
+              <p className="mt-1 text-amber-800">{loadErrors.join(" · ")}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <Tabs value={subTab} onValueChange={(v) => setSubTab(v as "invoices" | "draws" | "retainage")} className="w-full gap-0">
+        <TabsContent value="invoices" className="m-0">
           <InvoicesClient
             invoices={invoices}
             projects={[project]}
             builderInfo={builderInfo}
             contacts={contacts}
             costCodes={costCodes}
+            enableApprovedCostsSource={enableApprovedCostsSource}
+            toolbarLeading={renderTabList()}
+            fullBleed
           />
         </TabsContent>
 
-        <TabsContent value="draws" className="mt-4">
-          <DrawScheduleManager
-            projectId={projectId}
-            initialDraws={draws}
-            contract={contract}
-            approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
-            scheduleItems={scheduleItems}
-            costCodes={costCodes}
-          />
+        <TabsContent value="draws" className="m-0">
+          <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+          <div className="p-4 sm:p-6 lg:p-8">
+            <DrawScheduleManager
+              projectId={projectId}
+              initialDraws={draws}
+              contract={contract}
+              approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
+              scheduleItems={scheduleItems}
+              costCodes={costCodes}
+            />
+          </div>
         </TabsContent>
 
-        <TabsContent value="retainage" className="mt-4">
-          <RetainageTracker projectId={projectId} project={project} retainage={safeRetainage} />
+        <TabsContent value="retainage" className="m-0">
+          <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+          <div className="p-4 sm:p-6 lg:p-8">
+            <RetainageTracker projectId={projectId} project={project} retainage={safeRetainage} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>
   )
-}
-
-function SummaryCard({
-  label,
-  value,
-  subtext,
-  variant = "default",
-}: {
-  label: string
-  value: string
-  subtext?: string
-  variant?: "default" | "success" | "warning" | "destructive"
-}) {
-  const variantStyles = {
-    default: "",
-    success: "border-success/30 bg-success/5",
-    warning: "border-warning/30 bg-warning/5",
-    destructive: "border-destructive/30 bg-destructive/5",
-  }
-
-  const textStyles = {
-    default: "",
-    success: "text-success",
-    warning: "text-warning",
-    destructive: "text-destructive",
-  }
-
-  return (
-    <Card className={variantStyles[variant]}>
-      <CardContent className="p-4">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className={`text-2xl font-bold ${textStyles[variant]}`}>{value}</p>
-        {subtext && <p className="text-xs text-muted-foreground mt-1">{subtext}</p>}
-      </CardContent>
-    </Card>
-  )
-}
-
-function formatCurrency(cents?: number) {
-  if (typeof cents !== "number") return "$0"
-  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 }

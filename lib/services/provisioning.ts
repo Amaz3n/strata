@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { syncOrgEntitlementsFromPlan } from "@/lib/services/billing"
 
 export interface ProvisionOrgInput {
   name: string
@@ -106,6 +107,8 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
     if (subscriptionError) {
       throw new Error(subscriptionError.message)
     }
+
+    await syncOrgEntitlementsFromPlan(org.id, input.planCode)
   }
 
   await recordEvent({

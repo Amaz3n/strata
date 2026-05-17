@@ -11,6 +11,10 @@ export const invoiceLineInputSchema = z.object({
   taxable: z.boolean().default(true),
   qbo_income_account_id: z.string().min(1).optional().nullable(),
   qbo_income_account_name: z.string().max(255).optional().nullable(),
+  billable_cost_ids: z.array(z.string().uuid()).optional(),
+  cost_cents: z.number().optional(),
+  markup_cents: z.number().optional(),
+  markup_percent: z.number().optional().nullable(),
 })
 
 export const invoiceInputSchema = z.object({
@@ -19,6 +23,8 @@ export const invoiceInputSchema = z.object({
   customer_id: z.string().uuid().optional().nullable(),
   customer_name: z.string().optional().nullable(),
   customer_address: z.string().max(500).optional().nullable(),
+  qbo_customer_id: z.string().max(80).optional().nullable(),
+  qbo_customer_name: z.string().max(255).optional().nullable(),
   from_name: z.string().max(255).optional().nullable(),
   from_email: z.string().max(255).optional().nullable(),
   from_address: z.string().max(500).optional().nullable(),
@@ -43,7 +49,7 @@ export const invoiceInputSchema = z.object({
   lines: z.array(invoiceLineInputSchema).min(1, "Add at least one line item"),
   sent_to_emails: z.array(z.string().email()).optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),
-  source_type: z.enum(["manual", "draw", "change_order"]).optional(),
+  source_type: z.enum(["manual", "draw", "change_order", "from_costs"]).optional(),
   source_draw_id: z.string().uuid().optional(),
   source_change_order_id: z.string().uuid().optional(),
   qbo_income_account_id: z.string().min(1).optional().nullable(),

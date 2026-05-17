@@ -29,6 +29,10 @@ const statusStyles: Record<StatusKey, string> = {
 interface Plan {
   code: string
   name: string
+  publicName: string | null
+  packageType: string | null
+  featureKeys: string[]
+  internalNotes: string | null
   pricingModel: string
   interval: string | null
   amountCents: number | null
@@ -55,7 +59,7 @@ export function PlansClient({ plans }: PlansClientProps) {
       const status = plan.isActive ? "active" : "inactive"
       const matchesStatus = statusFilter === "all" || status === statusFilter
       const matchesPricing = pricingFilter === "all" || plan.pricingModel === pricingFilter
-      const haystack = [plan.name, plan.code].join(" ").toLowerCase()
+      const haystack = [plan.name, plan.code, plan.publicName, plan.packageType].join(" ").toLowerCase()
       const matchesSearch = !term || haystack.includes(term)
       return matchesStatus && matchesPricing && matchesSearch
     })
@@ -134,6 +138,7 @@ export function PlansClient({ plans }: PlansClientProps) {
             <TableRow className="divide-x">
               <TableHead className="px-4 py-4">Code</TableHead>
               <TableHead className="px-4 py-4">Plan Name</TableHead>
+              <TableHead className="px-4 py-4 text-center">Package</TableHead>
               <TableHead className="px-4 py-4 text-center">Pricing Model</TableHead>
               <TableHead className="px-4 py-4 text-center">Status</TableHead>
               <TableHead className="text-right px-4 py-4">Price</TableHead>
@@ -151,6 +156,15 @@ export function PlansClient({ plans }: PlansClientProps) {
                   </TableCell>
                   <TableCell className="px-4 py-4">
                     <div className="font-semibold">{plan.name}</div>
+                    <div className="text-sm text-muted-foreground">{plan.publicName ?? "Internal plan"}</div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    <div className="flex flex-col items-center gap-1">
+                      <Badge variant={plan.packageType === "custom" ? "outline" : "secondary"}>
+                        {plan.packageType === "custom" ? "Custom" : "Full access"}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{plan.featureKeys.length} features</span>
+                    </div>
                   </TableCell>
                   <TableCell className="px-4 py-4 text-center">
                     <Badge variant="outline" className="capitalize">
@@ -207,7 +221,7 @@ export function PlansClient({ plans }: PlansClientProps) {
             })}
             {filtered.length === 0 && (
               <TableRow className="divide-x">
-                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-4">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <DollarSign className="h-6 w-6" />

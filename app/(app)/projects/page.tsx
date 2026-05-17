@@ -1,17 +1,40 @@
+import { Suspense } from "react"
 import { listProjectsAction } from "./actions"
 import { ProjectsClient } from "./projects-client"
 import { PageLayout } from "@/components/layout/page-layout"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export const dynamic = 'force-dynamic'
 
-export default async function ProjectsPage() {
+async function ProjectsData() {
   const projects = await listProjectsAction()
+  return <ProjectsClient projects={projects} />
+}
 
+export default function ProjectsPage() {
   return (
     <PageLayout title="Projects">
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
-        <ProjectsClient projects={projects} />
+        <Suspense fallback={<ProjectsSkeleton />}>
+          <ProjectsData />
+        </Suspense>
       </div>
     </PageLayout>
+  )
+}
+
+function ProjectsSkeleton() {
+  return (
+    <div className="p-6 space-y-4">
+      <div className="flex justify-between items-center mb-6">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-10 w-32" />
+      </div>
+      <div className="space-y-2">
+        {Array.from({ length: 10 }).map((_, i) => (
+          <Skeleton key={i} className="h-16 w-full rounded-md" />
+        ))}
+      </div>
+    </div>
   )
 }

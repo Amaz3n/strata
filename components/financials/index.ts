@@ -1,5 +1,3 @@
-export { FinancialsTabs } from "./financials-tabs"
-export { OverviewTab } from "./overview-tab"
 export { BudgetTab } from "./budget-tab"
 export { ReceivablesTab } from "./receivables-tab"
 export { PayablesTab } from "./payables-tab"

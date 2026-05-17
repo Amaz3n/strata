@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -12,17 +14,52 @@ interface ProjectDocumentsPageProps {
 export default async function ProjectDocumentsPage({ params }: ProjectDocumentsPageProps) {
   const { id } = await params
 
-  const [project, data] = await Promise.all([
-    getProjectAction(id),
-    listSignaturesHubAction({ projectId: id }),
-  ])
+  return (
+    <>
+      <PageLayout
+        title="Project Signatures"
+        breadcrumbs={[
+          { label: "Project" },
+          { label: "Signatures" },
+        ]}
+      />
+      <Suspense fallback={<ProjectSignaturesFallback />}>
+        <ProjectSignaturesData id={id} />
+      </Suspense>
+    </>
+  )
+}
+
+function ProjectSignaturesFallback() {
+  return (
+    <div className="p-6 space-y-4">
+      <Skeleton className="h-8 w-48 mb-6" />
+      <div className="space-y-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-16 w-full rounded-md" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+async function ProjectSignaturesData({ id }: { id: string }) {
+  const project = await getProjectAction(id)
 
   if (!project) {
     notFound()
   }
 
+  const data = await listSignaturesHubAction({ projectId: id })
+
   return (
-    <PageLayout title="Project Signatures">
+    <PageLayout
+      title="Project Signatures"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "Signatures" },
+      ]}
+    >
       <SignaturesHubClient
         initialData={data}
         scope="project"

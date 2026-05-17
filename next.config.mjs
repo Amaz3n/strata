@@ -6,10 +6,15 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  devIndicators: {
+    appIsrStatus: false,
+    buildActivity: false,
+  },
   // Native Node addons (prevent bundling so bindings resolve correctly)
   serverExternalPackages: ["@napi-rs/canvas"],
   // Server Actions configuration
   experimental: {
+    devOverlay: false,
     serverActions: {
       bodySizeLimit: '10mb',
     },

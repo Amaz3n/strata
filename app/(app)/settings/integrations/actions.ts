@@ -14,6 +14,7 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { retryFailedQBOSyncJobs } from "@/lib/services/qbo-sync"
+import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 
 export async function connectQBOAction() {
   const { supabase, orgId, userId } = await requireOrgContext()
@@ -95,4 +96,33 @@ export async function retryFailedQBOJobsAction() {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requirePermission("org.admin", { supabase, orgId, userId })
   return retryFailedQBOSyncJobs(orgId)
+}
+
+export async function getQBOAccountingSetupAction() {
+  const { orgId } = await requireOrgContext()
+  const client = await QBOClient.forOrg(orgId)
+  if (!client) {
+    return {
+      connected: false,
+      incomeAccounts: [],
+      expenseAccounts: [],
+      paymentAccounts: [],
+      apAccounts: [],
+    }
+  }
+
+  const [incomeAccounts, expenseAccounts, paymentAccounts, apAccounts] = await Promise.all([
+    client.listIncomeAccounts(),
+    client.listExpenseAccounts(),
+    client.listPaymentAccounts(),
+    client.listAccountsPayableAccounts(),
+  ])
+
+  return {
+    connected: true,
+    incomeAccounts,
+    expenseAccounts,
+    paymentAccounts,
+    apAccounts,
+  }
 }

@@ -1003,6 +1003,7 @@ export async function releaseProjectRetainageAction(
 
   revalidatePath(`/projects/${projectId}`)
   revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/receivables`)
 
   return { success: true, invoice_id: invoice.id }
 }

@@ -10,7 +10,6 @@ import type {
   Invoice,
   PortalAccessToken,
   PortalFinancialSummary,
-  PortalMessage,
   PortalPermissions,
   PunchItem,
   Rfi,
@@ -42,7 +41,6 @@ function mapPermissions(row: any): PortalPermissions {
     can_approve_change_orders: !!row.can_approve_change_orders,
     can_submit_selections: !!row.can_submit_selections,
     can_create_punch_items: !!row.can_create_punch_items,
-    can_message: !!row.can_message,
     can_view_invoices: row.can_view_invoices ?? true,
     can_pay_invoices: row.can_pay_invoices ?? false,
     can_view_rfis: row.can_view_rfis ?? true,
@@ -433,245 +431,6 @@ export async function validatePortalPin({
   }
 }
 
-async function getOrCreatePortalConversation({
-  orgId,
-  projectId,
-  channel,
-  audienceCompanyId,
-}: {
-  orgId: string
-  projectId: string
-  channel: "client" | "sub"
-  audienceCompanyId?: string | null
-}) {
-  const supabase = createServiceSupabaseClient()
-
-  // Build query with audience_company_id for proper scoping
-  let query = supabase
-    .from("conversations")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("channel", channel)
-
-  // For sub conversations, require audience_company_id match
-  // For client conversations, also match by company if provided
-  if (audienceCompanyId) {
-    query = query.eq("audience_company_id", audienceCompanyId)
-  } else {
-    query = query.is("audience_company_id", null)
-  }
-
-  const { data: existing } = await query.maybeSingle()
-
-  if (existing) return existing.id
-
-  const { data, error } = await supabase
-    .from("conversations")
-    .insert({
-      org_id: orgId,
-      project_id: projectId,
-      channel,
-      audience_company_id: audienceCompanyId ?? null,
-    })
-    .select("id")
-    .single()
-
-  if (error) throw new Error(`Failed to create conversation: ${error.message}`)
-  return data.id as string
-}
-
-export async function listPortalMessages({
-  orgId,
-  projectId,
-  channel,
-  audienceCompanyId,
-}: {
-  orgId: string
-  projectId: string
-  channel: "client" | "sub"
-  audienceCompanyId?: string | null
-}): Promise<PortalMessage[]> {
-  const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
-
-  const { data, error } = await supabase
-    .from("messages")
-    .select("id, org_id, conversation_id, sender_id, message_type, body, payload, sent_at, sender:app_users(full_name, avatar_url)")
-    .eq("org_id", orgId)
-    .eq("conversation_id", conversationId)
-    .order("sent_at", { ascending: true })
-
-  if (error) throw new Error(`Failed to load portal messages: ${error.message}`)
-
-  return (data ?? []).map((row: any) => ({
-    id: row.id,
-    org_id: row.org_id,
-    conversation_id: row.conversation_id,
-    sender_id: row.sender_id ?? undefined,
-    message_type: row.message_type,
-    body: row.body,
-    payload: row.payload ?? {},
-    sent_at: row.sent_at,
-    sender_name: row.sender?.full_name ?? row.payload?.sender_name ?? "Portal user",
-    sender_avatar_url: row.sender?.avatar_url ?? undefined,
-  }))
-}
-
-export async function listPortalEntityMessages({
-  orgId,
-  projectId,
-  channel,
-  entityType,
-  entityId,
-  audienceCompanyId,
-}: {
-  orgId: string
-  projectId: string
-  channel: "client" | "sub"
-  entityType: "rfi" | "submittal"
-  entityId: string
-  audienceCompanyId?: string | null
-}): Promise<PortalMessage[]> {
-  const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
-
-  const { data, error } = await supabase
-    .from("messages")
-    .select("id, org_id, conversation_id, sender_id, message_type, body, payload, sent_at, sender:app_users(full_name, avatar_url)")
-    .eq("org_id", orgId)
-    .eq("conversation_id", conversationId)
-    .eq("payload->>entity_type", entityType)
-    .eq("payload->>entity_id", entityId)
-    .order("sent_at", { ascending: true })
-
-  if (error) throw new Error(`Failed to load portal messages: ${error.message}`)
-
-  return (data ?? []).map((row: any) => ({
-    id: row.id,
-    org_id: row.org_id,
-    conversation_id: row.conversation_id,
-    sender_id: row.sender_id ?? undefined,
-    message_type: row.message_type,
-    body: row.body,
-    payload: row.payload ?? {},
-    sent_at: row.sent_at,
-    sender_name: row.sender?.full_name ?? row.payload?.sender_name ?? "Portal user",
-    sender_avatar_url: row.sender?.avatar_url ?? undefined,
-  }))
-}
-
-export async function postPortalMessage({
-  orgId,
-  projectId,
-  channel,
-  body,
-  senderName,
-  portalTokenId,
-  audienceCompanyId,
-}: {
-  orgId: string
-  projectId: string
-  channel: "client" | "sub"
-  body: string
-  senderName?: string
-  portalTokenId?: string
-  audienceCompanyId?: string | null
-}) {
-  const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
-
-  const { data, error } = await supabase
-    .from("messages")
-    .insert({
-      org_id: orgId,
-      conversation_id: conversationId,
-      sender_id: null,
-      message_type: "text",
-      body,
-      payload: { sender_name: senderName ?? "Portal user", portal_token_id: portalTokenId },
-    })
-    .select("id, org_id, conversation_id, sender_id, message_type, body, payload, sent_at")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to send portal message: ${error?.message}`)
-  }
-
-  return {
-    id: data.id,
-    org_id: data.org_id,
-    conversation_id: data.conversation_id,
-    sender_id: data.sender_id ?? undefined,
-    message_type: data.message_type,
-    body: data.body,
-    payload: data.payload ?? {},
-    sent_at: data.sent_at,
-    sender_name: data.payload?.sender_name ?? "Portal user",
-    sender_avatar_url: undefined,
-  } as PortalMessage
-}
-
-export async function postPortalEntityMessage({
-  orgId,
-  projectId,
-  channel,
-  body,
-  senderName,
-  portalTokenId,
-  entityType,
-  entityId,
-  audienceCompanyId,
-}: {
-  orgId: string
-  projectId: string
-  channel: "client" | "sub"
-  body: string
-  senderName?: string
-  portalTokenId?: string
-  entityType: "rfi" | "submittal"
-  entityId: string
-  audienceCompanyId?: string | null
-}) {
-  const supabase = createServiceSupabaseClient()
-  const conversationId = await getOrCreatePortalConversation({ orgId, projectId, channel, audienceCompanyId })
-
-  const { data, error } = await supabase
-    .from("messages")
-    .insert({
-      org_id: orgId,
-      conversation_id: conversationId,
-      sender_id: null,
-      message_type: "text",
-      body,
-      payload: {
-        sender_name: senderName ?? "Portal user",
-        portal_token_id: portalTokenId,
-        entity_type: entityType,
-        entity_id: entityId,
-      },
-    })
-    .select("id, org_id, conversation_id, sender_id, message_type, body, payload, sent_at")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to send portal message: ${error?.message}`)
-  }
-
-  return {
-    id: data.id,
-    org_id: data.org_id,
-    conversation_id: data.conversation_id,
-    sender_id: data.sender_id ?? undefined,
-    message_type: data.message_type,
-    body: data.body,
-    payload: data.payload ?? {},
-    sent_at: data.sent_at,
-    sender_name: data.payload?.sender_name ?? "Portal user",
-    sender_avatar_url: undefined,
-  } as PortalMessage
-}
-
 async function loadPortalFinancialSummary({
   orgId,
   projectId,
@@ -833,7 +592,7 @@ export async function loadClientPortalData({
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, messages, financialSummary] = await Promise.all([
+  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, financialSummary] = await Promise.all([
     supabase.from("orgs").select("id, name").eq("id", orgId).single(),
     supabase
       .from("projects")
@@ -859,7 +618,6 @@ export async function loadClientPortalData({
           .eq("share_with_clients", true)
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
-    permissions.can_message ? listPortalMessages({ orgId, projectId, channel: portalType, audienceCompanyId: companyId }) : Promise.resolve([]),
     permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
   ])
 
@@ -915,7 +673,6 @@ export async function loadClientPortalData({
     submittals,
     recentLogs: (dailyLogs ?? []).filter((log) => log.project_id === projectId).slice(0, 5),
     sharedFiles: (filesResult.data ?? []).map(mapFileMetadata).slice(0, 10),
-    messages: messages ?? [],
     punchItems,
     financialSummary,
   }
@@ -948,7 +705,6 @@ export async function loadSubPortalData({
     rfisResult,
     submittalsResult,
     filesResult,
-    messagesResult,
   ] = await Promise.all([
     // Org info
     supabase
@@ -1068,10 +824,6 @@ export async function loadSubPortalData({
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
 
-    // Messages - scoped to this subcontractor company
-    permissions.can_message
-      ? listPortalMessages({ orgId, projectId, channel: "sub", audienceCompanyId: companyId })
-      : Promise.resolve([]),
   ])
 
   // Filter bills to only those belonging to this company's commitments
@@ -1189,7 +941,6 @@ export async function loadSubPortalData({
     rfis: (rfisResult.data ?? []).map(mapRfi),
     submittals: (submittalsResult.data ?? []).map(mapSubmittal),
     sharedFiles: (filesResult.data ?? []).map(mapFileMetadata),
-    messages: messagesResult ?? [],
     pendingRfiCount,
     pendingSubmittalCount,
   }
@@ -1206,7 +957,6 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_approve_change_orders: overrides?.can_approve_change_orders ?? true,
     can_submit_selections: overrides?.can_submit_selections ?? true,
     can_create_punch_items: overrides?.can_create_punch_items ?? false,
-    can_message: overrides?.can_message ?? true,
     can_view_invoices: overrides?.can_view_invoices ?? true,
     can_pay_invoices: overrides?.can_pay_invoices ?? false,
     can_view_rfis: overrides?.can_view_rfis ?? true,
@@ -1492,20 +1242,5 @@ function mapFileMetadata(data: any) {
     tags: data.tags ?? undefined,
     folder_path: data.folder_path ?? undefined,
     created_at: data.created_at,
-  }
-}
-
-function mapPortalMessage(data: any): PortalMessage {
-  return {
-    id: data.id,
-    org_id: data.org_id,
-    conversation_id: data.conversation_id,
-    sender_id: data.sender_id ?? undefined,
-    message_type: data.message_type,
-    body: data.body ?? undefined,
-    payload: data.payload ?? {},
-    sent_at: data.sent_at,
-    sender_name: data.payload?.sender_name ?? "Portal user",
-    sender_avatar_url: undefined,
   }
 }

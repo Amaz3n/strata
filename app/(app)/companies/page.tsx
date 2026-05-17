@@ -1,5 +1,6 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
-export const dynamic = 'force-dynamic'
 import { CompaniesTable } from "@/components/companies/companies-table"
 import { listCompanies } from "@/lib/services/companies"
 import { listContacts } from "@/lib/services/contacts"
@@ -8,7 +9,9 @@ import { ComplianceWatchWidget } from "@/components/companies/compliance-watch-w
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 
-export default async function CompaniesPage() {
+export const dynamic = 'force-dynamic'
+
+async function CompaniesData() {
   const [companies, contacts, teamMembers, permissionResult] = await Promise.all([
     listCompanies(),
     listContacts(),
@@ -25,28 +28,45 @@ export default async function CompaniesPage() {
   const canArchive = permissions.includes("org.admin") || permissions.includes("members.manage")
 
   return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Companies</h1>
+          <p className="text-muted-foreground mt-1">
+            Track subcontractors, suppliers, and partners with a unified compliance system.
+          </p>
+        </div>
+        <div className="w-full lg:max-w-sm">
+          <ComplianceWatchWidget companies={companies} complianceStatusByCompanyId={complianceStatusByCompanyId} />
+        </div>
+      </div>
+      <CompaniesTable
+        companies={companies}
+        contacts={contacts}
+        teamMembers={teamMembers}
+        canCreate={canEdit}
+        canEdit={canEdit}
+        canArchive={canArchive}
+      />
+    </div>
+  )
+}
+
+export default function CompaniesPage() {
+  return (
     <PageLayout title="Companies">
-      <div className="space-y-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Companies</h1>
-            <p className="text-muted-foreground mt-1">
-              Track subcontractors, suppliers, and partners with a unified compliance system.
-            </p>
-          </div>
-          <div className="w-full lg:max-w-sm">
-            <ComplianceWatchWidget companies={companies} complianceStatusByCompanyId={complianceStatusByCompanyId} />
+      <Suspense fallback={
+        <div className="p-6 space-y-4">
+          <Skeleton className="h-8 w-48 mb-6" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
           </div>
         </div>
-        <CompaniesTable
-          companies={companies}
-          contacts={contacts}
-          teamMembers={teamMembers}
-          canCreate={canEdit}
-          canEdit={canEdit}
-          canArchive={canArchive}
-        />
-      </div>
+      }>
+        <CompaniesData />
+      </Suspense>
     </PageLayout>
   )
 }

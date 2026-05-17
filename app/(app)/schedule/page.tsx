@@ -14,7 +14,7 @@ import { ScheduleOverviewClient } from "@/components/schedule/schedule-overview-
 import { GanttChartSkeleton } from "@/components/schedule/schedule-skeleton"
 import type { ScheduleItem, ScheduleDependency } from "@/lib/types"
 
-async function ScheduleContent() {
+async function ScheduleData() {
   const [projects, allItems] = await Promise.all([
     listProjectsAction(),
     listScheduleItemsAction(),
@@ -74,13 +74,12 @@ async function ScheduleContent() {
   )
 }
 
-export default async function SchedulePage() {
-
+export default function SchedulePage() {
   return (
     <PageLayout title="Schedule">
       <div className="-m-4 -mt-6 flex flex-1 min-h-0 flex-col overflow-hidden">
         <Suspense fallback={<GanttChartSkeleton />}>
-          <ScheduleContent />
+          <ScheduleData />
         </Suspense>
       </div>
     </PageLayout>

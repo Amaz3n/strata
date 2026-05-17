@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { PipelineWorkspaceClient } from "@/components/pipeline/pipeline-workspace-client"
 import { listProspects, getRecentActivity } from "@/lib/services/crm"
@@ -36,7 +38,17 @@ function resolveOpportunityStatus(status?: string): OpportunityStatus | undefine
   return parsed.success ? parsed.data : undefined
 }
 
-export default async function PipelinePage({ searchParams }: PipelinePageProps) {
+const STALLED_AFTER_DAYS = 14
+const NEW_INQUIRY_WINDOW_DAYS = 14
+const ACTIVE_OPPORTUNITY_STATUSES = new Set<OpportunityStatus>([
+  "new",
+  "contacted",
+  "qualified",
+  "estimating",
+  "proposed",
+])
+
+async function PipelineData({ searchParams }: PipelinePageProps) {
   const resolvedSearchParams = await searchParams
   const initialView = resolvePipelineView(resolvedSearchParams?.view)
   const initialProspectStatus = resolveLeadStatus(resolvedSearchParams?.status)
@@ -57,60 +69,77 @@ export default async function PipelinePage({ searchParams }: PipelinePageProps) 
   const canManageProjects = permissions.includes("project.manage")
 
   const now = new Date()
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+  const endOfTomorrow = new Date(now)
+  endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+  endOfTomorrow.setHours(23, 59, 59, 999)
+  const stalledCutoff = new Date(now.getTime() - STALLED_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  const newInquiryCutoff = new Date(now.getTime() - NEW_INQUIRY_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
 
-  const followUpsDue = prospects
+  const overdueFollowUps = prospects
+    .filter((p) => p.next_follow_up_at && p.next_follow_up_at < now.toISOString())
+    .sort((a, b) => (a.next_follow_up_at ?? "").localeCompare(b.next_follow_up_at ?? ""))
+
+  const upcomingFollowUps = prospects
     .filter((p) => {
       if (!p.next_follow_up_at) return false
-      return p.next_follow_up_at <= new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      return p.next_follow_up_at >= now.toISOString() && p.next_follow_up_at <= endOfTomorrow.toISOString()
     })
-    .sort((a, b) => {
-      if (!a.next_follow_up_at || !b.next_follow_up_at) return 0
-      return a.next_follow_up_at.localeCompare(b.next_follow_up_at)
-    })
+    .sort((a, b) => (a.next_follow_up_at ?? "").localeCompare(b.next_follow_up_at ?? ""))
 
   const newInquiries = prospects
-    .filter((p) => p.lead_status === "new" || !p.lead_status)
+    .filter((p) => (p.lead_status === "new" || !p.lead_status) && p.created_at >= newInquiryCutoff)
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
 
-  const opportunityCounts = {
-    new: opportunities.filter((opportunity) => opportunity.status === "new").length,
-    contacted: opportunities.filter((opportunity) => opportunity.status === "contacted").length,
-    qualified: opportunities.filter((opportunity) => opportunity.status === "qualified").length,
-    estimating: opportunities.filter((opportunity) => opportunity.status === "estimating").length,
-    proposed: opportunities.filter((opportunity) => opportunity.status === "proposed").length,
-    won: opportunities.filter((opportunity) => opportunity.status === "won").length,
-    lost: opportunities.filter((opportunity) => opportunity.status === "lost").length,
+  const opportunityCounts: Record<OpportunityStatus, number> = {
+    new: 0, contacted: 0, qualified: 0, estimating: 0, proposed: 0, won: 0, lost: 0,
+  }
+  for (const opportunity of opportunities) {
+    opportunityCounts[opportunity.status] += 1
   }
 
-  const closedThisMonth = {
-    won: opportunities.filter((opportunity) => opportunity.status === "won" && (opportunity.updated_at ?? opportunity.created_at) >= monthStart).length,
-    lost: opportunities.filter((opportunity) => opportunity.status === "lost" && (opportunity.updated_at ?? opportunity.created_at) >= monthStart).length,
-  }
-
-  const totalClosed = closedThisMonth.won + closedThisMonth.lost
-  const winRate = totalClosed > 0 ? Math.round((closedThisMonth.won / totalClosed) * 100) : null
+  const stalledOpportunities = opportunities
+    .filter((opportunity) => ACTIVE_OPPORTUNITY_STATUSES.has(opportunity.status))
+    .filter((opportunity) => (opportunity.updated_at ?? opportunity.created_at) < stalledCutoff)
+    .sort((a, b) => (a.updated_at ?? a.created_at).localeCompare(b.updated_at ?? b.created_at))
 
   return (
+    <PipelineWorkspaceClient
+      initialView={initialView}
+      initialProspectStatus={initialProspectStatus}
+      initialOpportunityStatus={initialOpportunityStatus}
+      opportunityCounts={opportunityCounts}
+      overdueFollowUps={overdueFollowUps}
+      upcomingFollowUps={upcomingFollowUps}
+      newInquiries={newInquiries}
+      stalledOpportunities={stalledOpportunities}
+      stalledAfterDays={STALLED_AFTER_DAYS}
+      recentActivity={recentActivity}
+      prospects={prospects}
+      opportunities={opportunities}
+      teamMembers={teamMembers}
+      clients={clients}
+      canCreate={canCreate}
+      canEdit={canEdit}
+      canManageProjects={canManageProjects}
+    />
+  )
+}
+
+export default function PipelinePage(props: PipelinePageProps) {
+  return (
     <PageLayout title="Pipeline">
-      <PipelineWorkspaceClient
-        initialView={initialView}
-        initialProspectStatus={initialProspectStatus}
-        initialOpportunityStatus={initialOpportunityStatus}
-        opportunityCounts={opportunityCounts}
-        closedThisMonth={closedThisMonth}
-        winRate={winRate}
-        followUpsDue={followUpsDue}
-        newInquiries={newInquiries}
-        recentActivity={recentActivity}
-        prospects={prospects}
-        opportunities={opportunities}
-        teamMembers={teamMembers}
-        clients={clients}
-        canCreate={canCreate}
-        canEdit={canEdit}
-        canManageProjects={canManageProjects}
-      />
+      <Suspense fallback={
+        <div className="p-6 space-y-4">
+          <Skeleton className="h-8 w-48 mb-6" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
+          </div>
+        </div>
+      }>
+        <PipelineData searchParams={props.searchParams} />
+      </Suspense>
     </PageLayout>
   )
 }

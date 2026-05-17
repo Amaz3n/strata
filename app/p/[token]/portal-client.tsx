@@ -10,7 +10,6 @@ import { PortalHomeTab } from "@/components/portal/tabs/portal-home-tab"
 import { PortalTimelineTab } from "@/components/portal/tabs/portal-timeline-tab"
 import { PortalDocumentsTab } from "@/components/portal/tabs/portal-documents-tab"
 import { PortalActionsTab } from "@/components/portal/tabs/portal-actions-tab"
-import { PortalMessagesTab } from "@/components/portal/tabs/portal-messages-tab"
 import { PortalAboutTab } from "@/components/portal/tabs/portal-about-tab"
 import { PortalRoadmapTab } from "@/components/portal/tabs/portal-roadmap-tab"
 import type { ClientPortalData, ExternalPortalWorkspaceContext } from "@/lib/types"
@@ -20,7 +19,6 @@ interface PortalPublicClientProps {
   token: string
   portalType?: "client" | "sub"
   pinRequired?: boolean
-  canMessage?: boolean
   workspace?: ExternalPortalWorkspaceContext | null
 }
 
@@ -29,7 +27,6 @@ export function PortalPublicClient({
   token,
   portalType = "client",
   pinRequired = false,
-  canMessage = false,
   workspace = null,
 }: PortalPublicClientProps) {
   const [activeTab, setActiveTab] = useState<PortalTab | "roadmap">("home")
@@ -37,8 +34,8 @@ export function PortalPublicClient({
   const isMobile = useIsMobile()
 
   const tabsForPortal = useMemo<(PortalTab | "roadmap")[]>(
-    () => (canMessage ? ["home", "roadmap", "timeline", "documents", "actions", "messages", "about"] : ["home", "roadmap", "timeline", "documents", "actions", "about"]),
-    [canMessage],
+    () => ["home", "roadmap", "timeline", "documents", "actions", "about"],
+    [],
   )
 
   const hasPendingActions = data.pendingChangeOrders.length > 0 || data.pendingSelections.length > 0
@@ -62,10 +59,9 @@ export function PortalPublicClient({
           icon: CheckSquare,
           indicator: hasPendingActions ? <span className="ml-1 h-2 w-2 rounded-full bg-destructive" /> : null,
         },
-        canMessage ? { id: "messages", label: "Messages", icon: MessageCircle } : null,
         { id: "about", label: "About", icon: Info },
       ].filter(Boolean) as Array<{ id: any; label: string; icon: typeof Home; indicator?: ReactNode }>,
-    [canMessage, hasPendingActions],
+    [hasPendingActions],
   )
 
   const renderTab = (tab: string) => {
@@ -74,9 +70,6 @@ export function PortalPublicClient({
     if (tab === "timeline") return <PortalTimelineTab data={data} />
     if (tab === "documents") return <PortalDocumentsTab data={data} token={token} portalType={portalType} />
     if (tab === "actions") return <PortalActionsTab data={data} token={token} portalType={portalType} />
-    if (tab === "messages") {
-      return <PortalMessagesTab data={data} token={token} portalType={portalType} canMessage={canMessage} />
-    }
     return <PortalAboutTab data={data} />
   }
 

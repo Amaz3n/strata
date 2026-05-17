@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { listContacts } from "@/lib/services/contacts"
 import { EstimatesClient } from "@/components/estimates/estimates-client"
@@ -6,7 +8,11 @@ import { listCostCodes } from "@/lib/services/cost-codes"
 
 export const dynamic = "force-dynamic"
 
-export default async function EstimatesPage({ searchParams }: { searchParams: Promise<Record<string, string | string[]>> }) {
+interface EstimatesPageProps {
+  searchParams: Promise<Record<string, string | string[]>>
+}
+
+async function EstimatesData({ searchParams }: EstimatesPageProps) {
   const [estimates, contacts, templates, costCodes, resolvedSearchParams] = await Promise.all([
     listEstimatesAction(),
     listContacts(),
@@ -25,17 +31,34 @@ export default async function EstimatesPage({ searchParams }: { searchParams: Pr
         : undefined
 
   return (
+    <div className="space-y-6">
+      <EstimatesClient
+        estimates={estimates}
+        contacts={contacts}
+        templates={templates}
+        costCodes={costCodes}
+        initialRecipientId={recipient}
+        initialProjectId={project}
+      />
+    </div>
+  )
+}
+
+export default function EstimatesPage(props: EstimatesPageProps) {
+  return (
     <PageLayout title="Estimates">
-      <div className="space-y-6">
-        <EstimatesClient
-          estimates={estimates}
-          contacts={contacts}
-          templates={templates}
-          costCodes={costCodes}
-          initialRecipientId={recipient}
-          initialProjectId={project}
-        />
-      </div>
+      <Suspense fallback={
+        <div className="p-6 space-y-4">
+          <Skeleton className="h-8 w-48 mb-6" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
+          </div>
+        </div>
+      }>
+        <EstimatesData searchParams={props.searchParams} />
+      </Suspense>
     </PageLayout>
   )
 }

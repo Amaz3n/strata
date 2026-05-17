@@ -11,10 +11,16 @@ import {
   removeMember,
   resendInvite,
   suspendMember,
+  updateMemberLaborSettings,
   updateMemberProfile,
   updateMemberRole,
 } from "@/lib/services/team"
-import { inviteMemberSchema, updateMemberProfileSchema, updateMemberRoleSchema } from "@/lib/validation/team"
+import {
+  inviteMemberSchema,
+  updateMemberLaborSettingsSchema,
+  updateMemberProfileSchema,
+  updateMemberRoleSchema,
+} from "@/lib/validation/team"
 import { AuthorizationError } from "@/lib/services/authorization"
 
 function rethrowTypedAuthError(error: unknown): never {
@@ -75,6 +81,18 @@ export async function updateMemberProfileAction(userId: string, input: unknown) 
     revalidatePath("/team")
     revalidatePath("/settings")
     return user
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function updateMemberLaborSettingsAction(membershipId: string, input: unknown) {
+  try {
+    const parsed = updateMemberLaborSettingsSchema.parse(input)
+    const member = await updateMemberLaborSettings({ membershipId, input: parsed })
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return member
   } catch (error) {
     rethrowTypedAuthError(error)
   }

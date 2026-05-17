@@ -41,6 +41,7 @@ function getInitials(name: string | null | undefined): string {
 
 interface TeamTableProps {
   className?: string
+  tableWrapperClassName?: string
   members: TeamMember[]
   canManageMembers?: boolean
   canEditRoles?: boolean
@@ -54,7 +55,7 @@ interface TeamTableProps {
   onEditMember?: (member: TeamMember) => void
 }
 
-export function TeamTable({ className, members, canManageMembers = false, canEditRoles = false, showProjectCounts = true, showInviteAction = true, hideToolbar = false, view: viewProp, onViewChange, onMemberChange, onInviteMember, onEditMember }: TeamTableProps) {
+export function TeamTable({ className, tableWrapperClassName, members, canManageMembers = false, canEditRoles = false, showProjectCounts = true, showInviteAction = true, hideToolbar = false, view: viewProp, onViewChange, onMemberChange, onInviteMember, onEditMember }: TeamTableProps) {
   const [isPending, startTransition] = useTransition()
   const [internalView, setInternalView] = useState<"active" | "archived">("active")
   const view = viewProp ?? internalView
@@ -220,12 +221,12 @@ export function TeamTable({ className, members, canManageMembers = false, canEdi
           )}
         </div>
       )}
-      <div className="min-w-0 overflow-x-auto px-4 py-3 sm:px-6">
+      <div className={cn("min-w-0 overflow-x-auto px-4 py-3 sm:px-6", tableWrapperClassName)}>
         <TooltipProvider delayDuration={200}>
           <Table className="min-w-[780px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[280px]">Member</TableHead>
+                <TableHead className="w-[280px] pl-10">Member</TableHead>
                 <TableHead className="text-center">Role</TableHead>
                 <TableHead className="text-center">Status</TableHead>
                 <TableHead className="text-center">
@@ -244,13 +245,17 @@ export function TeamTable({ className, members, canManageMembers = false, canEdi
                 </TableHead>
                 {showProjectCounts && <TableHead className="text-center">Projects</TableHead>}
                 <TableHead className="text-center">Last active</TableHead>
-                {(canManageMembers || canEditRoles) && <TableHead className="w-[120px] text-right">Actions</TableHead>}
+                {(canManageMembers || canEditRoles) && (
+                  <TableHead className="w-[140px]">
+                    <div className="flex justify-end pr-10">Actions</div>
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
               {visibleMembers.map((member) => (
                 <TableRow key={member.id}>
-                  <TableCell>
+                  <TableCell className="pl-10">
                     <div className="flex items-center gap-3">
                       <Avatar className="h-9 w-9">
                         <AvatarImage src={member.user.avatar_url || undefined} alt={member.user.full_name || ""} />
@@ -288,14 +293,15 @@ export function TeamTable({ className, members, canManageMembers = false, canEdi
                   {showProjectCounts && <TableCell className="text-center text-muted-foreground">{member.project_count ?? 0}</TableCell>}
                   <TableCell className="text-center text-sm text-muted-foreground">{member.last_active_at ? new Date(member.last_active_at).toLocaleDateString() : "—"}</TableCell>
                   {(canManageMembers || canEditRoles) && (
-                    <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Actions</span>
-                          </Button>
-                        </DropdownMenuTrigger>
+                    <TableCell>
+                      <div className="flex justify-end pr-10">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <MoreHorizontal className="h-4 w-4" />
+                              <span className="sr-only">Actions</span>
+                            </Button>
+                          </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuLabel>Actions</DropdownMenuLabel>
                           <DropdownMenuItem
@@ -329,7 +335,8 @@ export function TeamTable({ className, members, canManageMembers = false, canEdi
                             Remove
                           </DropdownMenuItem>
                         </DropdownMenuContent>
-                      </DropdownMenu>
+                        </DropdownMenu>
+                      </div>
                     </TableCell>
                   )}
                 </TableRow>

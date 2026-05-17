@@ -20,6 +20,7 @@ import {
   createProjectBudgetAction,
   replaceProjectBudgetLinesAction,
   runVarianceScanAction,
+  updateCostCodeProgressAction,
 } from "@/app/(app)/projects/[id]/budget/actions"
 import { fetchBudgetBucketCommitmentsAction } from "@/app/(app)/projects/[id]/financials/actions"
 import {
@@ -100,12 +101,14 @@ type CommitmentCreateDraft = {
 
 interface BudgetTabProps {
   projectId: string
+  project: any // Project
   budgetData: any | null
   costCodes: CostCode[]
   varianceAlerts: any[]
   commitments: CommitmentSummary[]
   companies: Company[]
   budgetBucketCompanies: Record<string, string[]>
+  loadErrors?: string[]
 }
 
 function dollarsToCents(input: string) {
@@ -181,12 +184,14 @@ function CommitmentStatusBadge({ status }: { status?: string }) {
 
 export function BudgetTab({
   projectId,
+  project,
   budgetData,
   costCodes,
   varianceAlerts,
   commitments,
   companies,
   budgetBucketCompanies,
+  loadErrors = [],
 }: BudgetTabProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -418,12 +423,18 @@ export function BudgetTab({
         category?: string | null
         lines: EditableBudgetLine[]
         budgetCents: number
+        coAdjustmentCents: number
+        adjustedBudgetCents: number
         committedCents: number
         actualCents: number
         invoicedCents: number
         varianceCents: number
         variancePercent: number
         status: string
+        percentComplete: number | null
+        eacCents: number
+        costToCompleteCents: number
+        varianceAtCompletionCents: number
         assignedCompanies: string[]
       }
     >()
@@ -440,16 +451,26 @@ export function BudgetTab({
         category: code?.category ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: 0,
+        coAdjustmentCents: breakdown?.co_adjustment_cents ?? 0,
+        adjustedBudgetCents: breakdown?.adjusted_budget_cents ?? 0,
         committedCents: breakdown?.committed_cents ?? 0,
         actualCents: breakdown?.actual_cents ?? 0,
         invoicedCents: breakdown?.invoiced_cents ?? 0,
         varianceCents: breakdown?.variance_cents ?? 0,
         variancePercent: breakdown?.variance_percent ?? 0,
         status: breakdown?.status ?? "ok",
+        percentComplete: breakdown?.percent_complete ?? null,
+        eacCents: breakdown?.eac_cents ?? 0,
+        costToCompleteCents: breakdown?.cost_to_complete_cents ?? 0,
+        varianceAtCompletionCents: breakdown?.variance_at_completion_cents ?? 0,
         assignedCompanies: budgetBucketCompanies[key] ?? [],
       }
       existing.lines.push(line)
       existing.budgetCents += dollarsToCents(line.amount_dollars) ?? 0
+
+      // Re-calculate adjustedBudget after appending new lines if they were not saved yet
+      existing.adjustedBudgetCents = existing.budgetCents + existing.coAdjustmentCents
+
       grouped.set(key, existing)
     }
 
@@ -464,12 +485,18 @@ export function BudgetTab({
         category: code?.category ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: breakdown.budget_cents ?? 0,
+        coAdjustmentCents: breakdown.co_adjustment_cents ?? 0,
+        adjustedBudgetCents: breakdown.adjusted_budget_cents ?? 0,
         committedCents: breakdown.committed_cents ?? 0,
         actualCents: breakdown.actual_cents ?? 0,
         invoicedCents: breakdown.invoiced_cents ?? 0,
         varianceCents: breakdown.variance_cents ?? 0,
         variancePercent: breakdown.variance_percent ?? 0,
         status: breakdown.status ?? "ok",
+        percentComplete: breakdown.percent_complete ?? null,
+        eacCents: breakdown.eac_cents ?? 0,
+        costToCompleteCents: breakdown.cost_to_complete_cents ?? 0,
+        varianceAtCompletionCents: breakdown.variance_at_completion_cents ?? 0,
         assignedCompanies: budgetBucketCompanies[key] ?? [],
       })
     }
@@ -545,8 +572,15 @@ export function BudgetTab({
   }, [activeBucket, projectId])
 
   // ---------- Render ----------
+  const contractValue = project?.total_contract_value_cents ?? 0
+  const contractBilled = summary?.total_invoiced_cents ?? 0
+  const percentComplete = summary?.total_eac_cents > 0 ? (summary?.total_actual_cents ?? 0) / summary.total_eac_cents : 0
+  const earnedRevenue = Math.round(contractValue * percentComplete)
+  const overUnderBilling = contractBilled - earnedRevenue
+
   return (
     <div className="-mx-4 -mt-6 -mb-4 flex flex-col bg-card">
+      {loadErrors.length > 0 && <FinancialLoadWarning errors={loadErrors} />}
       {activeAlerts.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-amber-500/30 bg-amber-500/[0.04] px-6 py-2.5 text-sm">
           <div className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-400">
@@ -579,6 +613,35 @@ export function BudgetTab({
           </div>
         </div>
       )}
+
+      {/* Project WIP Summary */}
+      <div className="border-b px-6 py-4">
+        <div className="mb-3 text-sm font-semibold">Project WIP & Forecast</div>
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
+          <div className="flex flex-col gap-1 rounded-md border p-3">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Contract Value</span>
+            <span className="font-mono text-sm">{formatCurrency(contractValue)}</span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-md border p-3">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Earned Rev</span>
+            <span className="font-mono text-sm">{formatCurrency(earnedRevenue)}</span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-md border p-3">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Billed Rev</span>
+            <span className="font-mono text-sm">{formatCurrency(contractBilled)}</span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-md border p-3">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Over/(Under)</span>
+            <span className={cn("font-mono text-sm", overUnderBilling > 0 ? "text-emerald-600 dark:text-emerald-400" : overUnderBilling < 0 ? "text-destructive" : "")}>
+              {formatCurrency(overUnderBilling)}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-md border p-3">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">EAC</span>
+            <span className="font-mono text-sm">{formatCurrency(summary?.total_eac_cents)}</span>
+          </div>
+        </div>
+      </div>
 
       {/* Sticky controls bar - sits flush below the tab bar when scrolled */}
       <div className="sticky top-11 z-[5] flex items-center gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-background/70">
@@ -701,25 +764,28 @@ export function BudgetTab({
       </div>
 
       {/* Desktop unified table */}
-      <div className="hidden border-t md:block">
-        <Table>
+      <div className="hidden border-t md:block overflow-x-auto">
+        <Table className="w-full min-w-[1000px]">
           <TableHeader>
             <TableRow className="border-b bg-muted/30 hover:bg-muted/30">
-              <TableHead className="w-[140px] px-4 text-xs uppercase tracking-wide">Code</TableHead>
-              <TableHead className="min-w-[280px] px-4 text-xs uppercase tracking-wide">Scope</TableHead>
-              <TableHead className="w-[180px] px-4 text-xs uppercase tracking-wide">Assigned</TableHead>
-              <TableHead className="w-[220px] px-4 text-xs uppercase tracking-wide">Utilization</TableHead>
-              <TableHead className="hidden xl:table-cell w-[140px] px-4 text-right text-xs uppercase tracking-wide">Budget</TableHead>
-              <TableHead className="hidden xl:table-cell w-[140px] px-4 text-right text-xs uppercase tracking-wide">Committed</TableHead>
-              <TableHead className="w-[130px] px-4 text-right text-xs uppercase tracking-wide">To buy</TableHead>
-              <TableHead className="w-[130px] px-4 text-right text-xs uppercase tracking-wide">Actual</TableHead>
+              <TableHead className="w-[120px] px-4 text-xs uppercase tracking-wide">Code</TableHead>
+              <TableHead className="min-w-[200px] px-4 text-xs uppercase tracking-wide">Scope</TableHead>
+              <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
+              <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Approved CO</TableHead>
+              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">Revised</TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Committed</TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Actual</TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">CTC</TableHead>
+              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">EAC</TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">VAC</TableHead>
+              <TableHead className="w-[100px] px-4 text-right text-xs uppercase tracking-wide">% Comp</TableHead>
               <TableHead className="w-[56px] px-2" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredUnifiedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="h-56 text-center hover:bg-transparent">
+                <TableCell colSpan={12} className="h-56 text-center hover:bg-transparent">
                   <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
                 </TableCell>
               </TableRow>
@@ -770,47 +836,36 @@ export function BudgetTab({
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="px-4">
-                      {row.assignedCompanies.length > 0 ? (
-                        <span className="block truncate text-sm text-muted-foreground">
-                          {row.assignedCompanies.join(", ")}
-                        </span>
-                      ) : (
-                        <span className="text-sm text-muted-foreground/60">Unassigned</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="px-4">
-                      <div className="flex items-center gap-2">
-                        <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="absolute inset-y-0 left-0 bg-primary/35"
-                            style={{ width: `${rowCommittedPct}%` }}
-                          />
-                          <div
-                            className="absolute inset-y-0 left-0 bg-primary"
-                            style={{ width: `${rowActualPct}%` }}
-                          />
-                        </div>
-                        <span className={cn("w-10 text-right text-xs tabular-nums", toneClass || "text-muted-foreground")}>
-                          {row.variancePercent}%
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="hidden px-4 text-right tabular-nums xl:table-cell">
-                      <span className="text-sm font-medium">
-                        {formatCurrency(row.budgetCents)}
-                      </span>
+                    <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
+                      <span className="text-sm">{formatCurrency(row.budgetCents)}</span>
                     </TableCell>
                     <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
-                      <span className="text-sm">{formatCurrency(row.committedCents)}</span>
+                      <span className="text-sm">{formatCurrency(row.coAdjustmentCents)}</span>
                     </TableCell>
                     <TableCell className="px-4 text-right tabular-nums">
-                      <span className={cn("text-sm font-medium", toneClass)}>
-                        {formatCurrency(rowRemainingToBuy)}
-                      </span>
+                      <span className="text-sm font-medium">{formatCurrency(row.adjustedBudgetCents)}</span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
+                      <span className="text-sm">{formatCurrency(row.committedCents)}</span>
                     </TableCell>
                     <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                       <span className="text-sm">{formatCurrency(row.actualCents)}</span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums">
+                      <span className="text-sm text-muted-foreground">{formatCurrency(row.costToCompleteCents)}</span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums">
+                      <span className="text-sm font-medium">{formatCurrency(row.eacCents)}</span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums">
+                      <span className={cn("text-sm", row.varianceAtCompletionCents < 0 ? "text-destructive" : "text-muted-foreground")}>
+                        {formatCurrency(row.varianceAtCompletionCents)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums">
+                      <span className="text-sm text-muted-foreground">
+                        {row.percentComplete != null ? `${row.percentComplete}%` : "—"}
+                      </span>
                     </TableCell>
                     <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
                       <DropdownMenu>
@@ -859,6 +914,7 @@ export function BudgetTab({
         }
       />
       <BudgetBucketSheet
+        projectId={projectId}
         bucket={activeBucket}
         open={activeBucket !== null}
         onOpenChange={(open) => {
@@ -901,6 +957,20 @@ export function BudgetTab({
   )
 }
 
+function FinancialLoadWarning({ errors }: { errors: string[] }) {
+  return (
+    <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-900">
+      <div className="flex gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div>
+          <p className="font-medium">Some financial data could not load.</p>
+          <p className="mt-1 text-amber-800">{errors.join(" · ")}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // -------------------- Sub-components --------------------
 
 function UnifiedBudgetEmptyState({
@@ -932,6 +1002,7 @@ function UnifiedBudgetEmptyState({
 }
 
 function BudgetBucketSheet({
+  projectId,
   bucket,
   open,
   onOpenChange,
@@ -943,6 +1014,7 @@ function BudgetBucketSheet({
   onCommitmentLines,
   onCommitmentFiles,
 }: {
+  projectId: string
   bucket: {
     key: string
     costCodeId: string | null
@@ -956,6 +1028,9 @@ function BudgetBucketSheet({
     varianceCents: number
     variancePercent: number
     status: string
+    percentComplete: number | null
+    eacCents: number
+    costToCompleteCents: number
   } | null
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -1059,6 +1134,15 @@ function BudgetBucketSheet({
                 </div>
               </div>
             </div>
+
+            {bucket?.costCodeId && (
+              <CostCodeProgressEditor
+                projectId={projectId}
+                costCodeId={bucket.costCodeId}
+                percentComplete={bucket.percentComplete}
+                estimateRemainingCents={bucket.costToCompleteCents}
+              />
+            )}
 
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -2062,5 +2146,72 @@ function CommitmentFilesDialog({
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function CostCodeProgressEditor({
+  projectId,
+  costCodeId,
+  percentComplete,
+  estimateRemainingCents,
+}: {
+  projectId: string
+  costCodeId: string
+  percentComplete: number | null
+  estimateRemainingCents: number | null
+}) {
+  const router = useRouter()
+  const { toast } = useToast()
+  const [isPending, startTransition] = useTransition()
+
+  const [percent, setPercent] = useState(percentComplete != null ? percentComplete.toString() : "")
+  const [ctc, setCtc] = useState(estimateRemainingCents != null ? (estimateRemainingCents / 100).toFixed(2) : "")
+
+  useEffect(() => {
+    setPercent(percentComplete != null ? percentComplete.toString() : "")
+    setCtc(estimateRemainingCents != null ? (estimateRemainingCents / 100).toFixed(2) : "")
+  }, [percentComplete, estimateRemainingCents])
+
+  const submit = () => {
+    startTransition(async () => {
+      try {
+        const p = percent.trim() ? parseFloat(percent) : null
+        const c = ctc.trim() ? Math.round(parseFloat(ctc) * 100) : null
+        await updateCostCodeProgressAction(projectId, costCodeId, {
+          percent_complete: p,
+          estimate_remaining_cents: c,
+        })
+        toast({ title: "Progress updated" })
+        router.refresh()
+      } catch (error) {
+        toast({ title: "Failed to update progress", description: (error as Error).message })
+      }
+    })
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h4 className="text-sm font-semibold">Forecast & Progress</h4>
+          <p className="text-xs text-muted-foreground">Update completion percentage and CTC.</p>
+        </div>
+      </div>
+      <div className="rounded-lg border bg-card p-4 space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label>Percent Complete (%)</Label>
+            <Input type="number" min="0" max="100" value={percent} onChange={e => setPercent(e.target.value)} placeholder="0-100" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Cost to Complete (CTC $)</Label>
+            <Input type="number" min="0" value={ctc} onChange={e => setCtc(e.target.value)} placeholder="0.00" />
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" onClick={submit} disabled={isPending}>{isPending ? "Saving..." : "Save Forecast"}</Button>
+        </div>
+      </div>
+    </div>
   )
 }

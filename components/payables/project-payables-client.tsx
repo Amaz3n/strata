@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
+import { type ReactNode, useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { 
@@ -17,7 +17,11 @@ import {
 
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
-import { updateProjectVendorBillStatusAction } from "@/app/(app)/projects/[id]/payables/actions"
+import {
+  getPayablesAccountingContextAction,
+  syncProjectVendorBillToQBOAction,
+  updateProjectVendorBillStatusAction,
+} from "@/app/(app)/projects/[id]/payables/actions"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -44,6 +48,42 @@ function dollarsToCents(input: string) {
   return Math.round(amount * 100)
 }
 
+type QBOAccountOption = { id: string; name: string; account_type?: string; account_sub_type?: string }
+type QBOVendorOption = { id: string; name: string }
+
+function qboBillUrl(qboId?: string | null) {
+  return qboId ? `https://qbo.intuit.com/app/bill?txnId=${encodeURIComponent(qboId)}` : null
+}
+
+function getPaymentBlockReason({
+  bill,
+  complianceRules,
+  complianceStatusByCompanyId,
+}: {
+  bill: VendorBillSummary
+  complianceRules: ComplianceRules
+  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
+}) {
+  if (!complianceRules.block_payment_on_missing_docs) return null
+
+  const reasons: string[] = []
+  const complianceStatus = bill.company_id ? complianceStatusByCompanyId[bill.company_id] : null
+
+  if (complianceStatus && !complianceStatus.is_compliant) {
+    const missingCount =
+      (complianceStatus.missing?.length ?? 0) +
+      (complianceStatus.expired?.length ?? 0) +
+      (complianceStatus.pending_review?.length ?? 0)
+    reasons.push(missingCount > 0 ? `${missingCount} compliance item${missingCount === 1 ? "" : "s"}` : "Compliance")
+  }
+
+  if (complianceRules.require_lien_waiver && bill.lien_waiver_status !== "received") {
+    reasons.push("Lien waiver")
+  }
+
+  return reasons.length > 0 ? reasons.join(" + ") : null
+}
+
 function billBadge(status?: string) {
   const normalized = (status ?? "pending").toLowerCase()
   const map: Record<string, { label: string; tone: string }> = {
@@ -60,18 +100,40 @@ function billBadge(status?: string) {
   )
 }
 
+function qboBadge(status?: string, error?: string) {
+  const normalized = (status ?? "not_synced").toLowerCase()
+  const map: Record<string, { label: string; tone: string }> = {
+    synced: { label: "QBO synced", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
+    pending: { label: "QBO pending", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
+    error: { label: "QBO error", tone: "bg-destructive/10 text-destructive border-destructive/20" },
+    needs_review: { label: "QBO review", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
+    skipped: { label: "QBO off", tone: "bg-muted text-muted-foreground border-border" },
+    not_synced: { label: "Not synced", tone: "bg-muted text-muted-foreground border-border" },
+  }
+  const config = map[normalized] ?? map.not_synced
+  return (
+    <Badge variant="outline" title={error} className={`text-[10px] font-bold uppercase tracking-tight ${config.tone}`}>
+      {config.label}
+    </Badge>
+  )
+}
+
 export function ProjectPayablesClient({
   projectId,
   vendorBills,
   costCodes,
   complianceRules,
   complianceStatusByCompanyId,
+  toolbarLeading,
+  fullBleed = false,
 }: {
   projectId: string
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
+  toolbarLeading?: ReactNode
+  fullBleed?: boolean
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -81,6 +143,11 @@ export function ProjectPayablesClient({
   const [paymentRef, setPaymentRef] = useState<Record<string, string>>({})
   const [paymentMethod, setPaymentMethod] = useState<Record<string, string>>({})
   const [billCostCode, setBillCostCode] = useState<Record<string, string>>({})
+  const [accountingEnabled, setAccountingEnabled] = useState(false)
+  const [qboExpenseAccounts, setQboExpenseAccounts] = useState<QBOAccountOption[]>([])
+  const [qboApAccounts, setQboApAccounts] = useState<QBOAccountOption[]>([])
+  const [qboVendors, setQboVendors] = useState<QBOVendorOption[]>([])
+  const [qboDefaults, setQboDefaults] = useState<{ expenseAccountId?: string; apAccountId?: string }>({})
 
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
@@ -88,14 +155,48 @@ export function ProjectPayablesClient({
   const [billDetailOpen, setBillDetailOpen] = useState(false)
   const [detailRetainage, setDetailRetainage] = useState("")
   const [detailLienWaiver, setDetailLienWaiver] = useState("not_required")
+  const [detailQboExpenseAccountId, setDetailQboExpenseAccountId] = useState("")
+  const [detailQboApAccountId, setDetailQboApAccountId] = useState("")
+  const [detailQboVendorId, setDetailQboVendorId] = useState("")
   const [detailActualLines, setDetailActualLines] = useState<
-    Array<{ id: string; costCodeId: string; description: string; amountDollars: string }>
+    Array<{ id: string; costCodeId: string; description: string; amountDollars: string; qboExpenseAccountId?: string }>
   >([])
+
+  const selectedPaymentBlockReason = selectedBill
+    ? getPaymentBlockReason({ bill: selectedBill, complianceRules, complianceStatusByCompanyId })
+    : null
 
   const sortedCostCodes = useMemo(
     () => [...costCodes].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "")),
     [costCodes],
   )
+
+  const getExpenseAccountName = (accountId?: string) =>
+    qboExpenseAccounts.find((account) => account.id === accountId)?.name
+
+  const getApAccountName = (accountId?: string) =>
+    qboApAccounts.find((account) => account.id === accountId)?.name
+
+  const getVendorName = (vendorId?: string) => qboVendors.find((vendor) => vendor.id === vendorId)?.name
+
+  useEffect(() => {
+    let cancelled = false
+    getPayablesAccountingContextAction()
+      .then((context) => {
+        if (cancelled) return
+        setAccountingEnabled(Boolean(context.enabled))
+        setQboExpenseAccounts(context.expenseAccounts ?? [])
+        setQboApAccounts(context.apAccounts ?? [])
+        setQboVendors(context.vendors ?? [])
+        setQboDefaults(context.defaults ?? {})
+      })
+      .catch(() => {
+        if (!cancelled) setAccountingEnabled(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const setStatus = (
     billId: string,
@@ -110,6 +211,10 @@ export function ProjectPayablesClient({
         await updateProjectVendorBillStatusAction(projectId, billId, {
           status,
           cost_code_id: costCodeId ?? billCostCode[billId] ?? undefined,
+          qbo_expense_account_id: qboDefaults.expenseAccountId,
+          qbo_expense_account_name: getExpenseAccountName(qboDefaults.expenseAccountId),
+          qbo_ap_account_id: qboDefaults.apAccountId,
+          qbo_ap_account_name: getApAccountName(qboDefaults.apAccountId),
           payment_method: paymentMethod[billId] || undefined,
           payment_reference: paymentRef[billId] || undefined,
           payment_amount_cents: status === "paid" || status === "partial" ? amountCents : undefined,
@@ -156,6 +261,9 @@ export function ProjectPayablesClient({
       selectedBill.retainage_percent != null ? String(selectedBill.retainage_percent) : ""
     )
     setDetailLienWaiver(selectedBill.lien_waiver_status ?? "not_required")
+    setDetailQboExpenseAccountId(selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "")
+    setDetailQboApAccountId(selectedBill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "")
+    setDetailQboVendorId(selectedBill.qbo_vendor_id ?? "")
     const existingLines = selectedBill.actual_lines ?? []
     setDetailActualLines(
       existingLines.length > 0
@@ -164,6 +272,7 @@ export function ProjectPayablesClient({
             costCodeId: line.cost_code_id,
             description: line.description ?? selectedBill.bill_number ?? "Vendor bill",
             amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
+            qboExpenseAccountId: line.qbo_expense_account_id ?? selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
           }))
         : [
             {
@@ -171,10 +280,11 @@ export function ProjectPayablesClient({
               costCodeId: selectedBill.actual_cost_code_id ?? sortedCostCodes[0]?.id ?? "",
               description: selectedBill.bill_number ?? "Vendor bill",
               amountDollars: ((selectedBill.total_cents ?? 0) / 100).toFixed(2),
+              qboExpenseAccountId: selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
             },
           ],
     )
-  }, [selectedBill, sortedCostCodes])
+  }, [selectedBill, sortedCostCodes, qboDefaults])
 
   const handleAttach = async (files: File[], linkRole?: string) => {
     if (!selectedBill) return
@@ -224,14 +334,16 @@ export function ProjectPayablesClient({
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex-1 overflow-hidden border rounded-xl bg-card shadow-sm">
+    <div className={fullBleed ? "w-full" : "h-full flex flex-col"}>
+      <div className={fullBleed ? "w-full" : "flex-1 overflow-hidden border rounded-xl bg-card shadow-sm"}>
         <PayablesExplorer
           projectId={projectId}
           vendorBills={vendorBills}
           costCodes={costCodes}
           complianceRules={complianceRules}
           complianceStatusByCompanyId={complianceStatusByCompanyId}
+          toolbarLeading={toolbarLeading}
+          fullBleed={fullBleed}
           onAddPayable={() => setAddPayableOpen(true)}
           onViewDetails={(bill) => {
             setSelectedBill(bill)
@@ -247,6 +359,17 @@ export function ProjectPayablesClient({
           onRecordPayment={(bill) => {
             setSelectedBill(bill)
             setBillDetailOpen(true)
+          }}
+          onSyncQbo={(bill) => {
+            startTransition(async () => {
+              const result = await syncProjectVendorBillToQBOAction(projectId, bill.id)
+              if (result.success) {
+                toast.success("Synced to QuickBooks")
+                router.refresh()
+              } else {
+                toast.error(result.error ?? "QuickBooks sync failed")
+              }
+            })
           }}
           onDelete={(bill) => {
             toast.info("Action restricted", { description: "Deletion must be handled by an administrator." })
@@ -287,7 +410,21 @@ export function ProjectPayablesClient({
                 <div className="flex items-center justify-between p-5 rounded-xl border bg-muted/5 shadow-inner">
                   <div className="space-y-1">
                     <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Current Status</p>
-                    <div className="mt-1">{billBadge(selectedBill.status)}</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {billBadge(selectedBill.status)}
+                      {qboBadge(selectedBill.qbo_sync_status, selectedBill.qbo_sync_error)}
+                    </div>
+                    {selectedBill.qbo_id && (
+                      <a
+                        href={qboBillUrl(selectedBill.qbo_id) ?? undefined}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                      >
+                        Open in QuickBooks
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
                   </div>
                   <div className="text-right space-y-1">
                     <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Total Amount</p>
@@ -410,11 +547,16 @@ export function ProjectPayablesClient({
                           </div>
                           <Button 
                             className="w-full h-10 shadow-md bg-blue-600 hover:bg-blue-700" 
-                            disabled={isPending}
+                            disabled={isPending || Boolean(selectedPaymentBlockReason)}
                             onClick={() => setStatus(selectedBill.id, "paid")}
                           >
-                            {isPending ? "Processing..." : "Post Payment"}
+                            {isPending ? "Processing..." : selectedPaymentBlockReason ? `Blocked: ${selectedPaymentBlockReason}` : "Post Payment"}
                           </Button>
+                          {selectedPaymentBlockReason && (
+                            <p className="text-xs font-medium text-destructive">
+                              Payment cannot be posted until {selectedPaymentBlockReason.toLowerCase()} is cleared.
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -438,6 +580,7 @@ export function ProjectPayablesClient({
                             costCodeId: sortedCostCodes[0]?.id ?? "",
                             description: selectedBill.bill_number ?? "Vendor bill",
                             amountDollars: "0.00",
+                            qboExpenseAccountId: detailQboExpenseAccountId,
                           },
                         ])
                       }
@@ -512,6 +655,67 @@ export function ProjectPayablesClient({
                     ))}
                   </div>
 
+                  {accountingEnabled && (
+                    <div className="space-y-4 rounded-xl border bg-muted/5 p-4">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">QuickBooks Coding</h4>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">QBO Vendor</Label>
+                          <Select value={detailQboVendorId} onValueChange={setDetailQboVendorId}>
+                            <SelectTrigger className="h-10 w-full">
+                              <SelectValue placeholder={selectedBill.company_name ?? "Match vendor"} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {qboVendors.map((vendor) => (
+                                <SelectItem key={vendor.id} value={vendor.id}>
+                                  {vendor.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">Category / Account</Label>
+                          <Select
+                            value={detailQboExpenseAccountId}
+                            onValueChange={(value) => {
+                              setDetailQboExpenseAccountId(value)
+                              setDetailActualLines((prev) =>
+                                prev.map((line) => ({ ...line, qboExpenseAccountId: line.qboExpenseAccountId || value })),
+                              )
+                            }}
+                          >
+                            <SelectTrigger className="h-10 w-full">
+                              <SelectValue placeholder="Select QBO account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {qboExpenseAccounts.map((account) => (
+                                <SelectItem key={account.id} value={account.id}>
+                                  {account.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest">AP Account</Label>
+                          <Select value={detailQboApAccountId} onValueChange={setDetailQboApAccountId}>
+                            <SelectTrigger className="h-10 w-full">
+                              <SelectValue placeholder="Default AP account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {qboApAccounts.map((account) => (
+                                <SelectItem key={account.id} value={account.id}>
+                                  {account.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Financial Meta terms */}
                   <div className="grid grid-cols-2 gap-6 pt-4">
                     <div className="space-y-2">
@@ -566,6 +770,8 @@ export function ProjectPayablesClient({
                           cost_code_id: line.costCodeId,
                           description: line.description.trim() || selectedBill.bill_number || "Vendor bill",
                           amount_cents: dollarsToCents(line.amountDollars) ?? -1,
+                          qbo_expense_account_id: line.qboExpenseAccountId || detailQboExpenseAccountId || undefined,
+                          qbo_expense_account_name: getExpenseAccountName(line.qboExpenseAccountId || detailQboExpenseAccountId),
                         }))
                         if (actualLines.some((line) => !line.cost_code_id || line.amount_cents < 0)) {
                           toast.error("Invalid cost coding. Each split needs a cost code and amount.")
@@ -582,6 +788,12 @@ export function ProjectPayablesClient({
                           actual_lines: actualLines,
                           retainage_percent: retainagePercent,
                           lien_waiver_status: detailLienWaiver as any,
+                          qbo_expense_account_id: detailQboExpenseAccountId || undefined,
+                          qbo_expense_account_name: getExpenseAccountName(detailQboExpenseAccountId),
+                          qbo_ap_account_id: detailQboApAccountId || undefined,
+                          qbo_ap_account_name: getApAccountName(detailQboApAccountId),
+                          qbo_vendor_id: detailQboVendorId || undefined,
+                          qbo_vendor_name: getVendorName(detailQboVendorId),
                         })
                         setBillCostCode((prev) => ({
                           ...prev,

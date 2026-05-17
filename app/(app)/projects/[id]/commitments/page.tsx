@@ -6,5 +6,5 @@ interface PageProps {
 
 export default async function CommitmentsPage({ params }: PageProps) {
   const { id } = await params
-  redirect(`/projects/${id}/financials?tab=budget`)
+  redirect(`/projects/${id}/financials/budget`)
 }

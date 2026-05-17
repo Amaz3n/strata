@@ -25,13 +25,13 @@ export default async function PayLinkPage({ params }: Params) {
     {
       invoice_id: result.invoice.id,
       currency: result.invoice.currency,
+      include_processing_fee: false,
     },
     result.invoice.org_id,
   )
 
   return <PayLinkClient token={token} invoice={result.invoice} publishableKey={publishableKey} clientSecret={intent.client_secret ?? ""} />
 }
-
 
 
 

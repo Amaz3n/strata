@@ -1,0 +1,306 @@
+import "server-only"
+
+import { z } from "zod"
+
+const MAX_RECEIPT_EXTRACTION_SIZE = 10 * 1024 * 1024
+const SUPPORTED_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"])
+
+const centsSchema = z.preprocess((value) => {
+  if (typeof value === "number") return value
+  if (typeof value === "string") {
+    const cleaned = value.replace(/[^\d.-]/g, "")
+    if (!cleaned) return null
+    const numberValue = Number(cleaned)
+    if (!Number.isFinite(numberValue)) return null
+    return value.includes(".") ? Math.round(numberValue * 100) : Math.round(numberValue)
+  }
+  return value ?? null
+}, z.number().int().min(0).nullable())
+
+const dateSchema = z.preprocess((value) => normalizeDateValue(value), z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable())
+
+const paymentMethodSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return null
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_")
+  if (normalized.includes("card") || normalized.includes("visa") || normalized.includes("mastercard") || normalized.includes("amex")) {
+    return "credit_card"
+  }
+  if (normalized.includes("cash")) return "cash"
+  if (normalized.includes("check") || normalized.includes("cheque")) return "check"
+  if (normalized.includes("ach")) return "ach"
+  if (normalized.includes("company")) return "company_card"
+  if (normalized.includes("personal") || normalized.includes("reimburs")) return "reimbursable_personal"
+  if (normalized === "other") return "other"
+  return null
+}, z.enum(["cash", "credit_card", "check", "ach", "company_card", "reimbursable_personal", "other"]).nullable())
+
+const confidenceSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return "low"
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "high" || normalized === "medium" || normalized === "low") return normalized
+  return "low"
+}, z.enum(["high", "medium", "low"]))
+
+const notesSchema = z.preprocess((value) => {
+  if (Array.isArray(value)) return value
+  if (typeof value === "string" && value.trim()) return [value]
+  return []
+}, z.array(z.string()))
+
+const extractedReceiptSchema = z.object({
+  vendor_name: z.string().nullable().default(null),
+  expense_date: dateSchema.default(null),
+  total_cents: centsSchema.default(null),
+  tax_cents: centsSchema.default(null),
+  payment_method: paymentMethodSchema.default(null),
+  description: z.string().nullable().default(null),
+  confidence: confidenceSchema.default("low"),
+  notes: notesSchema.default([]),
+})
+
+export interface ExtractedExpenseReceipt {
+  vendorName: string | null
+  expenseDate: string | null
+  totalDollars: number | null
+  taxDollars: number | null
+  paymentMethod: "cash" | "credit_card" | "check" | "ach" | "company_card" | "reimbursable_personal" | "other" | null
+  description: string | null
+  confidence: "high" | "medium" | "low"
+  notes: string[]
+  model: string
+}
+
+export async function extractExpenseReceiptFromFile(file: File): Promise<ExtractedExpenseReceipt> {
+  if (!file || file.size === 0) throw new Error("Choose a receipt to scan")
+  if (file.size > MAX_RECEIPT_EXTRACTION_SIZE) {
+    throw new Error("Receipt scanning supports files up to 10MB")
+  }
+
+  const mimeType = normalizeMimeType(file.type, file.name)
+  if (!SUPPORTED_MIME_TYPES.has(mimeType)) {
+    throw new Error("Receipt scanning supports images and PDFs")
+  }
+
+  const apiKey = getGeminiApiKey()
+  if (!apiKey) {
+    throw new Error("Receipt scanning is not configured")
+  }
+
+  const model = getReceiptVisionModel()
+  const bytes = Buffer.from(await file.arrayBuffer())
+  const rawText = await generateGeminiReceiptExtraction({
+    apiKey,
+    model,
+    mimeType,
+    base64: bytes.toString("base64"),
+  })
+  const parsed = parseReceiptJson(rawText)
+
+  return {
+    vendorName: cleanString(parsed.vendor_name),
+    expenseDate: parsed.expense_date,
+    totalDollars: centsToDollars(parsed.total_cents),
+    taxDollars: centsToDollars(parsed.tax_cents),
+    paymentMethod: parsed.payment_method,
+    description: cleanString(parsed.description),
+    confidence: parsed.confidence,
+    notes: parsed.notes.map((note) => note.trim()).filter(Boolean).slice(0, 4),
+    model,
+  }
+}
+
+function normalizeMimeType(mimeType: string | null | undefined, fileName: string) {
+  const normalized = mimeType?.trim().toLowerCase()
+  if (normalized) return normalized
+  const lowerName = fileName.toLowerCase()
+  if (lowerName.endsWith(".pdf")) return "application/pdf"
+  if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) return "image/jpeg"
+  if (lowerName.endsWith(".png")) return "image/png"
+  if (lowerName.endsWith(".webp")) return "image/webp"
+  if (lowerName.endsWith(".heic")) return "image/heic"
+  if (lowerName.endsWith(".heif")) return "image/heif"
+  return "application/octet-stream"
+}
+
+function getGeminiApiKey() {
+  return process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim() || null
+}
+
+function getReceiptVisionModel() {
+  return (
+    process.env.RECEIPT_VISION_MODEL ||
+    process.env.GEMINI_RECEIPT_MODEL ||
+    process.env.DRAWINGS_VISION_MODEL ||
+    process.env.AI_DRAWINGS_VISION_MODEL ||
+    process.env.GEMINI_VISION_MODEL ||
+    process.env.GOOGLE_VISION_MODEL ||
+    "gemini-2.5-flash-lite"
+  ).trim()
+}
+
+async function generateGeminiReceiptExtraction({
+  apiKey,
+  model,
+  mimeType,
+  base64,
+}: {
+  apiKey: string
+  model: string
+  mimeType: string
+  base64: string
+}) {
+  const normalizedModel = model.startsWith("models/") ? model : `models/${model}`
+  const endpoint = process.env.GEMINI_BASE_URL?.replace(/\/$/, "") || "https://generativelanguage.googleapis.com/v1beta"
+  const response = await fetch(`${endpoint}/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: [
+                "Extract job-site expense receipt data from this image or PDF.",
+                "Return only JSON with these keys:",
+                "vendor_name, expense_date, total_cents, tax_cents, payment_method, description, confidence, notes.",
+                "expense_date must be YYYY-MM-DD or null.",
+                "total_cents must be the final amount paid, including tax and discounts.",
+                "tax_cents should be the sales tax amount if visible, otherwise null.",
+                "payment_method must be one of: cash, credit_card, check, ach, company_card, reimbursable_personal, other, or null.",
+                "description should be a short purchase summary, not a full line-item dump.",
+                "confidence must be high, medium, or low.",
+                "If a value is uncertain, use null and explain briefly in notes.",
+              ].join("\n"),
+            },
+            {
+              inline_data: {
+                mime_type: mimeType,
+                data: base64,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    console.warn(`[ReceiptExtraction] Gemini request failed: ${response.status} ${body}`)
+    throw new Error("Could not scan receipt")
+  }
+
+  const payload = await response.json()
+  const text = extractGeminiResponseText(payload)
+  if (!text) throw new Error("Receipt scan returned no data")
+  return text
+}
+
+function extractGeminiResponseText(payload: any) {
+  const parts = payload?.candidates?.[0]?.content?.parts
+  if (!Array.isArray(parts)) return ""
+  return parts.map((part) => part?.text).filter((text): text is string => typeof text === "string").join("\n").trim()
+}
+
+function parseReceiptJson(rawText: string) {
+  const direct = tryParseJson(rawText)
+  const directParsed = parseReceiptShape(direct)
+  if (directParsed) return directParsed
+
+  const fenced = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]
+  const fencedJson = fenced ? tryParseJson(fenced) : null
+  const fencedParsed = parseReceiptShape(fencedJson)
+  if (fencedParsed) return fencedParsed
+
+  const firstBrace = rawText.indexOf("{")
+  const lastBrace = rawText.lastIndexOf("}")
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const sliced = tryParseJson(rawText.slice(firstBrace, lastBrace + 1))
+    const slicedParsed = parseReceiptShape(sliced)
+    if (slicedParsed) return slicedParsed
+  }
+
+  throw new Error("Could not read receipt details")
+}
+
+function parseReceiptShape(value: unknown) {
+  if (!value) return null
+  const normalized = normalizeReceiptPayload(value)
+  const parsed = extractedReceiptSchema.safeParse(normalized)
+  if (parsed.success) return parsed.data
+
+  console.warn("[ReceiptExtraction] Could not parse model JSON", {
+    issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).slice(0, 6),
+    keys: normalized && typeof normalized === "object" ? Object.keys(normalized as Record<string, unknown>).slice(0, 20) : [],
+  })
+  return null
+}
+
+function normalizeReceiptPayload(value: unknown): Record<string, unknown> | null {
+  const record = Array.isArray(value) ? value[0] : value
+  if (!record || typeof record !== "object") return null
+  const source = record as Record<string, unknown>
+
+  return {
+    vendor_name: pickFirst(source, ["vendor_name", "vendorName", "vendor", "merchant", "merchant_name", "store", "store_name", "supplier"]),
+    expense_date: pickFirst(source, ["expense_date", "expenseDate", "date", "transaction_date", "transactionDate", "receipt_date", "receiptDate", "purchase_date", "purchaseDate"]),
+    total_cents: pickFirst(source, ["total_cents", "totalCents", "total_amount_cents", "totalAmountCents", "total", "total_amount", "totalAmount", "amount", "amount_paid", "amountPaid", "grand_total", "grandTotal"]),
+    tax_cents: pickFirst(source, ["tax_cents", "taxCents", "tax_amount_cents", "taxAmountCents", "tax", "tax_amount", "taxAmount", "sales_tax", "salesTax"]),
+    payment_method: pickFirst(source, ["payment_method", "paymentMethod", "payment", "tender", "tender_type", "tenderType", "card_type", "cardType"]),
+    description: pickFirst(source, ["description", "summary", "memo", "notes", "purchase_summary", "purchaseSummary"]),
+    confidence: pickFirst(source, ["confidence", "confidence_level", "confidenceLevel"]),
+    notes: pickFirst(source, ["notes", "warnings", "uncertainties", "explanation"]),
+  }
+}
+
+function pickFirst(source: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = source[key]
+    if (value !== undefined && value !== "") return value
+  }
+  return null
+}
+
+function normalizeDateValue(value: unknown) {
+  if (typeof value !== "string") return null
+  const raw = value.trim()
+  if (!raw) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
+
+  const slashMatch = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
+  if (slashMatch) {
+    const month = Number(slashMatch[1])
+    const day = Number(slashMatch[2])
+    const year = Number(slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3])
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 2000 && year <= 2100) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+    }
+  }
+
+  const parsed = new Date(raw)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed.toISOString().slice(0, 10)
+}
+
+function tryParseJson(value: string) {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+function centsToDollars(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null
+  return Math.round(value) / 100
+}
+
+function cleanString(value: string | null | undefined) {
+  const cleaned = value?.trim()
+  return cleaned ? cleaned.slice(0, 500) : null
+}

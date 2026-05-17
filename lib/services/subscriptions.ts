@@ -2,6 +2,7 @@ import Stripe from "stripe"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
+import { syncOrgEntitlementsFromPlan } from "@/lib/services/billing"
 
 function toIso(seconds?: number | null) {
   if (!seconds) return null
@@ -72,14 +73,34 @@ export async function upsertSubscriptionFromStripe(subscription: Stripe.Subscrip
     updated_at: new Date().toISOString(),
   }
 
-  const { error } = await supabase
+  const { data: existingByExternal } = await supabase
     .from("subscriptions")
-    .upsert(payload, { onConflict: "external_subscription_id" })
+    .select("id")
+    .eq("external_subscription_id", subscription.id)
+    .maybeSingle()
+
+  const { data: pendingLocalSubscription } = existingByExternal?.id
+    ? { data: null }
+    : await supabase
+        .from("subscriptions")
+        .select("id")
+        .eq("org_id", orgId)
+        .is("external_subscription_id", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+  const targetSubscriptionId = existingByExternal?.id ?? pendingLocalSubscription?.id ?? null
+  const { error } = targetSubscriptionId
+    ? await supabase.from("subscriptions").update(payload).eq("id", targetSubscriptionId)
+    : await supabase.from("subscriptions").upsert(payload, { onConflict: "external_subscription_id" })
 
   if (error) {
     console.error("Failed to upsert subscription", error)
     return
   }
+
+  await syncOrgEntitlementsFromPlan(orgId, planCode)
 
   await recordAudit({
     orgId,

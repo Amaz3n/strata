@@ -6,6 +6,7 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   ChevronsUpDown,
+  HardHat,
   LogOut,
   Mail,
   Settings,
@@ -35,8 +36,10 @@ import { useHydrated } from "@/hooks/use-hydrated"
 
 export function NavUser({
   user,
+  canAccessPlatform,
 }: {
   user?: User | null
+  canAccessPlatform?: boolean
 }) {
   const { isMobile, state } = useSidebar()
   const pathname = usePathname()
@@ -123,6 +126,14 @@ export function NavUser({
               </div>
             </DropdownMenuLabel>
             <DropdownMenuGroup>
+              {canAccessPlatform && (
+                <DropdownMenuItem className="rounded-none px-2.5 py-2.5 font-medium text-cyan-600 dark:text-cyan-400" asChild>
+                  <Link href="/platform">
+                    <HardHat className="size-4" />
+                    Platform
+                  </Link>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
                 <Link href={settingsHref}>
                   <Settings />

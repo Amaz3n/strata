@@ -1,18 +1,14 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useState } from "react"
 import { format } from "date-fns"
 
-import type { PortalMessage, Submittal } from "@/lib/types"
-import { loadPortalEntityMessagesAction, sendPortalEntityMessageAction } from "@/app/p/[token]/messages/actions"
+import type { Submittal } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Textarea } from "@/components/ui/textarea"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Spinner } from "@/components/ui/spinner"
 
 interface SubmittalsPortalClientProps {
   submittals: Submittal[]
@@ -21,38 +17,7 @@ interface SubmittalsPortalClientProps {
 
 export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalClientProps) {
   const [selected, setSelected] = useState<Submittal | null>(null)
-  const [messages, setMessages] = useState<PortalMessage[]>([])
-  const [body, setBody] = useState("")
-  const [isPending, startTransition] = useTransition()
-  const [loadingThread, setLoadingThread] = useState(false)
-
-  useEffect(() => {
-    if (!selected) return
-    setLoadingThread(true)
-    loadPortalEntityMessagesAction({ token, entityType: "submittal", entityId: selected.id })
-      .then((msgs) => setMessages(msgs))
-      .catch((err) => console.error("Failed to load submittal messages", err))
-      .finally(() => setLoadingThread(false))
-  }, [selected, token])
-
-  const handleSend = () => {
-    if (!selected || !body.trim()) return
-    startTransition(async () => {
-      try {
-        const message = await sendPortalEntityMessageAction({
-          token,
-          entityType: "submittal",
-          entityId: selected.id,
-          body,
-          senderName: "Portal user",
-        })
-        setMessages((prev) => [...prev, message])
-        setBody("")
-      } catch (error) {
-        console.error("Failed to send message", error)
-      }
-    })
-  }
+  void token
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-6">
@@ -92,7 +57,7 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
                   )}
                 </div>
                 <Button variant="outline" size="sm" onClick={() => setSelected(sub)}>
-                  View messages
+                  View details
                 </Button>
               </CardContent>
             </Card>
@@ -104,7 +69,7 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {selected ? `Submittal #${selected.submittal_number}: ${selected.title}` : "Messages"}
+              {selected ? `Submittal #${selected.submittal_number}: ${selected.title}` : "Submittal Details"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
@@ -115,42 +80,21 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
               </p>
             </div>
             <Separator />
-            <div className="h-64 rounded-lg border">
-              <ScrollArea className="h-full p-3">
-                {loadingThread ? (
-                  <div className="flex h-full items-center justify-center">
-                    <Spinner className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                ) : messages.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No messages yet.</p>
-                ) : (
-                  <div className="space-y-3">
-                    {messages.map((msg) => (
-                      <div key={msg.id} className="rounded-md border bg-card/50 p-2">
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{msg.sender_name ?? "Portal user"}</span>
-                          <span>{format(new Date(msg.sent_at), "MMM d, h:mm a")}</span>
-                        </div>
-                        <p className="text-sm whitespace-pre-line">{msg.body}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
-            <div className="space-y-2">
-              <Textarea
-                placeholder="Type a message"
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                disabled={isPending || loadingThread}
-              />
-              <div className="flex justify-end">
-                <Button onClick={handleSend} disabled={isPending || loadingThread || !body.trim()}>
-                  {isPending ? <Spinner className="mr-2 h-4 w-4" /> : null}
-                  Send
-                </Button>
-              </div>
+            <div className="rounded-lg border bg-muted/30 p-3 space-y-2 text-sm">
+              {selected?.spec_section && (
+                <p>
+                  <span className="font-medium">Spec section:</span> {selected.spec_section}
+                </p>
+              )}
+              {selected?.due_date && (
+                <p>
+                  <span className="font-medium">Due:</span> {format(new Date(selected.due_date), "MMM d, yyyy")}
+                </p>
+              )}
+              <p>
+                <span className="font-medium">Status:</span>{" "}
+                <span className="capitalize">{selected?.status.replaceAll("_", " ")}</span>
+              </p>
             </div>
           </div>
         </DialogContent>
@@ -158,4 +102,3 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
     </div>
   )
 }
-

@@ -595,10 +595,15 @@ export interface SupportContract {
 export interface Plan {
   code: string
   name: string
+  publicName: string | null
+  packageType: string | null
+  featureKeys: string[]
+  internalNotes: string | null
   pricingModel: string
   interval: string | null
   amountCents: number | null
   currency: string | null
+  stripePriceId: string | null
   isActive: boolean
   createdAt: string
 }
@@ -741,7 +746,7 @@ export async function getUsageTrends(): Promise<UsageTrends> {
     { name: "Project Management", entityTypes: ["project", "task", "schedule_item"] },
     { name: "Documents", entityTypes: ["file", "document", "drawing_set", "drawing_sheet"] },
     { name: "Financials", entityTypes: ["invoice", "payment", "vendor_bill", "subscription"] },
-    { name: "Collaboration", entityTypes: ["conversation", "message", "daily_log"] },
+    { name: "Collaboration", entityTypes: ["daily_log"] },
     { name: "Operations", entityTypes: ["rfi", "submittal", "change_order", "punch_item"] },
   ]
 
@@ -789,13 +794,34 @@ export async function getPlans(): Promise<Plan[]> {
 
   if (error) throw error
 
+  const planCodes = (data || []).map((plan) => plan.code).filter(Boolean)
+  const featureKeysByPlan = new Map<string, string[]>()
+  if (planCodes.length > 0) {
+    const { data: limits } = await supabase
+      .from("plan_feature_limits")
+      .select("plan_code, feature_key")
+      .in("plan_code", planCodes)
+
+    for (const limit of limits ?? []) {
+      const planCode = String(limit.plan_code)
+      const current = featureKeysByPlan.get(planCode) ?? []
+      current.push(String(limit.feature_key))
+      featureKeysByPlan.set(planCode, current)
+    }
+  }
+
   return (data || []).map(plan => ({
     code: plan.code,
     name: plan.name,
+    publicName: (plan.metadata as any)?.public_name ?? null,
+    packageType: (plan.metadata as any)?.package_type ?? null,
+    featureKeys: featureKeysByPlan.get(plan.code) ?? [],
+    internalNotes: (plan.metadata as any)?.internal_notes ?? null,
     pricingModel: plan.pricing_model,
     interval: plan.interval,
     amountCents: plan.amount_cents,
     currency: plan.currency,
+    stripePriceId: plan.stripe_price_id ?? null,
     isActive: plan.is_active,
     createdAt: plan.created_at,
   }))

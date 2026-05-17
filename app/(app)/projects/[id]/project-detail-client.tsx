@@ -809,6 +809,7 @@ export function ProjectDetailClient({
     <div className="flex flex-col h-[calc(100vh-5rem)] space-y-4 p-4 lg:p-6 overflow-hidden">
       <ProjectSettingsSheet
         project={project}
+        contract={contract}
         contacts={contacts}
         open={settingsSheetOpen}
         onOpenChange={setSettingsSheetOpen}

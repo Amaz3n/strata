@@ -41,6 +41,10 @@ function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
   }))
 }
 
+function calculateLineBudgetRevisionCents(line: ChangeOrderLine) {
+  return Math.round((line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0))
+}
+
 function calculateTotals(lines: ChangeOrderLineInput[], taxRate = 0, markupPercent = 0): ChangeOrderTotals {
   const normalized = normalizeLines(lines)
 
@@ -67,6 +71,109 @@ function calculateTotals(lines: ChangeOrderLineInput[], taxRate = 0, markupPerce
     tax_rate: taxRate,
     markup_percent: markupPercent,
   }
+}
+
+function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, actorId?: string | null) {
+  const lines = changeOrder.lines ?? []
+  if (lines.length === 0) {
+    throw new Error("Change order must include line items before approval")
+  }
+
+  const uncodedLines = lines.filter((line) => !line.cost_code_id)
+  if (uncodedLines.length > 0) {
+    throw new Error("Every change order line must be assigned to a cost code before approval")
+  }
+
+  const budgetDistributions = lines.map((line, index) => {
+    const budgetRevisionCents = calculateLineBudgetRevisionCents(line)
+    return {
+      cost_code_id: line.cost_code_id,
+      description: line.description,
+      budget_revision_cents: budgetRevisionCents,
+      allowance_draw_cents: line.allowance_cents ?? 0,
+      source_line_index: index,
+    }
+  })
+
+  const budgetRevisionCents = budgetDistributions.reduce((sum, line) => sum + line.budget_revision_cents, 0)
+  const allowanceDrawCents = budgetDistributions.reduce((sum, line) => sum + line.allowance_draw_cents, 0)
+
+  return {
+    budget_revision_cents: budgetRevisionCents,
+    allowance_draw_cents: allowanceDrawCents,
+    budget_distributions: budgetDistributions,
+    billing_status: "ready_to_bill",
+    posted_at: new Date().toISOString(),
+    posted_by: actorId ?? null,
+  }
+}
+
+async function postBudgetRevisionForChangeOrder({
+  supabase,
+  changeOrder,
+  actorId,
+}: {
+  supabase: SupabaseClient
+  changeOrder: ChangeOrder
+  actorId?: string | null
+}) {
+  const financialImpact = buildApprovedChangeOrderFinancialMetadata(changeOrder, actorId)
+  const { data: revision, error: revisionError } = await supabase
+    .from("budget_revisions")
+    .upsert(
+      {
+        org_id: changeOrder.org_id,
+        project_id: changeOrder.project_id,
+        change_order_id: changeOrder.id,
+        revision_type: "change_order",
+        status: "posted",
+        title: changeOrder.title,
+        total_cents: financialImpact.budget_revision_cents,
+        posted_by: actorId ?? null,
+        posted_at: financialImpact.posted_at,
+        metadata: {
+          allowance_draw_cents: financialImpact.allowance_draw_cents,
+          billing_status: financialImpact.billing_status,
+        },
+      },
+      { onConflict: "org_id,change_order_id" },
+    )
+    .select("id")
+    .single()
+
+  if (revisionError || !revision) {
+    throw new Error(`Failed to post budget revision: ${revisionError?.message}`)
+  }
+
+  const { error: deleteLinesError } = await supabase
+    .from("budget_revision_lines")
+    .delete()
+    .eq("org_id", changeOrder.org_id)
+    .eq("budget_revision_id", revision.id)
+
+  if (deleteLinesError) {
+    throw new Error(`Failed to refresh budget revision lines: ${deleteLinesError.message}`)
+  }
+
+  const lineRows = financialImpact.budget_distributions.map((line, index) => ({
+    org_id: changeOrder.org_id,
+    budget_revision_id: revision.id,
+    cost_code_id: line.cost_code_id,
+    description: line.description,
+    amount_cents: line.budget_revision_cents,
+    allowance_draw_cents: line.allowance_draw_cents,
+    sort_order: index,
+    metadata: { source_line_index: line.source_line_index },
+  }))
+
+  if (lineRows.length > 0) {
+    const { error: insertLinesError } = await supabase.from("budget_revision_lines").insert(lineRows)
+    if (insertLinesError) {
+      throw new Error(`Failed to post budget revision lines: ${insertLinesError.message}`)
+    }
+  }
+
+  return { revisionId: revision.id, financialImpact }
 }
 
 function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
@@ -236,6 +343,9 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     sort_order: idx,
     metadata: {
       allowance_cents: line.allowance_cents ?? 0,
+      allowance_draw_cents: line.allowance_cents ?? 0,
+      budget_revision_cents: calculateLineBudgetRevisionCents(line),
+      financial_impact_type: line.allowance_cents && line.allowance_cents > 0 ? "allowance_plus_budget_revision" : "budget_revision",
       taxable: line.taxable ?? true,
     },
   }))
@@ -359,6 +469,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
   }
 
   const nowIso = new Date().toISOString()
+  const financialImpact = buildApprovedChangeOrderFinancialMetadata(existing, null)
   const metadataPatch = {
     ...(existing.metadata ?? {}),
     approved_via_envelope: true,
@@ -369,6 +480,11 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     approved_signer_email: input.signerEmail ?? null,
     approved_signer_ip: input.signerIp ?? null,
     approved_at: existing.approved_at ?? nowIso,
+    financial_impact: {
+      ...(existing.metadata?.financial_impact ?? {}),
+      ...financialImpact,
+      posted_at: nowIso,
+    },
   }
 
   const needsApprovalTransition = existing.status !== "approved"
@@ -431,6 +547,16 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
   })
 
   if (needsApprovalTransition) {
+    await postBudgetRevisionForChangeOrder({
+      supabase,
+      changeOrder: {
+        ...existing,
+        status: "approved",
+        approved_at: existing.approved_at ?? nowIso,
+        metadata: metadataPatch,
+      },
+      actorId: null,
+    })
     await applyChangeOrderFinancialImpact({
       supabase,
       orgId: existing.org_id,
@@ -481,6 +607,7 @@ export async function approveChangeOrder({
   }
 
   const nowIso = new Date().toISOString()
+  const financialImpact = buildApprovedChangeOrderFinancialMetadata(existing, userId)
   const { data, error } = await supabase
     .from("change_orders")
     .update({
@@ -491,6 +618,11 @@ export async function approveChangeOrder({
         ...(existing.metadata ?? {}),
         approval_method: "manual_offline",
         approved_by_user: userId,
+        financial_impact: {
+          ...(existing.metadata?.financial_impact ?? {}),
+          ...financialImpact,
+          posted_at: nowIso,
+        },
       },
     })
     .eq("org_id", resolvedOrgId)
@@ -503,6 +635,15 @@ export async function approveChangeOrder({
   if (error || !data) {
     throw new Error(`Failed to approve change order: ${error?.message}`)
   }
+
+  await postBudgetRevisionForChangeOrder({
+    supabase,
+    changeOrder: {
+      ...mapChangeOrderRow(data as ChangeOrderRow),
+      metadata: data.metadata as any,
+    },
+    actorId: userId,
+  })
 
   await applyChangeOrderFinancialImpact({
     supabase,

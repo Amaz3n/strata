@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { CrmDashboard } from "@/components/crm"
 import { listProspects, getCrmDashboardStats } from "@/lib/services/crm"
@@ -6,7 +8,7 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
 export const dynamic = "force-dynamic"
 
-export default async function CrmPage() {
+async function CrmData() {
   const [prospects, stats, teamMembers, permissionResult] = await Promise.all([
     listProspects(),
     getCrmDashboardStats(),
@@ -35,21 +37,38 @@ export default async function CrmPage() {
   })
 
   return (
-    <PageLayout title="CRM">
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">CRM Dashboard</h1>
-          <p className="text-muted-foreground">Track and manage your sales pipeline</p>
-        </div>
-        <CrmDashboard
-          stats={stats}
-          followUpsDue={followUpsDue}
-          newInquiries={newInquiries}
-          teamMembers={teamMembers}
-          canCreate={canCreate}
-          canEdit={canEdit}
-        />
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">CRM Dashboard</h1>
+        <p className="text-muted-foreground">Track and manage your sales pipeline</p>
       </div>
+      <CrmDashboard
+        stats={stats}
+        followUpsDue={followUpsDue}
+        newInquiries={newInquiries}
+        teamMembers={teamMembers}
+        canCreate={canCreate}
+        canEdit={canEdit}
+      />
+    </div>
+  )
+}
+
+export default function CrmPage() {
+  return (
+    <PageLayout title="CRM">
+      <Suspense fallback={
+        <div className="p-6 space-y-4">
+          <Skeleton className="h-8 w-48 mb-6" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
+          </div>
+        </div>
+      }>
+        <CrmData />
+      </Suspense>
     </PageLayout>
   )
 }

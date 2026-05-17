@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { randomUUID } from "crypto"
 
 import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accounting/qbo-api"
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo-api"
@@ -304,6 +305,351 @@ async function reconcileInvoiceFromQbo(params: {
   return { reconciled: true as const }
 }
 
+async function resolveLocalExpenseIdByQboId(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  qboId: string,
+) {
+  const { data: sync } = await supabase
+    .from("qbo_sync_records")
+    .select("entity_id")
+    .eq("org_id", orgId)
+    .eq("entity_type", "project_expense")
+    .eq("qbo_id", qboId)
+    .maybeSingle()
+
+  if (sync?.entity_id) return sync.entity_id as string
+
+  const { data: expense } = await supabase
+    .from("project_expenses")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("qbo_id", qboId)
+    .maybeSingle()
+
+  return (expense?.id as string | undefined) ?? null
+}
+
+async function reconcileProjectExpenseFromQbo(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  client: QBOClient
+  orgId: string
+  connectionId: string
+  qboId: string
+  entityName: "purchase" | "bill"
+  operation?: string | null
+}) {
+  const expenseId = await resolveLocalExpenseIdByQboId(params.supabase, params.orgId, params.qboId)
+  if (!expenseId) {
+    return { reconciled: false as const, reason: "No local expense mapping" }
+  }
+  const { data: localExpense } = await params.supabase
+    .from("project_expenses")
+    .select("amount_cents, tax_cents, status")
+    .eq("org_id", params.orgId)
+    .eq("id", expenseId)
+    .maybeSingle()
+
+  const nowIso = new Date().toISOString()
+  const normalizedOp = String(params.operation ?? "").toLowerCase()
+  if (normalizedOp === "delete") {
+    await params.supabase
+      .from("project_expenses")
+      .update({
+        qbo_sync_status: "needs_review",
+        qbo_sync_error: "The linked QuickBooks transaction was deleted.",
+        qbo_synced_at: nowIso,
+      })
+      .eq("org_id", params.orgId)
+      .eq("id", expenseId)
+    return { reconciled: true as const }
+  }
+
+  const qboTxn =
+    params.entityName === "bill"
+      ? await params.client.getBillById(params.qboId)
+      : await params.client.getPurchaseById(params.qboId)
+
+  if (!qboTxn) {
+    return { reconciled: false as const, reason: "QBO transaction not found" }
+  }
+
+  const firstAccountLine = (qboTxn.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
+  const accountRef = firstAccountLine?.AccountBasedExpenseLineDetail?.AccountRef
+  const vendorRef = qboTxn.VendorRef ?? qboTxn.EntityRef
+  const totalCents = toCents(qboTxn.TotalAmt)
+  const txnDate = normalizeDate(qboTxn.TxnDate)
+
+  const localTotalCents = Number((localExpense as any)?.amount_cents ?? 0) + Number((localExpense as any)?.tax_cents ?? 0)
+  const localStatus = String((localExpense as any)?.status ?? "")
+  if (totalCents !== null && localTotalCents > 0 && totalCents !== localTotalCents && ["approved", "invoiced", "locked"].includes(localStatus)) {
+    await params.supabase
+      .from("project_expenses")
+      .update({
+        qbo_sync_status: "needs_review",
+        qbo_sync_error: `QuickBooks changed this ${params.entityName} amount from ${(localTotalCents / 100).toFixed(2)} to ${(totalCents / 100).toFixed(2)}.`,
+        qbo_synced_at: nowIso,
+      })
+      .eq("org_id", params.orgId)
+      .eq("id", expenseId)
+    return { reconciled: true as const }
+  }
+
+  const update: Record<string, unknown> = {
+    qbo_id: params.qboId,
+    qbo_transaction_type: params.entityName === "bill" ? "bill" : "purchase",
+    qbo_sync_status: "synced",
+    qbo_sync_error: null,
+    qbo_synced_at: nowIso,
+    qbo_vendor_id: vendorRef?.value ?? null,
+    qbo_vendor_name: vendorRef?.name ?? null,
+  }
+
+  if (totalCents !== null) {
+    update.amount_cents = Math.max(totalCents, 0)
+    update.tax_cents = 0
+  }
+  if (txnDate) update.expense_date = txnDate
+  if (typeof qboTxn.PrivateNote === "string") update.description = qboTxn.PrivateNote
+  if (accountRef?.value) {
+    update.qbo_expense_account_id = String(accountRef.value)
+    update.qbo_expense_account_name = accountRef.name ? String(accountRef.name) : null
+  }
+
+  const { error } = await params.supabase
+    .from("project_expenses")
+    .update(update)
+    .eq("org_id", params.orgId)
+    .eq("id", expenseId)
+
+  if (error) {
+    return { reconciled: false as const, reason: error.message }
+  }
+
+  await params.supabase.from("qbo_sync_records").upsert(
+    {
+      org_id: params.orgId,
+      connection_id: params.connectionId,
+      entity_type: "project_expense",
+      entity_id: expenseId,
+      qbo_id: params.qboId,
+      qbo_sync_token: qboTxn.SyncToken ?? null,
+      last_synced_at: nowIso,
+      status: "synced",
+      error_message: null,
+    },
+    { onConflict: "org_id,entity_type,entity_id" },
+  )
+
+  return { reconciled: true as const }
+}
+
+async function resolveLocalVendorBillIdByQboId(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  qboId: string,
+) {
+  const { data: sync } = await supabase
+    .from("qbo_sync_records")
+    .select("entity_id")
+    .eq("org_id", orgId)
+    .eq("entity_type", "vendor_bill")
+    .eq("qbo_id", qboId)
+    .maybeSingle()
+
+  if (sync?.entity_id) return sync.entity_id as string
+
+  const { data: bill } = await supabase
+    .from("vendor_bills")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("qbo_id", qboId)
+    .maybeSingle()
+
+  return (bill?.id as string | undefined) ?? null
+}
+
+async function reconcileVendorBillFromQbo(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  client: QBOClient
+  orgId: string
+  connectionId: string
+  qboId: string
+  operation?: string | null
+}) {
+  const billId = await resolveLocalVendorBillIdByQboId(params.supabase, params.orgId, params.qboId)
+  if (!billId) {
+    return { reconciled: false as const, reason: "No local vendor bill mapping" }
+  }
+
+  const nowIso = new Date().toISOString()
+  const normalizedOp = String(params.operation ?? "").toLowerCase()
+  if (normalizedOp === "delete") {
+    await params.supabase
+      .from("vendor_bills")
+      .update({
+        qbo_sync_status: "needs_review",
+        qbo_sync_error: "The linked QuickBooks bill was deleted.",
+        qbo_synced_at: nowIso,
+      })
+      .eq("org_id", params.orgId)
+      .eq("id", billId)
+    return { reconciled: true as const }
+  }
+
+  const [qboBill, localResult] = await Promise.all([
+    params.client.getBillById(params.qboId),
+    params.supabase.from("vendor_bills").select("total_cents, status").eq("org_id", params.orgId).eq("id", billId).maybeSingle(),
+  ])
+  if (!qboBill) {
+    return { reconciled: false as const, reason: "QBO bill not found" }
+  }
+
+  const local = localResult.data as any
+  const qboTotalCents = toCents(qboBill.TotalAmt)
+  const localTotalCents = Number(local?.total_cents ?? 0)
+  if (qboTotalCents !== null && localTotalCents > 0 && qboTotalCents !== localTotalCents && ["approved", "partial", "paid"].includes(String(local?.status ?? ""))) {
+    await params.supabase
+      .from("vendor_bills")
+      .update({
+        qbo_sync_status: "needs_review",
+        qbo_sync_error: `QuickBooks changed this bill amount from ${(localTotalCents / 100).toFixed(2)} to ${(qboTotalCents / 100).toFixed(2)}.`,
+        qbo_synced_at: nowIso,
+      })
+      .eq("org_id", params.orgId)
+      .eq("id", billId)
+    return { reconciled: true as const }
+  }
+
+  const firstAccountLine = (qboBill.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
+  const accountRef = firstAccountLine?.AccountBasedExpenseLineDetail?.AccountRef
+  const update: Record<string, unknown> = {
+    qbo_id: params.qboId,
+    qbo_sync_status: "synced",
+    qbo_sync_error: null,
+    qbo_synced_at: nowIso,
+    qbo_vendor_id: qboBill.VendorRef?.value ?? null,
+    qbo_vendor_name: qboBill.VendorRef?.name ?? null,
+  }
+  if (qboTotalCents !== null) update.total_cents = qboTotalCents
+  if (normalizeDate(qboBill.TxnDate)) update.bill_date = normalizeDate(qboBill.TxnDate)
+  if (normalizeDate(qboBill.DueDate)) update.due_date = normalizeDate(qboBill.DueDate)
+  if (typeof qboBill.DocNumber === "string") update.bill_number = qboBill.DocNumber
+  if (accountRef?.value) {
+    update.qbo_expense_account_id = String(accountRef.value)
+    update.qbo_expense_account_name = accountRef.name ? String(accountRef.name) : null
+  }
+  if (qboBill.APAccountRef?.value) {
+    update.qbo_ap_account_id = String(qboBill.APAccountRef.value)
+    update.qbo_ap_account_name = qboBill.APAccountRef.name ? String(qboBill.APAccountRef.name) : null
+  }
+
+  const { error } = await params.supabase
+    .from("vendor_bills")
+    .update(update)
+    .eq("org_id", params.orgId)
+    .eq("id", billId)
+
+  if (error) return { reconciled: false as const, reason: error.message }
+
+  await params.supabase.from("qbo_sync_records").upsert(
+    {
+      org_id: params.orgId,
+      connection_id: params.connectionId,
+      entity_type: "vendor_bill",
+      entity_id: billId,
+      qbo_id: params.qboId,
+      qbo_sync_token: qboBill.SyncToken ?? null,
+      last_synced_at: nowIso,
+      status: "synced",
+      error_message: null,
+    },
+    { onConflict: "org_id,entity_type,entity_id" },
+  )
+
+  return { reconciled: true as const }
+}
+
+async function reconcileBillPaymentFromQbo(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  client: QBOClient
+  orgId: string
+  connectionId: string
+  qboBillPaymentId: string
+  operation?: string | null
+}) {
+  const normalizedOp = String(params.operation ?? "").toLowerCase()
+  if (normalizedOp === "delete") {
+    await params.supabase
+      .from("qbo_sync_records")
+      .update({
+        status: "conflict",
+        error_message: "The linked QuickBooks bill payment was deleted.",
+        last_synced_at: new Date().toISOString(),
+      })
+      .eq("org_id", params.orgId)
+      .eq("entity_type", "bill_payment")
+      .eq("qbo_id", params.qboBillPaymentId)
+    return { reconciled: true as const }
+  }
+
+  const billPayment = await params.client.getBillPaymentById(params.qboBillPaymentId)
+  if (!billPayment) return { reconciled: false as const, reason: "QBO bill payment not found" }
+
+  const linkedBillIds = new Set<string>()
+  for (const line of billPayment.Line ?? []) {
+    for (const linkedTxn of line.LinkedTxn ?? []) {
+      if (String(linkedTxn.TxnType ?? "").toLowerCase() !== "bill") continue
+      if (linkedTxn.TxnId) linkedBillIds.add(String(linkedTxn.TxnId))
+    }
+  }
+  if (linkedBillIds.size === 0) return { reconciled: false as const, reason: "No linked bill found" }
+
+  let updated = 0
+  for (const qboBillId of linkedBillIds) {
+    const { data: bill } = await params.supabase
+      .from("vendor_bills")
+      .select("id, total_cents, paid_cents")
+      .eq("org_id", params.orgId)
+      .eq("qbo_id", qboBillId)
+      .maybeSingle()
+    if (!bill?.id) continue
+
+    const paymentCents = toCents(billPayment.TotalAmt) ?? 0
+    const currentPaid = Number((bill as any).paid_cents ?? 0)
+    const totalCents = Number((bill as any).total_cents ?? 0)
+    const nextPaid = Math.min(totalCents || currentPaid + paymentCents, Math.max(currentPaid, paymentCents))
+    await params.supabase
+      .from("vendor_bills")
+      .update({
+        paid_cents: nextPaid,
+        status: totalCents > 0 && nextPaid >= totalCents ? "paid" : "partial",
+        paid_at: totalCents > 0 && nextPaid >= totalCents ? new Date().toISOString() : null,
+      })
+      .eq("org_id", params.orgId)
+      .eq("id", bill.id)
+    updated += 1
+  }
+
+  await params.supabase.from("qbo_sync_records").upsert(
+    {
+      org_id: params.orgId,
+      connection_id: params.connectionId,
+      entity_type: "bill_payment",
+      entity_id: randomUUID(),
+      qbo_id: params.qboBillPaymentId,
+      qbo_sync_token: billPayment.SyncToken ?? null,
+      last_synced_at: new Date().toISOString(),
+      status: "synced",
+      error_message: null,
+      metadata: { source: "qbo_inbound" },
+    },
+    { onConflict: "org_id,entity_type,entity_id" },
+  )
+
+  return updated > 0 ? { reconciled: true as const } : { reconciled: false as const, reason: "No local bill matched linked QBO bill" }
+}
+
 function extractLinkedInvoiceQboIds(payment: QBOPaymentSnapshot | null) {
   const invoiceQboIds = new Set<string>()
   for (const line of payment?.Line ?? []) {
@@ -473,6 +819,53 @@ export async function POST(request: NextRequest) {
           await markEventProcessed(supabase, row.id, "reconciled")
         } else {
           await markEventProcessed(supabase, row.id, "ignored", "Payment event had no local invoice to reconcile")
+        }
+      } else if (entityName === "purchase" || entityName === "bill") {
+        const vendorBillResult =
+          entityName === "bill"
+            ? await reconcileVendorBillFromQbo({
+                supabase,
+                client,
+                orgId,
+                connectionId: typedConnection.id,
+                qboId: row.entity_qbo_id,
+                operation: row.operation,
+              })
+            : { reconciled: false as const, reason: "Not a QBO bill" }
+
+        const result = vendorBillResult.reconciled
+          ? vendorBillResult
+          : await reconcileProjectExpenseFromQbo({
+              supabase,
+              client,
+              orgId,
+              connectionId: typedConnection.id,
+              qboId: row.entity_qbo_id,
+              entityName: entityName as "purchase" | "bill",
+              operation: row.operation,
+            })
+
+        if (result.reconciled) {
+          reconciled += 1
+          await markEventProcessed(supabase, row.id, "reconciled")
+        } else {
+          await markEventProcessed(supabase, row.id, "ignored", result.reason)
+        }
+      } else if (entityName === "billpayment") {
+        const result = await reconcileBillPaymentFromQbo({
+          supabase,
+          client,
+          orgId,
+          connectionId: typedConnection.id,
+          qboBillPaymentId: row.entity_qbo_id,
+          operation: row.operation,
+        })
+
+        if (result.reconciled) {
+          reconciled += 1
+          await markEventProcessed(supabase, row.id, "reconciled")
+        } else {
+          await markEventProcessed(supabase, row.id, "ignored", result.reason)
         }
       } else {
         await markEventProcessed(supabase, row.id, "ignored", `Entity ${row.entity_name} not handled`)

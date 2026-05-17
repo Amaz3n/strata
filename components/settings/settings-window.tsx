@@ -6,12 +6,11 @@ import { useSearchParams } from "next/navigation"
 import * as TabsPrimitive from "@radix-ui/react-tabs"
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -54,6 +53,12 @@ const sections = [
     icon: Building2,
   },
   {
+    value: "invoicing",
+    label: "Invoicing",
+    description: "Client invoice defaults",
+    icon: Receipt,
+  },
+  {
     value: "billing",
     label: "Billing",
     description: "Subscription details",
@@ -85,8 +90,8 @@ const sections = [
   },
   {
     value: "compliance",
-    label: "Payables",
-    description: "Payment gating policy",
+    label: "Vendor Compliance",
+    description: "Requirements and payment rules",
     icon: Settings,
   },
   {
@@ -107,10 +112,10 @@ function toRoleLabel(roleKey: string) {
 
 const appInfo = {
   name: "Arc",
-  company: "Arc",
+  company: "Arc Project Systems LLC",
   version: packageJson.version ?? "0.1.0",
   termsUrl: "/terms",
-  logoUrl: "/logo.svg",
+  logoUrl: "/arc-logo2.svg",
 }
 
 type AiProvider = "openai" | "anthropic" | "google"
@@ -145,8 +150,60 @@ function isAiProvider(value: string): value is AiProvider {
   return value === "openai" || value === "anthropic" || value === "google"
 }
 
+function formatBillingStatus(status: string) {
+  return status
+    .split("_")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ")
+}
+
+function CostCodeTableSkeleton() {
+  return (
+    <div className="flex h-full min-h-[calc(100svh-7rem)] flex-col overflow-hidden border-t border-border/70 bg-background">
+      <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+          <Skeleton className="h-9 w-full md:w-80" />
+          <Skeleton className="h-9 w-full sm:w-40" />
+        </div>
+        <div className="flex shrink-0">
+          <Skeleton className="h-9 w-full sm:w-32" />
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="grid grid-cols-[136px_minmax(280px,1fr)_150px_132px_112px_108px_92px] border-b bg-muted/40 px-4 py-3">
+          {Array.from({ length: 7 }).map((_, index) => (
+            <Skeleton key={index} className="h-4 w-16" />
+          ))}
+        </div>
+        {Array.from({ length: 10 }).map((_, index) => (
+          <div key={index} className="grid h-16 grid-cols-[136px_minmax(280px,1fr)_150px_132px_112px_108px_92px] items-center border-b px-4">
+            <Skeleton className="h-4 w-20" />
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-4 w-56" />
+              <Skeleton className="h-3 w-28" />
+            </div>
+            <Skeleton className="mx-auto hidden h-4 w-20 md:block" />
+            <Skeleton className="mx-auto hidden h-5 w-16 lg:block" />
+            <Skeleton className="mx-auto hidden h-4 w-14 lg:block" />
+            <Skeleton className="mx-auto hidden h-5 w-14 xl:block" />
+            <Skeleton className="ml-auto h-7 w-7" />
+          </div>
+        ))}
+      </div>
+      <div className="sticky bottom-0 z-20 flex shrink-0 flex-col gap-3 border-t bg-background px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <Skeleton className="h-4 w-44" />
+        <div className="flex items-center justify-end gap-2">
+          <Skeleton className="h-9 w-20" />
+          <Skeleton className="h-4 w-20" />
+          <Skeleton className="h-9 w-16" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const tabPanelClass = "overflow-hidden rounded-xl border border-border/80 bg-background/75 shadow-sm"
-const tabPanelHeaderClass = "flex flex-col gap-3 border-b border-border/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6"
+const tabPanelHeaderClass = "flex min-h-14 flex-col justify-center gap-1 border-b border-border/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between lg:px-6"
 const tabPanelBodyClass = "space-y-6 px-5 py-5 lg:px-6 lg:py-6"
 
 type BillingDetails = {
@@ -272,7 +329,7 @@ export function SettingsWindow({
   const [permissionOptions, setPermissionOptions] = useState<PermissionOption[]>(initialPermissionOptions ?? [])
   const [canManageMembers, setCanManageMembers] = useState<boolean>(initialCanManageMembers ?? false)
   const [canEditRoles, setCanEditRoles] = useState<boolean>(initialCanEditRoles ?? false)
-  const [hasFetchedTeam, setHasFetchedTeam] = useState<boolean>(initialTeamMembers !== undefined || initialRoleOptions !== undefined || initialPermissionOptions !== undefined || initialCanManageMembers !== undefined || initialCanEditRoles !== undefined)
+  const [hasFetchedTeam, setHasFetchedTeam] = useState<boolean>(initialTeamMembers !== undefined || initialRoleOptions !== undefined || initialPermissionOptions !== undefined)
   const [loadingTeam, setLoadingTeam] = useState(false)
   const [teamError, setTeamError] = useState<string | null>(null)
   const [teamView, setTeamView] = useState<{ mode: "list" } | { mode: "invite" } | { mode: "edit"; member: TeamMember }>({ mode: "list" })
@@ -380,10 +437,10 @@ export function SettingsWindow({
     if (initialCanEditRoles !== undefined) {
       setCanEditRoles(initialCanEditRoles)
     }
-    if (initialTeamMembers !== undefined || initialRoleOptions !== undefined || initialCanManageMembers !== undefined || initialCanEditRoles !== undefined) {
+    if (initialTeamMembers !== undefined || initialRoleOptions !== undefined || initialPermissionOptions !== undefined) {
       setHasFetchedTeam(true)
     }
-  }, [initialTeamMembers, initialRoleOptions, initialCanManageMembers, initialCanEditRoles])
+  }, [initialTeamMembers, initialRoleOptions, initialPermissionOptions, initialCanManageMembers, initialCanEditRoles])
 
   useEffect(() => {
     return () => {
@@ -597,12 +654,11 @@ export function SettingsWindow({
     loadCostCodes()
   }, [tab, loadCostCodes])
 
-  const containerHeight = variant === "dialog" ? "flex h-[76vh] min-h-[560px] max-h-[84vh]" : "flex h-full min-h-0"
+  const containerHeight = variant === "dialog" ? "flex h-[76vh] min-h-[560px] max-h-[84vh]" : "flex h-full min-h-0 w-full"
   const activeSection = sections.find((section) => section.value === tab) ?? sections[0]
 
   const planName = billing?.plan?.name ?? billing?.subscription?.plan_code ?? billing?.org?.billing_model ?? "Custom"
   const billingStatus = billing?.subscription?.status ?? "active"
-  const amount = billing?.plan?.amount_cents != null ? `$${(billing.plan.amount_cents / 100).toFixed(2)} ${billing.plan.currency ?? "usd"}` : "Custom / invoiced"
   const interval = billing?.plan?.interval ?? "monthly"
   const trialEndsAt = billing?.subscription?.trial_ends_at
   const isActive = billingStatus === "active"
@@ -623,7 +679,6 @@ export function SettingsWindow({
 
   const planAmountDisplay = billing?.plan?.amount_cents != null ? `$${(billing.plan.amount_cents / 100).toFixed(0)}` : "Custom"
   const planIntervalSuffix = billing?.plan?.amount_cents != null && interval ? `/${interval === "monthly" ? "mo" : interval === "yearly" ? "yr" : interval}` : ""
-  const planCurrency = (billing?.plan?.currency ?? "usd").toUpperCase()
   const planCodeStr = (billing?.subscription?.plan_code ?? billing?.org?.billing_model ?? "").toLowerCase()
   const PlanTierIcon = planCodeStr.includes("business") || planCodeStr.includes("enterprise") ? Building2 : planCodeStr.includes("pro") ? Zap : Sparkles
   const includedFeatures = ["Workspace access for your team and organization settings.", "Projects, cost codes, compliance rules, and financial workflows.", "Invoices, receipts, payment methods, and plan changes through the billing portal.", "Security settings, member permissions, and support from the Arc team."]
@@ -847,7 +902,7 @@ export function SettingsWindow({
   }
 
   return (
-    <Tabs value={tab} onValueChange={handleTabChange}>
+    <Tabs value={tab} onValueChange={handleTabChange} className="h-full min-h-0 gap-0">
       <div className={cn(containerHeight, "relative min-h-0 overflow-hidden bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85", variant === "dialog" && "border border-border/80 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)]")}>
         <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-primary/[0.07] to-transparent" />
         {variant === "dialog" && !isMobile && (
@@ -889,20 +944,38 @@ export function SettingsWindow({
         )}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className={cn("border-b border-border/70 bg-background/90 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 lg:px-6", "py-4")}>
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex size-9 items-center justify-center border border-primary/30 bg-primary/5 text-primary">
-                <activeSection.icon className="h-4 w-4" />
+          <div className="shrink-0 border-b border-border bg-background/95 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+            <div className="flex h-10 items-center gap-3 px-2 lg:px-4">
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate text-sm font-medium text-foreground">{activeSection.label}</h1>
               </div>
-              <div>
-                {tab !== "profile" && tab !== "organization" && tab !== "billing" && tab !== "team" && tab !== "about" && <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Settings</p>}
-                <h1 className="text-lg font-semibold leading-tight">{activeSection.label}</h1>
-                {tab !== "profile" && tab !== "organization" && tab !== "billing" && tab !== "team" && tab !== "about" && <p className="text-sm text-muted-foreground">{activeSection.description}</p>}
-              </div>
+              {tab === "team" && (
+                <div className="flex shrink-0 items-center gap-2">
+                  <Select value={teamFilter} onValueChange={(next) => setTeamFilter(next as "active" | "archived")}>
+                    <SelectTrigger size="sm" className="h-8 w-[150px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">Active ({teamActiveCount})</SelectItem>
+                      <SelectItem value="archived">Archived ({teamArchivedCount})</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button disabled={!canManageMembers} onClick={() => setTeamView({ mode: "invite" })} size="sm" className="h-8">
+                    <Users className="mr-1.5 h-3.5 w-3.5" />
+                    Invite member
+                  </Button>
+                </div>
+              )}
+              {tab === "billing" && canManageBilling && isActive && (
+                <Button onClick={handleManageBilling} disabled={portalLoading} size="sm" className="gap-2">
+                  {portalLoading ? "Opening..." : "Open billing portal"}
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
 
             {isMobile ? (
-              <div className="flex items-center gap-2 overflow-hidden">
+              <div className="flex items-center gap-2 overflow-hidden px-2 pb-2">
                 <button type="button" onClick={() => handleTabChange("profile")} className={cn("flex shrink-0 items-center justify-center rounded-full border transition-all", tab === "profile" ? "border-primary/30 bg-primary/10 ring-2 ring-primary/20" : "border-border/70 bg-background/70")}>
                   <Avatar className="h-9 w-9">
                     <AvatarImage src={user?.avatar_url || "/placeholder.svg"} alt={user?.full_name} />
@@ -920,12 +993,10 @@ export function SettingsWindow({
                     ))}
                 </TabsList>
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">Manage your account and workspace preferences.</p>
-            )}
+            ) : null}
           </div>
 
-          <ScrollArea className="min-h-0 flex-1" viewportClassName={cn("min-h-0", tab === "team" && "overflow-hidden")}>
+          <ScrollArea className="min-h-0 flex-1" viewportClassName="min-h-0">
             <TabsContent value="billing" className="m-0 mt-0 outline-none focus-visible:outline-none">
               {!canManageBilling ? (
                 <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
@@ -941,59 +1012,46 @@ export function SettingsWindow({
                 <div className="px-6 py-12 text-center text-sm text-destructive">{billingError}</div>
               ) : (
                 <div className="flex flex-col">
-                  <Card className="rounded-none border-x-0 border-t-0 bg-background/75 shadow-none">
-                    <CardHeader className="gap-4 px-5 py-6 sm:flex sm:flex-row sm:items-start sm:justify-between lg:px-8">
-                      <div className="flex items-start gap-4">
-                        <div className="flex size-10 shrink-0 items-center justify-center border border-primary/30 bg-primary/5 text-primary">
-                          <PlanTierIcon className="h-4 w-4" />
+                  <div className="border-b border-border/70">
+                    <div className="flex flex-col gap-5 px-5 py-6 sm:flex-row sm:items-center sm:justify-between lg:px-8">
+                      <div className="flex min-w-0 items-start gap-4">
+                        <div className="flex size-12 shrink-0 items-center justify-center border border-border/70 bg-background text-muted-foreground">
+                          <PlanTierIcon className="h-5 w-5" />
                         </div>
-                        <div>
-                          <CardDescription>Current plan</CardDescription>
-                          <CardTitle className="mt-1 text-2xl font-semibold leading-tight">{planName}</CardTitle>
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Current plan</p>
+                          <h2 className="mt-1 truncate text-2xl font-semibold leading-tight">{planName}</h2>
                         </div>
                       </div>
-                      <CardAction className="static row-auto col-auto justify-self-auto sm:text-right">
+                      <div className="shrink-0 sm:text-right">
                         <div className="flex items-baseline gap-1 sm:justify-end">
                           <span className="text-3xl font-semibold tabular-nums text-foreground">{planAmountDisplay}</span>
                           {planIntervalSuffix && <span className="text-sm font-medium text-muted-foreground">{planIntervalSuffix}</span>}
                         </div>
-                        {billing?.plan?.amount_cents != null && <p className="mt-1 text-[11px] uppercase tracking-wider text-muted-foreground">{planCurrency}</p>}
-                      </CardAction>
-                    </CardHeader>
-                    <CardContent className="space-y-5 px-5 pb-6 lg:px-8">
-                      <div className="grid gap-3 border-t border-border/60 pt-5 sm:grid-cols-2">
-                        <div>
-                          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Billing</p>
-                          <p className="mt-1 text-sm text-foreground">{amount}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Cycle</p>
-                          <p className="mt-1 text-sm capitalize text-foreground">{interval} billing</p>
+                        <div className="mt-2 flex justify-start sm:justify-end">
+                          <Badge variant="outline" className={cn("border-border bg-muted/20 text-muted-foreground", isActive && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400")}>
+                            {formatBillingStatus(billingStatus)}
+                          </Badge>
                         </div>
                       </div>
+                    </div>
 
-                      <Accordion type="single" collapsible className="border-t border-border/60">
-                        <AccordionItem value="included" className="border-b-0">
-                          <AccordionTrigger className="py-4 hover:no-underline">
-                            <span>
-                              <span className="block text-sm font-medium">What this subscription includes</span>
-                              <span className="mt-1 block text-xs font-normal text-muted-foreground">Expand for a quick summary of plan access and billing tools.</span>
-                            </span>
-                          </AccordionTrigger>
-                          <AccordionContent className="pb-1">
-                            <div className="grid gap-3 sm:grid-cols-2">
-                              {includedFeatures.map((feature) => (
-                                <div key={feature} className="flex gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
-                                  <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                                  <p className="text-sm leading-5 text-muted-foreground">{feature}</p>
-                                </div>
-                              ))}
+                    <div className="border-t border-border/70 px-5 py-6 lg:px-8">
+                      <div>
+                        <h3 className="text-sm font-medium text-foreground">Included with your subscription</h3>
+                      </div>
+                      <div className="mt-5 overflow-hidden border border-border/70">
+                        {includedFeatures.map((feature) => (
+                          <div key={feature} className="flex gap-3 border-b border-border/70 bg-background px-4 py-4 last:border-b-0">
+                            <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center border border-primary/25 bg-primary/[0.04] text-primary">
+                              <Check className="h-3.5 w-3.5" />
                             </div>
-                          </AccordionContent>
-                        </AccordionItem>
-                      </Accordion>
-                    </CardContent>
-                  </Card>
+                            <p className="text-sm leading-6 text-foreground/85">{feature}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
 
                   {/* Inline alerts */}
                   {(isTrialing || isPastDue || billingActionError) && (
@@ -1027,7 +1085,7 @@ export function SettingsWindow({
                   {needsSubscription && (
                     <div className={cn(tabPanelClass, "mx-5 my-8 lg:mx-8 lg:my-10")}>
                       <div className={tabPanelHeaderClass}>
-                        <div className="mb-8">
+                        <div>
                           <h3 className="text-base font-semibold text-foreground">Choose your plan</h3>
                           <p className="mt-1 text-sm text-muted-foreground">{isTrialing ? "Pick a plan to keep your workspace active after the trial." : "Activate your workspace by selecting a plan."}</p>
                         </div>
@@ -1090,25 +1148,6 @@ export function SettingsWindow({
                     </div>
                   )}
 
-                  {isActive && (
-                    <Card className="mx-5 my-8 rounded-xl bg-background/75 lg:mx-8 lg:my-10">
-                      <CardHeader className="gap-4 sm:flex sm:flex-row sm:items-center sm:justify-between">
-                        <div className="flex items-start gap-3">
-                          <div className="flex size-9 shrink-0 items-center justify-center border border-border/70 bg-background text-muted-foreground">
-                            <Receipt className="h-4 w-4" />
-                          </div>
-                          <div>
-                            <CardTitle className="text-base">Billing portal</CardTitle>
-                            <CardDescription className="mt-1">View invoices, update payment methods, and manage plan changes in Stripe.</CardDescription>
-                          </div>
-                        </div>
-                        <Button onClick={handleManageBilling} disabled={portalLoading} className="gap-2">
-                          {portalLoading ? "Opening..." : "Open billing portal"}
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        </Button>
-                      </CardHeader>
-                    </Card>
-                  )}
                 </div>
               )}
             </TabsContent>
@@ -1191,74 +1230,6 @@ export function SettingsWindow({
                           </Label>
                           <Input id="company" value={organizationForm.name} onChange={(event) => handleOrganizationFieldChange("name", event.target.value)} placeholder="Company name" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
                         </div>
-                        <div className="space-y-3">
-                          <Label htmlFor="billing-email" className="text-sm font-medium">
-                            Billing email
-                          </Label>
-                          <Input id="billing-email" type="email" value={organizationForm.billingEmail} onChange={(event) => handleOrganizationFieldChange("billingEmail", event.target.value)} placeholder="billing@company.com" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                        </div>
-                      </div>
-
-                      <div className="space-y-4 rounded-lg border border-border/70 bg-muted/20 p-4">
-                        <p className="text-sm font-semibold text-foreground">Billing address</p>
-                        <div className="grid gap-4 lg:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label htmlFor="address-line-1" className="text-sm font-medium">
-                              Address line 1
-                            </Label>
-                            <Input id="address-line-1" value={organizationForm.addressLine1} onChange={(event) => handleOrganizationFieldChange("addressLine1", event.target.value)} placeholder="123 Main St" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="address-line-2" className="text-sm font-medium">
-                              Address line 2
-                            </Label>
-                            <Input id="address-line-2" value={organizationForm.addressLine2} onChange={(event) => handleOrganizationFieldChange("addressLine2", event.target.value)} placeholder="Suite, floor, unit (optional)" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                        </div>
-                        <div className="grid gap-4 lg:grid-cols-4">
-                          <div className="space-y-2 lg:col-span-2">
-                            <Label htmlFor="address-city" className="text-sm font-medium">
-                              City
-                            </Label>
-                            <Input id="address-city" value={organizationForm.city} onChange={(event) => handleOrganizationFieldChange("city", event.target.value)} placeholder="Naples" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="address-state" className="text-sm font-medium">
-                              State
-                            </Label>
-                            <Input id="address-state" value={organizationForm.state} onChange={(event) => handleOrganizationFieldChange("state", event.target.value)} placeholder="FL" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="address-postal" className="text-sm font-medium">
-                              ZIP
-                            </Label>
-                            <Input id="address-postal" value={organizationForm.postalCode} onChange={(event) => handleOrganizationFieldChange("postalCode", event.target.value)} placeholder="34102" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="address-country" className="text-sm font-medium">
-                            Country
-                          </Label>
-                          <Input id="address-country" value={organizationForm.country} onChange={(event) => handleOrganizationFieldChange("country", event.target.value)} placeholder="United States" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                        </div>
-                      </div>
-
-                      <div className="space-y-4 rounded-lg border border-border/70 bg-background/60 p-4">
-                        <p className="text-sm font-semibold text-foreground">Billing defaults</p>
-                        <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-                          <div className="space-y-2">
-                            <Label htmlFor="default-net-terms" className="text-sm font-medium">
-                              Default net terms
-                            </Label>
-                            <Input id="default-net-terms" type="number" min={0} max={365} value={organizationForm.defaultPaymentTermsDays} onChange={(event) => handleOrganizationFieldChange("defaultPaymentTermsDays", Number(event.target.value || 0))} className="h-11" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="default-invoice-note" className="text-sm font-medium">
-                              Default payment details
-                            </Label>
-                            <Textarea id="default-invoice-note" value={organizationForm.defaultInvoiceNote} onChange={(event) => handleOrganizationFieldChange("defaultInvoiceNote", event.target.value)} placeholder={"Bank: Example Bank, IBAN: XXXX 0000 0000 0000 0000\nReference: Invoice number"} className="min-h-[88px]" disabled={!organizationSettings?.canManageOrganization} />
-                          </div>
-                        </div>
                       </div>
 
                       <div className="flex justify-start">
@@ -1273,55 +1244,115 @@ export function SettingsWindow({
                 </div>
               </TabsContent>
 
+              <TabsContent value="invoicing" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <div className="mx-auto max-w-6xl space-y-8">
+                  {loadingOrganization ? (
+                    <div className="flex items-center gap-3 text-muted-foreground p-6">
+                      <Spinner className="h-4 w-4" />
+                      <span className="text-sm">Loading invoicing settings...</span>
+                    </div>
+                  ) : (
+                    <>
+                      <section className="overflow-hidden border border-border/80 bg-background/75 shadow-sm">
+                        <div className="border-b border-border/70 px-4 py-4 lg:px-5">
+                          <h2 className="text-sm font-medium text-foreground">Invoice sender</h2>
+                          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                            These details appear on client-facing invoices and payment documents.
+                          </p>
+                        </div>
+                        <div className="divide-y divide-border/70">
+                          <div className="grid gap-3 px-4 py-4 lg:grid-cols-[220px_1fr] lg:px-5">
+                            <Label htmlFor="billing-email" className="pt-2 text-sm font-medium">
+                              Invoice email
+                            </Label>
+                            <Input id="billing-email" type="email" value={organizationForm.billingEmail} onChange={(event) => handleOrganizationFieldChange("billingEmail", event.target.value)} placeholder="billing@company.com" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                          </div>
+                          <div className="grid gap-3 px-4 py-4 lg:grid-cols-[220px_1fr] lg:px-5">
+                            <div>
+                              <Label htmlFor="address-line-1" className="text-sm font-medium">
+                                Remittance address
+                              </Label>
+                              <p className="mt-1 text-xs leading-5 text-muted-foreground">Used as the business address on invoices.</p>
+                            </div>
+                            <div className="space-y-3">
+                              <div className="grid gap-3 lg:grid-cols-2">
+                                <Input id="address-line-1" value={organizationForm.addressLine1} onChange={(event) => handleOrganizationFieldChange("addressLine1", event.target.value)} placeholder="Address line 1" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                                <Input id="address-line-2" value={organizationForm.addressLine2} onChange={(event) => handleOrganizationFieldChange("addressLine2", event.target.value)} placeholder="Address line 2" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                              </div>
+                              <div className="grid gap-3 lg:grid-cols-[1fr_120px_140px]">
+                                <Input id="address-city" value={organizationForm.city} onChange={(event) => handleOrganizationFieldChange("city", event.target.value)} placeholder="City" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                                <Input id="address-state" value={organizationForm.state} onChange={(event) => handleOrganizationFieldChange("state", event.target.value)} placeholder="State" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                                <Input id="address-postal" value={organizationForm.postalCode} onChange={(event) => handleOrganizationFieldChange("postalCode", event.target.value)} placeholder="ZIP" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                              </div>
+                              <Input id="address-country" value={organizationForm.country} onChange={(event) => handleOrganizationFieldChange("country", event.target.value)} placeholder="Country" className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="overflow-hidden border border-border/80 bg-background/75 shadow-sm">
+                        <div className="border-b border-border/70 px-4 py-4 lg:px-5">
+                          <h2 className="text-sm font-medium text-foreground">Invoice defaults</h2>
+                          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                            Starting values for new client invoices. You can still override them per invoice.
+                          </p>
+                        </div>
+                        <div className="divide-y divide-border/70">
+                          <div className="grid gap-3 px-4 py-4 lg:grid-cols-[220px_1fr] lg:px-5">
+                            <Label htmlFor="default-net-terms" className="pt-2 text-sm font-medium">
+                              Default net terms
+                            </Label>
+                            <div className="max-w-40">
+                              <Input id="default-net-terms" type="number" min={0} max={365} value={organizationForm.defaultPaymentTermsDays} onChange={(event) => handleOrganizationFieldChange("defaultPaymentTermsDays", Number(event.target.value || 0))} className="h-10" disabled={!organizationSettings?.canManageOrganization} />
+                            </div>
+                          </div>
+                          <div className="grid gap-3 px-4 py-4 lg:grid-cols-[220px_1fr] lg:px-5">
+                            <div>
+                              <Label htmlFor="default-invoice-note" className="text-sm font-medium">
+                                Payment details
+                              </Label>
+                              <p className="mt-1 text-xs leading-5 text-muted-foreground">Bank details, check instructions, or other payment notes.</p>
+                            </div>
+                            <Textarea id="default-invoice-note" value={organizationForm.defaultInvoiceNote} onChange={(event) => handleOrganizationFieldChange("defaultInvoiceNote", event.target.value)} placeholder={"Bank: Example Bank, IBAN: XXXX 0000 0000 0000 0000\nReference: Invoice number"} className="min-h-[96px]" disabled={!organizationSettings?.canManageOrganization} />
+                          </div>
+                        </div>
+                      </section>
+
+                      <div className="flex justify-start">
+                        <Button size="sm" onClick={handleOrganizationSave} disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}>
+                          {isSavingOrganization ? "Saving..." : "Save invoicing settings"}
+                        </Button>
+                      </div>
+                    </>
+                  )}
+
+                  {(organizationError || organizationNotice) && <div className={cn("rounded-md border px-3 py-2 text-sm", organizationError ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-primary/30 bg-primary/5 text-primary")}>{organizationError ?? organizationNotice}</div>}
+                </div>
+              </TabsContent>
+
               <TabsContent value="notifications" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
-                <div className="mx-auto max-w-6xl">
-                  <div className={tabPanelClass}>
-                    <div className={tabPanelHeaderClass}>
-                      <div>
-                        <h2 className="text-base font-semibold">Notifications</h2>
-                        <p className="text-sm text-muted-foreground">Configure how and when you receive updates.</p>
-                      </div>
-                    </div>
-                    <div className={tabPanelBodyClass}>
-                      <div className="max-w-2xl">
-                        <NotificationPreferences />
-                      </div>
-                    </div>
-                  </div>
+                <div className="mx-auto flex max-w-6xl justify-center">
+                  <NotificationPreferences />
                 </div>
               </TabsContent>
 
               <TabsContent value="integrations" className="m-0 mt-0 outline-none focus-visible:outline-none">
-                <div className="flex flex-col">
-                  {/* Modern Header */}
-                  <div className="relative overflow-hidden border-b border-border/70 bg-gradient-to-br from-indigo-500/[0.05] via-background to-background px-6 py-10 md:px-10 md:py-12 lg:px-12 lg:py-14">
-                    <div className="pointer-events-none absolute inset-0 [background-image:linear-gradient(to_right,oklch(0.5_0_0/0.03)_1px,transparent_1px),linear-gradient(to_bottom,oklch(0.5_0_0/0.03)_1px,transparent_1px)] [background-size:24px_24px]" />
-                    <div className="relative max-w-4xl">
-                      <div className="flex items-center gap-3 text-indigo-600">
-                        <Link2 className="h-5 w-5" />
-                        <span className="text-[11px] font-bold uppercase tracking-[0.2em]">External Connections</span>
-                      </div>
-                      <h2 className="mt-4 text-3xl font-semibold tracking-tight text-foreground md:text-4xl">Integrations</h2>
-                      <p className="mt-3 text-lg text-muted-foreground leading-relaxed">Connect Arc with your accounting and payment tools to automate your entire financial workflow.</p>
-                    </div>
-                  </div>
-
-                  {/* Spacious Grid */}
-                  <div className="px-6 py-8 md:px-10 md:py-10 lg:px-12 lg:py-12">
+                <div className="flex min-h-full flex-col">
+                  <div className="flex-1">
                     {loadingIntegrations ? (
                       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
                         <Spinner className="h-8 w-8 mb-4 text-indigo-500/50" />
                         <span className="text-sm font-medium tracking-wide">Syncing integration status...</span>
                       </div>
                     ) : (
-                      <div className="mx-auto max-w-6xl">
-                        <div className="grid gap-8 lg:grid-cols-2">
+                      <div className="w-full">
+                        <div className="flex flex-col border-y border-border/70">
                           <StripeConnectionCard connection={stripeConnection} canManage={Boolean(organizationSettings?.canManageOrganization)} onConnectionChange={setStripeConnection} />
+                          <div className="h-px bg-border/70" />
                           <QBOConnectionCard connection={qboConnection} onConnectionChange={setQboConnection} />
                         </div>
 
-                        {/* Future integrations placeholder */}
-                        <div className="mt-12 rounded-2xl border border-dashed border-border/60 bg-muted/20 p-8 text-center">
+                        <div className="mt-3 border-y border-dashed border-border/70 bg-muted/20 px-4 py-3 text-center">
                           <p className="text-sm font-medium text-muted-foreground">
                             Looking for another integration?
                             <a href="mailto:support@arc.build" className="ml-1 text-primary hover:underline">
@@ -1337,28 +1368,6 @@ export function SettingsWindow({
 
               <TabsContent value="team" className="m-0 mt-0 h-full min-h-0 outline-none focus-visible:outline-none">
                 <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background">
-                  <div className="relative z-20 flex shrink-0 flex-col gap-3 border-b bg-background/95 px-4 py-3 backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between lg:px-6">
-                    <div className="min-w-0">
-                      <h2 className="text-sm font-semibold">Team directory</h2>
-                      <p className="mt-0.5 text-xs text-muted-foreground">Manage teammates, role assignments, MFA status, and invite workflow.</p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Select value={teamFilter} onValueChange={(next) => setTeamFilter(next as "active" | "archived")}>
-                        <SelectTrigger size="sm" className="h-8 w-[160px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="active">Active ({teamActiveCount})</SelectItem>
-                          <SelectItem value="archived">Archived ({teamArchivedCount})</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Button disabled={!canManageMembers} onClick={() => setTeamView({ mode: "invite" })} size="sm" className="h-8">
-                        <Users className="mr-1.5 h-3.5 w-3.5" />
-                        Invite member
-                      </Button>
-                    </div>
-                  </div>
-
                   <div className="relative z-10 min-h-0 flex-1 overflow-hidden">
                     <div className="h-full min-w-0 overflow-auto">
                       {loadingTeam ? (
@@ -1369,7 +1378,7 @@ export function SettingsWindow({
                       ) : teamError ? (
                         <div className="p-8 text-sm text-destructive">{teamError}</div>
                       ) : (
-                        <TeamTable className="h-full" members={teamMembers} canManageMembers={canManageMembers} canEditRoles={canEditRoles} showProjectCounts={false} showInviteAction={false} hideToolbar view={teamFilter} onViewChange={setTeamFilter} onMemberChange={refreshTeam} onInviteMember={() => setTeamView({ mode: "invite" })} onEditMember={(member) => setTeamView({ mode: "edit", member })} />
+                        <TeamTable className="h-full" tableWrapperClassName="px-0 py-0 sm:px-0" members={teamMembers} canManageMembers={canManageMembers} canEditRoles={canEditRoles} showProjectCounts={false} showInviteAction={false} hideToolbar view={teamFilter} onViewChange={setTeamFilter} onMemberChange={refreshTeam} onInviteMember={() => setTeamView({ mode: "invite" })} onEditMember={(member) => setTeamView({ mode: "edit", member })} />
                       )}
                     </div>
 
@@ -1410,78 +1419,53 @@ export function SettingsWindow({
                 </div>
               </TabsContent>
 
-              <TabsContent value="cost-codes" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
-                <div className="mx-auto max-w-6xl">
-                  <div className={tabPanelClass}>
-                    <div className={tabPanelHeaderClass}>
-                      <div>
-                        <h2 className="text-base font-semibold">Cost Codes</h2>
-                        <p className="text-sm text-muted-foreground">Manage your org-wide cost code library for financial workflows.</p>
-                      </div>
-                    </div>
-                    <div className={tabPanelBodyClass}>
-                      {loadingCostCodes ? (
-                        <div className="flex items-center gap-3 text-muted-foreground">
-                          <Spinner className="h-4 w-4" />
-                          <span className="text-sm">Loading cost codes...</span>
-                        </div>
-                      ) : costCodesError ? (
-                        <div className="text-sm text-destructive">{costCodesError}</div>
-                      ) : (
-                        <CostCodeManager costCodes={costCodes} canManage={Boolean(organizationSettings?.canManageOrganization)} onCostCodesChange={setCostCodes} />
-                      )}
-                    </div>
-                  </div>
-                </div>
+              <TabsContent value="cost-codes" className="m-0 mt-0 h-full min-h-[calc(100svh-7rem)] outline-none focus-visible:outline-none">
+                {loadingCostCodes || (!hasFetchedCostCodes && tab === "cost-codes") ? (
+                  <CostCodeTableSkeleton />
+                ) : costCodesError ? (
+                  <div className="px-6 py-12 text-center text-sm text-destructive">{costCodesError}</div>
+                ) : (
+                  <CostCodeManager costCodes={costCodes} canManage={Boolean(organizationSettings?.canManageOrganization)} onCostCodesChange={setCostCodes} />
+                )}
               </TabsContent>
 
               <TabsContent value="compliance" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
                 <div className="mx-auto max-w-6xl">
-                  <div className={tabPanelClass}>
-                    <div className={tabPanelHeaderClass}>
-                      <div>
-                        <h2 className="text-base font-semibold">Payables</h2>
-                        <p className="text-sm text-muted-foreground">Configure payment gating and compliance requirements.</p>
-                      </div>
-                    </div>
-                    <div className={tabPanelBodyClass}>
-                      <ComplianceSettings initialRules={initialComplianceRules} initialRequirementDefaults={initialComplianceRequirementDefaults} canManage={canManageCompliance} />
-                    </div>
-                  </div>
+                  <ComplianceSettings initialRules={initialComplianceRules} initialRequirementDefaults={initialComplianceRequirementDefaults} canManage={canManageCompliance} />
                 </div>
               </TabsContent>
 
               <TabsContent value="about" className="m-0 mt-0 h-full">
-                <div className="flex flex-col min-h-[calc(100vh-20rem)] py-16 lg:py-24">
-                  <div className="flex-1 space-y-24">
-                    <div className="flex flex-col items-center justify-center space-y-10 text-center">
+                <div className="flex min-h-full flex-col justify-between px-5 py-8 lg:px-8 lg:py-10">
+                  <div className="space-y-10">
+                    <div className="flex flex-col items-center justify-center space-y-5 text-center">
                       <div className="relative">
-                        <div className="absolute -inset-6 rounded-full bg-primary/5 blur-3xl" />
-                        <div className="relative flex h-40 w-40 items-center justify-center rounded-3xl border border-border/50 bg-background/80 shadow-xl transition-all duration-500 hover:scale-105">
-                          <img src={appInfo.logoUrl} alt={`${appInfo.name} logo`} className="h-24 w-24 object-contain" />
+                        <div className="absolute -inset-4 rounded-full bg-primary/5 blur-3xl" />
+                        <div className="relative flex h-28 w-28 items-center justify-center border border-border/50 bg-white shadow-lg transition-all duration-500 hover:scale-105">
+                          <img src={appInfo.logoUrl} alt={`${appInfo.name} logo`} className="h-20 w-20 object-contain" />
                         </div>
                       </div>
-                      <div className="space-y-4">
-                        <h2 className="text-4xl font-extrabold tracking-tight text-foreground">{appInfo.name}</h2>
-                        <p className="text-sm font-semibold tracking-widest uppercase text-muted-foreground/60">Version {appInfo.version}</p>
+                      <div className="space-y-2">
+                        <h2 className="text-3xl font-extrabold tracking-tight text-foreground">{appInfo.name}</h2>
+                        <p className="text-xs font-semibold tracking-widest uppercase text-muted-foreground/60">Version {appInfo.version}</p>
                       </div>
                     </div>
 
                     <div className="mx-auto w-full max-w-2xl px-4">
-                      <div className="grid gap-px overflow-hidden rounded-2xl border border-border/60 bg-border/60 shadow-2xl sm:grid-cols-2">
-                        <div className="bg-background/95 p-8 space-y-2">
+                      <div className="grid gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 shadow-xl sm:grid-cols-2">
+                        <div className="space-y-1.5 bg-background/95 p-5">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Workspace</span>
                           <p className="text-lg font-semibold text-foreground">{organizationSettings?.name ?? billing?.org?.name ?? "Workspace"}</p>
                         </div>
-                        <div className="bg-background/95 p-8 space-y-2">
+                        <div className="space-y-1.5 bg-background/95 p-5">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Workspace ID</span>
                           <p className="font-mono text-xs text-foreground/80 break-all">{organizationSettings?.id ?? "—"}</p>
                         </div>
-                        <div className="bg-background/95 p-8 space-y-2">
+                        <div className="space-y-1.5 bg-background/95 p-5">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Account</span>
                           <p className="text-lg font-semibold text-foreground break-all">{user?.email ?? "—"}</p>
                         </div>
-                        <div className="bg-background/95 p-8 space-y-2">
+                        <div className="space-y-1.5 bg-background/95 p-5">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Your Role</span>
                           <p className="text-lg font-semibold text-foreground">{userRoleLabel ?? (loadingTeam ? "Loading..." : "Member")}</p>
                         </div>
@@ -1489,8 +1473,8 @@ export function SettingsWindow({
                     </div>
                   </div>
 
-                  <div className="mt-24 pt-12 border-t border-border/40">
-                    <div className="mx-auto max-w-2xl flex flex-col items-center justify-center space-y-8 px-4">
+                  <div className="mt-8 border-t border-border/40 pt-6">
+                    <div className="mx-auto flex max-w-2xl flex-col items-center justify-center space-y-4 px-4">
                       <nav className="flex items-center justify-center gap-x-8 text-sm font-semibold">
                         <Link href="https://arcnaples.com" target="_blank" className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
                           Website

@@ -17,6 +17,8 @@ export async function createCostCodeAction(input: {
   division?: string | null
   category?: string | null
   unit?: string | null
+  is_reimbursable_default?: boolean
+  default_markup_percent?: number | null
 }) {
   await requirePermissionGuard("org.admin")
   const result = await createCostCode({
@@ -26,6 +28,8 @@ export async function createCostCodeAction(input: {
     division: input.division?.trim() || undefined,
     category: input.category?.trim() || undefined,
     unit: input.unit?.trim() || undefined,
+    is_reimbursable_default: input.is_reimbursable_default,
+    default_markup_percent: input.default_markup_percent,
     standard: "custom",
   })
   revalidatePath("/settings")
@@ -41,6 +45,8 @@ export async function updateCostCodeAction(input: {
   division?: string | null
   category?: string | null
   unit?: string | null
+  is_reimbursable_default?: boolean
+  default_markup_percent?: number | null
   is_active?: boolean
 }) {
   await requirePermissionGuard("org.admin")
@@ -52,6 +58,8 @@ export async function updateCostCodeAction(input: {
     division: input.division?.trim() || null,
     category: input.category?.trim() || null,
     unit: input.unit?.trim() || null,
+    is_reimbursable_default: input.is_reimbursable_default,
+    default_markup_percent: input.default_markup_percent,
     is_active: input.is_active,
   })
   revalidatePath("/settings")
@@ -103,6 +111,5 @@ export async function importCostCodesAction(csv: string) {
   revalidatePath("/settings/cost-codes")
   return result
 }
-
 
 

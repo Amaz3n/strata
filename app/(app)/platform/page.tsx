@@ -23,7 +23,7 @@ import { requireAuth } from "@/lib/auth/context"
 
 export const dynamic = "force-dynamic"
 
-export default async function PlatformPage() {
+async function PlatformData() {
   const access = await getCurrentPlatformAccess()
 
   if (!access.canAccessPlatform) {
@@ -40,61 +40,69 @@ export default async function PlatformPage() {
   ])
 
   return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Platform Operations</h1>
+          <p className="text-muted-foreground mt-2">Unified admin and platform console for managing client organizations.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <ProvisionOrgSheet action={provisionPlatformOrgAction} plans={plans} />
+          <Button asChild variant="outline">
+            <Link href="/admin/customers">Manage Customers</Link>
+          </Button>
+          {access.roles.map((role) => (
+            <Badge key={role} variant="secondary">{role}</Badge>
+          ))}
+        </div>
+      </div>
+
+      <Suspense fallback={<AdminStatsSkeleton />}>
+        <AdminStats />
+      </Suspense>
+
+      <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr]">
+        <Suspense fallback={<Skeleton className="h-80" />}>
+          <QuickActions />
+        </Suspense>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Impersonation</CardTitle>
+              <CardDescription>
+                Start an audited impersonation session for support and diagnostics. Active session:
+                {" "}
+                {session.impersonation.active ? "yes" : "no"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ImpersonationPanel orgs={orgs.map((org) => ({ id: org.id, name: org.name }))} />
+            </CardContent>
+          </Card>
+
+          <PlatformAiDefaultsCard
+            initialProvider={platformAiConfig.provider}
+            initialModel={platformAiConfig.model}
+            initialSource={platformAiConfig.source}
+            canManage={canManagePlatformAi}
+          />
+        </div>
+      </div>
+
+    </div>
+  )
+}
+
+export default function PlatformPage() {
+  return (
     <PageLayout
       title="Platform"
       breadcrumbs={[{ label: "Platform" }]}
     >
-      <div className="space-y-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">Platform Operations</h1>
-            <p className="text-muted-foreground mt-2">Unified admin and platform console for managing client organizations.</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <ProvisionOrgSheet action={provisionPlatformOrgAction} plans={plans} />
-            <Button asChild variant="outline">
-              <Link href="/admin/customers">Manage Customers</Link>
-            </Button>
-            {access.roles.map((role) => (
-              <Badge key={role} variant="secondary">{role}</Badge>
-            ))}
-          </div>
-        </div>
-
-        <Suspense fallback={<AdminStatsSkeleton />}>
-          <AdminStats />
-        </Suspense>
-
-        <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr]">
-          <Suspense fallback={<Skeleton className="h-80" />}>
-            <QuickActions />
-          </Suspense>
-
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Impersonation</CardTitle>
-                <CardDescription>
-                  Start an audited impersonation session for support and diagnostics. Active session:
-                  {" "}
-                  {session.impersonation.active ? "yes" : "no"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ImpersonationPanel orgs={orgs.map((org) => ({ id: org.id, name: org.name }))} />
-              </CardContent>
-            </Card>
-
-            <PlatformAiDefaultsCard
-              initialProvider={platformAiConfig.provider}
-              initialModel={platformAiConfig.model}
-              initialSource={platformAiConfig.source}
-              canManage={canManagePlatformAi}
-            />
-          </div>
-        </div>
-
-      </div>
+      <Suspense fallback={<div className="p-6 space-y-4"><Skeleton className="h-8 w-48 mb-6" /><div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-16 w-full rounded-md" />))}</div></div>}>
+        <PlatformData />
+      </Suspense>
     </PageLayout>
   )
 }

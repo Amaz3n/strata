@@ -486,6 +486,23 @@ async function getBudgetWithActualsInternal(
     throw new Error(`Failed to load change order lines: ${coLinesError.message}`)
   }
 
+  const { data: revisionLines, error: revisionLinesError } = await supabase
+    .from("budget_revision_lines")
+    .select("cost_code_id, amount_cents, allowance_draw_cents, revision:budget_revisions!inner(project_id, status)")
+    .eq("org_id", orgId)
+    .eq("revision.project_id", projectId)
+    .eq("revision.status", "posted")
+
+  if (revisionLinesError) {
+    throw new Error(`Failed to load budget revisions: ${revisionLinesError.message}`)
+  }
+
+  const { data: progressList } = await supabase
+    .from("project_cost_code_progress")
+    .select("cost_code_id, percent_complete, estimate_remaining_cents")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+
   const byCostCode = new Map<
     string,
     {
@@ -494,6 +511,8 @@ async function getBudgetWithActualsInternal(
       actual_cents: number
       invoiced_cents: number
       co_adjustment_cents: number
+      percent_complete: number | null
+      estimate_remaining_cents: number | null
     }
   >()
 
@@ -506,6 +525,8 @@ async function getBudgetWithActualsInternal(
         actual_cents: 0,
         invoiced_cents: 0,
         co_adjustment_cents: 0,
+        percent_complete: null,
+        estimate_remaining_cents: null,
       }
     existing.budget_cents += line.amount_cents ?? 0
     byCostCode.set(key, existing)
@@ -520,6 +541,8 @@ async function getBudgetWithActualsInternal(
         actual_cents: 0,
         invoiced_cents: 0,
         co_adjustment_cents: 0,
+        percent_complete: null,
+        estimate_remaining_cents: null,
       }
     existing.committed_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
@@ -534,6 +557,8 @@ async function getBudgetWithActualsInternal(
         actual_cents: 0,
         invoiced_cents: 0,
         co_adjustment_cents: 0,
+        percent_complete: null,
+        estimate_remaining_cents: null,
       }
     existing.actual_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
@@ -548,12 +573,17 @@ async function getBudgetWithActualsInternal(
         actual_cents: 0,
         invoiced_cents: 0,
         co_adjustment_cents: 0,
+        percent_complete: null,
+        estimate_remaining_cents: null,
       }
     existing.invoiced_cents += (line.unit_price_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
   }
 
-  for (const line of coLines ?? []) {
+  const postedRevisionLines = revisionLines ?? []
+  const coAdjustmentSource = postedRevisionLines.length > 0 ? postedRevisionLines : coLines ?? []
+
+  for (const line of coAdjustmentSource) {
     const key = line.cost_code_id ?? "uncoded"
     const existing =
       byCostCode.get(key) ?? {
@@ -562,9 +592,38 @@ async function getBudgetWithActualsInternal(
         actual_cents: 0,
         invoiced_cents: 0,
         co_adjustment_cents: 0,
+        percent_complete: null,
+        estimate_remaining_cents: null,
       }
-    const allowanceCents = (line.metadata as any)?.allowance_cents ?? 0
-    existing.co_adjustment_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1) + allowanceCents
+    const sourceLine = line as any
+    const metadata = (sourceLine.metadata ?? {}) as Record<string, any>
+    if ("amount_cents" in sourceLine) {
+      existing.co_adjustment_cents += sourceLine.amount_cents ?? 0
+    } else {
+      const allowanceCents = metadata.allowance_draw_cents ?? metadata.allowance_cents ?? 0
+      const postedRevisionCents = metadata.budget_revision_cents
+      existing.co_adjustment_cents +=
+        typeof postedRevisionCents === "number"
+          ? postedRevisionCents
+          : (sourceLine.unit_cost_cents ?? 0) * (sourceLine.quantity ?? 1) + allowanceCents
+    }
+    byCostCode.set(key, existing)
+  }
+
+  for (const prog of progressList ?? []) {
+    const key = prog.cost_code_id ?? "uncoded"
+    const existing =
+      byCostCode.get(key) ?? {
+        budget_cents: 0,
+        committed_cents: 0,
+        actual_cents: 0,
+        invoiced_cents: 0,
+        co_adjustment_cents: 0,
+        percent_complete: null,
+        estimate_remaining_cents: null,
+      }
+    existing.percent_complete = prog.percent_complete
+    existing.estimate_remaining_cents = prog.estimate_remaining_cents
     byCostCode.set(key, existing)
   }
 
@@ -573,6 +632,9 @@ async function getBudgetWithActualsInternal(
   let totalActual = 0
   let totalInvoiced = 0
   let totalCOAdjustment = 0
+  let totalEac = 0
+  let totalCtc = 0
+  let totalVac = 0
 
   const breakdown = Array.from(byCostCode.entries()).map(([costCodeId, values]) => {
     totalBudget += values.budget_cents
@@ -585,6 +647,16 @@ async function getBudgetWithActualsInternal(
     const variance = adjustedBudget - values.actual_cents
     const variancePercent = adjustedBudget > 0 ? Math.round((values.actual_cents / adjustedBudget) * 100) : 0
 
+    const eac_cents = values.estimate_remaining_cents != null
+      ? values.actual_cents + values.estimate_remaining_cents
+      : Math.max(adjustedBudget, values.actual_cents, values.committed_cents)
+    const cost_to_complete_cents = Math.max(0, eac_cents - values.actual_cents)
+    const variance_at_completion_cents = adjustedBudget - eac_cents
+
+    totalEac += eac_cents
+    totalCtc += cost_to_complete_cents
+    totalVac += variance_at_completion_cents
+
     return {
       cost_code_id: costCodeId === "uncoded" ? null : costCodeId,
       budget_cents: values.budget_cents,
@@ -595,6 +667,10 @@ async function getBudgetWithActualsInternal(
       invoiced_cents: values.invoiced_cents,
       variance_cents: variance,
       variance_percent: variancePercent,
+      percent_complete: values.percent_complete,
+      eac_cents,
+      cost_to_complete_cents,
+      variance_at_completion_cents,
       status: variancePercent > 100 ? "over" : variancePercent > 90 ? "warning" : "ok",
     }
   })
@@ -614,6 +690,9 @@ async function getBudgetWithActualsInternal(
       total_invoiced_cents: totalInvoiced,
       total_variance_cents: adjustedTotalBudget - totalActual,
       variance_percent: adjustedTotalBudget > 0 ? Math.round((totalActual / adjustedTotalBudget) * 100) : 0,
+      total_eac_cents: totalEac,
+      total_ctc_cents: totalCtc,
+      total_vac_cents: totalVac,
       gross_margin_cents: grossMarginCents,
       gross_margin_percent: grossMarginPercent,
       status: grossMarginPercent < 10 ? "critical" : grossMarginPercent < 20 ? "warning" : "healthy",
@@ -773,5 +852,42 @@ async function selectIds(
   return Array.from(new Set((data ?? []).map((row: any) => row.id)))
 }
 
+export async function updateCostCodeProgress({
+  orgId,
+  projectId,
+  costCodeId,
+  percentComplete,
+  estimateRemainingCents,
+  notes,
+}: {
+  orgId: string
+  projectId: string
+  costCodeId: string
+  percentComplete: number | null
+  estimateRemainingCents: number | null
+  notes: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
 
+  // For server action calls we need the user session to know who recorded this.
+  // Assuming this is only called from authorized server actions:
+  const { data: userResponse } = await supabase.auth.getUser()
 
+  const { error } = await supabase
+    .from("project_cost_code_progress")
+    .upsert({
+      org_id: orgId,
+      project_id: projectId,
+      cost_code_id: costCodeId,
+      percent_complete: percentComplete,
+      estimate_remaining_cents: estimateRemainingCents,
+      notes: notes,
+      recorded_by_user_id: userResponse.user?.id ?? "00000000-0000-0000-0000-000000000000",
+    }, {
+      onConflict: "org_id, project_id, cost_code_id"
+    })
+
+  if (error) {
+    throw new Error(`Failed to update cost code progress: ${error.message}`)
+  }
+}

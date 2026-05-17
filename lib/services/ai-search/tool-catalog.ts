@@ -245,8 +245,6 @@ const GENERIC_TOOLS: AiToolDefinition[] = [
       "change_order",
       "contract",
       "proposal",
-      "conversation",
-      "message",
       "rfi",
       "submittal",
       "drawing_set",
@@ -291,26 +289,6 @@ const ACTION_TOOLS: AiToolDefinition[] = [
     examples: [
       "Create a task to follow up on invoice 1004",
       "Make this due Friday and assign to Alex",
-    ],
-  },
-  {
-    key: "messages.send",
-    name: "Send Message",
-    category: "action",
-    description: "Send a follow-up message in a conversation thread.",
-    grounded: true,
-    requiresApproval: true,
-    entities: ["conversation", "message", "project"],
-    dataSources: ["conversations", "messages", "projects"],
-    parameters: [
-      { name: "conversationId", type: "string", required: false, description: "Conversation/thread ID." },
-      { name: "body", type: "string", required: true, description: "Message body text." },
-      { name: "projectName", type: "string", required: false, description: "Optional project name hint to resolve thread." },
-      { name: "recipientHint", type: "string", required: false, description: "Optional recipient/company hint." },
-    ],
-    examples: [
-      "Send a reminder to the vendor in this thread",
-      "Draft and send a payment follow-up",
     ],
   },
 ]

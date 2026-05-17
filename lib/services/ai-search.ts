@@ -407,8 +407,6 @@ const ENTITY_INTENTS: EntityIntentDefinition[] = [
   { type: "commitment", label: "commitment", tokens: ["commitment"], aliases: [/\bcommitments?\b/] },
   { type: "contract", label: "contract", tokens: ["contract", "agreement"], aliases: [/\bcontracts?\b/, /\bagreements?\b/] },
   { type: "proposal", label: "proposal", tokens: ["proposal"], aliases: [/\bproposals?\b/] },
-  { type: "conversation", label: "conversation", tokens: ["conversation", "thread"], aliases: [/\bconversations?\b/, /\bthreads?\b/] },
-  { type: "message", label: "message", tokens: ["message", "chat"], aliases: [/\bmessages?\b/, /\bchats?\b/] },
   { type: "rfi", label: "rfi", tokens: ["rfi"], aliases: [/\brfis?\b/] },
   { type: "task", label: "task", tokens: ["task", "todo"], aliases: [/\btasks?\b/, /\bto-?dos?\b/, /\baction items?\b/] },
   { type: "project", label: "project", tokens: ["project", "job"], aliases: [/\bprojects?\b/, /\bprojets?\b/, /\bjobs?\b/] },
@@ -442,8 +440,6 @@ const COUNT_QUERY_CONFIGS: Partial<Record<SearchEntityType, CountQueryConfig>> =
   change_order: { table: "change_orders", searchableFields: ["title", "description", "reason", "summary"] },
   contract: { table: "contracts", searchableFields: ["title", "number", "terms"] },
   proposal: { table: "proposals", searchableFields: ["title", "number", "summary", "terms"] },
-  conversation: { table: "conversations", searchableFields: ["subject"] },
-  message: { table: "messages", searchableFields: ["body"] },
   rfi: { table: "rfis", searchableFields: ["subject", "question", "drawing_reference", "spec_reference", "location"] },
   submittal: { table: "submittals", searchableFields: ["title", "description", "spec_section"] },
   drawing_set: { table: "drawing_sets", searchableFields: ["title", "description"] },
@@ -530,8 +526,6 @@ const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   change_order: "/change-orders/{id}",
   contract: "/contracts/{id}",
   proposal: "/proposals/{id}",
-  conversation: "/conversations/{id}",
-  message: "/messages/{id}",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
   drawing_set: "/drawings/sets/{id}",
@@ -800,7 +794,7 @@ const GENERAL_ASSISTANT_SYSTEM_PROMPT = `You are a helpful assistant for constru
 const QUERY_PLANNER_SYSTEM_PROMPT = `You are a query planner for org data tools.
 Return strict JSON only with keys:
 - operation: "list" | "count" | "list_and_count" | "analyze" | "aggregate" | "none"
-- entityType: one of "project","task","file","contact","company","invoice","payment","budget","estimate","commitment","change_order","contract","proposal","conversation","message","rfi","submittal","drawing_set","drawing_sheet","daily_log","punch_item","schedule_item","photo","portal_access"
+- entityType: one of "project","task","file","contact","company","invoice","payment","budget","estimate","commitment","change_order","contract","proposal","rfi","submittal","drawing_set","drawing_sheet","daily_log","punch_item","schedule_item","photo","portal_access"
 - entityTypes: array of entity types when operation is "analyze"
 - statuses: string[]
 - textQuery: string
@@ -827,7 +821,7 @@ Rules:
 const AGENT_QUERY_PLANNER_SYSTEM_PROMPT = `You are a semantic query planner for an org-scoped analytics assistant.
 Return strict JSON only with keys:
 - operation: "list" | "aggregate" | "none"
-- entityType: one of "project","task","file","contact","company","invoice","payment","budget","estimate","commitment","change_order","contract","proposal","conversation","message","rfi","submittal","drawing_set","drawing_sheet","daily_log","punch_item","schedule_item","photo","portal_access"
+- entityType: one of "project","task","file","contact","company","invoice","payment","budget","estimate","commitment","change_order","contract","proposal","rfi","submittal","drawing_set","drawing_sheet","daily_log","punch_item","schedule_item","photo","portal_access"
 - relatedEntityTypes: optional array of additional entity types for cross-domain analysis
 - metric: "count" | "sum_amount" | "avg_amount"
 - groupBy: "none" | "status" | "project" | "month"
@@ -1431,7 +1425,7 @@ function clampDateRangeDays(value?: number) {
 function extractRequestedLimit(query: string, fallback: number) {
   const explicit =
     /\b(?:top|first|last)\s+(\d{1,3})\b/i.exec(query) ??
-    /\b(\d{1,3})\s+(?:projects?|tasks?|files?|invoices?|rfis?|submittals?|messages?|contacts?|companies?)\b/i.exec(query)
+    /\b(\d{1,3})\s+(?:projects?|tasks?|files?|invoices?|rfis?|submittals?|contacts?|companies?)\b/i.exec(query)
 
   if (!explicit) return fallback
   const parsed = Number.parseInt(explicit[1] ?? "", 10)

@@ -1,3 +1,4 @@
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import {
@@ -10,8 +11,7 @@ import {
   getProjectActivityAction,
 } from "../actions"
 import { ProjectDailyLogsClient } from "./project-daily-logs-client"
-
-// export const dynamic = "force-dynamic" // Removed for better caching performance
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface ProjectDailyLogsPageProps {
   params: Promise<{ id: string }>
@@ -20,8 +20,36 @@ interface ProjectDailyLogsPageProps {
 export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsPageProps) {
   const { id } = await params
 
-  const [project, dailyLogs, files, scheduleItems, tasks, punchItems, activity] = await Promise.all([
-    getProjectAction(id),
+  return (
+    <>
+      <PageLayout title="Daily Logs" breadcrumbs={[
+        { label: "Project" },
+        { label: "Daily Logs" },
+      ]} />
+      <Suspense fallback={
+        <div className="p-6 space-y-4">
+          <Skeleton className="h-8 w-48 mb-6" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
+          </div>
+        </div>
+      }>
+        <ProjectDailyLogsData id={id} />
+      </Suspense>
+    </>
+  )
+}
+
+async function ProjectDailyLogsData({ id }: { id: string }) {
+  const project = await getProjectAction(id)
+
+  if (!project) {
+    notFound()
+  }
+
+  const [dailyLogs, files, scheduleItems, tasks, punchItems, activity] = await Promise.all([
     getProjectDailyLogsAction(id),
     getProjectFilesAction(id),
     getProjectScheduleAction(id),
@@ -30,24 +58,18 @@ export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsP
     getProjectActivityAction(id),
   ])
 
-  if (!project) {
-    notFound()
-  }
-
   return (
-    <PageLayout title="Daily Logs">
-      <div className="space-y-6">
-        <ProjectDailyLogsClient
-          projectId={project.id}
-          projectAddress={project.address ?? undefined}
-          initialDailyLogs={dailyLogs}
-          initialFiles={files}
-          scheduleItems={scheduleItems}
-          tasks={tasks}
-          punchItems={punchItems}
-          activity={activity}
-        />
-      </div>
-    </PageLayout>
+    <div className="space-y-6">
+      <ProjectDailyLogsClient
+        projectId={project.id}
+        projectAddress={project.address ?? undefined}
+        initialDailyLogs={dailyLogs}
+        initialFiles={files}
+        scheduleItems={scheduleItems}
+        tasks={tasks}
+        punchItems={punchItems}
+        activity={activity}
+      />
+    </div>
   )
 }

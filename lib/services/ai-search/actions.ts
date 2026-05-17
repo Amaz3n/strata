@@ -1,9 +1,8 @@
 import type { OrgServiceContext } from "@/lib/services/context"
-import { postConversationMessageWithClient } from "@/lib/services/conversations"
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-const SUPPORTED_ACTION_TOOL_KEYS = new Set(["tasks.create", "messages.send"])
+const SUPPORTED_ACTION_TOOL_KEYS = new Set(["tasks.create"])
 const MAX_ACTION_TEXT_LENGTH = 2_000
 const ACTION_STALE_WINDOW_MS = 1000 * 60 * 30
 
@@ -42,15 +41,6 @@ type ActionExecutionOutput = {
   summary: string
   href?: string
   result?: Record<string, unknown>
-}
-
-type ConversationLookupRow = {
-  id: string
-  subject?: string | null
-  project_id?: string | null
-  channel?: string | null
-  projects?: { name?: string | null } | null
-  companies?: { name?: string | null } | null
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -183,19 +173,6 @@ function mapTaskActionSummary(args: Record<string, unknown>) {
   }
 }
 
-function mapMessageActionSummary(args: Record<string, unknown>) {
-  const body = toOptionalText(args.body) ?? "Quick follow-up from your assistant."
-  const recipientHint = toOptionalText(args.recipientHint)
-  const projectName = toOptionalText(args.projectName)
-  const pieces = ["Send a message"]
-  if (recipientHint) pieces.push(`to ${recipientHint}`)
-  if (projectName) pieces.push(`for project ${projectName}`)
-  return {
-    title: recipientHint ? `Send message to ${recipientHint}` : "Send follow-up message",
-    summary: `${pieces.join(" ")}. Draft: "${body.slice(0, 140)}"`,
-  }
-}
-
 export function isAiActionToolKey(toolKey: string) {
   return SUPPORTED_ACTION_TOOL_KEYS.has(toolKey)
 }
@@ -204,16 +181,6 @@ export function buildAiActionDraft(toolKey: string, rawArgs: Record<string, unkn
   const args = parseActionArgs(rawArgs)
   if (toolKey === "tasks.create") {
     const summary = mapTaskActionSummary(args)
-    return {
-      title: summary.title,
-      summary: summary.summary,
-      args,
-      requiresApproval: true,
-    }
-  }
-
-  if (toolKey === "messages.send") {
-    const summary = mapMessageActionSummary(args)
     return {
       title: summary.title,
       summary: summary.summary,
@@ -405,124 +372,6 @@ async function executeCreateTaskAction(
   }
 }
 
-async function validateConversationId(context: OrgServiceContext, conversationId: string): Promise<ConversationLookupRow | null> {
-  const { data, error } = await context.supabase
-    .from("conversations")
-    .select("id,subject,project_id,channel,projects(name),companies:audience_company_id(name)")
-    .eq("org_id", context.orgId)
-    .eq("id", conversationId)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to validate conversation: ${error.message}`)
-  return (data as ConversationLookupRow | null) ?? null
-}
-
-async function resolveConversation(context: OrgServiceContext, args: Record<string, unknown>) {
-  const explicitConversationId = toOptionalText(args.conversationId)
-  if (explicitConversationId) {
-    if (!isUuid(explicitConversationId)) {
-      throw new Error("Conversation ID is invalid.")
-    }
-    const direct = await validateConversationId(context, explicitConversationId)
-    if (!direct) throw new Error("Conversation was not found in your organization.")
-    return direct
-  }
-
-  const projectId = await resolveProjectId(context, args).catch(() => null)
-  const projectNameHint = toOptionalText(args.projectName)?.toLowerCase()
-  const recipientHint = toOptionalText(args.recipientHint)?.toLowerCase()
-
-  let query = context.supabase
-    .from("conversations")
-    .select("id,subject,project_id,channel,last_message_at,created_at,projects(name),companies:audience_company_id(name)")
-    .eq("org_id", context.orgId)
-    .order("last_message_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(40)
-
-  if (projectId) {
-    query = query.eq("project_id", projectId)
-  }
-
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to resolve conversation: ${error.message}`)
-
-  const rows = Array.isArray(data) ? (data as ConversationLookupRow[]) : []
-  if (rows.length === 0) {
-    throw new Error("No conversation matched this action request.")
-  }
-
-  const scored = rows
-    .map((row) => {
-      const subject = toOptionalText(row.subject)?.toLowerCase() ?? ""
-      const projectName = toOptionalText((row.projects ?? {}).name)?.toLowerCase() ?? ""
-      const companyName = toOptionalText((row.companies ?? {}).name)?.toLowerCase() ?? ""
-      let score = 0
-      if (recipientHint && (subject.includes(recipientHint) || companyName.includes(recipientHint))) score += 3
-      if (projectNameHint && projectName.includes(projectNameHint)) score += 2
-      if (projectId && row.project_id === projectId) score += 2
-      return { row, score }
-    })
-    .sort((a, b) => b.score - a.score)
-
-  const top = scored[0]
-  if (!top) throw new Error("No conversation matched this action request.")
-
-  if (top.score === 0 && scored.length > 1) {
-    throw new Error("Conversation is ambiguous. Include conversation ID or recipient in your request.")
-  }
-  if (scored.length > 1 && scored[1]?.score === top.score && top.score > 0) {
-    throw new Error("More than one conversation matched. Include conversation ID for precision.")
-  }
-
-  return top.row
-}
-
-async function executeSendMessageAction(
-  context: OrgServiceContext,
-  rawArgs: Record<string, unknown>,
-  options: { dryRun?: boolean } = {},
-): Promise<ActionExecutionOutput> {
-  const args = parseActionArgs(rawArgs)
-  const body = toOptionalText(args.body)
-  if (!body) throw new Error("Message body is required.")
-  if (body.length > MAX_ACTION_TEXT_LENGTH) {
-    throw new Error(`Message body is too long. Keep it under ${MAX_ACTION_TEXT_LENGTH} characters.`)
-  }
-
-  const conversation = await resolveConversation(context, args)
-
-  if (options.dryRun) {
-    return {
-      summary: `Preview: message is valid and would be sent to conversation "${conversation.subject ?? conversation.id}".`,
-      result: {
-        preview: true,
-        conversationId: conversation.id,
-        conversationSubject: conversation.subject ?? null,
-        body,
-      },
-    }
-  }
-
-  const sent = await postConversationMessageWithClient({
-    supabase: context.supabase,
-    orgId: context.orgId,
-    conversationId: conversation.id,
-    body,
-    senderId: context.userId,
-  })
-
-  return {
-    summary: "Message sent successfully.",
-    href: `/messages`,
-    result: {
-      messageId: sent.id,
-      conversationId: conversation.id,
-      conversationSubject: conversation.subject ?? null,
-      body,
-    },
-  }
-}
-
 async function executeActionTool(
   context: OrgServiceContext,
   toolKey: string,
@@ -532,8 +381,6 @@ async function executeActionTool(
   switch (toolKey) {
     case "tasks.create":
       return executeCreateTaskAction(context, args, options)
-    case "messages.send":
-      return executeSendMessageAction(context, args, options)
     default:
       throw new Error(`Unsupported action tool: ${toolKey}`)
   }

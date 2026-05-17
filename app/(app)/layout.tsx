@@ -5,8 +5,10 @@ import type { User } from "@/lib/types"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { AppHeader } from "@/components/layout/app-header"
 import { PageTitleProvider } from "@/components/layout/page-title-context"
-import { PlatformSessionBanner } from "@/components/layout/platform-session-banner"
+import { AppPageContent } from "@/components/layout/app-page-content"
+import { PlatformSessionControl } from "@/components/layout/platform-session-control"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
+import { OptimisticPathProvider } from "@/lib/navigation/optimistic-pathname"
 import { getCurrentUserAction } from "../actions/user"
 import { getCrmDashboardStats } from "@/lib/services/crm"
 import { getOrgAccessState } from "@/lib/services/access"
@@ -37,21 +39,20 @@ export default async function AppLayout({
 
   return (
     <SidebarProvider className="h-svh max-h-svh overflow-hidden">
-      <AppSidebar
-        user={currentUser}
-        pipelineBadgeCount={pipelineBadgeCount}
-        canAccessPlatform={platformAccess.canAccessPlatform}
-        permissions={permissionResult.permissions}
-      />
-      <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
-        <PageTitleProvider>
-          <PlatformSessionBanner />
-          <AppHeader />
-          <div className="flex flex-1 flex-col gap-4 p-4 pt-6 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden">
-            {children}
-          </div>
-        </PageTitleProvider>
-      </SidebarInset>
+      <OptimisticPathProvider>
+        <AppSidebar
+          user={currentUser}
+          pipelineBadgeCount={pipelineBadgeCount}
+          canAccessPlatform={platformAccess.canAccessPlatform}
+          permissions={permissionResult.permissions}
+        />
+        <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
+          <PageTitleProvider>
+            <AppHeader platformSessionControl={<PlatformSessionControl />} />
+            <AppPageContent>{children}</AppPageContent>
+          </PageTitleProvider>
+        </SidebarInset>
+      </OptimisticPathProvider>
     </SidebarProvider>
   )
 }

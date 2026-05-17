@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import type { TeamMember } from "@/lib/types"
 import type { Prospect, CrmActivity } from "@/lib/services/crm"
+import type { Opportunity } from "@/lib/services/opportunities"
+import type { OpportunityStatus } from "@/lib/validation/opportunities"
 import { LeadStatusBadge } from "./lead-status-badge"
 import { ProspectDetailSheet } from "./prospect-detail-sheet"
 import { AddTouchDialog } from "./add-touch-dialog"
@@ -20,9 +22,7 @@ import {
   Users,
   Receipt,
   TrendingUp,
-  TrendingDown,
   Plus,
-  Target,
   Activity,
   ChevronRight,
   Zap,
@@ -31,27 +31,18 @@ import {
   Mail,
   Phone,
   MessageSquare,
+  Timer,
 } from "@/components/icons"
-import { formatDistanceToNow, format, isPast, isToday, isYesterday } from "date-fns"
+import { formatDistanceToNow, format, isToday, isYesterday } from "date-fns"
 import { cn } from "@/lib/utils"
 
 interface PipelineDashboardProps {
-  opportunityCounts: {
-    new: number
-    contacted: number
-    qualified: number
-    estimating: number
-    proposed: number
-    won: number
-    lost: number
-  }
-  closedThisMonth: {
-    won: number
-    lost: number
-  }
-  winRate: number | null
-  followUpsDue: Prospect[]
+  opportunityCounts: Record<OpportunityStatus, number>
+  overdueFollowUps: Prospect[]
+  upcomingFollowUps: Prospect[]
   newInquiries: Prospect[]
+  stalledOpportunities: Opportunity[]
+  stalledAfterDays: number
   recentActivity: CrmActivity[]
   teamMembers: TeamMember[]
   canCreate?: boolean
@@ -60,19 +51,76 @@ interface PipelineDashboardProps {
 }
 
 const PIPELINE_STAGES = [
-  { key: "new", label: "New", color: "bg-blue-500" },
-  { key: "contacted", label: "Contacted", color: "bg-slate-400" },
-  { key: "qualified", label: "Qualified", color: "bg-purple-500" },
-  { key: "estimating", label: "Estimating", color: "bg-amber-500" },
-  { key: "proposed", label: "Proposed", color: "bg-emerald-500" },
+  { key: "new", label: "New" },
+  { key: "contacted", label: "Contacted" },
+  { key: "qualified", label: "Qualified" },
+  { key: "estimating", label: "Estimating" },
+  { key: "proposed", label: "Proposed" },
 ] as const
+
+type PipelineStageKey = (typeof PIPELINE_STAGES)[number]["key"]
+
+const STAGE_STYLES: Record<PipelineStageKey, { gradient: string; border: string; text: string }> = {
+  new: {
+    gradient: "from-blue-500/10 to-blue-600/5 dark:from-blue-500/20 dark:to-blue-600/10",
+    border: "border-blue-500/30",
+    text: "text-blue-600 dark:text-blue-400",
+  },
+  contacted: {
+    gradient: "from-slate-400/10 to-slate-500/5 dark:from-slate-400/20 dark:to-slate-500/10",
+    border: "border-slate-400/30",
+    text: "text-slate-600 dark:text-slate-400",
+  },
+  qualified: {
+    gradient: "from-purple-500/10 to-purple-600/5 dark:from-purple-500/20 dark:to-purple-600/10",
+    border: "border-purple-500/30",
+    text: "text-purple-600 dark:text-purple-400",
+  },
+  estimating: {
+    gradient: "from-amber-500/10 to-amber-600/5 dark:from-amber-500/20 dark:to-amber-600/10",
+    border: "border-amber-500/30",
+    text: "text-amber-600 dark:text-amber-400",
+  },
+  proposed: {
+    gradient: "from-emerald-500/10 to-teal-600/5 dark:from-emerald-500/20 dark:to-teal-600/10",
+    border: "border-emerald-500/30",
+    text: "text-emerald-600 dark:text-emerald-400",
+  },
+}
+
+const AVATAR_GRADIENTS = [
+  "from-blue-500 to-indigo-600",
+  "from-violet-500 to-purple-600",
+  "from-cyan-500 to-blue-600",
+  "from-indigo-500 to-blue-600",
+  "from-blue-600 to-violet-600",
+]
+
+function gradientForId(id: string) {
+  let hash = 0
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+  }
+  return AVATAR_GRADIENTS[hash % AVATAR_GRADIENTS.length]
+}
+
+function getInitials(name: string) {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .filter(Boolean)
+    .join("")
+    .slice(0, 2)
+    .toUpperCase()
+}
 
 export function PipelineDashboard({
   opportunityCounts,
-  closedThisMonth,
-  winRate,
-  followUpsDue,
+  overdueFollowUps,
+  upcomingFollowUps,
   newInquiries,
+  stalledOpportunities,
+  stalledAfterDays,
   recentActivity,
   teamMembers,
   canCreate = false,
@@ -90,16 +138,8 @@ export function PipelineDashboard({
     setDetailOpen(true)
   }
 
-  const getFollowUpClass = (dateStr?: string | null) => {
-    if (!dateStr) return ""
-    const date = new Date(dateStr)
-    if (isPast(date) && !isToday(date)) return "text-red-600 dark:text-red-400"
-    if (isToday(date)) return "text-amber-600 dark:text-amber-400"
-    return "text-muted-foreground"
-  }
-
-  // Calculate max for pipeline chart scaling
   const activePipelineTotal = PIPELINE_STAGES.reduce((sum, stage) => sum + opportunityCounts[stage.key], 0)
+  const maxStageCount = PIPELINE_STAGES.reduce((max, stage) => Math.max(max, opportunityCounts[stage.key]), 0)
 
   return (
     <div className="space-y-6">
@@ -129,75 +169,41 @@ export function PipelineDashboard({
                 Active Pipeline
               </CardTitle>
               <span className="text-xs text-muted-foreground">
-                {activePipelineTotal} active opportunities · {closedThisMonth.won + closedThisMonth.lost} closed this month
+                {activePipelineTotal} active {activePipelineTotal === 1 ? "opportunity" : "opportunities"}
               </span>
             </div>
           </CardHeader>
           <CardContent className="pt-0">
-            {/* Funnel stages - horizontal on desktop, vertical on mobile */}
-            <div className="flex flex-col sm:flex-row gap-2 sm:gap-0">
+            <div className="flex flex-col sm:flex-row sm:items-stretch gap-2 sm:gap-0">
               {PIPELINE_STAGES.map((stage, index) => {
                 const count = opportunityCounts[stage.key]
                 const pctOfTotal = activePipelineTotal > 0 ? Math.round((count / activePipelineTotal) * 100) : 0
-
-                const stageStyles: Record<(typeof PIPELINE_STAGES)[number]["key"], { gradient: string; border: string; text: string }> = {
-                  new: {
-                    gradient: "from-blue-500/10 to-blue-600/5 dark:from-blue-500/20 dark:to-blue-600/10",
-                    border: "border-blue-500/30",
-                    text: "text-blue-600 dark:text-blue-400",
-                  },
-                  contacted: {
-                    gradient: "from-slate-400/10 to-slate-500/5 dark:from-slate-400/20 dark:to-slate-500/10",
-                    border: "border-slate-400/30",
-                    text: "text-slate-600 dark:text-slate-400",
-                  },
-                  qualified: {
-                    gradient: "from-purple-500/10 to-purple-600/5 dark:from-purple-500/20 dark:to-purple-600/10",
-                    border: "border-purple-500/30",
-                    text: "text-purple-600 dark:text-purple-400",
-                  },
-                  estimating: {
-                    gradient: "from-amber-500/10 to-amber-600/5 dark:from-amber-500/20 dark:to-amber-600/10",
-                    border: "border-amber-500/30",
-                    text: "text-amber-600 dark:text-amber-400",
-                  },
-                  proposed: {
-                    gradient: "from-emerald-500/10 to-teal-600/5 dark:from-emerald-500/20 dark:to-teal-600/10",
-                    border: "border-emerald-500/30",
-                    text: "text-emerald-600 dark:text-emerald-400",
-                  },
-                }
-
-                const style = stageStyles[stage.key]
+                const widthRatio = maxStageCount > 0 ? Math.max(count / maxStageCount, 0.35) : 1
+                const style = STAGE_STYLES[stage.key]
 
                 return (
-                  <div key={stage.key} className="flex-1 flex items-center">
+                  <div key={stage.key} className="flex-1 flex items-center sm:justify-center">
                     <Link
                       href={`/pipeline?view=opportunities&status=${stage.key}`}
+                      style={{ flexBasis: `${widthRatio * 100}%` }}
                       className={cn(
-                        "group relative flex-1 p-4 rounded-xl border transition-all",
+                        "group relative p-4 rounded-xl border transition-all w-full sm:w-auto",
                         "hover:shadow-md hover:scale-[1.02] active:scale-[0.98]",
                         "bg-gradient-to-br",
                         style.gradient,
                         style.border
                       )}
                     >
-                      {/* Count - prominent */}
                       <div className={cn("text-2xl sm:text-3xl font-bold tabular-nums", style.text)}>
                         {count}
                       </div>
-
-                      {/* Stage name + percentage */}
-                      <div className="flex items-center justify-between mt-1">
+                      <div className="flex items-center justify-between gap-2 mt-1">
                         <span className="text-xs font-medium text-foreground">{stage.label}</span>
                         <span className="text-[10px] text-muted-foreground">{pctOfTotal}%</span>
                       </div>
-
-                      {/* Hover indicator */}
                       <ChevronRight className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/30 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block" />
                     </Link>
 
-                    {/* Arrow between stages - desktop only */}
                     {index < PIPELINE_STAGES.length - 1 && (
                       <div className="hidden sm:flex items-center justify-center w-6 shrink-0">
                         <ChevronRight className="h-4 w-4 text-muted-foreground/40" />
@@ -208,56 +214,54 @@ export function PipelineDashboard({
               })}
             </div>
 
-            {/* Outcomes: Won & Lost */}
-            <div className="flex gap-3 mt-4 pt-4 border-t">
-              <Link
-                href="/pipeline?view=opportunities&status=won"
-                className="flex-1 group flex items-center gap-3 p-3 rounded-lg bg-green-500/10 dark:bg-green-500/20 border border-green-500/20 hover:border-green-500/40 hover:shadow-sm transition-all"
-              >
-                <div className="h-10 w-10 rounded-lg bg-green-500 flex items-center justify-center shrink-0">
-                  <TrendingUp className="h-5 w-5 text-white" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xl font-bold text-green-600 dark:text-green-400 tabular-nums">
-                    {closedThisMonth.won}
-                  </div>
-                  <div className="text-xs text-muted-foreground">Won this month</div>
-                </div>
-                <ChevronRight className="h-4 w-4 text-muted-foreground/30 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block" />
-              </Link>
-
-              <Link
-                href="/pipeline?view=opportunities&status=lost"
-                className="flex-1 group flex items-center gap-3 p-3 rounded-lg bg-red-500/5 dark:bg-red-500/10 border border-red-500/15 hover:border-red-500/30 hover:shadow-sm transition-all"
-              >
-                <div className="h-10 w-10 rounded-lg bg-red-500 flex items-center justify-center shrink-0">
-                  <TrendingDown className="h-5 w-5 text-white" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xl font-bold text-red-600 dark:text-red-400 tabular-nums">
-                    {closedThisMonth.lost}
-                  </div>
-                  <div className="text-xs text-muted-foreground">Lost this month</div>
-                </div>
-                <ChevronRight className="h-4 w-4 text-muted-foreground/30 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block" />
-              </Link>
-            </div>
-
-            {/* Win rate indicator */}
-            {(closedThisMonth.won > 0 || closedThisMonth.lost > 0) && (
-              <div className="mt-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-                <Target className="h-3.5 w-3.5" />
-                <span>
-                  Win rate:{" "}
-                  <span className={cn(
-                    "font-semibold",
-                    winRate !== null && winRate >= 50 ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"
-                  )}>
-                    {winRate !== null ? `${winRate}%` : "—"}
+            <div className="mt-4 pt-4 border-t">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Timer className="h-4 w-4 text-amber-500" />
+                  Stalled deals
+                  <span className="text-xs font-normal text-muted-foreground">
+                    no activity in {stalledAfterDays}+ days
                   </span>
-                </span>
+                </div>
+                {stalledOpportunities.length > 5 && (
+                  <Button variant="ghost" size="sm" asChild className="text-xs h-7 px-2">
+                    <Link href="/pipeline?view=opportunities">
+                      View all {stalledOpportunities.length}
+                      <ChevronRight className="h-3 w-3 ml-1" />
+                    </Link>
+                  </Button>
+                )}
               </div>
-            )}
+              {stalledOpportunities.length === 0 ? (
+                <div className="text-xs text-muted-foreground py-2">
+                  No stalled deals — every active opportunity has been touched in the last {stalledAfterDays} days.
+                </div>
+              ) : (
+                <ul className="divide-y divide-border/50">
+                  {stalledOpportunities.slice(0, 5).map((opp) => {
+                    const lastActivity = new Date(opp.updated_at ?? opp.created_at)
+                    const style = STAGE_STYLES[opp.status as PipelineStageKey] ?? STAGE_STYLES.new
+                    return (
+                      <li key={opp.id}>
+                        <Link
+                          href={`/pipeline?view=opportunities&status=${opp.status}`}
+                          className="group flex items-center gap-3 py-2 hover:bg-muted/40 -mx-2 px-2 rounded-md transition-colors"
+                        >
+                          <span className={cn("inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 text-[10px] font-medium capitalize", style.border, style.text)}>
+                            {opp.status}
+                          </span>
+                          <span className="text-sm font-medium truncate flex-1 min-w-0">{opp.name}</span>
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {formatDistanceToNow(lastActivity, { addSuffix: true })}
+                          </span>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block" />
+                        </Link>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -281,7 +285,7 @@ export function PipelineDashboard({
             ) : (
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
                 <div className="divide-y divide-border/50">
-                  {recentActivity.slice(0, 15).map((item) => {
+                  {recentActivity.map((item) => {
                     // Determine icon and color based on event/touch type
                     const getActivityStyle = () => {
                       if (item.event_type === "crm_prospect_created") {
@@ -370,13 +374,13 @@ export function PipelineDashboard({
             )}
           </CardContent>
         </Card>
-        {/* Follow-ups due */}
+        {/* Follow-ups */}
         <Card className="lg:col-span-1 lg:col-start-1 lg:row-span-2 flex flex-col">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-500" />
-                Follow-ups Due
+                Follow-ups
               </CardTitle>
               <Button variant="ghost" size="sm" asChild className="text-xs">
                 <Link href="/pipeline?view=prospects">
@@ -385,9 +389,21 @@ export function PipelineDashboard({
                 </Link>
               </Button>
             </div>
+            <div className="flex gap-3 text-xs text-muted-foreground pt-1">
+              <span className="inline-flex items-center gap-1.5">
+                <span className={cn("h-2 w-2 rounded-full", overdueFollowUps.length > 0 ? "bg-red-500" : "bg-muted")} />
+                <span className={overdueFollowUps.length > 0 ? "text-red-600 dark:text-red-400 font-medium" : ""}>
+                  {overdueFollowUps.length} overdue
+                </span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className={cn("h-2 w-2 rounded-full", upcomingFollowUps.length > 0 ? "bg-amber-500" : "bg-muted")} />
+                <span>{upcomingFollowUps.length} due by tomorrow</span>
+              </span>
+            </div>
           </CardHeader>
           <CardContent className="pt-0 flex-1 min-h-0">
-            {followUpsDue.length === 0 ? (
+            {overdueFollowUps.length === 0 && upcomingFollowUps.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-center h-full">
                 <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mb-3">
                   <TrendingUp className="h-6 w-6 text-green-600 dark:text-green-400" />
@@ -396,32 +412,57 @@ export function PipelineDashboard({
                 <p className="text-xs text-muted-foreground mt-1">No follow-ups due</p>
               </div>
             ) : (
-              <div className="space-y-2 overflow-y-auto scrollbar-thin pr-1">
-                {followUpsDue.slice(0, 5).map((prospect) => (
-                  <button
-                    key={prospect.id}
-                    className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-muted/50 transition-colors text-left"
-                    onClick={() => openDetail(prospect.id)}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-sm truncate">{prospect.full_name}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <LeadStatusBadge status={prospect.lead_status ?? "new"} className="text-[10px] px-1.5 py-0" />
-                      </div>
-                    </div>
-                    <div className={cn("text-xs whitespace-nowrap ml-2", getFollowUpClass(prospect.next_follow_up_at))}>
-                      {prospect.next_follow_up_at && (
-                        <>
-                          {isPast(new Date(prospect.next_follow_up_at)) && !isToday(new Date(prospect.next_follow_up_at))
-                            ? "Overdue"
-                            : isToday(new Date(prospect.next_follow_up_at))
+              <div className="space-y-3 overflow-y-auto scrollbar-thin pr-1">
+                {overdueFollowUps.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-red-600 dark:text-red-400 px-2.5">
+                      Overdue
+                    </p>
+                    {overdueFollowUps.slice(0, 5).map((prospect) => (
+                      <button
+                        key={prospect.id}
+                        className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-muted/50 transition-colors text-left"
+                        onClick={() => openDetail(prospect.id)}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-sm truncate">{prospect.full_name}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <LeadStatusBadge status={prospect.lead_status ?? "new"} className="text-[10px] px-1.5 py-0" />
+                          </div>
+                        </div>
+                        <div className="text-xs whitespace-nowrap ml-2 text-red-600 dark:text-red-400 font-medium">
+                          {prospect.next_follow_up_at && formatDistanceToNow(new Date(prospect.next_follow_up_at), { addSuffix: true })}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {upcomingFollowUps.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400 px-2.5">
+                      Due today / tomorrow
+                    </p>
+                    {upcomingFollowUps.slice(0, 5).map((prospect) => (
+                      <button
+                        key={prospect.id}
+                        className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-muted/50 transition-colors text-left"
+                        onClick={() => openDetail(prospect.id)}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-sm truncate">{prospect.full_name}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <LeadStatusBadge status={prospect.lead_status ?? "new"} className="text-[10px] px-1.5 py-0" />
+                          </div>
+                        </div>
+                        <div className="text-xs whitespace-nowrap ml-2 text-amber-600 dark:text-amber-400">
+                          {prospect.next_follow_up_at && (isToday(new Date(prospect.next_follow_up_at))
                             ? format(new Date(prospect.next_follow_up_at), "h:mm a")
-                            : formatDistanceToNow(new Date(prospect.next_follow_up_at), { addSuffix: true })}
-                        </>
-                      )}
-                    </div>
-                  </button>
-                ))}
+                            : formatDistanceToNow(new Date(prospect.next_follow_up_at), { addSuffix: true }))}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
@@ -455,22 +496,10 @@ export function PipelineDashboard({
             ) : (
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
                 <div className="divide-y divide-border/50">
-                  {newInquiries.map((prospect, index) => {
-                    const initials = prospect.full_name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")
-                      .slice(0, 2)
-                      .toUpperCase()
+                  {newInquiries.map((prospect) => {
+                    const initials = getInitials(prospect.full_name)
                     const isHot = prospect.lead_priority === "high" || prospect.lead_priority === "urgent"
-                    const gradients = [
-                      "from-blue-500 to-indigo-600",
-                      "from-violet-500 to-purple-600",
-                      "from-cyan-500 to-blue-600",
-                      "from-indigo-500 to-blue-600",
-                      "from-blue-600 to-violet-600",
-                    ]
-                    const gradient = gradients[index % gradients.length]
+                    const gradient = gradientForId(prospect.id)
 
                     // Format timestamp properly
                     const createdDate = new Date(prospect.created_at)

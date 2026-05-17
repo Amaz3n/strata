@@ -79,6 +79,7 @@ interface QBOCustomer {
   DisplayName: string
   PrimaryEmailAddr?: { Address: string }
   PrimaryPhone?: { FreeFormNumber: string }
+  BillAddr?: { Line1?: string; Line2?: string; City?: string; CountrySubDivisionCode?: string; PostalCode?: string }
 }
 
 interface QBOInvoice {
@@ -104,6 +105,12 @@ interface QBOInvoice {
 interface QBOItem {
   Id?: string
   Name?: string
+}
+
+interface QBOVendor {
+  Id?: string
+  SyncToken?: string
+  DisplayName: string
 }
 
 interface QBOInvoiceLineSnapshot {
@@ -150,6 +157,25 @@ export interface QBOIncomeAccount {
   id: string
   name: string
   fullyQualifiedName?: string
+}
+
+export interface QBOAccountRef {
+  id: string
+  name: string
+  fullyQualifiedName?: string
+  accountType?: string
+}
+
+export interface QBOCustomerOption {
+  id: string
+  name: string
+  email?: string | null
+  billingAddress?: string | null
+}
+
+export interface QBOVendorOption {
+  id: string
+  name: string
 }
 
 export class QBOClient {
@@ -237,6 +263,57 @@ export class QBOClient {
     const found = await this.findCustomerByName(displayName)
     if (found) return found
     return this.createCustomer({ DisplayName: displayName })
+  }
+
+  async listCustomers(limit = 1000): Promise<QBOCustomerOption[]> {
+    const query = `SELECT Id, DisplayName, PrimaryEmailAddr, BillAddr FROM Customer WHERE Active = true ORDERBY DisplayName MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
+    const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
+      "GET",
+      `query?query=${encodeURIComponent(query)}`,
+    )
+    return (result.QueryResponse.Customer ?? [])
+      .filter((customer) => customer.Id && customer.DisplayName)
+      .map((customer) => ({
+        id: String(customer.Id),
+        name: String(customer.DisplayName),
+        email: customer.PrimaryEmailAddr?.Address ?? null,
+        billingAddress: formatQboAddress(customer.BillAddr),
+      }))
+  }
+
+  async findVendorByName(displayName: string): Promise<QBOVendor | null> {
+    const query = `SELECT * FROM Vendor WHERE DisplayName = '${this.toQboStringLiteral(displayName)}'`
+    const result = await this.request<{ QueryResponse: { Vendor?: QBOVendor[] } }>(
+      "GET",
+      `query?query=${encodeURIComponent(query)}`,
+    )
+    return result.QueryResponse.Vendor?.[0] ?? null
+  }
+
+  async createVendor(vendor: Omit<QBOVendor, "Id" | "SyncToken">): Promise<QBOVendor> {
+    const result = await this.request<{ Vendor: QBOVendor }>("POST", "vendor", vendor)
+    return result.Vendor
+  }
+
+  async getOrCreateVendor(displayName: string): Promise<QBOVendor> {
+    const normalized = displayName.trim() || "Unknown Vendor"
+    const found = await this.findVendorByName(normalized)
+    if (found) return found
+    return this.createVendor({ DisplayName: normalized })
+  }
+
+  async listVendors(limit = 1000): Promise<QBOVendorOption[]> {
+    const query = `SELECT Id, DisplayName FROM Vendor WHERE Active = true ORDERBY DisplayName MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
+    const result = await this.request<{ QueryResponse: { Vendor?: QBOVendor[] } }>(
+      "GET",
+      `query?query=${encodeURIComponent(query)}`,
+    )
+    return (result.QueryResponse.Vendor ?? [])
+      .filter((vendor) => vendor.Id && vendor.DisplayName)
+      .map((vendor) => ({
+        id: String(vendor.Id),
+        name: String(vendor.DisplayName),
+      }))
   }
 
   private async getDefaultIncomeAccountId(): Promise<string | null> {
@@ -335,6 +412,65 @@ export class QBOClient {
     })
   }
 
+  async listExpenseAccounts(): Promise<QBOAccountRef[]> {
+    const runAccountQuery = async (query: string): Promise<QBOAccountRef[]> => {
+      try {
+        const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+        return (result.QueryResponse.Account ?? [])
+          .filter((account) => account.Id && account.Name)
+          .map((account) => ({
+            id: String(account.Id),
+            name: String(account.Name),
+            fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
+            accountType: account.AccountType ? String(account.AccountType) : undefined,
+          }))
+      } catch {
+        return []
+      }
+    }
+
+    const expense = await runAccountQuery(
+      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Expense' AND Active = true ORDERBY Name MAXRESULTS 1000`,
+    )
+    const cogs = await runAccountQuery(
+      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Cost of Goods Sold' AND Active = true ORDERBY Name MAXRESULTS 1000`,
+    )
+    const otherExpense = await runAccountQuery(
+      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Other Expense' AND Active = true ORDERBY Name MAXRESULTS 1000`,
+    )
+    return [...expense, ...cogs, ...otherExpense]
+  }
+
+  async listPaymentAccounts(): Promise<QBOAccountRef[]> {
+    const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE Active = true ORDERBY Name MAXRESULTS 1000`
+    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    return (result.QueryResponse.Account ?? [])
+      .filter((account) => account.Id && account.Name)
+      .filter((account) => {
+        const type = String(account.AccountType ?? "").toLowerCase()
+        return type === "bank" || type === "credit card" || type === "other current asset"
+      })
+      .map((account) => ({
+        id: String(account.Id),
+        name: String(account.Name),
+        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
+        accountType: account.AccountType ? String(account.AccountType) : undefined,
+      }))
+  }
+
+  async listAccountsPayableAccounts(): Promise<QBOAccountRef[]> {
+    const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Accounts Payable' AND Active = true ORDERBY Name MAXRESULTS 1000`
+    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    return (result.QueryResponse.Account ?? [])
+      .filter((account) => account.Id && account.Name)
+      .map((account) => ({
+        id: String(account.Id),
+        name: String(account.Name),
+        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
+        accountType: account.AccountType ? String(account.AccountType) : undefined,
+      }))
+  }
+
   async getIncomeAccountById(accountId: string): Promise<QBOIncomeAccount | null> {
     const normalized = String(accountId ?? "").trim()
     if (!normalized) return null
@@ -416,6 +552,53 @@ export class QBOClient {
     return result.Payment
   }
 
+  async createPurchase(purchase: any): Promise<any> {
+    const result = await this.request<{ Purchase: any }>("POST", "purchase", purchase)
+    return result.Purchase
+  }
+
+  async updatePurchase(purchase: any): Promise<any> {
+    if (!purchase.Id || !purchase.SyncToken) {
+      throw new Error("Purchase Id and SyncToken required for update")
+    }
+    const result = await this.request<{ Purchase: any }>("POST", "purchase", purchase)
+    return result.Purchase
+  }
+
+  async createBill(bill: any): Promise<any> {
+    const result = await this.request<{ Bill: any }>("POST", "bill", bill)
+    return result.Bill
+  }
+
+  async updateBill(bill: any): Promise<any> {
+    if (!bill.Id || !bill.SyncToken) {
+      throw new Error("Bill Id and SyncToken required for update")
+    }
+    const result = await this.request<{ Bill: any }>("POST", "bill", bill)
+    return result.Bill
+  }
+
+  async createBillPayment(billPayment: any): Promise<any> {
+    const result = await this.request<{ BillPayment: any }>("POST", "billpayment", billPayment)
+    return result.BillPayment
+  }
+
+  async getBillPaymentById(billPaymentId: string): Promise<any | null> {
+    const normalizedId = String(billPaymentId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ BillPayment?: any }>(
+        "GET",
+        `billpayment/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.BillPayment ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
+  }
+
   async getInvoiceById(invoiceId: string): Promise<QBOInvoiceSnapshot | null> {
     const normalizedId = String(invoiceId ?? "").trim()
     if (!normalizedId) return null
@@ -448,8 +631,51 @@ export class QBOClient {
     }
   }
 
-  async uploadAttachmentForInvoice(params: {
-    invoiceId: string
+  async getPurchaseById(purchaseId: string): Promise<any | null> {
+    const normalizedId = String(purchaseId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ Purchase?: any }>(
+        "GET",
+        `purchase/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.Purchase ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async getBillById(billId: string): Promise<any | null> {
+    const normalizedId = String(billId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ Bill?: any }>(
+        "GET",
+        `bill/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.Bill ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async changeDataCapture(entities: string[], changedSinceIso: string): Promise<any> {
+    const entityList = entities.map((entity) => entity.trim()).filter(Boolean).join(",")
+    if (!entityList) throw new Error("At least one CDC entity is required")
+    const params = new URLSearchParams({
+      entities: entityList,
+      changedSince: changedSinceIso,
+    })
+    return this.request<any>("GET", `cdc?${params.toString()}`)
+  }
+
+  async uploadAttachmentForEntity(params: {
+    entityType: "Invoice" | "Purchase" | "Bill" | "BillPayment" | "PurchaseOrder" | "VendorCredit"
+    entityId: string
     fileName: string
     contentType: string
     content: Uint8Array | Buffer
@@ -459,8 +685,8 @@ export class QBOClient {
       AttachableRef: [
         {
           EntityRef: {
-            type: "Invoice",
-            value: params.invoiceId,
+            type: params.entityType,
+            value: params.entityId,
           },
         },
       ],
@@ -503,6 +729,34 @@ export class QBOClient {
       tempDownloadUri: typeof attachable.TempDownloadUri === "string" ? attachable.TempDownloadUri : null,
     }
   }
+
+  async uploadAttachmentForInvoice(params: {
+    invoiceId: string
+    fileName: string
+    contentType: string
+    content: Uint8Array | Buffer
+    note?: string | null
+  }): Promise<{ id: string; fileName?: string; tempDownloadUri?: string | null }> {
+    return this.uploadAttachmentForEntity({
+      entityType: "Invoice",
+      entityId: params.invoiceId,
+      fileName: params.fileName,
+      contentType: params.contentType,
+      content: params.content,
+      note: params.note,
+    })
+  }
+}
+
+function formatQboAddress(address?: QBOCustomer["BillAddr"]) {
+  if (!address) return null
+  return [
+    address.Line1,
+    address.Line2,
+    [address.City, address.CountrySubDivisionCode, address.PostalCode].filter(Boolean).join(", "),
+  ]
+    .filter(Boolean)
+    .join("\n") || null
 }
 
 export class QBOError extends Error {

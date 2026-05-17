@@ -1,9 +1,8 @@
 "use client"
 
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { Contract, DrawSchedule, PortalAccessToken, Project, Proposal } from "@/lib/types"
-import { Button } from "@/components/ui/button"
-import { CheckCircle2, Circle, ArrowRight, Sparkles } from "@/components/icons"
+import { CheckCircle2, Circle, ArrowRight, X } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
 interface ProjectOverviewSetupChecklistProps {
@@ -25,6 +24,14 @@ export function ProjectOverviewSetupChecklist({
   portalTokens,
   onOpenSetupWizard,
 }: ProjectOverviewSetupChecklistProps) {
+  const dismissKey = `project-setup-banner-dismissed:${project.id}`
+  const [dismissed, setDismissed] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    setDismissed(window.localStorage.getItem(dismissKey) === "1")
+  }, [dismissKey])
+
   const hasClient = !!project.client_id
   const hasProposal = proposals.length > 0
   const hasSentProposal = proposals.some((p) => p.status === "sent" || p.status === "accepted" || !!p.sent_at)
@@ -46,100 +53,80 @@ export function ProjectOverviewSetupChecklist({
   ], [hasClient, hasProposal, hasSentProposal, hasAcceptedProposal, hasContract, hasSchedule, hasDrawSchedule, hasClientPortal])
 
   const doneCount = items.filter((i) => i.done).length
-  const progress = Math.round((doneCount / items.length) * 100)
-  const isComplete = progress === 100
-
-  // If all items are complete, don't show
-  if (isComplete) {
-    return null
-  }
-
-  // Find the next incomplete step
+  const isComplete = doneCount === items.length
   const nextStep = items.find((item) => !item.done)
 
+  if (isComplete || dismissed) return null
+
+  function dismiss() {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(dismissKey, "1")
+    }
+    setDismissed(true)
+  }
+
   return (
-    <div className="border-t border-border/50 bg-muted/20">
-      <div className="px-4 py-3 sm:px-5">
-        <div className="flex items-center justify-between gap-3">
-          {/* Left: Progress info */}
-          <div className="flex items-center gap-2.5 min-w-0">
-            {/* Circular progress indicator */}
-            <div className="relative size-7 shrink-0">
-              <svg className="size-7 -rotate-90" viewBox="0 0 28 28">
-                <circle
-                  cx="14"
-                  cy="14"
-                  r="12"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  className="text-border"
-                />
-                <circle
-                  cx="14"
-                  cy="14"
-                  r="12"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeDasharray={75.4}
-                  strokeDashoffset={75.4 - (progress / 100) * 75.4}
-                  strokeLinecap="round"
-                  className="text-primary transition-all duration-500"
-                />
-              </svg>
-              <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold text-foreground">
-                {doneCount}/{items.length}
-              </span>
-            </div>
+    <div className="border-b bg-muted/20">
+      <div className="px-5 sm:px-8 lg:px-12 py-3 flex items-center gap-4">
+        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground shrink-0">
+          Setup
+        </span>
 
-            {/* Steps display */}
-            <div className="hidden sm:flex items-center gap-1 overflow-x-auto">
-              {items.map((item, index) => (
-                <div
-                  key={item.key}
+        <span className="text-[11px] tabular-nums text-muted-foreground/80 shrink-0">
+          {doneCount}/{items.length}
+        </span>
+
+        <div className="hidden md:flex items-center gap-3 min-w-0 overflow-x-auto">
+          {items.map((item) => (
+            <span
+              key={item.key}
+              className={cn(
+                "inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap",
+                item.done
+                  ? "text-muted-foreground/60"
+                  : item.key === nextStep?.key
+                  ? "text-foreground font-medium"
+                  : "text-muted-foreground/40"
+              )}
+            >
+              {item.done ? (
+                <CheckCircle2 className="h-3 w-3 text-success" />
+              ) : (
+                <Circle
                   className={cn(
-                    "flex items-center gap-1 text-xs px-2 py-1 rounded-full transition-colors",
-                    item.done
-                      ? "text-muted-foreground"
-                      : item.key === nextStep?.key
-                      ? "text-primary bg-primary/10 font-medium"
-                      : "text-muted-foreground/60"
+                    "h-3 w-3",
+                    item.key === nextStep?.key ? "text-foreground" : "text-muted-foreground/30"
                   )}
-                >
-                  {item.done ? (
-                    <CheckCircle2 className="size-3 text-emerald-500" />
-                  ) : (
-                    <Circle className={cn(
-                      "size-3",
-                      item.key === nextStep?.key ? "text-primary" : "text-muted-foreground/40"
-                    )} />
-                  )}
-                  <span className={item.done ? "line-through decoration-muted-foreground/50" : ""}>
-                    {item.label}
-                  </span>
-                </div>
-              ))}
-            </div>
+                />
+              )}
+              <span className={item.done ? "line-through decoration-muted-foreground/40" : ""}>
+                {item.label}
+              </span>
+            </span>
+          ))}
+        </div>
 
-            {/* Mobile: Show next step only */}
-            <div className="sm:hidden flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Next:</span>
-              <span className="font-medium text-foreground">{nextStep?.label}</span>
-            </div>
-          </div>
+        <span className="md:hidden text-[11px] text-foreground font-medium truncate">
+          Next: {nextStep?.label}
+        </span>
 
-          {/* Right: Continue button */}
-          <Button
-            size="sm"
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
             onClick={onOpenSetupWizard}
-            className="shrink-0 gap-2 h-8"
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-foreground hover:text-primary transition-colors px-2 py-1"
           >
-            <Sparkles className="size-3.5" />
-            <span className="hidden sm:inline">Continue Setup</span>
-            <span className="sm:hidden">Continue</span>
-            <ArrowRight className="size-3.5" />
-          </Button>
+            Continue
+            <ArrowRight className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label="Dismiss setup banner"
+            className="inline-flex items-center justify-center h-6 w-6 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
+          >
+            <X className="h-3 w-3" />
+          </button>
         </div>
       </div>
     </div>

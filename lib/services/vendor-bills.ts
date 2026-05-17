@@ -14,6 +14,8 @@ import {
 } from "@/lib/validation/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
+import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
+import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qbo-sync"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
@@ -51,6 +53,16 @@ export interface VendorBillSummary {
   actual_cost_code_id?: string
   actual_cost_code_code?: string
   actual_cost_code_name?: string
+  qbo_id?: string
+  qbo_synced_at?: string
+  qbo_sync_status?: string
+  qbo_sync_error?: string
+  qbo_expense_account_id?: string
+  qbo_expense_account_name?: string
+  qbo_ap_account_id?: string
+  qbo_ap_account_name?: string
+  qbo_vendor_id?: string
+  qbo_vendor_name?: string
   actual_lines?: VendorBillActualLine[]
 }
 
@@ -61,6 +73,8 @@ export interface VendorBillActualLine {
   cost_code_name?: string
   description?: string
   amount_cents: number
+  qbo_expense_account_id?: string
+  qbo_expense_account_name?: string
 }
 
 export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
@@ -74,6 +88,8 @@ export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
     cost_code_name: line.cost_code?.name ?? undefined,
     description: line.description ?? undefined,
     amount_cents: (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
+    qbo_expense_account_id: line.metadata?.qbo_expense_account_id ?? undefined,
+    qbo_expense_account_name: line.metadata?.qbo_expense_account_name ?? undefined,
   }))
   const firstActualLine = actualLines[0]
   const paidCents =
@@ -116,6 +132,16 @@ export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
     actual_cost_code_id: firstActualLine?.cost_code_id ?? undefined,
     actual_cost_code_code: firstActualLine?.cost_code_code ?? undefined,
     actual_cost_code_name: firstActualLine?.cost_code_name ?? undefined,
+    qbo_id: row.qbo_id ?? undefined,
+    qbo_synced_at: row.qbo_synced_at ?? undefined,
+    qbo_sync_status: row.qbo_sync_status ?? undefined,
+    qbo_sync_error: row.qbo_sync_error ?? undefined,
+    qbo_expense_account_id: row.qbo_expense_account_id ?? metadata.qbo_expense_account_id ?? undefined,
+    qbo_expense_account_name: row.qbo_expense_account_name ?? metadata.qbo_expense_account_name ?? undefined,
+    qbo_ap_account_id: row.qbo_ap_account_id ?? metadata.qbo_ap_account_id ?? undefined,
+    qbo_ap_account_name: row.qbo_ap_account_name ?? metadata.qbo_ap_account_name ?? undefined,
+    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
     actual_lines: actualLines,
   }
 }
@@ -129,7 +155,13 @@ async function replaceBillLineCoding(
   }: {
     orgId: string
     billId: string
-    lines: Array<{ cost_code_id: string; description: string; amount_cents: number }>
+    lines: Array<{
+      cost_code_id: string
+      description: string
+      amount_cents: number
+      qbo_expense_account_id?: string
+      qbo_expense_account_name?: string
+    }>
   },
 ) {
   if (lines.length === 0) return
@@ -164,7 +196,11 @@ async function replaceBillLineCoding(
     unit: "LS",
     unit_cost_cents: line.amount_cents,
     sort_order: index,
-    metadata: { source: "ap_review" },
+    metadata: {
+      source: "ap_review",
+      qbo_expense_account_id: line.qbo_expense_account_id ?? null,
+      qbo_expense_account_name: line.qbo_expense_account_name ?? null,
+    },
   }))
 
   const { error: insertError } = await supabase.from("bill_lines").insert(rows)
@@ -203,7 +239,7 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
       commitment:commitments(id, title, total_cents, company:companies(id, name))
     `,
@@ -236,7 +272,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
       commitment:commitments(id, title, total_cents, company:companies(id, name))
     `,
@@ -258,7 +294,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
       ? { data: [], error: null }
       : await supabase
           .from("bill_lines")
-          .select("id, bill_id, cost_code_id, description, unit_cost_cents, quantity, cost_code:cost_codes(id, code, name)")
+          .select("id, bill_id, cost_code_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name)")
           .eq("org_id", resolvedOrgId)
           .in("bill_id", billIds)
           .order("sort_order", { ascending: true })
@@ -291,7 +327,7 @@ export async function updateVendorBillStatus({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, commitment_id, bill_number, status, total_cents, currency, metadata, approved_at, paid_at, paid_cents, lien_waiver_status")
+    .select("id, org_id, project_id, commitment_id, bill_number, status, total_cents, currency, metadata, approved_at, paid_at, paid_cents, lien_waiver_status, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -379,6 +415,33 @@ export async function updateVendorBillStatus({
     updateData.payment_method = parsed.payment_method
   }
 
+  if (parsed.qbo_expense_account_id !== undefined) {
+    updateData.qbo_expense_account_id = parsed.qbo_expense_account_id || null
+    updateData.qbo_expense_account_name = parsed.qbo_expense_account_name || null
+    if (existing.qbo_expense_account_id !== parsed.qbo_expense_account_id) {
+      updateData.qbo_sync_status = "pending"
+      updateData.qbo_sync_error = null
+    }
+  }
+
+  if (parsed.qbo_ap_account_id !== undefined) {
+    updateData.qbo_ap_account_id = parsed.qbo_ap_account_id || null
+    updateData.qbo_ap_account_name = parsed.qbo_ap_account_name || null
+    if (existing.qbo_ap_account_id !== parsed.qbo_ap_account_id) {
+      updateData.qbo_sync_status = "pending"
+      updateData.qbo_sync_error = null
+    }
+  }
+
+  if (parsed.qbo_vendor_id !== undefined) {
+    updateData.qbo_vendor_id = parsed.qbo_vendor_id || null
+    updateData.qbo_vendor_name = parsed.qbo_vendor_name || null
+    if (existing.qbo_vendor_id !== parsed.qbo_vendor_id) {
+      updateData.qbo_sync_status = "pending"
+      updateData.qbo_sync_error = null
+    }
+  }
+
   if (parsed.status === "approved" && !existing.approved_at) {
     updateData.approved_at = new Date().toISOString()
     updateData.approved_by = userId
@@ -390,6 +453,8 @@ export async function updateVendorBillStatus({
           cost_code_id: line.cost_code_id,
           description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
           amount_cents: line.amount_cents,
+          qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
+          qbo_expense_account_name: line.qbo_expense_account_name ?? parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
         }))
       : parsed.cost_code_id
         ? [
@@ -397,6 +462,8 @@ export async function updateVendorBillStatus({
               cost_code_id: parsed.cost_code_id,
               description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
               amount_cents: totalCents,
+              qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
+              qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
             },
           ]
         : []
@@ -435,7 +502,7 @@ export async function updateVendorBillStatus({
     }
 
     if (paymentAmount > 0) {
-      const { error: paymentInsertError } = await supabase.from("payments").insert({
+      const { data: paymentRow, error: paymentInsertError } = await supabase.from("payments").insert({
         org_id: resolvedOrgId,
         project_id: existing.project_id,
         bill_id: billId,
@@ -448,10 +515,13 @@ export async function updateVendorBillStatus({
         provider: "manual",
         net_cents: paymentAmount,
         metadata: {},
-      })
+      }).select("id").single()
 
       if (paymentInsertError) {
         throw new Error(`Failed to record bill payment: ${paymentInsertError.message}`)
+      }
+      if (paymentRow?.id) {
+        await enqueueBillPaymentSync(paymentRow.id, resolvedOrgId)
       }
     }
 
@@ -482,7 +552,7 @@ export async function updateVendorBillStatus({
     .eq("id", billId)
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
       commitment:commitments(id, title, total_cents, company:companies(id, name))
     `,
@@ -519,8 +589,24 @@ export async function updateVendorBillStatus({
       payment_amount_cents: parsed.payment_amount_cents,
       lien_waiver_status: parsed.lien_waiver_status,
       retainage_percent: parsed.retainage_percent,
+      qbo_expense_account_id: parsed.qbo_expense_account_id,
+      qbo_ap_account_id: parsed.qbo_ap_account_id,
+      qbo_vendor_id: parsed.qbo_vendor_id,
     },
   })
+
+  if (finalStatus === "approved") {
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId }).catch((error) => {
+      console.warn("Failed to propagate approved vendor bill to cost ledger", error)
+    })
+    await enqueueVendorBillSync(billId, resolvedOrgId)
+  }
+
+  if (existing.status === "approved" && finalStatus === "pending") {
+    await voidBillableCostsForVendorBill({ billId, orgId: resolvedOrgId }).catch((error) => {
+      console.warn("Failed to void vendor bill ledger costs", error)
+    })
+  }
 
   return mapVendorBill(data)
 }

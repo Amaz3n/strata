@@ -1,4 +1,6 @@
 import { notFound } from "next/navigation"
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
 import {
@@ -15,12 +17,51 @@ interface ProjectFilesPageProps {
 
 export default async function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
   const { id } = await params
-  const query = await searchParams
+  const project = await getProjectAction(id)
 
+  if (!project) {
+    notFound()
+  }
+
+  return (
+    <PageLayout
+      title="Documents"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "Documents" },
+      ]}
+    >
+      <Suspense
+        fallback={
+          <div className="p-6 space-y-4">
+            <Skeleton className="h-8 w-48 mb-6" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-16 w-full rounded-md" />
+              ))}
+            </div>
+          </div>
+        }
+      >
+        <ProjectFilesData id={id} project={project} searchParams={searchParams} />
+      </Suspense>
+    </PageLayout>
+  )
+}
+
+async function ProjectFilesData({
+  id,
+  project,
+  searchParams,
+}: {
+  id: string
+  project: any
+  searchParams: Promise<{ path?: string }>
+}) {
+  const query = await searchParams
   const normalizedPath = query.path?.trim() ? query.path : undefined
 
-  const [project, filesResult, counts, folders] = await Promise.all([
-    getProjectAction(id),
+  const [filesResult, counts, folders] = await Promise.all([
     listFilesAction({
       project_id: id,
       folder_path: normalizedPath,
@@ -32,12 +73,14 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
     listChildFoldersAction(id, normalizedPath),
   ])
 
-  if (!project) {
-    notFound()
-  }
-
   return (
-    <PageLayout title="Documents">
+    <PageLayout
+      title="Documents"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "Documents" },
+      ]}
+    >
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
         <UnifiedDocumentsLayout
           project={{ id: project.id, name: project.name }}

@@ -42,8 +42,6 @@ const HREF_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   proposal: "/proposals/{id}",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
-  conversation: "/conversations/{id}",
-  message: "/messages/{id}",
 }
 
 const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i
@@ -153,39 +151,6 @@ function parseTaskTitle(query: string): string | undefined {
   return undefined
 }
 
-function parseMessageBody(query: string): string | undefined {
-  const quoted = extractQuotedText(query)
-  if (quoted) return quoted
-
-  const explicitBody = query.match(/\b(?:saying|to say|that)\s+(.+)$/i)
-  if (explicitBody?.[1]) {
-    const body = cleanActionText(explicitBody[1])
-    if (body.length > 0) return body
-  }
-
-  const aboutBody = query.match(/\b(?:about|regarding)\s+(.+)$/i)
-  if (aboutBody?.[1]) {
-    const body = cleanActionText(aboutBody[1])
-    if (body.length > 0) return `Quick follow-up: ${body}`
-  }
-
-  return undefined
-}
-
-function parseRecipientHint(query: string): string | undefined {
-  const match = query.match(/\bto\s+([a-z][a-z0-9\s&.'-]{1,80})\b/i)
-  if (!match?.[1]) return undefined
-  const hint = cleanActionText(match[1])
-  if (!hint) return undefined
-  if (["me", "myself", "them", "him", "her", "team"].includes(hint.toLowerCase())) return undefined
-  return hint
-}
-
-function parseConversationIdHint(query: string): string | undefined {
-  const match = query.match(UUID_PATTERN)
-  return match?.[0]
-}
-
 function normalizeEntityType(value: unknown): SearchEntityType | null {
   if (typeof value !== "string") return null
   const normalized = value.trim().toLowerCase().replace(/\s+/g, "_")
@@ -203,8 +168,6 @@ function normalizeEntityType(value: unknown): SearchEntityType | null {
     "change_order",
     "contract",
     "proposal",
-    "conversation",
-    "message",
     "rfi",
     "submittal",
     "drawing_set",
@@ -255,25 +218,6 @@ export function planAiToolInvocation(query: string): PlannedAiToolInvocation | n
         dueDate: parseDateHint(query),
         projectName: parseProjectHint(query),
         assigneeHint: parseAssigneeHint(query),
-      },
-    }
-  }
-
-  if (
-    (/^(please\s+)?(send|message|notify|remind|ping)\b/.test(normalized) ||
-      /\b(can you|could you|please)\s+(send|message|notify|remind|ping)\b/.test(normalized)) &&
-    /\b(message|note|reminder|update)\b/.test(normalized)
-  ) {
-    const body = parseMessageBody(query)
-    return {
-      toolKey: "messages.send",
-      reason: "Action intent detected: send a message.",
-      confidence: body ? 0.9 : 0.82,
-      args: {
-        body: body ?? "Quick follow-up from your assistant.",
-        conversationId: parseConversationIdHint(query),
-        projectName: parseProjectHint(query),
-        recipientHint: parseRecipientHint(query),
       },
     }
   }

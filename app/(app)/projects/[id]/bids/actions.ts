@@ -157,6 +157,7 @@ export async function awardBidSubmissionAction(
   revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
   revalidatePath(`/projects/${projectId}/commitments`)
   revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/budget`)
   revalidatePath(`/projects/${projectId}/budget`)
   return result
 }

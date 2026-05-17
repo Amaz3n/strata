@@ -12,11 +12,28 @@ import { HtmlTemplate } from "@/packages/invoice/src/templates/html"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { createPublicInvoicePaymentIntentAction } from "@/app/i/[token]/actions"
 
 type PaymentProps = {
-  clientSecret: string
   publishableKey: string
   token: string
+  feeQuotes: {
+    ach: PaymentFeeQuote
+    card: PaymentFeeQuote
+  }
+}
+
+type PaymentFeeQuote = {
+  method: "ach" | "card"
+  enabled: boolean
+  invoiceBalanceCents: number
+  feeCents: number
+  totalCents: number
+  feePercent: number
+  feeFixedCents: number
+  feeCapCents: number | null
+  label: string
+  disclosure: string
 }
 
 interface Props {
@@ -103,14 +120,12 @@ function getStripeAppearance(isDark: boolean): Appearance {
   }
 }
 
-function PaymentForm({
-  invoice,
+function ConfirmPaymentForm({
+  quote,
   token,
-  isDark,
 }: {
-  invoice: Invoice
+  quote: PaymentFeeQuote
   token: string
-  isDark: boolean
 }) {
   const stripe = useStripe()
   const elements = useElements()
@@ -118,23 +133,11 @@ function PaymentForm({
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
-  const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
-  const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
-  const businessName =
-    typeof (invoice.metadata as Record<string, any> | undefined)?.org_name === "string"
-      ? ((invoice.metadata as Record<string, any>).org_name as string)
-      : "Invoice payment"
-
   const handleSubmit = async () => {
     setError(null)
     setMessage(null)
     if (!stripe || !elements) {
       setError("Payment form not ready yet.")
-      return
-    }
-    if (isPaid) {
-      setMessage("This invoice is already paid.")
       return
     }
     setIsSubmitting(true)
@@ -160,10 +163,25 @@ function PaymentForm({
 
   return (
     <div className="space-y-6">
+      <div className="space-y-2 border bg-muted/30 p-4 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">Invoice balance</span>
+          <span>{formatMoney(quote.invoiceBalanceCents)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">{quote.label} processing fee</span>
+          <span>{formatMoney(quote.feeCents)}</span>
+        </div>
+        <Separator />
+        <div className="flex items-center justify-between font-semibold">
+          <span>Total charged</span>
+          <span>{formatMoney(quote.totalCents)}</span>
+        </div>
+      </div>
+
       <PaymentElement
         options={{
           layout: "tabs",
-          business: { name: businessName },
         }}
       />
 
@@ -181,18 +199,16 @@ function PaymentForm({
 
       <Button
         className="w-full h-11"
-        disabled={isSubmitting || isPaid || !stripe}
+        disabled={isSubmitting || !stripe}
         onClick={handleSubmit}
       >
-        {isPaid ? (
-          "Already paid"
-        ) : isSubmitting ? (
+        {isSubmitting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
             Processing...
           </>
         ) : (
-          `Pay ${formatMoney(balanceCents)}`
+          `Pay ${formatMoney(quote.totalCents)}`
         )}
       </Button>
 
@@ -212,6 +228,10 @@ function PaymentSection({
   payment: PaymentProps
 }) {
   const [isDark, setIsDark] = useState(false)
+  const [selectedQuote, setSelectedQuote] = useState<PaymentFeeQuote | null>(null)
+  const [clientSecret, setClientSecret] = useState<string | null>(null)
+  const [isCreatingIntent, setIsCreatingIntent] = useState(false)
+  const [intentError, setIntentError] = useState<string | null>(null)
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -229,32 +249,107 @@ function PaymentSection({
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
   const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
+  const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
 
-  return (
-    <Elements
-      stripe={stripePromise}
-      options={{
-        clientSecret: payment.clientSecret,
-        appearance,
-      }}
-    >
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
+  async function handleMethodSelect(quote: PaymentFeeQuote) {
+    if (!quote.enabled || isPaid || isCreatingIntent) return
+    setSelectedQuote(quote)
+    setClientSecret(null)
+    setIntentError(null)
+    setIsCreatingIntent(true)
+    try {
+      const intent = await createPublicInvoicePaymentIntentAction({
+        token: payment.token,
+        method: quote.method,
+      })
+      if (!intent.client_secret) {
+        throw new Error("Stripe did not return a payment form secret.")
+      }
+      setClientSecret(intent.client_secret)
+    } catch (err) {
+      setIntentError(err instanceof Error ? err.message : "Unable to start payment.")
+    } finally {
+      setIsCreatingIntent(false)
+    }
+  }
+
+  function renderMethodButton(quote: PaymentFeeQuote) {
+    const isSelected = selectedQuote?.method === quote.method
+    return (
+      <button
+        type="button"
+        key={quote.method}
+        disabled={!quote.enabled || isPaid || isCreatingIntent}
+        onClick={() => handleMethodSelect(quote)}
+        className={[
+          "w-full border p-4 text-left transition-colors",
+          isSelected ? "border-primary bg-primary/5" : "bg-background hover:bg-muted/50",
+          !quote.enabled || isPaid ? "cursor-not-allowed opacity-60" : "",
+        ].join(" ")}
+      >
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="font-semibold">Pay invoice</h3>
-            <p className="text-sm text-muted-foreground">Select a payment method</p>
+            <p className="font-medium">{quote.label}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{quote.disclosure}</p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-muted-foreground">Amount due</p>
-            <p className="text-xl font-semibold">{formatMoney(balanceCents)}</p>
+            <p className="text-xs text-muted-foreground">Total</p>
+            <p className="font-semibold">{formatMoney(quote.totalCents)}</p>
           </div>
         </div>
+        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+          <span>Processing fee</span>
+          <span>{formatMoney(quote.feeCents)}</span>
+        </div>
+      </button>
+    )
+  }
 
-        <Separator />
-
-        <PaymentForm invoice={invoice} token={payment.token} isDark={isDark} />
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold">Pay invoice</h3>
+          <p className="text-sm text-muted-foreground">Choose how you want to pay</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-muted-foreground">Balance due</p>
+          <p className="text-xl font-semibold">{formatMoney(balanceCents)}</p>
+        </div>
       </div>
-    </Elements>
+
+      <Separator />
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {renderMethodButton(payment.feeQuotes.ach)}
+        {renderMethodButton(payment.feeQuotes.card)}
+      </div>
+
+      {isCreatingIntent && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Preparing secure payment form...
+        </div>
+      )}
+      {intentError && (
+        <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
+          {intentError}
+        </div>
+      )}
+
+      {selectedQuote && clientSecret ? (
+        <Elements
+          key={clientSecret}
+          stripe={stripePromise}
+          options={{
+            clientSecret,
+            appearance,
+          }}
+        >
+          <ConfirmPaymentForm quote={selectedQuote} token={payment.token} />
+        </Elements>
+      ) : null}
+    </div>
   )
 }
 

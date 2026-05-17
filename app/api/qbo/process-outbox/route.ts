@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { syncInvoiceToQBO, syncPaymentToQBO } from "@/lib/services/qbo-sync"
+import {
+  syncBillPaymentToQBO,
+  syncInvoiceToQBO,
+  syncPaymentToQBO,
+  syncProjectExpenseToQBO,
+  syncVendorBillToQBO,
+} from "@/lib/services/qbo-sync"
 import { refreshQBOConnectionsDueForKeepalive } from "@/lib/services/qbo-connection"
 import { logQBO } from "@/lib/services/qbo-logger"
 
@@ -10,6 +16,7 @@ const MAX_RETRIES = 3
 const BATCH_SIZE = 25
 const TOKEN_KEEPALIVE_BATCH_SIZE = 10
 const PROCESSING_TIMEOUT_MINUTES = 20
+const QBO_JOB_TYPES = ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"]
 
 type ClaimedJob = {
   id?: number
@@ -58,7 +65,7 @@ export async function POST(request: NextRequest) {
       run_at: new Date().toISOString(),
       last_error: "Recovered stale processing job",
     })
-    .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+    .in("job_type", QBO_JOB_TYPES)
     .eq("status", "processing")
     .lt("updated_at", staleCutoff)
     .select("id")
@@ -73,7 +80,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: claimedJobs, error } = await supabase.rpc("claim_jobs", {
-    job_types: ["qbo_sync_invoice", "qbo_sync_payment"],
+    job_types: QBO_JOB_TYPES,
     limit_value: BATCH_SIZE,
   })
 
@@ -87,7 +94,7 @@ export async function POST(request: NextRequest) {
     const { data: fallbackJobs, error: fallbackError } = await supabase
       .from("outbox")
       .select("id, org_id, job_type, payload, retry_count, run_at")
-      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+      .in("job_type", QBO_JOB_TYPES)
       .eq("status", "pending")
       .lte("run_at", now)
       .order("created_at", { ascending: true })
@@ -130,6 +137,36 @@ export async function POST(request: NextRequest) {
         const paymentId = payload.payment_id as string | undefined
         if (!paymentId || !job.org_id) throw new Error("Missing payment_id or org_id")
         const result = await syncPaymentToQBO(paymentId, job.org_id)
+        if (result.success) {
+          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
+          processed++
+        } else {
+          throw new Error(result.error ?? "Unknown sync error")
+        }
+      } else if (job.job_type === "qbo_sync_project_expense") {
+        const expenseId = payload.expense_id as string | undefined
+        if (!expenseId || !job.org_id) throw new Error("Missing expense_id or org_id")
+        const result = await syncProjectExpenseToQBO(expenseId, job.org_id)
+        if (result.success) {
+          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
+          processed++
+        } else {
+          throw new Error(result.error ?? "Unknown sync error")
+        }
+      } else if (job.job_type === "qbo_sync_vendor_bill") {
+        const billId = payload.bill_id as string | undefined
+        if (!billId || !job.org_id) throw new Error("Missing bill_id or org_id")
+        const result = await syncVendorBillToQBO(billId, job.org_id)
+        if (result.success) {
+          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
+          processed++
+        } else {
+          throw new Error(result.error ?? "Unknown sync error")
+        }
+      } else if (job.job_type === "qbo_sync_bill_payment") {
+        const paymentId = payload.payment_id as string | undefined
+        if (!paymentId || !job.org_id) throw new Error("Missing payment_id or org_id")
+        const result = await syncBillPaymentToQBO(paymentId, job.org_id)
         if (result.success) {
           await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
           processed++

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import { z } from "zod"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireAuth } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -16,6 +17,7 @@ import {
 } from "@/lib/services/platform-session"
 import { provisionOrganization } from "@/lib/services/provisioning"
 import { setPlatformOrganizationStatus } from "@/lib/services/platform-access"
+import { createOrgSubscriptionCheckout } from "@/lib/services/billing"
 import {
   AI_PROVIDER_VALUES,
   clearPlatformAiSearchDefaultConfig,
@@ -45,6 +47,16 @@ const provisionPlatformOrgSchema = z.object({
   fullName: z.string().min(2, "Primary contact name is required"),
   primaryEmail: z.string().email("Valid email is required"),
   trialDays: z.coerce.number().optional(),
+  createCheckout: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  teamMembers: z
+    .array(
+      z.object({
+        fullName: z.string().trim().optional(),
+        email: z.string().trim().email("Valid team member email is required"),
+        role: z.enum(["org_admin", "org_user"]).default("org_user"),
+      }),
+    )
+    .default([]),
 })
 
 const setOrganizationStatusSchema = z.object({
@@ -57,6 +69,96 @@ const updatePlatformAiDefaultsSchema = z.object({
   provider: z.enum(AI_PROVIDER_VALUES),
   model: z.string().trim().max(120).optional(),
 })
+
+type PlatformOnboardingState = {
+  error?: string
+  message?: string
+  checkoutUrl?: string
+  orgId?: string
+  orgName?: string
+  invitedCount?: number
+}
+
+async function resolveOrgRoleId(client: SupabaseClient, roleKey: "org_admin" | "org_user") {
+  const { data, error } = await client.from("roles").select("id").eq("scope", "org").eq("key", roleKey).maybeSingle()
+  if (error || !data?.id) {
+    throw new Error(`Role ${roleKey} not found.`)
+  }
+  return data.id as string
+}
+
+function parseTeamMembers(formData: FormData) {
+  const names = formData.getAll("teamMemberName")
+  const emails = formData.getAll("teamMemberEmail")
+  const roles = formData.getAll("teamMemberRole")
+
+  return emails
+    .map((email, index) => ({
+      fullName: String(names[index] ?? "").trim(),
+      email: String(email ?? "").trim(),
+      role: String(roles[index] ?? "org_user"),
+    }))
+    .filter((member) => member.email.length > 0)
+}
+
+async function inviteInitialTeamMember(input: {
+  supabase: SupabaseClient
+  orgId: string
+  actorUserId: string
+  fullName?: string | null
+  email: string
+  role: "org_admin" | "org_user"
+}) {
+  const email = input.email.trim().toLowerCase()
+  const roleId = await resolveOrgRoleId(input.supabase, input.role)
+  const existingUser = await findUserByEmail(email)
+  let userId = existingUser?.id ?? null
+
+  if (!userId) {
+    const { data: invited, error } = await input.supabase.auth.admin.inviteUserByEmail(email, {
+      data: {
+        full_name: input.fullName?.trim() || undefined,
+        org_id: input.orgId,
+      },
+    })
+
+    if (error || !invited?.user?.id) {
+      throw new Error(error?.message ?? `Failed to invite ${email}.`)
+    }
+    userId = invited.user.id
+  }
+
+  const { data: existingMembership } = await input.supabase
+    .from("memberships")
+    .select("id")
+    .eq("org_id", input.orgId)
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (existingMembership?.id) {
+    const { error } = await input.supabase
+      .from("memberships")
+      .update({ role_id: roleId, status: "active" })
+      .eq("id", existingMembership.id)
+
+    if (error) {
+      throw new Error(`Failed to update membership for ${email}: ${error.message}`)
+    }
+    return
+  }
+
+  const { error } = await input.supabase.from("memberships").insert({
+    org_id: input.orgId,
+    user_id: userId,
+    role_id: roleId,
+    status: existingUser?.id ? "active" : "invited",
+    invited_by: input.actorUserId,
+  })
+
+  if (error) {
+    throw new Error(`Failed to add ${email}: ${error.message}`)
+  }
+}
 
 export async function enterOrgContextAction(formData: FormData) {
   const parsed = enterOrgContextSchema.safeParse({
@@ -140,7 +242,10 @@ export async function endImpersonationAction() {
   redirect("/platform")
 }
 
-export async function provisionPlatformOrgAction(prevState: { error?: string; message?: string }, formData: FormData) {
+export async function provisionPlatformOrgAction(
+  _prevState: PlatformOnboardingState,
+  formData: FormData,
+): Promise<PlatformOnboardingState> {
   const parsed = provisionPlatformOrgSchema.safeParse({
     orgName: formData.get("orgName"),
     slug: formData.get("slug") ?? formData.get("orgSlug"),
@@ -149,6 +254,8 @@ export async function provisionPlatformOrgAction(prevState: { error?: string; me
     fullName: formData.get("fullName"),
     primaryEmail: formData.get("primaryEmail"),
     trialDays: formData.get("trialDays"),
+    createCheckout: formData.get("createCheckout") ?? "true",
+    teamMembers: parseTeamMembers(formData),
   })
 
   if (!parsed.success) {
@@ -159,7 +266,7 @@ export async function provisionPlatformOrgAction(prevState: { error?: string; me
   await requireAnyPermission(["billing.manage", "platform.billing.manage"], { userId: user.id })
 
   try {
-    await provisionOrganization({
+    const org = await provisionOrganization({
       name: parsed.data.orgName,
       slug: parsed.data.slug,
       billingModel: parsed.data.billingModel,
@@ -169,14 +276,53 @@ export async function provisionPlatformOrgAction(prevState: { error?: string; me
       trialDays: parsed.data.trialDays,
       createdBy: user.id,
     })
+
+    const serviceSupabase = createServiceSupabaseClient()
+    const primaryEmail = parsed.data.primaryEmail.trim().toLowerCase()
+    const teamMembers = parsed.data.teamMembers.filter((member) => member.email.trim().toLowerCase() !== primaryEmail)
+
+    for (const member of teamMembers) {
+      await inviteInitialTeamMember({
+        supabase: serviceSupabase,
+        orgId: org.id,
+        actorUserId: user.id,
+        fullName: member.fullName,
+        email: member.email,
+        role: member.role,
+      })
+    }
+
+    let checkoutUrl: string | undefined
+    if (parsed.data.billingModel === "subscription" && parsed.data.createCheckout) {
+      if (!parsed.data.planCode) {
+        throw new Error("Choose a subscription plan before creating a checkout link.")
+      }
+
+      const checkout = await createOrgSubscriptionCheckout({
+        orgId: org.id,
+        planCode: parsed.data.planCode,
+        actorUserId: user.id,
+      })
+      checkoutUrl = checkout.checkoutUrl
+    }
+
+    revalidatePath("/platform")
+    revalidatePath("/admin")
+    revalidatePath("/admin/customers")
+
+    return {
+      message: checkoutUrl
+        ? "Client org created. Send the Stripe Checkout link to finish subscription setup."
+        : "Client org created.",
+      checkoutUrl,
+      orgId: org.id,
+      orgName: org.name,
+      invitedCount: teamMembers.length + 1,
+    }
   } catch (error: any) {
     console.error("Failed to provision organization from platform", error)
     return { error: error?.message ?? "Failed to provision organization." }
   }
-
-  revalidatePath("/platform")
-  revalidatePath("/admin")
-  return { message: "Organization provisioned successfully." }
 }
 
 export async function setOrganizationStatusAction(formData: FormData) {

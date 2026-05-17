@@ -3,7 +3,7 @@
 import { LayoutDashboard, FileText, HelpCircle, Package, MessageCircle, ShieldCheck } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type SubPortalTab = "dashboard" | "documents" | "rfis" | "submittals" | "messages" | "compliance"
+export type SubPortalTab = "dashboard" | "documents" | "rfis" | "submittals" | "compliance"
 
 interface SubBottomNavProps {
   activeTab: SubPortalTab
@@ -19,7 +19,6 @@ const tabs: { id: SubPortalTab; label: string; icon: typeof LayoutDashboard }[] 
   { id: "documents", label: "Docs", icon: FileText },
   { id: "rfis", label: "RFIs", icon: HelpCircle },
   { id: "compliance", label: "Compliance", icon: ShieldCheck },
-  { id: "messages", label: "Messages", icon: MessageCircle },
 ]
 
 export function SubBottomNav({

@@ -1,10 +1,10 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
 import { listWarrantyRequestsAction } from "@/app/(app)/warranty/actions"
 import { WarrantyClient } from "@/components/warranty/warranty-client"
-
-// export const dynamic = "force-dynamic" // Removed for better caching performance
 
 interface ProjectWarrantyPageProps {
   params: Promise<{ id: string }>
@@ -13,18 +13,45 @@ interface ProjectWarrantyPageProps {
 export default async function ProjectWarrantyPage({ params }: ProjectWarrantyPageProps) {
   const { id } = await params
 
-  const [project, requests] = await Promise.all([
-    getProjectAction(id),
-    listWarrantyRequestsAction(id),
-  ])
+  return (
+    <>
+      <PageLayout
+        title="Warranty"
+        breadcrumbs={[
+          { label: "Project" },
+          { label: "Warranty" },
+        ]}
+      />
+      <Suspense fallback={<ProjectWarrantyFallback />}>
+        <ProjectWarrantyData id={id} />
+      </Suspense>
+    </>
+  )
+}
+
+function ProjectWarrantyFallback() {
+  return (
+    <div className="p-6 space-y-4">
+      <Skeleton className="h-8 w-48 mb-6" />
+      <div className="space-y-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-16 w-full rounded-md" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+async function ProjectWarrantyData({ id }: { id: string }) {
+  const project = await getProjectAction(id)
 
   if (!project) notFound()
 
+  const requests = await listWarrantyRequestsAction(id)
+
   return (
-    <PageLayout title="Warranty">
-      <div className="space-y-6">
-        <WarrantyClient projectId={project.id} requests={requests} />
-      </div>
-    </PageLayout>
+    <div className="space-y-6">
+      <WarrantyClient projectId={project.id} requests={requests} />
+    </div>
   )
 }

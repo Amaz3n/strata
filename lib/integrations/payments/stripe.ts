@@ -241,13 +241,15 @@ export function mapStripeEventToDomain(event: Stripe.Event) {
   switch (event.type) {
     case "payment_intent.succeeded": {
       const intent = event.data.object as Stripe.PaymentIntent
+      const invoiceBalanceCents = Number.parseInt(intent.metadata.invoice_balance_cents ?? "", 10)
+      const paymentMethodFeeCents = Number.parseInt(intent.metadata.payment_method_fee_cents ?? "", 10)
       return {
         type: "payment_succeeded" as const,
         provider_payment_id: intent.id,
-        amount_cents: intent.amount,
+        amount_cents: Number.isFinite(invoiceBalanceCents) && invoiceBalanceCents > 0 ? invoiceBalanceCents : intent.amount,
         currency: intent.currency,
-    method: mapPaymentMethodType(intent.payment_method_types?.[0] ?? "ach"),
-        fee_cents: 0,
+        method: mapPaymentMethodType(intent.metadata.payment_method_choice ?? intent.payment_method_types?.[0] ?? "ach"),
+        fee_cents: Number.isFinite(paymentMethodFeeCents) && paymentMethodFeeCents > 0 ? paymentMethodFeeCents : 0,
         metadata: intent.metadata,
         invoice_id: intent.metadata.invoice_id,
         org_id: intent.metadata.org_id,

@@ -1,9 +1,9 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
-import { usePathname } from "next/navigation"
 import { ChevronRight, type LucideIcon } from "lucide-react"
+
+import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 
 import {
   Collapsible,
@@ -22,28 +22,41 @@ import {
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
 
-export function NavMain({
-  items,
-}: {
-  items: {
-    label?: string
-    items: {
-      title: string
-      url: string
-      icon?: LucideIcon
-      isActive?: boolean
-      badge?: number
-      disabled?: boolean
-      items?: {
-        title: string
-        url: string
-      }[]
-    }[]
-  }[]
-}) {
-  const pathname = usePathname()
+type NavSubItem = {
+  title: string
+  url: string
+  isActive?: boolean
+}
 
-  // Avoid hydration issues with useSearchParams by only using it after hydration
+type NavItem = {
+  title: string
+  url: string
+  icon?: LucideIcon
+  isActive?: boolean
+  badge?: number
+  disabled?: boolean
+  items?: NavSubItem[]
+}
+
+type NavGroup = {
+  label?: string
+  items: NavItem[]
+}
+
+const activeItemClass =
+  "data-[active=true]:shadow-[inset_2px_0_0_0_var(--sidebar-primary)] data-[active=true]:text-sidebar-foreground"
+
+const activeSubItemClass = [
+  "data-[active=true]:bg-[oklch(0.58_0.20_264_/_0.4)]",
+  "data-[active=true]:hover:bg-[oklch(0.58_0.20_264_/_0.5)]",
+  "data-[active=true]:text-sidebar-foreground",
+  "data-[active=true]:font-semibold",
+  "data-[active=true]:shadow-[inset_3px_0_0_0_var(--sidebar-primary)]",
+].join(" ")
+
+export function NavMain({ items }: { items: NavGroup[] }) {
+  const pathname = useOptimisticPathname()
+
   const [currentPath, setCurrentPath] = React.useState(pathname)
   React.useEffect(() => {
     try {
@@ -60,72 +73,94 @@ export function NavMain({
   return (
     <>
       {items.map((group, groupIndex) => (
-        <SidebarGroup key={group.label ?? `group-${groupIndex}`}>
-          {group.label ? <SidebarGroupLabel>{group.label}</SidebarGroupLabel> : null}
+        <SidebarGroup
+          key={group.label ?? `group-${groupIndex}`}
+          className={groupIndex > 0 ? "pt-1" : undefined}
+        >
+          {group.label ? (
+            <SidebarGroupLabel className="px-2 text-[11px] tracking-[0.08em] uppercase text-sidebar-foreground/45">
+              {group.label}
+            </SidebarGroupLabel>
+          ) : null}
           <SidebarMenu>
-            {group.items.map((item) => (
-              <Collapsible
-                key={item.title}
-                asChild
-                defaultOpen={item.isActive}
-                className="group/collapsible"
-              >
-                <SidebarMenuItem>
-                  {item.items?.length ? (
-                    <CollapsibleTrigger asChild>
-                      <SidebarMenuButton tooltip={item.title}>
-                        {item.icon && <item.icon />}
-                        <span>{item.title}</span>
-                        <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
-                      </SidebarMenuButton>
-                    </CollapsibleTrigger>
-                  ) : (
-                    <>
-                      {item.disabled ? (
-                        <SidebarMenuButton
-                          tooltip={item.title}
-                          isActive={false}
-                          aria-disabled="true"
-                        >
+            {group.items.map((item) => {
+              const subActive = item.items?.some((s) => s.isActive) ?? false
+
+              return (
+                <Collapsible
+                  key={item.title}
+                  asChild
+                  defaultOpen={subActive}
+                  className="group/collapsible"
+                >
+                  <SidebarMenuItem>
+                    {item.items?.length ? (
+                      <CollapsibleTrigger asChild>
+                        <SidebarMenuButton tooltip={item.title}>
                           {item.icon && <item.icon />}
                           <span>{item.title}</span>
+                          <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                         </SidebarMenuButton>
-                      ) : (
-                        <SidebarMenuButton tooltip={item.title} isActive={item.isActive} asChild>
-                          <Link href={item.url}>
+                      </CollapsibleTrigger>
+                    ) : (
+                      <>
+                        {item.disabled ? (
+                          <SidebarMenuButton
+                            tooltip={item.title}
+                            isActive={false}
+                            aria-disabled="true"
+                          >
                             {item.icon && <item.icon />}
                             <span>{item.title}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                      )}
-                      {item.badge !== undefined && item.badge > 0 && !item.disabled && (
-                        <SidebarMenuBadge className="bg-red-500 text-white">
-                          {item.badge > 99 ? "99+" : item.badge}
-                        </SidebarMenuBadge>
-                      )}
-                    </>
-                  )}
-                  {item.items?.length ? (
-                    <CollapsibleContent>
-                      <SidebarMenuSub>
-                        {item.items?.map((subItem) => (
-                          <SidebarMenuSubItem key={subItem.title}>
-                            <SidebarMenuSubButton
-                              asChild
-                              isActive={currentPath === subItem.url || pathname === subItem.url}
-                            >
-                              <Link href={subItem.url}>
-                                <span>{subItem.title}</span>
-                              </Link>
-                            </SidebarMenuSubButton>
-                          </SidebarMenuSubItem>
-                        ))}
-                      </SidebarMenuSub>
-                    </CollapsibleContent>
-                  ) : null}
-                </SidebarMenuItem>
-              </Collapsible>
-            ))}
+                          </SidebarMenuButton>
+                        ) : (
+                          <SidebarMenuButton
+                            tooltip={item.title}
+                            isActive={item.isActive}
+                            asChild
+                            className={activeItemClass}
+                          >
+                            <OptimisticLink href={item.url}>
+                              {item.icon && <item.icon />}
+                              <span>{item.title}</span>
+                            </OptimisticLink>
+                          </SidebarMenuButton>
+                        )}
+                        {item.badge !== undefined && item.badge > 0 && !item.disabled && (
+                          <SidebarMenuBadge className="bg-red-500 text-white">
+                            {item.badge > 99 ? "99+" : item.badge}
+                          </SidebarMenuBadge>
+                        )}
+                      </>
+                    )}
+                    {item.items?.length ? (
+                      <CollapsibleContent>
+                        <SidebarMenuSub>
+                          {item.items.map((subItem) => {
+                            const isSubActive =
+                              subItem.isActive ??
+                              (currentPath === subItem.url || pathname === subItem.url)
+                            return (
+                              <SidebarMenuSubItem key={subItem.title}>
+                                <SidebarMenuSubButton
+                                  asChild
+                                  isActive={isSubActive}
+                                  className={activeSubItemClass}
+                                >
+                                  <OptimisticLink href={subItem.url}>
+                                    <span>{subItem.title}</span>
+                                  </OptimisticLink>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                            )
+                          })}
+                        </SidebarMenuSub>
+                      </CollapsibleContent>
+                    ) : null}
+                  </SidebarMenuItem>
+                </Collapsible>
+              )
+            })}
           </SidebarMenu>
         </SidebarGroup>
       ))}

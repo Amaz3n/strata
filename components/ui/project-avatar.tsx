@@ -41,9 +41,15 @@ interface ProjectAvatarProps {
   projectId: string
   className?: string
   size?: "sm" | "md" | "lg" | "xl"
+  animated?: boolean
 }
 
-export function ProjectAvatar({ projectId, className, size = "md" }: ProjectAvatarProps) {
+export function ProjectAvatar({
+  projectId,
+  className,
+  size = "md",
+  animated = false,
+}: ProjectAvatarProps) {
   const gradient = getProjectGradient(projectId)
 
   const sizeClasses = {
@@ -59,6 +65,7 @@ export function ProjectAvatar({ projectId, className, size = "md" }: ProjectAvat
         "bg-gradient-to-br shrink-0",
         gradient,
         sizeClasses[size],
+        animated && "project-avatar-animated",
         className
       )}
     />

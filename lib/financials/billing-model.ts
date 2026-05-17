@@ -1,0 +1,131 @@
+import type { Contract, Project } from "@/lib/types"
+
+export type ProjectBillingModel =
+  | "fixed_price"
+  | "cost_plus_percent"
+  | "cost_plus_fixed_fee"
+  | "cost_plus_gmp"
+  | "time_and_materials"
+
+export type FinancialLandingPage = "inbox" | "receivables" | "budget" | "forecast"
+export type OwnerBillingBasis = "draws" | "costs" | "costs_plus_fee" | "time_materials"
+
+export interface ProjectFinancialFeatureConfig {
+  billingModel: ProjectBillingModel
+  landingPage: FinancialLandingPage
+  showInbox: boolean
+  showTime: boolean
+  showExpenses: boolean
+  showGenerateFromCosts: boolean
+  showOpenBook: boolean
+  showDraws: boolean
+  showGmpForecast: boolean
+  requireCostApproval: boolean
+  ownerBillingBasis: OwnerBillingBasis
+}
+
+type BillingSource = Pick<Project, "status" | "billing_contract"> | Contract | null | undefined
+
+function getContract(source: BillingSource, explicitContract?: Contract | null) {
+  if (explicitContract) return explicitContract
+  if (!source) return null
+  if ("contract_type" in source) return source
+  if ("billing_contract" in source) return source.billing_contract ?? null
+  return null
+}
+
+export function resolveProjectBillingModel(source: BillingSource, explicitContract?: Contract | null): ProjectBillingModel {
+  const contract = getContract(source, explicitContract)
+  const rawType = contract?.contract_type
+  const snapshotModel = typeof contract?.snapshot?.billing_model === "string" ? contract.snapshot.billing_model : null
+
+  if (snapshotModel === "cost_plus_fixed_fee") return "cost_plus_fixed_fee"
+  if (snapshotModel === "cost_plus_gmp") return "cost_plus_gmp"
+  if (snapshotModel === "cost_plus_percent") return "cost_plus_percent"
+  if (snapshotModel === "time_and_materials") return "time_and_materials"
+  if (snapshotModel === "fixed_price") return "fixed_price"
+
+  if (rawType === "time_materials") return "time_and_materials"
+  if (rawType === "cost_plus") {
+    return contract?.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent"
+  }
+
+  return "fixed_price"
+}
+
+export function getProjectFinancialFeatureConfig(
+  source: BillingSource,
+  explicitContract?: Contract | null,
+): ProjectFinancialFeatureConfig {
+  const contract = getContract(source, explicitContract)
+  const billingModel = resolveProjectBillingModel(source, contract)
+  const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
+  const isTimeAndMaterials = billingModel === "time_and_materials"
+  const isCostDriven = isCostPlus || isTimeAndMaterials
+
+  if (billingModel === "fixed_price") {
+    return {
+      billingModel,
+      landingPage: "receivables",
+      showInbox: false,
+      showTime: false,
+      showExpenses: false,
+      showGenerateFromCosts: false,
+      showOpenBook: false,
+      showDraws: true,
+      showGmpForecast: false,
+      requireCostApproval: false,
+      ownerBillingBasis: "draws",
+    }
+  }
+
+  if (billingModel === "cost_plus_fixed_fee") {
+    return {
+      billingModel,
+      landingPage: "inbox",
+      showInbox: true,
+      showTime: true,
+      showExpenses: true,
+      showGenerateFromCosts: true,
+      showOpenBook: contract?.open_book !== false,
+      showDraws: false,
+      showGmpForecast: false,
+      requireCostApproval: contract?.requires_client_cost_approval === true,
+      ownerBillingBasis: "costs_plus_fee",
+    }
+  }
+
+  if (billingModel === "cost_plus_gmp") {
+    return {
+      billingModel,
+      landingPage: "inbox",
+      showInbox: true,
+      showTime: true,
+      showExpenses: true,
+      showGenerateFromCosts: true,
+      showOpenBook: contract?.open_book !== false,
+      showDraws: false,
+      showGmpForecast: true,
+      requireCostApproval: contract?.requires_client_cost_approval === true,
+      ownerBillingBasis: "costs",
+    }
+  }
+
+  return {
+    billingModel,
+    landingPage: "inbox",
+    showInbox: true,
+    showTime: true,
+    showExpenses: true,
+    showGenerateFromCosts: isCostDriven,
+    showOpenBook: isCostPlus ? contract?.open_book !== false : false,
+    showDraws: false,
+    showGmpForecast: false,
+    requireCostApproval: contract?.requires_client_cost_approval === true,
+    ownerBillingBasis: isTimeAndMaterials ? "time_materials" : "costs",
+  }
+}
+
+export function supportsApprovedCostInvoicing(source: BillingSource, explicitContract?: Contract | null) {
+  return getProjectFinancialFeatureConfig(source, explicitContract).showGenerateFromCosts
+}

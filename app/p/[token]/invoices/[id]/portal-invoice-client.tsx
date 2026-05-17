@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js"
 import { loadStripe, type Appearance } from "@stripe/stripe-js"
 import { format } from "date-fns"
-import { CheckCircle2, ChevronDown, Download, Link2, Loader2, Lock } from "lucide-react"
+import { AlertTriangle, CheckCircle2, ChevronDown, Download, Link2, Loader2, Lock } from "lucide-react"
 
 import type { Invoice, Receipt } from "@/lib/types"
+import type { BillableCost } from "@/lib/services/cost-plus"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -20,6 +21,8 @@ interface Props {
     token: string
   } | null
   receipts?: Receipt[] | null
+  costDetails?: Array<BillableCost & { source_company_name?: string | null; source_status?: string | null; proof_file_id?: string | null }> | null
+  proofErrors?: string[]
 }
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -259,7 +262,7 @@ function PaymentSection({
   )
 }
 
-export function InvoicePortalClient({ invoice, portalType = "client", payment, receipts }: Props) {
+export function InvoicePortalClient({ invoice, portalType = "client", payment, receipts, costDetails, proofErrors = [] }: Props) {
   const [copied, setCopied] = useState(false)
   const paymentRef = useRef<HTMLDivElement>(null)
 
@@ -269,6 +272,7 @@ export function InvoicePortalClient({ invoice, portalType = "client", payment, r
   const balanceDue = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? total
   const isPaid = balanceDue <= 0 || invoice.status === "paid" || invoice.status === "void"
   const receiptList = receipts ?? []
+  const openBookCosts = costDetails ?? []
 
   // Match container width (600px content + 48px padding)
   const containerMaxWidth = 648
@@ -329,6 +333,17 @@ export function InvoicePortalClient({ invoice, portalType = "client", payment, r
       )}
 
       <div className="mx-auto px-4 py-8 sm:px-6" style={{ maxWidth: containerMaxWidth }}>
+        {proofErrors.length > 0 ? (
+          <div className="mb-4 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <div className="flex gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium">Some invoice proof could not load.</p>
+                <p className="mt-1 text-amber-800">{proofErrors.join(" · ")}</p>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {/* Header */}
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -379,20 +394,54 @@ export function InvoicePortalClient({ invoice, portalType = "client", payment, r
             <h2 className="text-sm font-medium text-muted-foreground mb-4">Line items</h2>
             <div className="space-y-3">
               {invoice.lines && invoice.lines.length > 0 ? (
-                invoice.lines.map((line, idx) => (
-                  <div key={idx} className="flex items-start justify-between gap-4 py-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm">{line.description}</p>
-                      <p className="text-xs text-muted-foreground">
-                        Qty {line.quantity} {line.unit ? line.unit : ""}
-                        {line.taxable === false ? " · Non-taxable" : ""}
+                invoice.lines.map((line, idx) => {
+                  const linkedCostIds = ((line as any).metadata?.billable_cost_ids ?? []) as string[]
+                  const lineCosts = linkedCostIds.length
+                    ? openBookCosts.filter((cost) => linkedCostIds.includes(cost.id))
+                    : []
+                  return (
+                  <div key={idx} className="py-2">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm">{line.description}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Qty {line.quantity} {line.unit ? line.unit : ""}
+                          {line.taxable === false ? " · Non-taxable" : ""}
+                        </p>
+                      </div>
+                      <p className="text-sm font-medium shrink-0">
+                        {formatMoneyFromCents(line.unit_cost_cents)}
                       </p>
                     </div>
-                    <p className="text-sm font-medium shrink-0">
-                      {formatMoneyFromCents(line.unit_cost_cents)}
-                    </p>
+                    {lineCosts.length > 0 ? (
+                      <div className="mt-3 space-y-2 border-l pl-3">
+                        {lineCosts.map((cost) => (
+                          <div key={cost.id} className="grid grid-cols-[1fr_auto] gap-3 text-xs">
+                            <div className="min-w-0">
+                              <p className="truncate font-medium">{cost.description ?? cost.source_company_name ?? "Cost detail"}</p>
+                              <p className="text-muted-foreground">
+                                {format(new Date(`${cost.occurred_on}T00:00:00`), "MMM d, yyyy")}
+                                {cost.source_type ? ` · ${cost.source_type.replaceAll("_", " ")}` : ""}
+                                {cost.source_company_name ? ` · ${cost.source_company_name}` : ""}
+                                {cost.cost_code_code ? ` · ${cost.cost_code_code}` : ""}
+                                {cost.source_status ? ` · ${cost.source_status.replaceAll("_", " ")}` : ""}
+                                {` · ${Number(cost.markup_percent_resolved ?? 0)}% markup`}
+                              </p>
+                              {cost.proof_file_id ? (
+                                <p className="text-muted-foreground">Proof attached</p>
+                              ) : null}
+                            </div>
+                            <div className="text-right">
+                              <p>{formatMoneyFromCents(cost.cost_cents)}</p>
+                              <p className="text-muted-foreground">+{formatMoneyFromCents(cost.markup_cents)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                ))
+                  )
+                })
               ) : (
                 <p className="text-sm text-muted-foreground">No line items.</p>
               )}

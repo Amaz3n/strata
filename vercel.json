@@ -9,6 +9,10 @@
       "schedule": "0 3 * * *"
     },
     {
+      "path": "/api/qbo/process-cdc",
+      "schedule": "30 3 * * *"
+    },
+    {
       "path": "/api/jobs/process-outbox",
       "schedule": "0 2 * * *"
     },
@@ -32,6 +36,9 @@
       "maxDuration": 120
     },
     "app/api/qbo/process-webhooks/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/qbo/process-cdc/route.ts": {
       "maxDuration": 120
     },
     "app/api/jobs/rbac-evidence/route.ts": {

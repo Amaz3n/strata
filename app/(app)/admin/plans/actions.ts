@@ -5,6 +5,8 @@ import { z } from "zod"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/auth/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
+import { allBillingFeatureKeys, BILLING_FEATURE_CATALOG } from "@/lib/billing-feature-catalog"
+import { ensureBillingFeatureCatalog } from "@/lib/services/billing"
 
 const createPlanSchema = z.object({
   code: z.string().min(1, "Plan code is required").regex(/^[a-z0-9-]+$/, "Code must contain only lowercase letters, numbers, and hyphens"),
@@ -14,7 +16,11 @@ const createPlanSchema = z.object({
   amountCents: z.number().min(0, "Amount must be non-negative"),
   currency: z.string().default("usd"),
   description: z.string().optional(),
+  packageType: z.enum(["full_access", "custom"]).default("full_access"),
+  publicName: z.string().optional(),
+  internalNotes: z.string().optional(),
   stripePriceId: z.string().optional(),
+  featureKeys: z.array(z.enum(BILLING_FEATURE_CATALOG.map((feature) => feature.key) as [string, ...string[]])).default([]),
   isActive: z.boolean().default(true),
 })
 
@@ -27,7 +33,11 @@ export async function createPlanAction(prevState: { error?: string; message?: st
     amountCents: parseInt(formData.get("amountCents") as string) || 0,
     currency: formData.get("currency") || "usd",
     description: formData.get("description"),
+    packageType: formData.get("packageType") || "full_access",
+    publicName: formData.get("publicName"),
+    internalNotes: formData.get("internalNotes"),
     stripePriceId: formData.get("stripePriceId"),
+    featureKeys: formData.getAll("featureKeys"),
     isActive: formData.get("isActive") === "true",
   })
 
@@ -42,6 +52,16 @@ export async function createPlanAction(prevState: { error?: string; message?: st
   const supabase = createServiceSupabaseClient()
 
   try {
+    await ensureBillingFeatureCatalog()
+    const featureKeys =
+      parsed.data.packageType === "full_access"
+        ? allBillingFeatureKeys()
+        : Array.from(new Set(parsed.data.featureKeys))
+
+    if (featureKeys.length === 0) {
+      return { error: "Select at least one feature for a custom package." }
+    }
+
     const { error } = await supabase
       .from("plans")
       .insert({
@@ -55,11 +75,26 @@ export async function createPlanAction(prevState: { error?: string; message?: st
         stripe_price_id: parsed.data.stripePriceId || null,
         metadata: {
           description: parsed.data.description,
+          package_type: parsed.data.packageType,
+          public_name: parsed.data.publicName || parsed.data.name,
+          internal_notes: parsed.data.internalNotes,
           created_by: user.id,
         },
       })
 
     if (error) throw error
+
+    const { error: featureError } = await supabase.from("plan_feature_limits").insert(
+      featureKeys.map((featureKey) => ({
+        plan_code: parsed.data.code,
+        feature_key: featureKey,
+        limit_type: "enabled",
+        limit_value: 1,
+        metadata: {},
+      })),
+    )
+
+    if (featureError) throw featureError
 
     revalidatePath("/admin/plans")
     return { message: "Subscription plan created successfully." }

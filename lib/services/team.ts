@@ -3,7 +3,14 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { randomBytes } from "node:crypto"
 
 import type { MemberPermissionOverride, PermissionOption, TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
-import { inviteMemberSchema, memberStatusSchema, updateMemberRoleSchema, type InviteMemberInput } from "@/lib/validation/team"
+import {
+  inviteMemberSchema,
+  memberStatusSchema,
+  updateMemberLaborSettingsSchema,
+  updateMemberRoleSchema,
+  type InviteMemberInput,
+  type UpdateMemberLaborSettingsInput,
+} from "@/lib/validation/team"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordEvent } from "@/lib/services/events"
@@ -332,6 +339,10 @@ function mapTeamMember(
     role_label: normalizeRoleLabel((row.role?.label as string | null) ?? null, roleKey),
     permission_overrides: permissionOverridesByMembership[row.id] ?? [],
     status: row.status ?? "invited",
+    labor_cost_rate_cents: row.labor_cost_rate_cents ?? 0,
+    labor_bill_rate_cents: row.labor_bill_rate_cents ?? 0,
+    labor_burden_multiplier: Number(row.labor_burden_multiplier ?? 1),
+    labor_is_billable_default: row.labor_is_billable_default ?? true,
     mfa_enabled: Boolean(user?.id ? mfaEnabledByUser[user.id] : false),
     project_count: projectCounts[user?.id] ?? 0,
     last_active_at: row.last_active_at ?? undefined,
@@ -381,6 +392,7 @@ export async function listTeamMembers(
     .select(
       `
       id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
       invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
@@ -404,6 +416,64 @@ export async function listTeamMembers(
   const permissionOverridesByMembership = await mapPermissionOverrides(serviceClient, membershipIds)
 
   return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser, permissionOverridesByMembership))
+}
+
+export async function updateMemberLaborSettings({
+  membershipId,
+  input,
+  orgId,
+}: {
+  membershipId: string
+  input: UpdateMemberLaborSettingsInput
+  orgId?: string
+}) {
+  const parsed = updateMemberLaborSettingsSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "members.manage",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId: membershipId,
+  })
+
+  const serviceClient = createServiceSupabaseClient()
+  const { data: before, error: beforeError } = await serviceClient
+    .from("memberships")
+    .select("id, org_id, user_id, labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", membershipId)
+    .maybeSingle()
+
+  if (beforeError || !before) {
+    throw new Error("Membership not found")
+  }
+
+  const { data, error } = await serviceClient
+    .from("memberships")
+    .update(parsed)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", membershipId)
+    .select("id, org_id, user_id, labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update labor settings: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "membership",
+    entityId: membershipId,
+    before,
+    after: data,
+  })
+
+  return data
 }
 
 export async function updateMemberProfile({

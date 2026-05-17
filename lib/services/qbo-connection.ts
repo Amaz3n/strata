@@ -28,6 +28,11 @@ export interface QBOConnectionSettings {
   sync_payments: boolean
   customer_sync_mode: "create_new" | "match_existing"
   default_income_account_id?: string
+  default_expense_account_id?: string
+  default_payment_account_id?: string
+  default_credit_card_account_id?: string
+  default_ap_account_id?: string
+  project_mapping_mode?: "customer" | "sub_customer"
   invoice_number_sync?: boolean
   invoice_number_pattern?: "numeric" | "prefix" | "custom"
   invoice_number_prefix?: string | null
@@ -282,13 +287,13 @@ export async function getQBODiagnostics(orgId?: string) {
       .from("outbox")
       .select("id", { count: "exact", head: true })
       .eq("org_id", resolvedOrgId)
-      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"])
       .in("status", ["pending", "processing"]),
     supabase
       .from("outbox")
       .select("id, job_type, last_error, updated_at", { count: "exact" })
       .eq("org_id", resolvedOrgId)
-      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment"])
+      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"])
       .eq("status", "failed")
       .order("updated_at", { ascending: false })
       .limit(5),

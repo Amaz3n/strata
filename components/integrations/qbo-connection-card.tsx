@@ -1,11 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useState, useTransition } from "react"
-import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw, Users } from "lucide-react"
+import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw } from "lucide-react"
 
 import {
   connectQBOAction,
   disconnectQBOAction,
+  getQBOAccountingSetupAction,
   getQBOConnectionAction,
   getQBODiagnosticsAction,
   refreshQBOTokenAction,
@@ -14,9 +15,10 @@ import {
 } from "@/app/(app)/settings/integrations/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
 import { cn } from "@/lib/utils"
 
@@ -44,11 +46,18 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
     invoices?: { failed_sync_count?: number }
     connection?: { last_error?: string | null } | null
   } | null>(null)
+  const [setup, setSetup] = useState<Awaited<ReturnType<typeof getQBOAccountingSetupAction>> | null>(null)
   const [loadingDiagnostics, setLoadingDiagnostics] = useState(false)
   const [settings, setSettings] = useState(() => ({
     auto_sync: connection?.settings?.auto_sync ?? true,
     sync_payments: connection?.settings?.sync_payments ?? true,
     invoice_number_sync: connection?.settings?.invoice_number_sync ?? true,
+    default_income_account_id: connection?.settings?.default_income_account_id ?? "",
+    default_expense_account_id: connection?.settings?.default_expense_account_id ?? "",
+    default_payment_account_id: connection?.settings?.default_payment_account_id ?? "",
+    default_credit_card_account_id: connection?.settings?.default_credit_card_account_id ?? "",
+    default_ap_account_id: connection?.settings?.default_ap_account_id ?? "",
+    project_mapping_mode: connection?.settings?.project_mapping_mode ?? "customer",
   }))
 
   useEffect(() => {
@@ -56,6 +65,12 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
       auto_sync: connection?.settings?.auto_sync ?? true,
       sync_payments: connection?.settings?.sync_payments ?? true,
       invoice_number_sync: connection?.settings?.invoice_number_sync ?? true,
+      default_income_account_id: connection?.settings?.default_income_account_id ?? "",
+      default_expense_account_id: connection?.settings?.default_expense_account_id ?? "",
+      default_payment_account_id: connection?.settings?.default_payment_account_id ?? "",
+      default_credit_card_account_id: connection?.settings?.default_credit_card_account_id ?? "",
+      default_ap_account_id: connection?.settings?.default_ap_account_id ?? "",
+      project_mapping_mode: connection?.settings?.project_mapping_mode ?? "customer",
     })
   }, [connection])
 
@@ -148,6 +163,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   useEffect(() => {
     if (!connection) return
     void loadDiagnostics()
+    void getQBOAccountingSetupAction().then((data) => setSetup(data)).catch(() => setSetup(null))
   }, [connection, loadDiagnostics])
 
   useEffect(() => {
@@ -175,7 +191,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
     }
   }, [onConnectionChange])
 
-  const handleSettingChange = (key: keyof typeof settings, value: boolean) => {
+  const handleSettingChange = (key: keyof typeof settings, value: boolean | string) => {
     setSettings((prev) => ({ ...prev, [key]: value }))
     startUpdate(async () => {
       try {
@@ -210,130 +226,84 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   }
 
   const hasErrors = Boolean(connection?.last_error || diagnostics?.connection?.last_error || error)
-  const failedCount = (diagnostics?.outbox?.failed ?? 0) + (diagnostics?.invoices?.failed_sync_count ?? 0)
-
   return (
-    <Card className="overflow-hidden border-border/80 shadow-sm transition-all hover:border-border/100 hover:shadow-md">
-      <div className="h-2 bg-[#2CA01C]" />
-      <CardHeader className="pb-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#2CA01C] text-white shadow-sm">
-              <svg viewBox="0 0 40 40" className="h-7 w-7 fill-current">
-                <path d="M34 10h-28v20h28v-20zm-2 18h-24v-16h24v16zM10 14h4v2h-4v-2zm0 4h10v2h-10v-2zm0 4h14v2h-14v-2z" opacity=".2"/>
-                <rect x="6" y="10" width="28" height="20" rx="2" fill="none" stroke="currentColor" strokeWidth="2.5"/>
-              </svg>
+    <Card className="overflow-hidden rounded-none border-0 py-0 shadow-none">
+      <CardContent className="flex flex-col gap-4 p-4">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex size-12 shrink-0 items-center justify-center border border-border/70 bg-background p-1.5">
+              <img src="/qbo.svg" alt="" className="size-9 object-contain" />
             </div>
-            <div>
-              <CardTitle className="text-xl">QuickBooks Online</CardTitle>
-              <CardDescription className="text-sm">Sync invoices and payments automatically</CardDescription>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="truncate text-sm font-semibold">QuickBooks Online</h3>
+                <Badge variant={connection?.status === "active" ? "default" : connection ? "destructive" : "outline"} className="gap-1">
+                  {connection?.status === "active" ? <CheckCircle2 className="size-3" /> : <AlertCircle className="size-3" />}
+                  {connection ? (connection.status === "active" ? "Connected" : connection.status) : "Not connected"}
+                </Badge>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">Sync invoices, payments, and numbering with QuickBooks.</p>
+              {connection && (
+                <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+                  <span>Company: {connection.company_name ?? "QuickBooks Online"}</span>
+                  <span>Last sync: {connection.last_sync_at ? new Date(connection.last_sync_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Never"}</span>
+                  {expiresInLabel && <span>Access refresh: {expiresInLabel}</span>}
+                </div>
+              )}
             </div>
           </div>
-          {connection && (
-            <Badge 
-              variant={connection.status === "active" ? "default" : "destructive"}
-              className={cn(
-                "px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider",
-                connection.status === "active" ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 hover:bg-emerald-500/20" : ""
-              )}
-            >
-              {connection.status === "active" ? (
-                <>
-                  <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
-                  Connected
-                </>
-              ) : (
-                <>
-                  <AlertCircle className="mr-1.5 h-3.5 w-3.5" />
-                  {connection.status}
-                </>
-              )}
-            </Badge>
-          )}
-        </div>
-      </CardHeader>
 
-      <CardContent className="space-y-6">
-        {!connection ? (
-          <div className="space-y-6">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="rounded-xl border border-border/50 bg-muted/30 p-4 transition-colors hover:bg-muted/50">
-                <div className="mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-[#2CA01C]/10 text-[#2CA01C]">
-                  <RefreshCw className="h-4 w-4" />
-                </div>
-                <h4 className="text-sm font-semibold">Automatic Sync</h4>
-                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  Invoices and payments sync to QuickBooks in real-time.
-                </p>
-              </div>
-              <div className="rounded-xl border border-border/50 bg-muted/30 p-4 transition-colors hover:bg-muted/50">
-                <div className="mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-[#2CA01C]/10 text-[#2CA01C]">
-                  <Users className="h-4 w-4" />
-                </div>
-                <h4 className="text-sm font-semibold">Contact Mapping</h4>
-                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  Customers and vendors are automatically matched or created.
-                </p>
-              </div>
-            </div>
-
-            <Button onClick={handleConnect} disabled={isConnecting} className="h-11 w-full font-medium bg-[#2CA01C] hover:bg-[#238217]">
-              {isConnecting ? (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Connecting...
-                </>
-              ) : (
-                <>
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  Connect QuickBooks
-                </>
-              )}
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-5">
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <p className="text-xs font-medium uppercase tracking-wider text-emerald-600/80">Connected Company</p>
-                  <p className="text-base font-semibold text-foreground">{connection.company_name ?? "QuickBooks Online"}</p>
-                </div>
-                <Button variant="ghost" size="sm" asChild className="text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 md:justify-end">
+            {!connection ? (
+              <Button onClick={handleConnect} disabled={isConnecting} size="sm">
+                {isConnecting ? (
+                  <>
+                    <RefreshCw className="mr-1 size-3.5 animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  <>
+                    Connect
+                  </>
+                )}
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" size="sm" asChild>
                   <a href="https://qbo.intuit.com/app/homepage" target="_blank" rel="noopener noreferrer">
-                    Open QBO <ExternalLink className="ml-2 h-3.5 w-3.5" />
+                    Open QBO
+                    <ExternalLink className="ml-1 size-3.5" />
                   </a>
                 </Button>
-              </div>
-              
-              <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-emerald-500/10 pt-4">
-                <div className="space-y-0.5">
-                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground/70">Last Sync</p>
-                  <p className="text-xs font-medium">{connection.last_sync_at ? new Date(connection.last_sync_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : "Never"}</p>
-                </div>
-                {expiresInLabel && (
-                  <div className="space-y-0.5">
-                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground/70">Access Refresh</p>
-                    <p className="text-xs font-medium">{expiresInLabel}</p>
-                  </div>
-                )}
-              </div>
-            </div>
+                <Button variant="ghost" size="sm" onClick={handleConnect} disabled={isConnecting}>
+                  Reconnect
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleDisconnect} disabled={isDisconnecting} className="text-destructive hover:text-destructive">
+                  Disconnect
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
 
+        {!connection ? (
+          null
+        ) : (
+          <div className="flex flex-col gap-4 border-t border-border/60 pt-4">
             {hasErrors && (
-              <div className="rounded-xl border border-destructive/20 bg-destructive/[0.03] p-5">
+              <div className="border border-destructive/20 bg-destructive/[0.03] p-3">
                 <div className="flex items-start gap-3">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                  <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
                   <div className="flex-1">
-                    <h5 className="text-sm font-semibold text-destructive">Sync Issue Detected</h5>
-                    <p className="mt-1 text-sm text-destructive/80 leading-relaxed">
+                    <h5 className="text-sm font-semibold text-destructive">Sync issue detected</h5>
+                    <p className="mt-1 text-sm text-destructive/80">
                       {error ?? diagnostics?.connection?.last_error ?? connection.last_error}
                     </p>
-                    <div className="mt-4 flex gap-3">
-                      <Button variant="outline" size="sm" onClick={handleRetryFailed} disabled={isRetryingFailed} className="border-destructive/20 text-destructive hover:bg-destructive/10">
+                    <div className="mt-3 flex gap-2">
+                      <Button variant="outline" size="sm" onClick={handleRetryFailed} disabled={isRetryingFailed}>
                         Retry Sync
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={handleRefreshToken} disabled={isRefreshingToken} className="text-destructive/70 hover:text-destructive">
+                      <Button variant="ghost" size="sm" onClick={handleRefreshToken} disabled={isRefreshingToken}>
                         Refresh Connection
                       </Button>
                     </div>
@@ -342,92 +312,126 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
               </div>
             )}
 
-            <div className="space-y-4 pt-2">
-              <h5 className="text-xs font-bold uppercase tracking-[0.15em] text-muted-foreground/60">Sync Settings</h5>
-              <div className="grid gap-4 rounded-xl border border-border/50 bg-muted/20 p-5">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label htmlFor="auto-sync" className="text-sm font-semibold">Auto-sync Invoices</Label>
+            <div className="grid gap-0 border border-border/70">
+              <div className="flex items-center justify-between gap-4 border-b border-border/60 p-3">
+                <div className="min-w-0">
+                  <Label htmlFor="auto-sync" className="text-sm font-medium">Auto-sync invoices</Label>
                     <p className="text-xs text-muted-foreground">Automatically push new invoices to QuickBooks</p>
-                  </div>
-                  <Switch
-                    id="auto-sync"
-                    checked={settings.auto_sync}
-                    disabled={isUpdatingSettings}
-                    onCheckedChange={(v) => handleSettingChange("auto_sync", v)}
-                  />
                 </div>
+                <Switch
+                  id="auto-sync"
+                  checked={settings.auto_sync}
+                  disabled={isUpdatingSettings}
+                  onCheckedChange={(v) => handleSettingChange("auto_sync", v)}
+                />
+              </div>
 
-                <div className="flex items-center justify-between border-t border-border/40 pt-4">
-                  <div className="space-y-1">
-                    <Label htmlFor="sync-payments" className="text-sm font-semibold">Sync Payments</Label>
+              <div className="flex items-center justify-between gap-4 border-b border-border/60 p-3">
+                <div className="min-w-0">
+                  <Label htmlFor="sync-payments" className="text-sm font-medium">Sync payments</Label>
                     <p className="text-xs text-muted-foreground">Record payments in QuickBooks when an invoice is paid</p>
-                  </div>
-                  <Switch
-                    id="sync-payments"
-                    checked={settings.sync_payments}
-                    disabled={isUpdatingSettings}
-                    onCheckedChange={(v) => handleSettingChange("sync_payments", v)}
-                  />
                 </div>
+                <Switch
+                  id="sync-payments"
+                  checked={settings.sync_payments}
+                  disabled={isUpdatingSettings}
+                  onCheckedChange={(v) => handleSettingChange("sync_payments", v)}
+                />
+              </div>
 
-                <div className="flex items-center justify-between border-t border-border/40 pt-4">
-                  <div className="space-y-1">
-                    <Label htmlFor="invoice-number-sync" className="text-sm font-semibold">QuickBooks Numbering</Label>
+              <div className="flex items-center justify-between gap-4 p-3">
+                <div className="min-w-0">
+                  <Label htmlFor="invoice-number-sync" className="text-sm font-medium">QuickBooks numbering</Label>
                     <p className="text-xs text-muted-foreground">New invoices follow your QuickBooks number sequence</p>
-                  </div>
-                  <Switch
-                    id="invoice-number-sync"
-                    checked={settings.invoice_number_sync}
-                    disabled={isUpdatingSettings}
-                    onCheckedChange={(v) => handleSettingChange("invoice_number_sync", v)}
-                  />
                 </div>
+                <Switch
+                  id="invoice-number-sync"
+                  checked={settings.invoice_number_sync}
+                  disabled={isUpdatingSettings}
+                  onCheckedChange={(v) => handleSettingChange("invoice_number_sync", v)}
+                />
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex gap-2">
-                <Button variant="ghost" size="sm" onClick={handleConnect} disabled={isConnecting} className="text-muted-foreground">
-                  Reconnect
-                </Button>
-                <Button variant="ghost" size="sm" onClick={handleDisconnect} disabled={isDisconnecting} className="text-destructive/60 hover:text-destructive hover:bg-destructive/5">
-                  Disconnect
-                </Button>
+            {setup?.connected ? (
+              <div className="grid gap-3 border border-border/70 p-3">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Accounting defaults</p>
+                  <p className="mt-1 text-xs text-muted-foreground">These defaults keep day-to-day QBO posting clean; users can still override on each invoice or expense.</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <SetupSelect
+                    label="Invoice income"
+                    value={settings.default_income_account_id}
+                    accounts={setup.incomeAccounts}
+                    onChange={(value) => handleSettingChange("default_income_account_id", value)}
+                  />
+                  <SetupSelect
+                    label="Expense category fallback"
+                    value={settings.default_expense_account_id}
+                    accounts={setup.expenseAccounts}
+                    onChange={(value) => handleSettingChange("default_expense_account_id", value)}
+                  />
+                  <SetupSelect
+                    label="Default paid-from account"
+                    value={settings.default_payment_account_id}
+                    accounts={setup.paymentAccounts}
+                    onChange={(value) => handleSettingChange("default_payment_account_id", value)}
+                  />
+                  <SetupSelect
+                    label="Company card account"
+                    value={settings.default_credit_card_account_id}
+                    accounts={setup.paymentAccounts.filter((account) => String((account as any).accountType ?? "").toLowerCase() === "credit card")}
+                    onChange={(value) => handleSettingChange("default_credit_card_account_id", value)}
+                  />
+                  <SetupSelect
+                    label="Accounts payable"
+                    value={settings.default_ap_account_id}
+                    accounts={setup.apAccounts}
+                    onChange={(value) => handleSettingChange("default_ap_account_id", value)}
+                  />
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Project mapping</Label>
+                    <Select value={settings.project_mapping_mode} onValueChange={(value) => handleSettingChange("project_mapping_mode", value)}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="customer">Arc project as QBO customer/job</SelectItem>
+                        <SelectItem value="sub_customer">Client &gt; project sub-customer</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
               </div>
-              
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="text-[10px] uppercase tracking-widest text-muted-foreground/60 hover:text-muted-foreground"
-              >
-                {showAdvanced ? "Hide Diagnostics" : "Diagnostics"}
-              </Button>
-            </div>
+            ) : null}
+
+            <Button variant="ghost" size="sm" onClick={() => setShowAdvanced(!showAdvanced)} className="w-fit px-0 text-xs text-muted-foreground">
+              {showAdvanced ? "Hide diagnostics" : "Diagnostics"}
+            </Button>
 
             {showAdvanced && (
-              <div className="mt-4 space-y-4 rounded-xl border border-border/50 bg-muted/40 p-5">
+              <div className="flex flex-col gap-3 border border-border/70 bg-muted/20 p-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Technical Health</p>
-                  <Button variant="ghost" size="sm" onClick={loadDiagnostics} disabled={loadingDiagnostics} className="h-6 text-[10px]">
+                  <p className="text-xs font-medium text-muted-foreground">Technical health</p>
+                  <Button variant="ghost" size="sm" onClick={loadDiagnostics} disabled={loadingDiagnostics} className="h-7">
                     {loadingDiagnostics ? "Refreshing..." : "Refresh Stats"}
                   </Button>
                 </div>
                 
                 <div className="grid grid-cols-3 gap-3">
-                  <div className="rounded-lg bg-background/50 p-3 border border-border/40">
-                    <p className="text-[9px] uppercase tracking-widest text-muted-foreground">Pending</p>
+                  <div className="border border-border/60 bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Pending</p>
                     <p className="mt-1 text-lg font-semibold tabular-nums leading-none">{diagnostics?.outbox?.pending_or_processing ?? 0}</p>
                   </div>
-                  <div className="rounded-lg bg-background/50 p-3 border border-border/40">
-                    <p className="text-[9px] uppercase tracking-widest text-muted-foreground">Failed Jobs</p>
+                  <div className="border border-border/60 bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Failed jobs</p>
                     <p className={cn("mt-1 text-lg font-semibold tabular-nums leading-none", (diagnostics?.outbox?.failed ?? 0) > 0 ? "text-destructive" : "")}>
                       {diagnostics?.outbox?.failed ?? 0}
                     </p>
                   </div>
-                  <div className="rounded-lg bg-background/50 p-3 border border-border/40">
-                    <p className="text-[9px] uppercase tracking-widest text-muted-foreground">Inv Errors</p>
+                  <div className="border border-border/60 bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Invoice errors</p>
                     <p className={cn("mt-1 text-lg font-semibold tabular-nums leading-none", (diagnostics?.invoices?.failed_sync_count ?? 0) > 0 ? "text-destructive" : "")}>
                       {diagnostics?.invoices?.failed_sync_count ?? 0}
                     </p>
@@ -435,7 +439,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
                 </div>
 
                 {diagnostics?.outbox?.recent_failures?.length ? (
-                  <div className="space-y-2 border-t border-border/40 pt-3">
+                  <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
                     {diagnostics.outbox.recent_failures.slice(0, 2).map((failure, idx) => (
                       <div key={`${failure.job_type}-${idx}`} className="text-[10px] leading-relaxed">
                         <span className="font-bold text-foreground uppercase">{failure.job_type}</span>
@@ -450,7 +454,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
         )}
 
         {error && (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/[0.03] p-3 text-xs text-destructive">
+          <div className="border border-destructive/20 bg-destructive/[0.03] p-3 text-xs text-destructive">
             {error}
           </div>
         )}
@@ -459,3 +463,33 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   )
 }
 
+function SetupSelect({
+  label,
+  value,
+  accounts,
+  onChange,
+}: {
+  label: string
+  value: string
+  accounts: Array<{ id: string; name: string; fullyQualifiedName?: string }>
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Select value={value || "none"} onValueChange={(next) => onChange(next === "none" ? "" : next)}>
+        <SelectTrigger className="h-9">
+          <SelectValue placeholder="Choose account" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">Not set</SelectItem>
+          {accounts.map((account) => (
+            <SelectItem key={account.id} value={account.id}>
+              {account.fullyQualifiedName ?? account.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}

@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import {
   inviteTeamMemberAction,
+  updateMemberLaborSettingsAction,
   updateMemberProfileAction,
   updateMemberRoleAction,
 } from "@/app/(app)/team/actions"
@@ -197,6 +198,17 @@ function diffFromPreset(selected: Set<string>, preset: PermissionPreset): { adde
   return { added, removed }
 }
 
+function centsToDollars(cents?: number | null) {
+  if (!cents) return ""
+  return (cents / 100).toFixed(2)
+}
+
+function dollarsToCents(value: string) {
+  const parsed = Number(value.replaceAll(",", "").trim())
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return Math.round(parsed * 100)
+}
+
 interface MemberFormPanelProps {
   mode: "invite" | "edit"
   member?: TeamMember
@@ -250,6 +262,10 @@ export function MemberFormPanel({
   const [overrides, setOverrides] = useState<MemberPermissionOverride[]>(initialOverrides)
   const [preset, setPreset] = useState<PermissionPreset>(detectPreset(initialOverrides))
   const [search, setSearch] = useState("")
+  const [laborCostRate, setLaborCostRate] = useState(centsToDollars(member?.labor_cost_rate_cents))
+  const [laborBillRate, setLaborBillRate] = useState(centsToDollars(member?.labor_bill_rate_cents))
+  const [laborBurdenMultiplier, setLaborBurdenMultiplier] = useState(String(member?.labor_burden_multiplier ?? 1))
+  const [laborIsBillableDefault, setLaborIsBillableDefault] = useState(member?.labor_is_billable_default ?? true)
 
   const isEdit = mode === "edit"
   const canEditProfile = isEdit ? canManageMembers : canManageMembers
@@ -313,9 +329,18 @@ export function MemberFormPanel({
     isEdit &&
     JSON.stringify(role === "org_user" ? overrides : []) !==
       JSON.stringify(member?.role === "org_user" ? member?.permission_overrides ?? [] : [])
+  const nextLaborCostRateCents = dollarsToCents(laborCostRate)
+  const nextLaborBillRateCents = dollarsToCents(laborBillRate)
+  const nextLaborBurdenMultiplier = Math.max(1, Number(laborBurdenMultiplier) || 1)
+  const hasLaborChange =
+    isEdit &&
+    (nextLaborCostRateCents !== (member?.labor_cost_rate_cents ?? 0) ||
+      nextLaborBillRateCents !== (member?.labor_bill_rate_cents ?? 0) ||
+      nextLaborBurdenMultiplier !== Number(member?.labor_burden_multiplier ?? 1) ||
+      laborIsBillableDefault !== (member?.labor_is_billable_default ?? true))
 
   const hasChanges = isEdit
-    ? (canEditProfile && hasNameChange) || (canEditRoleField && (hasRoleChange || hasPermissionChange))
+    ? (canEditProfile && hasNameChange) || (canEditRoleField && (hasRoleChange || hasPermissionChange)) || (canManageMembers && hasLaborChange)
     : Boolean(email.trim())
 
   const submit = () => {
@@ -360,6 +385,14 @@ export function MemberFormPanel({
           await updateMemberRoleAction(member.id, {
             role,
             permissionOverrides: role === "org_user" ? overrides : [],
+          })
+        }
+        if (canManageMembers && hasLaborChange) {
+          await updateMemberLaborSettingsAction(member.id, {
+            labor_cost_rate_cents: nextLaborCostRateCents,
+            labor_bill_rate_cents: nextLaborBillRateCents,
+            labor_burden_multiplier: nextLaborBurdenMultiplier,
+            labor_is_billable_default: laborIsBillableDefault,
           })
         }
         toast({ title: "Member updated" })
@@ -425,6 +458,65 @@ export function MemberFormPanel({
               )}
             </div>
           </section>
+
+          {isEdit ? (
+            <>
+              <Separator />
+              <section className="space-y-4">
+                <SectionHeader
+                  title="Labor rates"
+                  description="Defaults used when this employee logs time or is added to a crew time entry."
+                />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FieldBlock label="Cost rate / hr">
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+                      <Input
+                        value={laborCostRate}
+                        onChange={(event) => setLaborCostRate(event.target.value.replace(/[^\d.]/g, ""))}
+                        disabled={!canManageMembers}
+                        inputMode="decimal"
+                        className="pl-7"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </FieldBlock>
+                  <FieldBlock label="Bill rate / hr">
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+                      <Input
+                        value={laborBillRate}
+                        onChange={(event) => setLaborBillRate(event.target.value.replace(/[^\d.]/g, ""))}
+                        disabled={!canManageMembers}
+                        inputMode="decimal"
+                        className="pl-7"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </FieldBlock>
+                  <FieldBlock label="Burden multiplier">
+                    <Input
+                      value={laborBurdenMultiplier}
+                      onChange={(event) => setLaborBurdenMultiplier(event.target.value.replace(/[^\d.]/g, ""))}
+                      disabled={!canManageMembers}
+                      inputMode="decimal"
+                      placeholder="1.00"
+                    />
+                  </FieldBlock>
+                  <FieldBlock label="Default billing">
+                    <label className="flex h-10 items-center gap-2 rounded-md border px-3 text-sm">
+                      <Checkbox
+                        checked={laborIsBillableDefault}
+                        onCheckedChange={(checked) => setLaborIsBillableDefault(Boolean(checked))}
+                        disabled={!canManageMembers}
+                      />
+                      Billable by default
+                    </label>
+                  </FieldBlock>
+                </div>
+              </section>
+            </>
+          ) : null}
 
           <Separator />
 

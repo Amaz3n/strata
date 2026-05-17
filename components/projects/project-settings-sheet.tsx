@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { Contact, Project } from "@/lib/types"
+import type { Contact, Contract, Project } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,8 @@ import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Settings, CalendarDays } from "@/components/icons"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
+import { Switch } from "@/components/ui/switch"
+import { resolveProjectBillingModel, type ProjectBillingModel } from "@/lib/financials/billing-model"
 
 const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
   { label: "Planning", value: "planning" },
@@ -43,13 +45,14 @@ const PROJECT_TYPES: { label: string; value: NonNullable<Project["project_type"]
 
 interface ProjectSettingsSheetProps {
   project: Project
+  contract?: Contract | null
   contacts?: Contact[]
   open: boolean
   onOpenChange: (open: boolean) => void
   onSave: (input: Partial<ProjectInput>) => Promise<void>
 }
 
-export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChange, onSave }: ProjectSettingsSheetProps) {
+export function ProjectSettingsSheet({ project, contract, contacts = [], open, onOpenChange, onSave }: ProjectSettingsSheetProps) {
   const initialLocation = useMemo(() => {
     const location = (project as any).location as Record<string, any> | undefined
     if (location) {
@@ -72,8 +75,23 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
   const [clientId, setClientId] = useState<string | null | undefined>(project.client_id)
   const [retainagePercent, setRetainagePercent] = useState<string>(String(project.retainage_percent ?? "0"))
-  const [totalContractValue, setTotalContractValue] = useState<string>(project.total_contract_value_cents ? (project.total_contract_value_cents / 100).toString() : "")
+  const billingContract = contract ?? project.billing_contract ?? null
+  const [billingModel, setBillingModel] = useState<ProjectBillingModel>(resolveProjectBillingModel(project, billingContract))
+  const [totalContractValue, setTotalContractValue] = useState<string>(
+    billingContract?.total_cents ? (billingContract.total_cents / 100).toString() : project.total_contract_value_cents ? (project.total_contract_value_cents / 100).toString() : ""
+  )
+  const [markupPercent, setMarkupPercent] = useState<string>(billingContract?.markup_percent != null ? String(billingContract.markup_percent) : "")
+  const [gmpValue, setGmpValue] = useState<string>(billingContract?.gmp_cents ? (billingContract.gmp_cents / 100).toString() : "")
+  const [ownerSavingsPct, setOwnerSavingsPct] = useState<string>(billingContract?.savings_split_owner_pct != null ? String(billingContract.savings_split_owner_pct) : "")
+  const [builderSavingsPct, setBuilderSavingsPct] = useState<string>(billingContract?.savings_split_builder_pct != null ? String(billingContract.savings_split_builder_pct) : "")
+  const [laborBurdenMultiplier, setLaborBurdenMultiplier] = useState<string>(billingContract?.labor_burden_multiplier != null ? String(billingContract.labor_burden_multiplier) : "1")
+  const [openBook, setOpenBook] = useState<boolean>(billingContract?.open_book ?? true)
+  const [requiresClientCostApproval, setRequiresClientCostApproval] = useState<boolean>(billingContract?.requires_client_cost_approval ?? false)
   const [saving, setSaving] = useState(false)
+  const isCostBilling = billingModel !== "fixed_price"
+  const isGmpBilling = billingModel === "cost_plus_gmp"
+  const usesMarkup = billingModel === "cost_plus_percent" || billingModel === "cost_plus_gmp" || billingModel === "time_and_materials"
+  const contractType = billingModel === "time_and_materials" ? "time_materials" : isCostBilling ? "cost_plus" : "fixed"
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -93,6 +111,15 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
       location: address ? { formatted: address, address } : undefined,
       retainage_percent: Number.parseFloat(retainagePercent) || 0,
       total_contract_value_cents: totalContractValue ? Math.round(Number.parseFloat(totalContractValue) * 100) : null,
+      contract_type: contractType,
+      billing_model: billingModel,
+      markup_percent: usesMarkup && markupPercent ? Number.parseFloat(markupPercent) : null,
+      gmp_cents: isGmpBilling && gmpValue ? Math.round(Number.parseFloat(gmpValue) * 100) : null,
+      savings_split_owner_pct: isGmpBilling && ownerSavingsPct ? Number.parseFloat(ownerSavingsPct) : 0,
+      savings_split_builder_pct: isGmpBilling && builderSavingsPct ? Number.parseFloat(builderSavingsPct) : 0,
+      labor_burden_multiplier: isCostBilling && laborBurdenMultiplier ? Number.parseFloat(laborBurdenMultiplier) : 1,
+      open_book: openBook,
+      requires_client_cost_approval: requiresClientCostApproval,
     }
 
     setSaving(true)
@@ -297,8 +324,23 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
               <div className="pt-4 border-t">
                 <h4 className="text-sm font-semibold mb-4 uppercase tracking-wider text-muted-foreground">Financial Terms</h4>
                 <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label>Billing mode</Label>
+                    <Select value={billingModel} onValueChange={(value) => setBillingModel(value as ProjectBillingModel)}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="fixed_price">Fixed price</SelectItem>
+                        <SelectItem value="cost_plus_percent">Cost plus %</SelectItem>
+                        <SelectItem value="cost_plus_fixed_fee">Cost plus fixed fee</SelectItem>
+                        <SelectItem value="cost_plus_gmp">Cost plus GMP</SelectItem>
+                        <SelectItem value="time_and_materials">Time & materials</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <div className="space-y-2">
-                    <Label>Total Contract Value</Label>
+                    <Label>{isCostBilling ? "Contract cap / value" : "Total Contract Value"}</Label>
                     <div className="relative">
                       <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
                         <span className="text-muted-foreground sm:text-sm">$</span>
@@ -326,8 +368,27 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
                     </div>
                   </div>
                 </div>
+                {isCostBilling ? (
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    {usesMarkup ? <FinancialNumber label="Default markup %" value={markupPercent} onChange={setMarkupPercent} suffix="%" /> : null}
+                    <FinancialNumber label="Labor burden multiplier" value={laborBurdenMultiplier} onChange={setLaborBurdenMultiplier} />
+                    {isGmpBilling ? <FinancialMoney label="GMP" value={gmpValue} onChange={setGmpValue} /> : null}
+                    {isGmpBilling ? <FinancialNumber label="Owner savings %" value={ownerSavingsPct} onChange={setOwnerSavingsPct} suffix="%" /> : null}
+                    {isGmpBilling ? <FinancialNumber label="Builder savings %" value={builderSavingsPct} onChange={setBuilderSavingsPct} suffix="%" /> : null}
+                    <div className="space-y-3 rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label className="text-sm font-normal">Open-book client detail</Label>
+                        <Switch checked={openBook} onCheckedChange={setOpenBook} />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <Label className="text-sm font-normal">Client cost approval</Label>
+                        <Switch checked={requiresClientCostApproval} onCheckedChange={setRequiresClientCostApproval} />
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
                 <p className="text-xs text-muted-foreground mt-3">
-                  These terms are used as a fallback if no signed Contract is active in Arc.
+                  These terms update the active project contract Arc uses for financial workflows.
                 </p>
               </div>
             </div>
@@ -352,5 +413,55 @@ export function ProjectSettingsSheet({ project, contacts = [], open, onOpenChang
         </div>
       </SheetContent>
     </Sheet>
+  )
+}
+
+function FinancialNumber({
+  label,
+  value,
+  onChange,
+  suffix,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  suffix?: string
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <div className="relative">
+        <Input
+          className={suffix ? "pr-7" : undefined}
+          placeholder="0"
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^\d.]/g, ""))}
+        />
+        {suffix ? (
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+            <span className="text-muted-foreground sm:text-sm">{suffix}</span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function FinancialMoney({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <div className="relative">
+        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+          <span className="text-muted-foreground sm:text-sm">$</span>
+        </div>
+        <Input
+          className="pl-7"
+          placeholder="0.00"
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^\d.]/g, ""))}
+        />
+      </div>
+    </div>
   )
 }

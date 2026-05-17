@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { format } from "date-fns"
-import { Plus, AlertCircle, ChevronRight } from "lucide-react"
+import { Plus, AlertCircle, ChevronRight, Clock, ReceiptText } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -73,12 +73,26 @@ export function SubDashboard({
           )}
         </div>
         {canSubmitInvoices && (
-          <Button asChild size="sm">
-            <Link href={`/s/${token}/submit-invoice`}>
-              <Plus className="h-4 w-4 mr-1" />
-              Submit Invoice
-            </Link>
-          </Button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/s/${token}/time`}>
+                <Clock className="h-4 w-4 mr-1" />
+                Time
+              </Link>
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/s/${token}/expenses`}>
+                <ReceiptText className="h-4 w-4 mr-1" />
+                Expense
+              </Link>
+            </Button>
+            <Button asChild size="sm">
+              <Link href={`/s/${token}/submit-invoice`}>
+                <Plus className="h-4 w-4 mr-1" />
+                Invoice
+              </Link>
+            </Button>
+          </div>
         )}
       </div>
 

@@ -1,13 +1,9 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useState } from "react"
 import { format } from "date-fns"
 import { Package } from "lucide-react"
-import type { PortalMessage, Submittal } from "@/lib/types"
-import {
-  loadPortalEntityMessagesAction,
-  sendPortalEntityMessageAction,
-} from "@/app/p/[token]/messages/actions"
+import type { Submittal } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -17,10 +13,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Textarea } from "@/components/ui/textarea"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
-import { Spinner } from "@/components/ui/spinner"
 
 interface SubSubmittalsTabProps {
   submittals: Submittal[]
@@ -38,42 +30,7 @@ const statusColors: Record<string, string> = {
 
 export function SubSubmittalsTab({ submittals, token }: SubSubmittalsTabProps) {
   const [selected, setSelected] = useState<Submittal | null>(null)
-  const [messages, setMessages] = useState<PortalMessage[]>([])
-  const [body, setBody] = useState("")
-  const [isPending, startTransition] = useTransition()
-  const [loadingThread, setLoadingThread] = useState(false)
-
-  useEffect(() => {
-    if (!selected) return
-    setLoadingThread(true)
-    loadPortalEntityMessagesAction({
-      token,
-      entityType: "submittal",
-      entityId: selected.id,
-    })
-      .then((msgs) => setMessages(msgs))
-      .catch((err) => console.error("Failed to load submittal messages", err))
-      .finally(() => setLoadingThread(false))
-  }, [selected, token])
-
-  const handleSend = () => {
-    if (!selected || !body.trim()) return
-    startTransition(async () => {
-      try {
-        const message = await sendPortalEntityMessageAction({
-          token,
-          entityType: "submittal",
-          entityId: selected.id,
-          body,
-          senderName: "Sub Portal",
-        })
-        setMessages((prev) => [...prev, message])
-        setBody("")
-      } catch (error) {
-        console.error("Failed to send message", error)
-      }
-    })
-  }
+  void token
 
   if (submittals.length === 0) {
     return (
@@ -163,52 +120,6 @@ export function SubSubmittalsTab({ submittals, token }: SubSubmittalsTabProps) {
                   </p>
                 </div>
               )}
-            </div>
-            <Separator />
-            <div className="flex-1 min-h-0 rounded-lg border">
-              <ScrollArea className="h-full max-h-[200px] p-3">
-                {loadingThread ? (
-                  <div className="flex h-full items-center justify-center py-8">
-                    <Spinner className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                ) : messages.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    No messages yet. Start the conversation below.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {messages.map((msg) => (
-                      <div key={msg.id} className="rounded-md border bg-card/50 p-2">
-                        <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                          <span>{msg.sender_name ?? "Portal user"}</span>
-                          <span>
-                            {format(new Date(msg.sent_at), "MMM d, h:mm a")}
-                          </span>
-                        </div>
-                        <p className="text-sm whitespace-pre-line">{msg.body}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
-            <div className="space-y-2">
-              <Textarea
-                placeholder="Type a message..."
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                disabled={isPending || loadingThread}
-                rows={3}
-              />
-              <div className="flex justify-end">
-                <Button
-                  onClick={handleSend}
-                  disabled={isPending || loadingThread || !body.trim()}
-                >
-                  {isPending ? <Spinner className="mr-2 h-4 w-4" /> : null}
-                  Send Message
-                </Button>
-              </div>
             </div>
           </div>
         </DialogContent>

@@ -9,6 +9,8 @@ import { recordEvent } from "@/lib/services/events"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { AuthorizationError } from "@/lib/services/authorization"
+import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import { syncVendorBillToQBO } from "@/lib/services/qbo-sync"
 
 function rethrowTypedAuthError(error: unknown): never {
   if (error instanceof AuthorizationError) {
@@ -17,13 +19,18 @@ function rethrowTypedAuthError(error: unknown): never {
   throw error
 }
 
+function revalidatePayablesPages(projectId: string) {
+  revalidatePath(`/projects/${projectId}/payables`)
+  revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/payables`)
+  revalidatePath(`/projects/${projectId}`)
+}
+
 export async function updateProjectVendorBillStatusAction(projectId: string, billId: string, input: unknown) {
   try {
     const parsed = vendorBillStatusUpdateSchema.parse(input)
     const updated = await updateVendorBillStatus({ billId, input: parsed })
-    revalidatePath(`/projects/${projectId}/payables`)
-    revalidatePath(`/projects/${projectId}/financials`)
-    revalidatePath(`/projects/${projectId}`)
+    revalidatePayablesPages(projectId)
     return updated
   } catch (error) {
     rethrowTypedAuthError(error)
@@ -124,13 +131,52 @@ export async function createProjectVendorBillAction(projectId: string, input: un
     },
   })
 
-  revalidatePath(`/projects/${projectId}/payables`)
-  revalidatePath(`/projects/${projectId}/financials`)
-  revalidatePath(`/projects/${projectId}`)
+  revalidatePayablesPages(projectId)
 
   return mapVendorBill(data)
 }
 
 export async function listProjectCommitmentsForPayablesAction(projectId: string) {
   return listProjectCommitments(projectId)
+}
+
+export async function getPayablesAccountingContextAction() {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const client = await QBOClient.forOrg(orgId)
+  if (!client) {
+    return {
+      enabled: false,
+      expenseAccounts: [],
+      apAccounts: [],
+      vendors: [],
+      defaults: {},
+    }
+  }
+
+  const [{ data: connection }, expenseAccounts, apAccounts, vendors] = await Promise.all([
+    supabase.from("qbo_connections").select("settings").eq("org_id", orgId).eq("status", "active").maybeSingle(),
+    client.listExpenseAccounts().catch(() => []),
+    client.listAccountsPayableAccounts().catch(() => []),
+    client.listVendors().catch(() => []),
+  ])
+
+  const settings = (connection?.settings as Record<string, any> | null) ?? {}
+  return {
+    enabled: true,
+    expenseAccounts,
+    apAccounts,
+    vendors,
+    defaults: {
+      expenseAccountId: settings.default_expense_account_id as string | undefined,
+      apAccountId: settings.default_ap_account_id as string | undefined,
+    },
+  }
+}
+
+export async function syncProjectVendorBillToQBOAction(projectId: string, billId: string) {
+  const { orgId } = await requireOrgContext()
+  const result = await syncVendorBillToQBO(billId, orgId)
+  revalidatePayablesPages(projectId)
+  return result
 }

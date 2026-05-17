@@ -9,6 +9,19 @@ import { listContacts } from "@/lib/services/contacts"
 import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
+import {
+  generateInvoiceFromCosts,
+} from "@/lib/services/cost-plus"
+import { generateInvoiceFromCostsInputSchema } from "@/lib/validation/cost-plus"
+
+function messageForError(error: unknown) {
+  return error instanceof Error ? error.message : String(error ?? "Unknown error")
+}
+
+function resultError(label: string, result: PromiseSettledResult<unknown>) {
+  if (result.status === "fulfilled") return null
+  return `${label}: ${messageForError(result.reason)}`
+}
 
 /**
  * Fetch all data needed for the Budget tab
@@ -19,14 +32,26 @@ import { getCompaniesComplianceStatus } from "@/lib/services/compliance-document
  * - Companies (for commitment vendor selection)
  */
 export async function fetchBudgetTabDataAction(projectId: string) {
-  const [budgetData, costCodes, varianceAlerts, commitments, companies] = await Promise.all([
-    getBudgetWithActuals(projectId).catch(() => null),
-    listCostCodes().catch(() => []),
-    listVarianceAlertsForProject(projectId).catch(() => []),
-    listProjectCommitments(projectId).catch(() => []),
-    listCompanies().catch(() => []),
+  const [budgetDataResult, costCodesResult, varianceAlertsResult, commitmentsResult, companiesResult] = await Promise.allSettled([
+    getBudgetWithActuals(projectId),
+    listCostCodes(),
+    listVarianceAlertsForProject(projectId),
+    listProjectCommitments(projectId),
+    listCompanies(),
   ])
 
+  const budgetData = budgetDataResult.status === "fulfilled" ? budgetDataResult.value : null
+  const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
+  const varianceAlerts = varianceAlertsResult.status === "fulfilled" ? varianceAlertsResult.value : []
+  const commitments = commitmentsResult.status === "fulfilled" ? commitmentsResult.value : []
+  const companies = companiesResult.status === "fulfilled" ? companiesResult.value : []
+  const errors = [
+    resultError("Budget", budgetDataResult),
+    resultError("Cost codes", costCodesResult),
+    resultError("Variance alerts", varianceAlertsResult),
+    resultError("Commitments", commitmentsResult),
+    resultError("Companies", companiesResult),
+  ].filter(Boolean) as string[]
   const budgetBucketCompanies = await buildBudgetBucketCompanies(commitments)
 
   return {
@@ -36,6 +61,7 @@ export async function fetchBudgetTabDataAction(projectId: string) {
     commitments,
     companies,
     budgetBucketCompanies,
+    errors,
   }
 }
 
@@ -77,16 +103,21 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  * - Cost codes for invoice line items
  */
 export async function fetchReceivablesTabDataAction(projectId: string) {
-  const [invoices, contacts, costCodes] = await Promise.all([
-    listInvoices({ projectId }).catch(() => []),
-    listContacts().catch(() => []),
-    listCostCodes().catch(() => []),
+  const [invoicesResult, contactsResult, costCodesResult] = await Promise.allSettled([
+    listInvoices({ projectId }),
+    listContacts(),
+    listCostCodes(),
   ])
 
   return {
-    invoices,
-    contacts,
-    costCodes,
+    invoices: invoicesResult.status === "fulfilled" ? invoicesResult.value : [],
+    contacts: contactsResult.status === "fulfilled" ? contactsResult.value : [],
+    costCodes: costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
+    errors: [
+      resultError("Invoices", invoicesResult),
+      resultError("Contacts", contactsResult),
+      resultError("Cost codes", costCodesResult),
+    ].filter(Boolean) as string[],
   }
 }
 
@@ -96,24 +127,43 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
  * - Compliance rules for payment blocking
  */
 export async function fetchPayablesTabDataAction(projectId: string) {
-  const [vendorBills, complianceRules, costCodes] = await Promise.all([
-    listVendorBillsForProject(projectId).catch(() => []),
-    getComplianceRules().catch(() => ({
-      require_lien_waiver: false,
-      block_payment_on_missing_docs: true,
-    })),
-    listCostCodes().catch(() => []),
+  const [vendorBillsResult, complianceRulesResult, costCodesResult] = await Promise.allSettled([
+    listVendorBillsForProject(projectId),
+    getComplianceRules(),
+    listCostCodes(),
   ])
 
+  const vendorBills = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : []
+  const complianceRules =
+    complianceRulesResult.status === "fulfilled"
+      ? complianceRulesResult.value
+      : {
+          require_lien_waiver: false,
+          block_payment_on_missing_docs: true,
+        }
+  const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
   const companyIds = Array.from(new Set(vendorBills.map((b) => b.company_id).filter(Boolean))) as string[]
-  const complianceStatusByCompanyId = await getCompaniesComplianceStatus(companyIds).catch(() => ({}))
+  const complianceStatusResult = await Promise.allSettled([getCompaniesComplianceStatus(companyIds)])
+  const complianceStatusByCompanyId =
+    complianceStatusResult[0].status === "fulfilled" ? complianceStatusResult[0].value : {}
 
   return {
     vendorBills,
     complianceRules,
     complianceStatusByCompanyId,
     costCodes,
+    errors: [
+      resultError("Vendor bills", vendorBillsResult),
+      resultError("Compliance rules", complianceRulesResult),
+      resultError("Cost codes", costCodesResult),
+      resultError("Compliance status", complianceStatusResult[0]),
+    ].filter(Boolean) as string[],
   }
+}
+
+export async function generateInvoiceFromCostsAction(input: unknown) {
+  const parsed = generateInvoiceFromCostsInputSchema.parse(input)
+  return generateInvoiceFromCosts(parsed)
 }
 
 /**

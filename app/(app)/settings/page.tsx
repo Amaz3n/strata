@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getQBOConnection } from "@/lib/services/qbo-connection"
@@ -15,7 +17,7 @@ interface SettingsPageProps {
   }>
 }
 
-export default async function SettingsPage({ searchParams }: SettingsPageProps) {
+async function SettingsData({ searchParams }: SettingsPageProps) {
   const [currentUser, permissionResult, accessState, resolvedSearchParams] = await Promise.all([
     getCurrentUserAction(),
     getCurrentUserPermissions(),
@@ -55,23 +57,31 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
     : await getDefaultComplianceRequirements().catch(() => [])
 
   return (
-    <div className="-m-4 -mt-6 h-svh min-h-0 overflow-hidden">
-      <SettingsWindow
-        user={currentUser}
-        initialTab={initialTab}
-        initialQboConnection={qboConnection}
-        initialStripeConnection={stripeConnection}
-        teamMembers={teamMembers}
-        roleOptions={roleOptions}
-        permissionOptions={permissionOptions}
-        canManageMembers={canManageMembers}
-        canEditRoles={canEditRoles}
-        initialBilling={billing}
-        canManageBilling={canManageBilling}
-        initialComplianceRules={complianceRules}
-        canManageCompliance={canManageCompliance}
-        initialComplianceRequirementDefaults={complianceRequirementDefaults}
-      />
+    <SettingsWindow
+      user={currentUser}
+      initialTab={initialTab}
+      initialQboConnection={qboConnection}
+      initialStripeConnection={stripeConnection}
+      teamMembers={teamMembers}
+      roleOptions={roleOptions}
+      permissionOptions={permissionOptions}
+      canManageMembers={canManageMembers}
+      canEditRoles={canEditRoles}
+      initialBilling={billing}
+      canManageBilling={canManageBilling}
+      initialComplianceRules={complianceRules}
+      canManageCompliance={canManageCompliance}
+      initialComplianceRequirementDefaults={complianceRequirementDefaults}
+    />
+  )
+}
+
+export default function SettingsPage({ searchParams }: SettingsPageProps) {
+  return (
+    <div className="-m-4 -mt-6 flex h-full min-h-0 overflow-hidden">
+      <Suspense fallback={<div className="p-6 space-y-4"><Skeleton className="h-8 w-48 mb-6" /><div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-16 w-full rounded-md" />))}</div></div>}>
+        <SettingsData searchParams={searchParams} />
+      </Suspense>
     </div>
   )
 }

@@ -74,11 +74,11 @@ Use users with each role assignment:
 1. Lint all phase-4 touched files:
 
 ```bash
-pnpm -s eslint "lib/services/platform-session.ts" "app/(app)/platform/actions.ts" "components/platform/impersonation-panel.tsx" "components/layout/platform-session-banner.tsx" "app/(app)/platform/page.tsx" "app/(app)/layout.tsx" "app/actions/orgs.ts" "lib/auth/context.ts" "middleware.ts"
+pnpm -s eslint "lib/services/platform-session.ts" "app/(app)/platform/actions.ts" "components/platform/impersonation-panel.tsx" "components/layout/platform-session-control.tsx" "app/(app)/platform/page.tsx" "app/(app)/layout.tsx" "app/actions/orgs.ts" "lib/auth/context.ts" "middleware.ts"
 ```
 
 2. Verify new endpoints/components are wired:
 
 ```bash
-rg -n "PlatformSessionBanner|enterOrgContextAction|startImpersonationAction|endImpersonationAction|platform.org.access|impersonation.start|impersonation.end" app lib components
+rg -n "PlatformSessionControl|enterOrgContextAction|startImpersonationAction|endImpersonationAction|platform.org.access|impersonation.start|impersonation.end" app lib components
 ```

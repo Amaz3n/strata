@@ -37,6 +37,13 @@ export const updateMemberProfileSchema = z.object({
   full_name: z.string().min(2, "Name is required"),
 })
 
+export const updateMemberLaborSettingsSchema = z.object({
+  labor_cost_rate_cents: z.number().int().min(0).max(10000000),
+  labor_bill_rate_cents: z.number().int().min(0).max(10000000),
+  labor_burden_multiplier: z.number().min(1).max(5),
+  labor_is_billable_default: z.boolean(),
+})
+
 export const memberStatusSchema = z.object({
   status: z.enum(["active", "invited", "suspended"]),
 })
@@ -60,9 +67,9 @@ export const acceptInviteSchema = z
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema>
 export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>
 export type UpdateMemberProfileInput = z.infer<typeof updateMemberProfileSchema>
+export type UpdateMemberLaborSettingsInput = z.infer<typeof updateMemberLaborSettingsSchema>
 export type MemberStatusInput = z.infer<typeof memberStatusSchema>
 export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>
-
 
 
 

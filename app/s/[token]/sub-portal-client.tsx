@@ -14,7 +14,6 @@ import {
 } from "@/components/portal/sub"
 import { SubRfisTab } from "./sub-rfis-tab"
 import { SubSubmittalsTab } from "./sub-submittals-tab"
-import { SubMessagesTab } from "./sub-messages-tab"
 import type {
   ComplianceDocumentType,
   ComplianceStatusSummary,
@@ -25,7 +24,6 @@ import type {
 interface SubPortalClientProps {
   data: SubPortalData
   token: string
-  canMessage?: boolean
   canSubmitInvoices?: boolean
   canDownloadFiles?: boolean
   canUploadComplianceDocs?: boolean
@@ -37,7 +35,6 @@ interface SubPortalClientProps {
 export function SubPortalClient({
   data: initialData,
   token,
-  canMessage = false,
   canSubmitInvoices = true,
   canDownloadFiles = true,
   canUploadComplianceDocs = true,
@@ -95,10 +92,9 @@ export function SubPortalClient({
       icon: ShieldCheck,
       indicator: complianceIssues > 0 ? <span className="ml-1.5 h-2 w-2 rounded-full bg-orange-500" /> : null,
     },
-    { id: "messages", label: "Messages", icon: MessageCircle },
   ]
 
-  const desktopTabs = tabs.filter((tab) => tab.id !== "messages")
+  const desktopTabs = tabs
 
   const renderTab = (tab: SubPortalTab) => {
     if (tab === "dashboard") {
@@ -116,23 +112,13 @@ export function SubPortalClient({
     }
     if (tab === "rfis") return <SubRfisTab rfis={data.rfis} token={token} />
     if (tab === "submittals") return <SubSubmittalsTab submittals={data.submittals} token={token} />
-    if (tab === "compliance") {
-      return (
-        <SubComplianceTab
-          complianceStatus={complianceStatus}
-          documentTypes={complianceDocumentTypes}
-          token={token}
-          canUpload={canUploadComplianceDocs}
-          onRefresh={refreshCompliance}
-        />
-      )
-    }
     return (
-      <SubMessagesTab
-        messages={data.messages}
+      <SubComplianceTab
+        complianceStatus={complianceStatus}
+        documentTypes={complianceDocumentTypes}
         token={token}
-        canMessage={canMessage}
-        senderName={data.company.name}
+        canUpload={canUploadComplianceDocs}
+        onRefresh={refreshCompliance}
       />
     )
   }

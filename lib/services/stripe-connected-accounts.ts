@@ -423,3 +423,23 @@ export async function requireReadyStripeConnectedAccount(orgId?: string) {
   }
   return connection
 }
+
+export async function requireReadyStripeConnectedAccountForOrg(orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("stripe_connected_accounts")
+    .select("*")
+    .eq("org_id", orgId)
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error("Online payments are not configured for this organization yet.")
+  }
+
+  const connection = mapConnection(data)
+  if (!isStripeConnectedAccountReady(connection)) {
+    throw new Error("Online payments are not configured for this organization yet.")
+  }
+
+  return connection
+}

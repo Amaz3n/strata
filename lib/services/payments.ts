@@ -7,6 +7,7 @@ import {
   generatePayLinkInputSchema,
   recordPaymentInputSchema,
   type CreatePaymentIntentInput,
+  type CreatePublicInvoicePaymentIntentInput,
   type GeneratePayLinkInput,
   type RecordPaymentInput,
 } from "@/lib/validation/payments"
@@ -15,11 +16,12 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
+import { calculatePaymentFeeQuote, type OnlinePaymentMethod, loadPaymentFeePolicy } from "@/lib/payments/fees"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { requireReadyStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
+import { requireReadyStripeConnectedAccount, requireReadyStripeConnectedAccountForOrg } from "@/lib/services/stripe-connected-accounts"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 const PAY_PATH = `${APP_URL}/p/pay`
@@ -219,6 +221,64 @@ async function getInvoiceTotals(supabase: ReturnType<typeof createServiceSupabas
   return data
 }
 
+function stripePaymentMethodTypesFor(method?: string | null) {
+  if (method === "ach") return ["us_bank_account"]
+  if (method === "card") return ["card"]
+  return ["us_bank_account", "card"]
+}
+
+function toStripeMethod(method?: string | null): OnlinePaymentMethod | null {
+  return method === "ach" || method === "card" ? method : null
+}
+
+async function buildPaymentIntentAmounts(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  invoiceBalanceCents: number
+  method?: string | null
+  includeProcessingFee?: boolean
+}): Promise<{
+  chargeAmountCents: number
+  invoiceBalanceCents: number
+  paymentMethodFeeCents: number
+  metadata: Record<string, string>
+}> {
+  const paymentMethod = toStripeMethod(params.method)
+  if (!params.includeProcessingFee || !paymentMethod) {
+    return {
+      chargeAmountCents: params.invoiceBalanceCents,
+      invoiceBalanceCents: params.invoiceBalanceCents,
+      paymentMethodFeeCents: 0,
+      metadata: {},
+    }
+  }
+
+  const policy = await loadPaymentFeePolicy(params.supabase, params.orgId)
+  const quote = calculatePaymentFeeQuote({
+    invoiceBalanceCents: params.invoiceBalanceCents,
+    method: paymentMethod,
+    policy,
+  })
+  if (!quote.enabled) {
+    throw new Error(`${quote.label} payments are not enabled for this invoice.`)
+  }
+
+  return {
+    chargeAmountCents: quote.totalCents,
+    invoiceBalanceCents: quote.invoiceBalanceCents,
+    paymentMethodFeeCents: quote.feeCents,
+    metadata: {
+      payment_method_choice: quote.method,
+      invoice_balance_cents: String(quote.invoiceBalanceCents),
+      payment_method_fee_cents: String(quote.feeCents),
+      payment_method_fee_percent: String(quote.feePercent),
+      payment_method_fee_fixed_cents: String(quote.feeFixedCents),
+      payment_method_fee_cap_cents: quote.feeCapCents == null ? "" : String(quote.feeCapCents),
+      payment_method_total_cents: String(quote.totalCents),
+    },
+  }
+}
+
 async function ensureReceiptForPayment({
   supabase,
   orgId,
@@ -412,20 +472,31 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
   const amount = parsed.amount_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
   if (amount <= 0) throw new Error("Invoice has no outstanding balance")
   const connectedAccount = await requireReadyStripeConnectedAccount(resolvedOrgId)
+  const amounts = await buildPaymentIntentAmounts({
+    supabase,
+    orgId: resolvedOrgId,
+    invoiceBalanceCents: amount,
+    method: parsed.method,
+    includeProcessingFee: parsed.include_processing_fee,
+  })
 
   const stripeIntent = await createStripePaymentIntent({
-    amount_cents: amount,
+    amount_cents: amounts.chargeAmountCents,
     currency: parsed.currency ?? "usd",
     invoice_id: parsed.invoice_id,
     org_id: resolvedOrgId,
     project_id: invoice.project_id,
     description: `Invoice ${parsed.invoice_id}`,
     connected_account_id: connectedAccount.stripe_account_id,
-    application_fee_amount: 0,
+    application_fee_amount: amounts.paymentMethodFeeCents,
     on_behalf_of_account_id: connectedAccount.stripe_account_id,
-    metadata: parsed.metadata
-      ? Object.fromEntries(Object.entries(parsed.metadata).map(([key, value]) => [key, String(value)]))
-      : undefined,
+    payment_method_types: stripePaymentMethodTypesFor(parsed.method),
+    metadata: {
+      ...amounts.metadata,
+      ...(parsed.metadata
+        ? Object.fromEntries(Object.entries(parsed.metadata).map(([key, value]) => [key, String(value)]))
+        : {}),
+    },
   })
 
   const intentPayload = {
@@ -433,25 +504,108 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     project_id: invoice.project_id,
     invoice_id: parsed.invoice_id,
     provider: "stripe",
-    amount_cents: amount,
+    amount_cents: amounts.chargeAmountCents,
     currency: parsed.currency ?? "usd",
     status: stripeIntent.status,
     client_secret: stripeIntent.client_secret,
     provider_intent_id: stripeIntent.provider_intent_id,
     connected_account_id: connectedAccount.stripe_account_id,
     charge_type: "destination",
-    application_fee_amount: 0,
+    application_fee_amount: amounts.paymentMethodFeeCents,
     processor_fee_cents: 0,
-    platform_fee_cents: 0,
+    platform_fee_cents: amounts.paymentMethodFeeCents,
     on_behalf_of_account_id: connectedAccount.stripe_account_id,
     idempotency_key: stripeIntent.provider_intent_id,
-    metadata: parsed.metadata ?? {},
+    metadata: {
+      ...(parsed.metadata ?? {}),
+      payment_method_choice: parsed.method ?? null,
+      invoice_balance_cents: amounts.invoiceBalanceCents,
+      payment_method_fee_cents: amounts.paymentMethodFeeCents,
+      payment_method_total_cents: amounts.chargeAmountCents,
+    },
   }
 
   const { data, error } = await supabase.from("payment_intents").insert(intentPayload).select("*").single()
 
   if (error || !data) {
     throw new Error(`Failed to create payment intent: ${error?.message}`)
+  }
+
+  return mapPaymentIntent(data)
+}
+
+export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoicePaymentIntentInput) {
+  const supabase = createServiceSupabaseClient()
+  const { data: invoice, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, project_id, token, invoice_number, status, client_visible, total_cents, balance_due_cents, currency")
+    .eq("token", input.token)
+    .maybeSingle()
+
+  if (error || !invoice) {
+    throw new Error("Invoice not found or inaccessible")
+  }
+  if (invoice.client_visible === false || invoice.status === "void") {
+    throw new Error("Invoice is not available for online payment")
+  }
+
+  const invoiceBalanceCents = invoice.balance_due_cents ?? invoice.total_cents ?? 0
+  if (invoiceBalanceCents <= 0) throw new Error("Invoice has no outstanding balance")
+
+  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(invoice.org_id)
+  const amounts = await buildPaymentIntentAmounts({
+    supabase,
+    orgId: invoice.org_id,
+    invoiceBalanceCents,
+    method: input.method,
+    includeProcessingFee: true,
+  })
+
+  const stripeIntent = await createStripePaymentIntent({
+    amount_cents: amounts.chargeAmountCents,
+    currency: invoice.currency ?? "usd",
+    invoice_id: invoice.id,
+    org_id: invoice.org_id,
+    project_id: invoice.project_id,
+    description: `Invoice ${invoice.invoice_number ?? invoice.id}`,
+    connected_account_id: connectedAccount.stripe_account_id,
+    application_fee_amount: amounts.paymentMethodFeeCents,
+    on_behalf_of_account_id: connectedAccount.stripe_account_id,
+    payment_method_types: stripePaymentMethodTypesFor(input.method),
+    metadata: {
+      ...amounts.metadata,
+      invoice_token: input.token,
+    },
+  })
+
+  const intentPayload = {
+    org_id: invoice.org_id,
+    project_id: invoice.project_id,
+    invoice_id: invoice.id,
+    provider: "stripe",
+    amount_cents: amounts.chargeAmountCents,
+    currency: invoice.currency ?? "usd",
+    status: stripeIntent.status,
+    client_secret: stripeIntent.client_secret,
+    provider_intent_id: stripeIntent.provider_intent_id,
+    connected_account_id: connectedAccount.stripe_account_id,
+    charge_type: "destination",
+    application_fee_amount: amounts.paymentMethodFeeCents,
+    processor_fee_cents: 0,
+    platform_fee_cents: amounts.paymentMethodFeeCents,
+    on_behalf_of_account_id: connectedAccount.stripe_account_id,
+    idempotency_key: stripeIntent.provider_intent_id,
+    metadata: {
+      payment_method_choice: input.method,
+      invoice_balance_cents: amounts.invoiceBalanceCents,
+      payment_method_fee_cents: amounts.paymentMethodFeeCents,
+      payment_method_total_cents: amounts.chargeAmountCents,
+    },
+  }
+
+  const { data, error: insertError } = await supabase.from("payment_intents").insert(intentPayload).select("*").single()
+  if (insertError || !data) {
+    throw new Error(`Failed to create payment intent: ${insertError?.message}`)
   }
 
   return mapPaymentIntent(data)

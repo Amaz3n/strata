@@ -12,6 +12,8 @@ const costCodeSchema = z.object({
   standard: z.enum(["nahb", "csi", "custom"]).default("custom"),
   unit: z.string().optional(),
   default_unit_cost_cents: z.number().int().min(0).optional(),
+  is_reimbursable_default: z.boolean().optional(),
+  default_markup_percent: z.number().min(0).max(200).nullable().optional(),
 })
 
 const updateCostCodeSchema = z.object({
@@ -24,6 +26,8 @@ const updateCostCodeSchema = z.object({
   standard: z.enum(["nahb", "csi", "custom"]).optional(),
   unit: z.string().nullable().optional(),
   default_unit_cost_cents: z.number().int().min(0).nullable().optional(),
+  is_reimbursable_default: z.boolean().optional(),
+  default_markup_percent: z.number().min(0).max(200).nullable().optional(),
   is_active: z.boolean().optional(),
 })
 
@@ -265,6 +269,5 @@ export async function importCostCodes(
 
   return { imported: data?.length ?? 0 }
 }
-
 
 

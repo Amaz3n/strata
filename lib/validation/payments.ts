@@ -7,7 +7,13 @@ export const createPaymentIntentInputSchema = z.object({
   amount_cents: z.number().int().positive().optional(),
   currency: z.string().default("usd"),
   method: paymentMethodInputSchema.optional(),
+  include_processing_fee: z.boolean().optional().default(false),
   metadata: z.record(z.any()).optional(),
+})
+
+export const createPublicInvoicePaymentIntentInputSchema = z.object({
+  token: z.string().min(1, "Invoice link is required"),
+  method: z.enum(["ach", "card"]),
 })
 
 export const generatePayLinkInputSchema = z.object({
@@ -33,10 +39,9 @@ export const recordPaymentInputSchema = z.object({
 })
 
 export type CreatePaymentIntentInput = z.infer<typeof createPaymentIntentInputSchema>
+export type CreatePublicInvoicePaymentIntentInput = z.infer<typeof createPublicInvoicePaymentIntentInputSchema>
 export type GeneratePayLinkInput = z.infer<typeof generatePayLinkInputSchema>
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
-
-
 
 
 

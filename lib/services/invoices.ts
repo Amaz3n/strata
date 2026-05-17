@@ -12,6 +12,7 @@ import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { markReservationUsed } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
+import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
 
 type InvoiceRow = {
   id: string
@@ -66,6 +67,10 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
     taxable: line.taxable ?? true,
     qbo_income_account_id: line.qbo_income_account_id ?? null,
     qbo_income_account_name: line.qbo_income_account_name ?? null,
+    billable_cost_ids: line.billable_cost_ids ?? undefined,
+    cost_cents: line.cost_cents ?? null,
+    markup_cents: line.markup_cents ?? null,
+    markup_percent: line.markup_percent ?? null,
   }))
 }
 
@@ -93,6 +98,45 @@ function calculateNormalizedTotals(lines: InvoiceLine[], taxRate = 0): InvoiceTo
 
 function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals {
   return calculateNormalizedTotals(normalizeLines(lines), taxRate)
+}
+
+export function buildApprovedCostInvoicePreview({
+  projectId,
+  title,
+  issueDate,
+  dueDate,
+  lines,
+  totals,
+}: {
+  projectId: string
+  title: string
+  issueDate?: string | null
+  dueDate?: string | null
+  lines: InvoiceLine[]
+  totals: InvoiceTotals
+}) {
+  return {
+    projectId,
+    title,
+    issueDate: issueDate ?? new Date().toISOString().slice(0, 10),
+    dueDate: dueDate ?? new Date().toISOString().slice(0, 10),
+    groupBy: "cost_code",
+    lines: lines.map((line, index) => ({
+      cost_code_id: line.cost_code_id ?? null,
+      description: line.description,
+      cost_cents: line.cost_cents ?? line.unit_cost_cents,
+      markup_cents: line.markup_cents ?? 0,
+      billable_cents: Math.round(line.quantity * line.unit_cost_cents),
+      markup_percent: line.markup_percent ?? 0,
+      billable_cost_ids: line.billable_cost_ids ?? [],
+      sort_order: index,
+    })),
+    totals: {
+      cost_cents: lines.reduce((sum, line) => sum + (line.cost_cents ?? line.unit_cost_cents), 0),
+      markup_cents: lines.reduce((sum, line) => sum + (line.markup_cents ?? 0), 0),
+      billable_cents: totals.total_cents,
+    },
+  }
 }
 
 function isSystemGeneratedRetainageLine(line: Pick<InvoiceLine, "description" | "unit">) {
@@ -473,6 +517,10 @@ function mapInvoiceWithLines(row: any) {
     taxable: (l.metadata as any)?.taxable ?? l.taxable ?? undefined,
     qbo_income_account_id: (l.metadata as any)?.qbo_income_account_id ?? null,
     qbo_income_account_name: (l.metadata as any)?.qbo_income_account_name ?? null,
+    billable_cost_ids: (l.metadata as any)?.billable_cost_ids ?? undefined,
+    cost_cents: (l.metadata as any)?.cost_cents ?? null,
+    markup_cents: (l.metadata as any)?.markup_cents ?? null,
+    markup_percent: (l.metadata as any)?.markup_percent ?? null,
   }))
 
   return {
@@ -546,9 +594,135 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     baseLines: normalizeLines(input.lines),
   })
   const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
+  const fromCostIds =
+    sourceType === "from_costs"
+      ? Array.from(new Set(lines.flatMap((line) => line.billable_cost_ids ?? [])))
+      : []
+  if (sourceType === "from_costs" && !input.project_id) {
+    throw new Error("Project is required to invoice approved costs")
+  }
+  if (sourceType === "from_costs" && input.project_id) {
+    const { data: contract, error: contractError } = await supabase
+      .from("contracts")
+      .select("id, contract_type, gmp_cents, open_book, requires_client_cost_approval, snapshot")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", input.project_id)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (contractError) {
+      throw new Error(`Failed to validate project billing model: ${contractError.message}`)
+    }
+    if (!supportsApprovedCostInvoicing(contract as any)) {
+      throw new Error("Approved-cost invoicing is only available for cost-plus, cost-plus GMP, fixed-fee, or T&M projects")
+    }
+  }
   const totals = calculateNormalizedTotals(lines, input.tax_rate)
   const shouldGenerateToken = input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? randomUUID() : null
+
+  if (sourceType === "from_costs") {
+    const costIds = Array.from(new Set(lines.flatMap((line) => line.billable_cost_ids ?? [])))
+    if (costIds.length === 0) {
+      throw new Error("Select approved costs before creating an approved-cost invoice")
+    }
+
+    const parsedCustomerDetails = {
+      customer_id: input.customer_id ?? null,
+      customer_name: input.customer_name ?? null,
+      customer_address: input.customer_address ?? null,
+      customer_email: input.sent_to_emails?.[0] ?? null,
+      from_name: input.from_name ?? orgData?.name ?? null,
+      from_email: input.from_email ?? orgData?.email ?? null,
+      from_address: input.from_address ?? orgData?.address ?? null,
+    }
+    const preview = buildApprovedCostInvoicePreview({
+      projectId: input.project_id as string,
+      title: input.title,
+      issueDate: input.issue_date,
+      dueDate: input.due_date,
+      lines,
+      totals,
+    })
+
+    const { data: rpcResult, error: rpcError } = await supabase.rpc("create_invoice_from_billable_costs_atomic", {
+      p_org_id: resolvedOrgId,
+      p_project_id: input.project_id,
+      p_actor_id: userId,
+      p_invoice_number: input.invoice_number,
+      p_token: token ?? randomUUID(),
+      p_title: input.title,
+      p_issue_date: input.issue_date ?? new Date().toISOString().slice(0, 10),
+      p_due_date: input.due_date ?? new Date().toISOString().slice(0, 10),
+      p_from_date: input.issue_date ?? new Date().toISOString().slice(0, 10),
+      p_to_date: input.issue_date ?? new Date().toISOString().slice(0, 10),
+      p_group_by: "cost_code",
+      p_cost_ids: costIds,
+      p_preview: preview,
+      p_idempotency_key: null,
+      p_reservation_id: reservationId ?? null,
+      p_status: input.status ?? "saved",
+      p_client_visible: shouldGenerateToken,
+      p_notes: input.notes ?? null,
+      p_sent_to_emails: input.sent_to_emails ?? null,
+      p_metadata: {
+        lines,
+        totals,
+        tax_rate: input.tax_rate,
+        created_by: userId,
+        payment_terms_days: input.payment_terms_days,
+        source_type: sourceType,
+        ...parsedCustomerDetails,
+        qbo_customer_id: input.qbo_customer_id ?? null,
+        qbo_customer_name: input.qbo_customer_name ?? null,
+        org_name: orgData?.name ?? null,
+        org_email: orgData?.email ?? null,
+        org_phone: orgData?.phone ?? null,
+        org_address: orgData?.address ?? null,
+      },
+    })
+
+    if (rpcError) {
+      throw new Error(`Failed to create approved-cost invoice: ${rpcError.message}`)
+    }
+    const invoiceId = (rpcResult as any)?.invoiceId
+    if (!invoiceId) throw new Error("Failed to create approved-cost invoice: missing invoice id")
+
+    await recordEvent({
+      orgId: resolvedOrgId,
+      eventType: "invoice_created",
+      entityType: "invoice",
+      entityId: invoiceId,
+      payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents, source_type: "from_costs" },
+    })
+    if (shouldGenerateToken) {
+      await recordEvent({
+        orgId: resolvedOrgId,
+        eventType: "invoice_sent",
+        entityType: "invoice",
+        entityId: invoiceId,
+        payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents, sent_to_emails: input.sent_to_emails ?? [] },
+        channel: "notification",
+      })
+      await sendInvoiceEmail({ orgId: resolvedOrgId, invoiceId, totalCents: totals.total_cents, dueDate: input.due_date ?? undefined })
+    }
+    await recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "insert",
+      entityType: "invoice",
+      entityId: invoiceId,
+      after: { invoice_number: input.invoice_number, project_id: input.project_id, source_type: "from_costs", billable_cost_ids: costIds, totals },
+    })
+    if (shouldQueueQboSync(input.status, shouldGenerateToken)) {
+      await enqueueInvoiceSync(invoiceId, resolvedOrgId)
+    }
+    const created = await getInvoiceWithLines(invoiceId, resolvedOrgId)
+    if (!created) throw new Error("Approved-cost invoice was created but could not be reloaded")
+    return created
+  }
 
   await assertSourceNotAlreadyBilled({
     supabase,
@@ -557,6 +731,22 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     sourceDrawId,
     sourceChangeOrderId,
   })
+
+  if (fromCostIds.length > 0) {
+    const { data: lockedRows, error: lockError } = await supabase
+      .from("billable_costs")
+      .update({ status: "locked" })
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", input.project_id)
+      .eq("status", "open")
+      .in("id", fromCostIds)
+      .select("id")
+
+    if (lockError) throw new Error(`Failed to lock billable costs: ${lockError.message}`)
+    if ((lockedRows ?? []).length !== fromCostIds.length) {
+      throw new Error("Some approved costs were already claimed by another invoice. Refresh and try again.")
+    }
+  }
 
   const payload = {
     org_id: resolvedOrgId,
@@ -583,6 +773,8 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       customer_name: input.customer_name,
       customer_address: input.customer_address,
       customer_email: input.sent_to_emails?.[0],
+      qbo_customer_id: input.qbo_customer_id ?? null,
+      qbo_customer_name: input.qbo_customer_name ?? null,
       from_name: input.from_name ?? orgData?.name ?? null,
       from_email: input.from_email ?? orgData?.email ?? null,
       from_address: input.from_address ?? orgData?.address ?? null,
@@ -614,11 +806,14 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     .single()
 
   if (error || !data) {
+    if (fromCostIds.length > 0) {
+      await supabase.from("billable_costs").update({ status: "open" }).eq("org_id", resolvedOrgId).in("id", fromCostIds)
+    }
     throw new Error(`Failed to create invoice: ${error?.message}`)
   }
 
   // Insert lines
-  const { error: linesError } = await supabase.from("invoice_lines").insert(
+  const { data: insertedLines, error: linesError } = await supabase.from("invoice_lines").insert(
     lines.map((line) => ({
       org_id: resolvedOrgId,
       invoice_id: data.id,
@@ -632,12 +827,42 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
         system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
+        source_type: null,
+        billable_cost_ids: line.billable_cost_ids ?? null,
+        cost_cents: line.cost_cents ?? null,
+        markup_cents: line.markup_cents ?? null,
+        markup_percent: line.markup_percent ?? null,
       },
     })),
-  )
+  ).select("id, metadata")
 
   if (linesError) {
+    if (fromCostIds.length > 0) {
+      await supabase.from("billable_costs").update({ status: "open", invoice_id: null, invoice_line_id: null }).eq("org_id", resolvedOrgId).in("id", fromCostIds)
+      await supabase.from("invoices").delete().eq("org_id", resolvedOrgId).eq("id", data.id)
+    }
     throw new Error(`Failed to create invoice lines: ${linesError.message}`)
+  }
+
+  if (fromCostIds.length > 0) {
+    for (const line of insertedLines ?? []) {
+      const lineCostIds = ((line.metadata as any)?.billable_cost_ids ?? []) as string[]
+      if (lineCostIds.length === 0) continue
+      const { error: costUpdateError } = await supabase
+        .from("billable_costs")
+        .update({
+          invoice_id: data.id,
+          invoice_line_id: line.id,
+          status: "billed",
+          billed_at: new Date().toISOString(),
+        })
+        .eq("org_id", resolvedOrgId)
+        .in("id", lineCostIds)
+
+      if (costUpdateError) {
+        throw new Error(`Failed to mark approved costs billed: ${costUpdateError.message}`)
+      }
+    }
   }
 
   if (reservationId) {
@@ -786,6 +1011,8 @@ export async function updateInvoice({
       customer_name: input.customer_name ?? (existing.metadata as any)?.customer_name,
       customer_address: input.customer_address ?? (existing.metadata as any)?.customer_address,
       customer_email: (input.sent_to_emails ?? [])[0] ?? (existing.metadata as any)?.customer_email,
+      qbo_customer_id: input.qbo_customer_id ?? (existing.metadata as any)?.qbo_customer_id ?? null,
+      qbo_customer_name: input.qbo_customer_name ?? (existing.metadata as any)?.qbo_customer_name ?? null,
       from_name: input.from_name ?? (existing.metadata as any)?.from_name ?? null,
       from_email: input.from_email ?? (existing.metadata as any)?.from_email ?? null,
       from_address: input.from_address ?? (existing.metadata as any)?.from_address ?? null,

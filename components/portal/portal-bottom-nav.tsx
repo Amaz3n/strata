@@ -3,7 +3,7 @@
 import { Home, Camera, FileText, CheckSquare, MessageCircle, Info } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type PortalTab = "home" | "roadmap" | "timeline" | "documents" | "actions" | "messages" | "about"
+export type PortalTab = "home" | "roadmap" | "timeline" | "documents" | "actions" | "about"
 
 interface PortalBottomNavProps {
   activeTab: PortalTab
@@ -17,7 +17,6 @@ const tabs: { id: PortalTab; label: string; icon: typeof Home }[] = [
   { id: "timeline", label: "Timeline", icon: Camera },
   { id: "documents", label: "Docs", icon: FileText },
   { id: "actions", label: "Actions", icon: CheckSquare },
-  { id: "messages", label: "Messages", icon: MessageCircle },
   { id: "about", label: "About", icon: Info },
 ]
 

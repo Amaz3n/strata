@@ -3,9 +3,10 @@ import { notFound } from "next/navigation"
 import { headers } from "next/headers"
 
 import { getInvoiceByToken, recordInvoiceViewed } from "@/lib/services/invoices"
-import { createPaymentIntent } from "@/lib/services/payments"
+import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fees"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { InvoicePublicWithPay } from "@/components/invoices/invoice-public-with-pay"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 interface Params {
   params: Promise<{ token: string }>
@@ -43,42 +44,24 @@ export default async function InvoicePublicPage({ params }: Params) {
   const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
   let paymentProps:
     | {
-        clientSecret: string
         publishableKey: string
         token: string
+        feeQuotes: ReturnType<typeof calculatePaymentFeeQuotes>
       }
     | null = null
 
   if (publishableKey) {
     try {
-      console.log("Creating payment intent for invoice:", {
-        invoiceId: invoice.id,
-        balanceDue: invoice.totals?.balance_due_cents ?? invoice.balance_due_cents,
-        status: invoice.status,
-        total: invoice.totals?.total_cents ?? invoice.total_cents,
-      })
-
-      const intent = await createPaymentIntent(
-        {
-          invoice_id: invoice.id,
-          currency: invoice.currency,
-        },
-        invoice.org_id,
-      )
-
-      if (intent?.client_secret) {
-        paymentProps = {
-          clientSecret: intent.client_secret,
-          publishableKey,
-          token,
-        }
-        console.log("Payment intent created successfully")
-      } else {
-        console.log("Payment intent created but no client_secret")
+      const policy = await loadPaymentFeePolicy(createServiceSupabaseClient(), invoice.org_id)
+      const balanceDue = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
+      paymentProps = {
+        publishableKey,
+        token,
+        feeQuotes: calculatePaymentFeeQuotes(balanceDue, policy),
       }
     } catch (err) {
       // Gracefully degrade: show read-only invoice if payments not configured or no balance.
-      console.error("Payment intent not created for public invoice:", err)
+      console.error("Payment options not created for public invoice:", err)
       console.error("Error details:", {
         message: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,

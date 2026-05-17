@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, type CSSProperties } from "react"
-import Link from "next/link"
+import { OptimisticLink as Link } from "@/lib/navigation/optimistic-pathname"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -41,6 +41,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
 import type { DateRange } from "react-day-picker"
+import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
+import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 
 const statusColors: Record<ProjectStatus, string> = {
   planning: "bg-chart-3/20 text-chart-3 border-chart-3/30",
@@ -94,6 +97,16 @@ function projectToFormValues(project: Project): ProjectInput {
     property_type: project.property_type ?? undefined,
     project_type: project.project_type ?? undefined,
     description: project.description ?? "",
+    contract_type: project.billing_contract?.contract_type === "cost_plus" || project.billing_contract?.contract_type === "time_materials" ? project.billing_contract.contract_type : "fixed",
+    billing_model: resolveProjectBillingModel(project, project.billing_contract),
+    markup_percent: project.billing_contract?.markup_percent ?? undefined,
+    gmp_cents: project.billing_contract?.gmp_cents ?? undefined,
+    savings_split_owner_pct: project.billing_contract?.savings_split_owner_pct ?? undefined,
+    savings_split_builder_pct: project.billing_contract?.savings_split_builder_pct ?? undefined,
+    labor_burden_multiplier: project.billing_contract?.labor_burden_multiplier ?? 1,
+    requires_client_cost_approval: project.billing_contract?.requires_client_cost_approval ?? false,
+    open_book: project.billing_contract?.open_book ?? true,
+    total_contract_value_cents: project.billing_contract?.total_cents ?? undefined,
   }
 }
 
@@ -132,6 +145,16 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
       property_type: undefined,
       project_type: undefined,
       description: "",
+      contract_type: "fixed",
+      billing_model: "fixed_price",
+      markup_percent: undefined,
+      gmp_cents: undefined,
+      savings_split_owner_pct: undefined,
+      savings_split_builder_pct: undefined,
+      labor_burden_multiplier: 1,
+      requires_client_cost_approval: false,
+      open_book: true,
+      total_contract_value_cents: undefined,
     },
   })
 
@@ -147,6 +170,16 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
       property_type: undefined,
       project_type: undefined,
       description: "",
+      contract_type: "fixed",
+      billing_model: "fixed_price",
+      markup_percent: undefined,
+      gmp_cents: undefined,
+      savings_split_owner_pct: undefined,
+      savings_split_builder_pct: undefined,
+      labor_burden_multiplier: 1,
+      requires_client_cost_approval: false,
+      open_book: true,
+      total_contract_value_cents: undefined,
     },
   })
 
@@ -532,6 +565,10 @@ function ProjectFormSheet({
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
+  const billingMode = form.watch("billing_model") ?? "fixed_price"
+  const isCostBilling = billingMode !== "fixed_price"
+  const isGmpBilling = billingMode === "cost_plus_gmp"
+  const usesMarkup = billingMode === "cost_plus_percent" || billingMode === "cost_plus_gmp" || billingMode === "time_and_materials"
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -716,6 +753,72 @@ function ProjectFormSheet({
                   </FormItem>
                 )}
               />
+              <Separator />
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold">Billing setup</h3>
+                  <p className="text-xs text-muted-foreground">Choose how Arc should treat costs and invoices for this project.</p>
+                </div>
+                <FormField
+                  control={form.control}
+                  name="billing_model"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Billing mode</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value ?? "fixed_price"}>
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="fixed_price">Fixed price</SelectItem>
+                          <SelectItem value="cost_plus_percent">Cost plus %</SelectItem>
+                          <SelectItem value="cost_plus_fixed_fee">Cost plus fixed fee</SelectItem>
+                          <SelectItem value="cost_plus_gmp">Cost plus GMP</SelectItem>
+                          <SelectItem value="time_and_materials">Time & materials</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="total_contract_value_cents"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{isCostBilling ? "Contract cap / value" : "Contract value"}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="text"
+                          placeholder="$500,000"
+                          className="font-mono"
+                          value={typeof field.value === "number" ? `$${(field.value / 100).toLocaleString()}` : ""}
+                          onChange={(e) => {
+                            const raw = e.target.value.replace(/[^\d.]/g, "")
+                            field.onChange(raw ? Math.round(Number(raw) * 100) : undefined)
+                          }}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {isCostBilling ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {usesMarkup ? <NumberField form={form} name="markup_percent" label="Default markup %" suffix="%" /> : null}
+                    <NumberField form={form} name="labor_burden_multiplier" label="Labor burden multiplier" step="0.01" />
+                    {isGmpBilling ? <MoneyCentsField form={form} name="gmp_cents" label="GMP" /> : null}
+                    {isGmpBilling ? <NumberField form={form} name="savings_split_owner_pct" label="Owner savings %" suffix="%" /> : null}
+                    {isGmpBilling ? <NumberField form={form} name="savings_split_builder_pct" label="Builder savings %" suffix="%" /> : null}
+                    <div className="space-y-3 rounded-md border p-3">
+                      <BooleanField form={form} name="open_book" label="Open-book client detail" />
+                      <BooleanField form={form} name="requires_client_cost_approval" label="Client cost approval" />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </form>
           </Form>
         </div>
@@ -739,5 +842,89 @@ function ProjectFormSheet({
         </div>
       </SheetContent>
     </Sheet>
+  )
+}
+
+function NumberField({
+  form,
+  name,
+  label,
+  suffix,
+  step = "1",
+}: {
+  form: UseFormReturn<ProjectInput>
+  name: keyof ProjectInput
+  label: string
+  suffix?: string
+  step?: string
+}) {
+  return (
+    <FormField
+      control={form.control}
+      name={name as any}
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{label}</FormLabel>
+          <FormControl>
+            <div className="relative">
+              <Input
+                type="number"
+                step={step}
+                min="0"
+                value={field.value ?? ""}
+                onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+                className={suffix ? "pr-8" : undefined}
+              />
+              {suffix ? <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">{suffix}</span> : null}
+            </div>
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  )
+}
+
+function MoneyCentsField({ form, name, label }: { form: UseFormReturn<ProjectInput>; name: keyof ProjectInput; label: string }) {
+  return (
+    <FormField
+      control={form.control}
+      name={name as any}
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{label}</FormLabel>
+          <FormControl>
+            <Input
+              type="text"
+              placeholder="$0"
+              className="font-mono"
+              value={typeof field.value === "number" ? `$${(field.value / 100).toLocaleString()}` : ""}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/[^\d.]/g, "")
+                field.onChange(raw ? Math.round(Number(raw) * 100) : undefined)
+              }}
+            />
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  )
+}
+
+function BooleanField({ form, name, label }: { form: UseFormReturn<ProjectInput>; name: keyof ProjectInput; label: string }) {
+  return (
+    <FormField
+      control={form.control}
+      name={name as any}
+      render={({ field }) => (
+        <FormItem className="flex items-center justify-between gap-3">
+          <FormLabel className="text-sm font-normal">{label}</FormLabel>
+          <FormControl>
+            <Switch checked={Boolean(field.value)} onCheckedChange={field.onChange} />
+          </FormControl>
+        </FormItem>
+      )}
+    />
   )
 }

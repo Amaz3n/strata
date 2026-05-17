@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { useEffect, useState } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
 import {
   ChevronsUpDown,
   Loader2,
 } from "@/components/icons"
+import { useOptimisticNavigate, useIsNavigationPending } from "@/lib/navigation/optimistic-pathname"
 import { ProjectAvatar } from "@/components/ui/project-avatar"
 
 import {
@@ -45,11 +46,11 @@ function getProjectIdFromPath(pathname: string): string | null {
 
 export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProps) {
   const { isMobile, state } = useSidebar()
-  const router = useRouter()
+  const navigate = useOptimisticNavigate()
+  const isPending = useIsNavigationPending()
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [projects, setProjects] = useState<Project[]>([])
-  const [isPending, startTransition] = useTransition()
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const hydrated = useHydrated()
@@ -95,13 +96,12 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
   const currentProject = projects.find((p) => p.id === resolvedProjectId)
 
   const handleSelect = (targetProjectId: string) => {
-    startTransition(() => {
-      const nextPath = pathProjectId
-        ? pathname.replace(`/projects/${pathProjectId}`, `/projects/${targetProjectId}`)
-        : `/projects/${targetProjectId}`
-      const search = searchParams.toString()
-      router.push(search ? `${nextPath}?${search}` : nextPath)
-    })
+    if (targetProjectId === resolvedProjectId) return
+    const nextPath = pathProjectId
+      ? pathname.replace(`/projects/${pathProjectId}`, `/projects/${targetProjectId}`)
+      : `/projects/${targetProjectId}`
+    const search = searchParams.toString()
+    navigate(search ? `${nextPath}?${search}` : nextPath)
   }
 
   const renderCurrent = () => {

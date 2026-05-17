@@ -33,8 +33,6 @@ export type SearchEntityType =
   | 'change_order'
   | 'contract'
   | 'proposal'
-  | 'conversation'
-  | 'message'
   | 'rfi'
   | 'submittal'
   | 'drawing_set'
@@ -370,22 +368,6 @@ const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     hrefTemplate: '/proposals/{id}',
     joins: ['LEFT JOIN projects p ON prop.project_id = p.id'],
   },
-  conversation: {
-    table: 'conversations',
-    titleField: 'subject',
-    subtitleFields: ['channel'],
-    searchableFields: ['subject'],
-    hrefTemplate: '/conversations/{id}',
-    joins: ['LEFT JOIN projects p ON conv.project_id = p.id'],
-  },
-  message: {
-    table: 'messages',
-    titleField: 'body',
-    subtitleFields: ['message_type'],
-    searchableFields: ['body'],
-    hrefTemplate: '/messages/{id}',
-    joins: ['LEFT JOIN conversations conv ON m.conversation_id = conv.id', 'LEFT JOIN projects p ON conv.project_id = p.id'],
-  },
   rfi: {
     table: 'rfis',
     titleField: 'subject',
@@ -720,7 +702,7 @@ async function searchSingleEntity(
   const { limit = 10 } = options
 
   // Determine if this entity has projects
-  const hasProject = ['project', 'task', 'file', 'invoice', 'payment', 'budget', 'estimate', 'commitment', 'change_order', 'contract', 'proposal', 'conversation', 'message', 'rfi', 'submittal', 'drawing_set', 'drawing_sheet', 'daily_log', 'punch_item', 'schedule_item', 'photo', 'portal_access'].includes(entityType)
+  const hasProject = ['project', 'task', 'file', 'invoice', 'payment', 'budget', 'estimate', 'commitment', 'change_order', 'contract', 'proposal', 'rfi', 'submittal', 'drawing_set', 'drawing_sheet', 'daily_log', 'punch_item', 'schedule_item', 'photo', 'portal_access'].includes(entityType)
   const includeProject = hasProject && entityType !== 'project'
   const selectClause = buildEntitySelectClause(entityType, config, includeProject)
 

@@ -4,6 +4,7 @@ import { validatePortalToken } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { createPaymentIntent } from "@/lib/services/payments"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
+import { listOpenBookCostDetailsForInvoice } from "@/lib/services/cost-plus"
 import { InvoicePortalClient } from "./portal-invoice-client"
 
 interface Params {
@@ -40,6 +41,7 @@ export default async function InvoicePortalPage({ params }: Params) {
         {
           invoice_id: invoice.id,
           currency: invoice.currency,
+          include_processing_fee: false,
         },
         access.org_id,
       )
@@ -57,8 +59,28 @@ export default async function InvoicePortalPage({ params }: Params) {
     }
   }
 
-  const receipts = await listReceiptsForInvoice({ orgId: access.org_id, invoiceId: invoice.id })
+  const [receiptsResult, costDetailsResult] = await Promise.allSettled([
+    listReceiptsForInvoice({ orgId: access.org_id, invoiceId: invoice.id }),
+    listOpenBookCostDetailsForInvoice({
+      invoiceId: invoice.id,
+      orgId: access.org_id,
+      projectId: access.project_id,
+    }),
+  ])
 
-  return <InvoicePortalClient invoice={invoice} portalType="client" payment={paymentProps} receipts={receipts} />
+  const proofErrors = [
+    receiptsResult.status === "rejected" ? `Receipts: ${receiptsResult.reason?.message ?? String(receiptsResult.reason)}` : null,
+    costDetailsResult.status === "rejected" ? `Cost detail: ${costDetailsResult.reason?.message ?? String(costDetailsResult.reason)}` : null,
+  ].filter(Boolean) as string[]
+
+  return (
+    <InvoicePortalClient
+      invoice={invoice}
+      portalType="client"
+      payment={paymentProps}
+      receipts={receiptsResult.status === "fulfilled" ? receiptsResult.value : []}
+      costDetails={costDetailsResult.status === "fulfilled" ? costDetailsResult.value : []}
+      proofErrors={proofErrors}
+    />
+  )
 }
-

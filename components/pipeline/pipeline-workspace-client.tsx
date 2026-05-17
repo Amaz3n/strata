@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 
 import type { Contact, TeamMember } from "@/lib/types"
 import type { Prospect, CrmActivity } from "@/lib/services/crm"
@@ -18,22 +18,12 @@ interface PipelineWorkspaceClientProps {
   initialView: PipelineView
   initialProspectStatus?: LeadStatus
   initialOpportunityStatus?: OpportunityStatus
-  opportunityCounts: {
-    new: number
-    contacted: number
-    qualified: number
-    estimating: number
-    proposed: number
-    won: number
-    lost: number
-  }
-  closedThisMonth: {
-    won: number
-    lost: number
-  }
-  winRate: number | null
-  followUpsDue: Prospect[]
+  opportunityCounts: Record<OpportunityStatus, number>
+  overdueFollowUps: Prospect[]
+  upcomingFollowUps: Prospect[]
   newInquiries: Prospect[]
+  stalledOpportunities: Opportunity[]
+  stalledAfterDays: number
   recentActivity: CrmActivity[]
   prospects: Prospect[]
   opportunities: Opportunity[]
@@ -49,10 +39,11 @@ export function PipelineWorkspaceClient({
   initialProspectStatus,
   initialOpportunityStatus,
   opportunityCounts,
-  closedThisMonth,
-  winRate,
-  followUpsDue,
+  overdueFollowUps,
+  upcomingFollowUps,
   newInquiries,
+  stalledOpportunities,
+  stalledAfterDays,
   recentActivity,
   prospects,
   opportunities,
@@ -62,11 +53,15 @@ export function PipelineWorkspaceClient({
   canEdit = false,
   canManageProjects = false,
 }: PipelineWorkspaceClientProps) {
-  const [view, setView] = useState<PipelineView>(initialView)
+  const router = useRouter()
 
-  useEffect(() => {
-    setView(initialView)
-  }, [initialView])
+  const handleViewChange = (next: string) => {
+    const nextView = (next === "opportunities" || next === "prospects" ? next : "overview") as PipelineView
+    const params = new URLSearchParams()
+    if (nextView !== "overview") params.set("view", nextView)
+    const qs = params.toString()
+    router.replace(qs ? `/pipeline?${qs}` : "/pipeline", { scroll: false })
+  }
 
   const renderTabSwitcher = () => (
     <TabsList>
@@ -77,15 +72,16 @@ export function PipelineWorkspaceClient({
   )
 
   return (
-    <Tabs value={view} onValueChange={(next) => setView(next as PipelineView)} className="space-y-6">
+    <Tabs value={initialView} onValueChange={handleViewChange} className="space-y-6">
       <TabsContent value="overview" className="space-y-6">
         <PipelineDashboard
           headerLeft={renderTabSwitcher()}
           opportunityCounts={opportunityCounts}
-          closedThisMonth={closedThisMonth}
-          winRate={winRate}
-          followUpsDue={followUpsDue}
+          overdueFollowUps={overdueFollowUps}
+          upcomingFollowUps={upcomingFollowUps}
           newInquiries={newInquiries}
+          stalledOpportunities={stalledOpportunities}
+          stalledAfterDays={stalledAfterDays}
           recentActivity={recentActivity}
           teamMembers={teamMembers}
           canCreate={canCreate}

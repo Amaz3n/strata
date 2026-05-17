@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
@@ -38,11 +38,11 @@ import {
   DropdownMenuTrigger,
   DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
-import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw } from "@/components/icons"
+import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search } from "@/components/icons"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
+import { InvoiceSyncQueueSheet } from "@/components/invoices/invoice-sync-queue-sheet"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 
 type StatusKey = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
 type StatusFilter = StatusKey | "all"
@@ -70,7 +70,10 @@ const statusStyles: Record<StatusKey, string> = {
 
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
-  return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
+  return dollars.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+  })
 }
 
 function resolveStatusKey(status?: string | null): StatusKey {
@@ -90,9 +93,22 @@ interface InvoicesClientProps {
   }
   contacts?: Contact[]
   costCodes?: CostCode[]
+  enableApprovedCostsSource?: boolean
+  toolbarLeading?: ReactNode
+  fullBleed?: boolean
 }
 
-export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, builderInfo, contacts, costCodes }: InvoicesClientProps) {
+export function InvoicesClient({
+  invoices,
+  projects,
+  initialOpenInvoiceId,
+  builderInfo,
+  contacts,
+  costCodes,
+  enableApprovedCostsSource,
+  toolbarLeading,
+  fullBleed = false,
+}: InvoicesClientProps) {
   const [items, setItems] = useState<Invoice[]>(invoices)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
@@ -109,7 +125,13 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   const [detailLink, setDetailLink] = useState<string | undefined>(undefined)
   const [detailViews, setDetailViews] = useState<InvoiceView[] | undefined>(undefined)
   const [detailSyncHistory, setDetailSyncHistory] = useState<
-    Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
+    Array<{
+      id: string
+      status: string
+      last_synced_at: string
+      error_message?: string | null
+      qbo_id?: string | null
+    }>
   >()
   const [isResyncing, setIsResyncing] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
@@ -174,13 +196,6 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id)) && !allVisibleSelected
   const qboPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
   const qboErrorCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "error").length, [items])
-  const queueItems = useMemo(
-    () =>
-      items
-        .filter((item) => item.qbo_sync_status === "pending" || item.qbo_sync_status === "error")
-        .sort((a, b) => Number(new Date(b.created_at ?? 0)) - Number(new Date(a.created_at ?? 0))),
-    [items],
-  )
 
   async function refreshInvoices() {
     setQueueRefreshing(true)
@@ -190,7 +205,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       setItems(fresh)
     } catch (error: any) {
       console.error(error)
-      toast.error("Could not refresh invoices", { description: error?.message ?? "Please try again." })
+      toast.error("Could not refresh invoices", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setQueueRefreshing(false)
     }
@@ -206,7 +223,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       await refreshInvoices()
     } catch (error: any) {
       console.error(error)
-      toast.error("Sync failed", { description: error?.message ?? "Please try again." })
+      toast.error("Sync failed", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setQueueSyncingPending(false)
     }
@@ -222,7 +241,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       await refreshInvoices()
     } catch (error: any) {
       console.error(error)
-      toast.error("Retry failed", { description: error?.message ?? "Please try again." })
+      toast.error("Retry failed", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setQueueRetryingFailed(false)
     }
@@ -236,7 +257,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       await refreshInvoices()
     } catch (error: any) {
       console.error(error)
-      toast.error("Sync failed", { description: error?.message ?? "Please try again." })
+      toast.error("Sync failed", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setQueueSyncingInvoiceId(null)
     }
@@ -256,7 +279,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       return created
     } catch (error: any) {
       console.error(error)
-      toast.error("Could not save invoice", { description: error?.message ?? "Please try again." })
+      toast.error("Could not save invoice", {
+        description: error?.message ?? "Please try again.",
+      })
       throw error
     } finally {
       setIsCreating(false)
@@ -281,7 +306,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       return updated
     } catch (error: any) {
       console.error(error)
-      toast.error("Could not update invoice", { description: error?.message ?? "Please try again." })
+      toast.error("Could not update invoice", {
+        description: error?.message ?? "Please try again.",
+      })
       throw error
     } finally {
       setIsUpdating(false)
@@ -302,7 +329,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       }
     } catch (error: any) {
       console.error(error)
-      toast.error("Could not generate link", { description: error?.message ?? "Please try again." })
+      toast.error("Could not generate link", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setLinkingId(null)
     }
@@ -317,7 +346,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       })
     } catch (error: any) {
       console.error(error)
-      toast.error("Could not send reminder", { description: error?.message ?? "Please try again." })
+      toast.error("Could not send reminder", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setSendingReminderId(null)
     }
@@ -338,7 +369,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
       setDetailSyncHistory(result.syncHistory as any)
     } catch (error: any) {
       console.error(error)
-      toast.error("Could not load invoice", { description: error?.message ?? "Please try again." })
+      toast.error("Could not load invoice", {
+        description: error?.message ?? "Please try again.",
+      })
     } finally {
       setDetailLoading(false)
     }
@@ -362,104 +395,117 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
   }
 
   return (
-    <div className="space-y-4 lg:space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="w-full sm:max-w-xl">
-          <div className="relative">
-            <Input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Search or filter"
-              className="pr-12"
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 h-8 w-8 border-0 shadow-none hover:bg-muted"
-                >
-                  <Filter className="h-4 w-4" />
-                  <span className="sr-only">Filters</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <Building2 className="mr-2 h-4 w-4" />
-                    By project
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuPortal>
-                    <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                      <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
-                        <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
-                        {projects.map((project) => (
-                          <DropdownMenuRadioItem key={project.id} value={project.id}>
-                            {project.name}
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuPortal>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <Calendar className="mr-2 h-4 w-4" />
-                    By due date
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuPortal>
-                    <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                      <DropdownMenuRadioGroup value={dueFilter} onValueChange={(value) => setDueFilter(value as DueFilter)}>
-                        <DropdownMenuRadioItem value="any">Any due date</DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="due_soon">Due in next 7 days</DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="no_due">No due date</DropdownMenuRadioItem>
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuPortal>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <List className="mr-2 h-4 w-4" />
-                    Status
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuPortal>
-                    <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                      <DropdownMenuRadioGroup
-                        value={statusFilter}
-                        onValueChange={(value) => setStatusFilter(value as StatusFilter)}
-                      >
-                        <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
-                        {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
-                          <DropdownMenuRadioItem key={status} value={status}>
-                            {statusLabels[status]}
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuPortal>
-                </DropdownMenuSub>
-              </DropdownMenuContent>
-            </DropdownMenu>
+    <div className={fullBleed ? "w-full" : "space-y-4 lg:space-y-6"}>
+      <div
+        className={
+          fullBleed
+            ? "sticky top-0 z-20 flex min-h-14 w-full flex-col border-b bg-background/95 shadow-[0_1px_0_rgba(0,0,0,0.02)] backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:flex-row sm:items-stretch"
+            : "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+        }
+      >
+        {toolbarLeading && <div className="flex min-w-0 items-stretch px-4 sm:border-r sm:px-6 lg:px-8">{toolbarLeading}</div>}
+        <div
+          className={
+            toolbarLeading ? "flex w-full flex-col gap-2 px-4 py-3 sm:flex-1 sm:flex-row sm:items-center sm:justify-end sm:px-4 sm:py-2 lg:px-6" : "contents"
+          }
+        >
+          <div className={toolbarLeading ? "w-full sm:max-w-sm lg:max-w-md xl:max-w-lg" : "w-full sm:max-w-xl"}>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search invoices"
+                className="h-9 rounded-md bg-muted/30 pl-9 pr-12 shadow-none transition-colors focus-visible:bg-background"
+              />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 border-0 shadow-none hover:bg-background">
+                    <Filter className="h-4 w-4" />
+                    <span className="sr-only">Filters</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Building2 className="mr-2 h-4 w-4" />
+                      By project
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuPortal>
+                      <DropdownMenuSubContent className="w-56" sideOffset={8}>
+                        <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
+                          <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
+                          {projects.map((project) => (
+                            <DropdownMenuRadioItem key={project.id} value={project.id}>
+                              {project.name}
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuRadioGroup>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuPortal>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Calendar className="mr-2 h-4 w-4" />
+                      By due date
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuPortal>
+                      <DropdownMenuSubContent className="w-56" sideOffset={8}>
+                        <DropdownMenuRadioGroup value={dueFilter} onValueChange={(value) => setDueFilter(value as DueFilter)}>
+                          <DropdownMenuRadioItem value="any">Any due date</DropdownMenuRadioItem>
+                          <DropdownMenuRadioItem value="due_soon">Due in next 7 days</DropdownMenuRadioItem>
+                          <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
+                          <DropdownMenuRadioItem value="no_due">No due date</DropdownMenuRadioItem>
+                        </DropdownMenuRadioGroup>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuPortal>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <List className="mr-2 h-4 w-4" />
+                      Status
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuPortal>
+                      <DropdownMenuSubContent className="w-56" sideOffset={8}>
+                        <DropdownMenuRadioGroup value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
+                          <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
+                          {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
+                            <DropdownMenuRadioItem key={status} value={status}>
+                              {statusLabels[status]}
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuRadioGroup>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuPortal>
+                  </DropdownMenuSub>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
-        </div>
 
-        <div className="flex flex-col sm:flex-row gap-2">
-          <Button variant="outline" onClick={() => setQueueOpen(true)} className="w-full sm:w-auto">
-            <RefreshCcw className="h-4 w-4 mr-2" />
-            Sync queue
-            {(qboPendingCount > 0 || qboErrorCount > 0) && (
-              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px]">
-                {qboPendingCount} pending / {qboErrorCount} failed
-              </span>
-            )}
-          </Button>
-          <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-2" />
-            New invoice
-          </Button>
+          <div className="flex flex-row gap-2">
+            <Button onClick={() => setSheetOpen(true)} size={fullBleed ? "sm" : "default"} className="h-9 flex-1 whitespace-nowrap sm:flex-none">
+              <Plus className="h-4 w-4 mr-2" />
+              New invoice
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setQueueOpen(true)}
+              className={fullBleed ? "relative h-9 w-9 shrink-0 bg-background" : "relative shrink-0"}
+              title={`Sync queue: ${qboPendingCount} pending, ${qboErrorCount} failed`}
+              aria-label={`Open sync queue. ${qboPendingCount} pending, ${qboErrorCount} failed`}
+            >
+              <RefreshCcw className="h-4 w-4" />
+              {(qboPendingCount > 0 || qboErrorCount > 0) && (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground">
+                  {qboPendingCount + qboErrorCount}
+                </span>
+              )}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -473,6 +519,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
         builderInfo={builderInfo}
         contacts={contacts}
         costCodes={costCodes}
+        enableApprovedCostsSource={enableApprovedCostsSource}
       />
       <InvoiceComposerSheet
         open={editOpen}
@@ -487,71 +534,32 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
         builderInfo={builderInfo}
         contacts={contacts}
         costCodes={costCodes}
+        enableApprovedCostsSource={enableApprovedCostsSource}
         mode="edit"
         invoice={editingInvoice}
       />
-      <Sheet open={queueOpen} onOpenChange={setQueueOpen}>
-        <SheetContent side="right" className="sm:max-w-xl w-full overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>QuickBooks Sync Queue</SheetTitle>
-            <SheetDescription>Review pending and failed invoice syncs, then trigger targeted actions.</SheetDescription>
-          </SheetHeader>
-          <div className="mt-6 space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-md border p-3">
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Pending</p>
-                <p className="text-2xl font-semibold">{qboPendingCount}</p>
-              </div>
-              <div className="rounded-md border p-3">
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Failed</p>
-                <p className="text-2xl font-semibold">{qboErrorCount}</p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={refreshInvoices} disabled={queueRefreshing}>
-                {queueRefreshing ? "Refreshing..." : "Refresh"}
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleQueueSyncPending} disabled={queueSyncingPending || qboPendingCount === 0}>
-                {queueSyncingPending ? "Syncing pending..." : "Sync pending"}
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleQueueRetryFailed} disabled={queueRetryingFailed || qboErrorCount === 0}>
-                {queueRetryingFailed ? "Retrying failed..." : "Retry failed"}
-              </Button>
-            </div>
-
-            <div className="space-y-2">
-              {queueItems.length === 0 ? (
-                <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">No invoices in sync queue.</div>
-              ) : (
-                queueItems.map((invoice) => (
-                  <div key={invoice.id} className="rounded-md border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-medium truncate">{invoice.invoice_number || invoice.title || "Untitled invoice"}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)} • {invoice.qbo_sync_status === "error" ? "Failed" : "Pending"}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={queueSyncingInvoiceId === invoice.id}
-                        onClick={() => handleQueueSyncOne(invoice.id)}
-                      >
-                        {queueSyncingInvoiceId === invoice.id ? "Syncing..." : "Sync now"}
-                      </Button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </SheetContent>
-      </Sheet>
+      <InvoiceSyncQueueSheet
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        invoices={items}
+        projects={projects}
+        onRefreshInvoices={refreshInvoices}
+        onSyncPending={handleQueueSyncPending}
+        onRetryFailed={handleQueueRetryFailed}
+        onSyncOne={handleQueueSyncOne}
+        refreshing={queueRefreshing}
+        syncingPending={queueSyncingPending}
+        retryingFailed={queueRetryingFailed}
+        syncingInvoiceId={queueSyncingInvoiceId}
+        onOpenInvoice={handleOpenDetail}
+        onEditInvoice={(invoice) => {
+          setEditingInvoice(invoice)
+          setEditOpen(true)
+        }}
+      />
 
       <AnimatePresence>
-        <div className="rounded-lg border overflow-hidden">
+        <div className={fullBleed ? "overflow-hidden border-b" : "rounded-lg border overflow-hidden"}>
           <Table>
             <TableHeader>
               <TableRow className="divide-x">
@@ -602,9 +610,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                         </button>
                       </div>
                     </TableCell>
-                    <TableCell className="px-4 py-4 text-muted-foreground">
-                      {projectName}
-                    </TableCell>
+                    <TableCell className="px-4 py-4 text-muted-foreground">{projectName}</TableCell>
                     <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
                       {invoice.issue_date ? format(new Date(invoice.issue_date), "MMM d, yyyy") : "—"}
                     </TableCell>
@@ -615,19 +621,12 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                       <div className="font-semibold">{total}</div>
                     </TableCell>
                     <TableCell className="px-4 py-4 text-center">
-                      <Badge
-                        variant="secondary"
-                        className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}
-                      >
+                      <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}>
                         {statusLabels[resolveStatusKey(invoice.status)]}
                       </Badge>
                     </TableCell>
                     <TableCell className="px-4 py-4 text-center">
-                      <QBOSyncBadge
-                        status={invoice.qbo_sync_status}
-                        syncedAt={invoice.qbo_synced_at ?? undefined}
-                        qboId={invoice.qbo_id ?? undefined}
-                      />
+                      <QBOSyncBadge status={invoice.qbo_sync_status} syncedAt={invoice.qbo_synced_at ?? undefined} qboId={invoice.qbo_id ?? undefined} />
                     </TableCell>
                     <TableCell className="text-center w-12 px-4 py-4">
                       <div className="flex justify-center">
@@ -659,20 +658,12 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
-                              disabled={
-                                invoice.status === "paid" ||
-                                invoice.status === "void" ||
-                                sendingReminderId === invoice.id
-                              }
+                              disabled={invoice.status === "paid" || invoice.status === "void" || sendingReminderId === invoice.id}
                               onSelect={(event) => {
                                 event.preventDefault()
                                 handleSendReminder(invoice)
                               }}
-                              className={
-                                invoice.status === "paid" || invoice.status === "void"
-                                  ? "text-muted-foreground"
-                                  : ""
-                              }
+                              className={invoice.status === "paid" || invoice.status === "void" ? "text-muted-foreground" : ""}
                             >
                               {sendingReminderId === invoice.id ? "Sending…" : "Send reminder"}
                             </DropdownMenuItem>
@@ -685,7 +676,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
               })}
               {filtered.length === 0 && !isCreating && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                     <div className="flex flex-col items-center gap-4">
                       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                         <FolderOpen className="h-6 w-6" />
@@ -704,7 +695,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
               )}
               {isCreating && filtered.length === 0 && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={7}>
+                  <TableCell colSpan={9}>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {[...Array(3)].map((_, idx) => (
                         <Skeleton key={idx} className="h-24 w-full rounded-md" />
@@ -717,12 +708,7 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
           </Table>
         </div>
 
-        {selectedIds.length > 0 && (
-          <InvoiceBottomBar
-            selectedCount={selectedIds.length}
-            onDeselectAll={() => setSelectedIds([])}
-          />
-        )}
+        {selectedIds.length > 0 && <InvoiceBottomBar selectedCount={selectedIds.length} onDeselectAll={() => setSelectedIds([])} />}
       </AnimatePresence>
 
       <InvoiceDetailSheet
@@ -749,7 +735,9 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
             await handleOpenDetail(detailInvoice.id)
           } catch (error: any) {
             console.error(error)
-            toast.error("Failed to resync", { description: error?.message ?? "Please try again." })
+            toast.error("Failed to resync", {
+              description: error?.message ?? "Please try again.",
+            })
           } finally {
             setIsResyncing(false)
           }
@@ -757,10 +745,10 @@ export function InvoicesClient({ invoices, projects, initialOpenInvoiceId, build
         onEdit={
           detailInvoice
             ? () => {
-              setEditingInvoice(detailInvoice)
-              setEditOpen(true)
-              setDetailOpen(false)
-            }
+                setEditingInvoice(detailInvoice)
+                setEditOpen(true)
+                setDetailOpen(false)
+              }
             : undefined
         }
       />

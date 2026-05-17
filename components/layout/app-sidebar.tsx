@@ -1,32 +1,30 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { useEffect, useMemo, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
+import { AnimatePresence, motion } from "framer-motion"
+import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import {
   ArrowLeft,
-  Home,
-  LayoutDashboard,
-  FileText,
-  Layers,
-  MessageSquare,
-  Receipt,
-  HardHat,
-  ClipboardCheck,
-  ClipboardList,
-  CheckSquare,
-  CalendarDays,
-  Camera,
-  FolderOpen,
+  Bell,
+  Briefcase,
   Building2,
   Contact,
-  Bell,
   CreditCard,
+  Flag,
+  FolderOpen,
+  Hammer,
+  HardHat,
+  Home,
+  LayoutDashboard,
   Link2,
+  Receipt,
   Settings,
   Shield,
   Tag,
   User as UserIcon,
   Users,
+  Wallet,
 } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
 import { NavMain } from "./nav-main"
@@ -55,6 +53,13 @@ interface AppSidebarProps {
   permissions?: string[]
 }
 
+type SidebarNavSubItem = {
+  title: string
+  url: string
+  isActive?: boolean
+  requiredAny?: string[]
+}
+
 type SidebarNavItem = {
   title: string
   url: string
@@ -63,6 +68,7 @@ type SidebarNavItem = {
   badge?: number
   disabled?: boolean
   requiredAny?: string[]
+  items?: SidebarNavSubItem[]
 }
 
 type SidebarNavGroup = {
@@ -73,16 +79,19 @@ type SidebarNavGroup = {
 const settingsItems: SidebarNavItem[] = [
   { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
   { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
+  { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
   { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
   { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },
   { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
   { title: "Team", url: "/settings?tab=team", icon: Users },
   { title: "Cost Codes", url: "/settings?tab=cost-codes", icon: Tag },
-  { title: "Payables", url: "/settings?tab=compliance", icon: Settings },
+  { title: "Markup Rules", url: "/settings/markup-rules", icon: Tag },
+  { title: "Vendor Compliance", url: "/settings?tab=compliance", icon: Settings },
   { title: "About", url: "/settings?tab=about", icon: Shield },
 ]
 
 function getProjectIdFromPath(pathname: string): string | null {
+  if (pathname === "/projects" || pathname.startsWith("/projects?")) return null
   const match = pathname.match(/^\/projects\/([^/]+)/)
   return match?.[1] ?? null
 }
@@ -98,9 +107,13 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/bids")) return "bids"
   if (pathname.includes("/change-orders")) return "change-orders"
   if (pathname.includes("/invoices")) return "invoices"
+  if (pathname.includes("/financials/receivables")) return "receivables"
   if (pathname.includes("/budget")) return "budget"
   if (pathname.includes("/commitments")) return "commitments"
   if (pathname.includes("/payables")) return "payables"
+  if (pathname.includes("/cost-inbox")) return "cost-inbox"
+  if (pathname.includes("/time")) return "time"
+  if (pathname.includes("/expenses")) return "expenses"
   if (pathname.includes("/reports")) return "reports"
   if (pathname.includes("/schedule")) return "schedule"
   if (pathname.includes("/tasks")) return "tasks"
@@ -118,17 +131,31 @@ function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) 
   return requiredAny.some((permission) => permissions.has(permission))
 }
 
-function filterNavigation(groups: SidebarNavGroup[], permissions: Set<string>) {
+function filterGroups(groups: SidebarNavGroup[], permissions: Set<string>): SidebarNavGroup[] {
   return groups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => canAccess(item.requiredAny, permissions)),
+      items: group.items
+        .map((item) => {
+          const subs = item.items?.filter((sub) => canAccess(sub.requiredAny, permissions))
+          return { ...item, items: subs }
+        })
+        .filter((item) => {
+          if (!canAccess(item.requiredAny, permissions)) return false
+          // Drop a parent if it had sub-items but none survive permission filtering
+          if (Array.isArray(item.items) && item.items.length === 0) return false
+          return true
+        }),
     }))
     .filter((group) => group.items.length > 0)
 }
 
-function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, canAccessPlatform?: boolean): SidebarNavGroup[] {
-  const workspaceItems: SidebarNavItem[] = [
+function buildWorkspaceGroups(
+  pathname: string,
+  pipelineBadgeCount?: number,
+  canAccessPlatform?: boolean,
+): SidebarNavGroup[] {
+  const items: SidebarNavItem[] = [
     {
       title: "Home",
       url: "/",
@@ -139,23 +166,23 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, ca
       title: "Projects",
       url: "/projects",
       icon: FolderOpen,
-      isActive: pathname === "/projects",
+      isActive: pathname === "/projects" || pathname.startsWith("/projects?"),
       requiredAny: ["org.member", "project.read"],
+    },
+    {
+      title: "Financial Control",
+      url: "/financial-control",
+      icon: Wallet,
+      isActive: pathname.startsWith("/financial-control"),
+      requiredAny: ["invoice.read"],
     },
     {
       title: "Pipeline",
       url: "/pipeline",
       icon: Contact,
-      isActive: pathname === "/pipeline",
+      isActive: pathname.startsWith("/pipeline"),
       badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
       requiredAny: ["pipeline.read", "pipeline.write"],
-    },
-    {
-      title: "Messages",
-      url: "/messages",
-      icon: MessageSquare,
-      isActive: pathname.startsWith("/messages"),
-      requiredAny: ["message.read", "message.write"],
     },
     {
       title: "Directory",
@@ -166,159 +193,80 @@ function buildGlobalNavigation(pathname: string, pipelineBadgeCount?: number, ca
     },
   ]
 
-  if (canAccessPlatform) {
-    workspaceItems.push({
-      title: "Platform",
-      url: "/platform",
-      icon: HardHat,
-      isActive: pathname.startsWith("/platform"),
-    })
-  }
-
-  return [{ label: "Workspace", items: workspaceItems }]
+  return [{ items }]
 }
 
-function buildProjectNavigation(projectId: string | null, section: string): SidebarNavGroup[] {
-  const hasProject = Boolean(projectId)
-  const base = hasProject ? `/projects/${projectId}` : "/projects"
-  const financialSections = ["financials", "budget", "commitments", "payables", "invoices", "reports"]
+function buildProjectGroups(projectId: string, section: string): SidebarNavGroup[] {
+  const base = `/projects/${projectId}`
+  const url = (suffix = "") => `${base}${suffix}`
+  const financialSections = ["financials", "budget", "commitments", "payables", "receivables", "invoices", "reports"]
 
-  const scopedUrl = (suffix = "") => {
-    if (!hasProject) return "/projects"
-    return `${base}${suffix}`
-  }
+  const planSubs: SidebarNavSubItem[] = [
+    { title: "Documents", url: url("/documents"), isActive: section === "documents", requiredAny: ["docs.read"] },
+    { title: "Drawings", url: url("/drawings"), isActive: section === "drawings", requiredAny: ["drawing.read", "docs.read"] },
+    { title: "Bids", url: url("/bids"), isActive: section === "bids", requiredAny: ["bid.read", "bid.write"] },
+    { title: "Proposals", url: url("/proposals"), isActive: section === "proposals", requiredAny: ["proposal.read", "proposal.write"] },
+  ]
+  const buildSubs: SidebarNavSubItem[] = [
+    { title: "Schedule", url: url("/schedule"), isActive: section === "schedule", requiredAny: ["schedule.read"] },
+    { title: "Daily Logs", url: url("/daily-logs"), isActive: section === "daily-logs", requiredAny: ["daily_log.read"] },
+    { title: "Punch", url: url("/punch"), isActive: section === "punch", requiredAny: ["punch.read", "punch.write"] },
+    { title: "RFIs", url: url("/rfis"), isActive: section === "rfis", requiredAny: ["rfi.read"] },
+    { title: "Submittals", url: url("/submittals"), isActive: section === "submittals", requiredAny: ["submittal.read"] },
+    { title: "Decisions", url: url("/decisions"), isActive: section === "decisions", requiredAny: ["decision.read", "decision.write"] },
+  ]
+  const financialSubs: SidebarNavSubItem[] = [
+    { title: "Inbox", url: url("/financials"), isActive: section === "financials" || section === "cost-inbox", requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"] },
+    { title: "Budget", url: url("/financials/budget"), isActive: section === "budget" || section === "commitments", requiredAny: ["budget.read", "commitment.read"] },
+    { title: "Receivables", url: url("/financials/receivables"), isActive: section === "receivables" || section === "invoices", requiredAny: ["invoice.read", "payment.read", "draw.read"] },
+    { title: "Payables", url: url("/financials/payables"), isActive: section === "payables", requiredAny: ["bill.read", "commitment.read"] },
+    { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
+    { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
+    { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
+    { title: "Signatures", url: url("/signatures"), isActive: section === "signatures", requiredAny: ["signature.read", "signature.send"] },
+  ]
+  const closeSubs: SidebarNavSubItem[] = [
+    { title: "Closeout", url: url("/closeout"), isActive: section === "closeout", requiredAny: ["closeout.read", "closeout.write"] },
+    { title: "Warranty", url: url("/warranty"), isActive: section === "warranty", requiredAny: ["warranty.read", "warranty.write"] },
+  ]
 
   return [
     {
-      label: "Current Project",
       items: [
         {
           title: "Overview",
-          url: scopedUrl(),
+          url: url(),
           icon: LayoutDashboard,
-          isActive: hasProject && section === "overview",
-          disabled: !hasProject,
+          isActive: section === "overview",
           requiredAny: ["org.member", "project.read"],
         },
         {
-          title: "Documents",
-          url: scopedUrl("/documents"),
-          icon: FileText,
-          isActive: hasProject && section === "documents",
-          disabled: !hasProject,
-          requiredAny: ["docs.read"],
+          title: "Plan",
+          url: url("/documents"),
+          icon: Briefcase,
+          isActive: planSubs.some((s) => s.isActive),
+          items: planSubs,
         },
         {
-          title: "Drawings",
-          url: scopedUrl("/drawings"),
-          icon: Layers,
-          isActive: hasProject && section === "drawings",
-          disabled: !hasProject,
-          requiredAny: ["drawing.read", "docs.read"],
-        },
-        {
-          title: "Schedule",
-          url: scopedUrl("/schedule"),
-          icon: CalendarDays,
-          isActive: hasProject && section === "schedule",
-          disabled: !hasProject,
-          requiredAny: ["schedule.read"],
-        },
-        {
-          title: "RFIs",
-          url: scopedUrl("/rfis"),
-          icon: MessageSquare,
-          isActive: hasProject && section === "rfis",
-          disabled: !hasProject,
-          requiredAny: ["rfi.read"],
-        },
-        {
-          title: "Submittals",
-          url: scopedUrl("/submittals"),
-          icon: ClipboardCheck,
-          isActive: hasProject && section === "submittals",
-          disabled: !hasProject,
-          requiredAny: ["submittal.read"],
-        },
-        {
-          title: "Decisions",
-          url: scopedUrl("/decisions"),
-          icon: CheckSquare,
-          isActive: hasProject && section === "decisions",
-          disabled: !hasProject,
-          requiredAny: ["decision.read", "decision.write"],
-        },
-        {
-          title: "Daily Logs",
-          url: scopedUrl("/daily-logs"),
-          icon: Camera,
-          isActive: hasProject && section === "daily-logs",
-          disabled: !hasProject,
-          requiredAny: ["daily_log.read"],
-        },
-        {
-          title: "Punch",
-          url: scopedUrl("/punch"),
-          icon: ClipboardList,
-          isActive: hasProject && section === "punch",
-          disabled: !hasProject,
-          requiredAny: ["punch.read", "punch.write"],
+          title: "Build",
+          url: url("/schedule"),
+          icon: Hammer,
+          isActive: buildSubs.some((s) => s.isActive),
+          items: buildSubs,
         },
         {
           title: "Financials",
-          url: scopedUrl("/financials"),
-          icon: Receipt,
-          isActive: hasProject && financialSections.includes(section),
-          disabled: !hasProject,
-          requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"],
+          url: url("/financials"),
+          icon: Wallet,
+          isActive: financialSubs.some((s) => s.isActive) || financialSections.includes(section),
+          items: financialSubs,
         },
         {
-          title: "Change Orders",
-          url: scopedUrl("/change-orders"),
-          icon: ClipboardList,
-          isActive: hasProject && section === "change-orders",
-          disabled: !hasProject,
-          requiredAny: ["change_order.read"],
-        },
-        {
-          title: "Signatures",
-          url: scopedUrl("/signatures"),
-          icon: ClipboardCheck,
-          isActive: hasProject && section === "signatures",
-          disabled: !hasProject,
-          requiredAny: ["signature.read", "signature.send"],
-        },
-        {
-          title: "Bids",
-          url: scopedUrl("/bids"),
-          icon: ClipboardList,
-          isActive: hasProject && section === "bids",
-          disabled: !hasProject,
-          requiredAny: ["bid.read", "bid.write"],
-        },
-        {
-          title: "Proposals",
-          url: scopedUrl("/proposals"),
-          icon: FileText,
-          isActive: hasProject && section === "proposals",
-          disabled: !hasProject,
-          requiredAny: ["proposal.read", "proposal.write"],
-        },
-        {
-          title: "Closeout",
-          url: scopedUrl("/closeout"),
-          icon: CheckSquare,
-          isActive: hasProject && section === "closeout",
-          disabled: !hasProject,
-          requiredAny: ["closeout.read", "closeout.write"],
-        },
-        {
-          title: "Warranty",
-          url: scopedUrl("/warranty"),
-          icon: ClipboardCheck,
-          isActive: hasProject && section === "warranty",
-          disabled: !hasProject,
-          requiredAny: ["warranty.read", "warranty.write"],
+          title: "Close",
+          url: url("/closeout"),
+          icon: Flag,
+          isActive: closeSubs.some((s) => s.isActive),
+          items: closeSubs,
         },
       ],
     },
@@ -326,10 +274,15 @@ function buildProjectNavigation(projectId: string | null, section: string): Side
 }
 
 export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permissions = [] }: AppSidebarProps) {
-  const pathname = usePathname()
+  const pathname = useOptimisticPathname()
   const router = useRouter()
   const searchParams = useSearchParams()
   const isSettings = pathname.startsWith("/settings")
+  const projectId = getProjectIdFromPath(pathname)
+  const isProject = Boolean(projectId)
+  const section = getProjectSection(pathname)
+  const permissionSet = useMemo(() => new Set(permissions), [permissions])
+
   const [activeSettingsTab, setActiveSettingsTab] = useState(searchParams.get("tab") ?? "profile")
   const settingsReturnTo = searchParams.get("returnTo") || "/"
   const settingsHref = (tab: string) => {
@@ -353,14 +306,19 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
     window.addEventListener("arc-settings-tab-change", handleSettingsTabChange)
     return () => window.removeEventListener("arc-settings-tab-change", handleSettingsTabChange)
   }, [])
-  const projectId = getProjectIdFromPath(pathname)
-  const section = getProjectSection(pathname)
-  const permissionSet = new Set(permissions)
 
-  const navMain = filterNavigation(
-    [...buildGlobalNavigation(pathname, pipelineBadgeCount, canAccessPlatform), ...buildProjectNavigation(projectId, section)],
-    permissionSet,
-  ).map((group) => ({
+  const navGroups = useMemo(() => {
+    if (isSettings) return [] as SidebarNavGroup[]
+    if (isProject && projectId) {
+      return filterGroups(buildProjectGroups(projectId, section), permissionSet)
+    }
+    return filterGroups(
+      buildWorkspaceGroups(pathname, pipelineBadgeCount, canAccessPlatform),
+      permissionSet,
+    )
+  }, [isSettings, isProject, projectId, section, pathname, pipelineBadgeCount, canAccessPlatform, permissionSet])
+
+  const navMain = navGroups.map((group) => ({
     ...group,
     items: group.items.map((item) => ({
       ...item,
@@ -374,30 +332,57 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
     plan: "Pro",
   }
 
+  const headerKey = isSettings ? "settings" : isProject ? "project" : "workspace"
+
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="h-14 flex items-center justify-center p-2">
-        {isSettings ? (
-          <SidebarMenu className="w-full">
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                tooltip="Back"
-                onClick={() => {
-                  router.push(settingsReturnTo)
-                }}
-                className="h-10"
-              >
-                <ArrowLeft />
-                <span>Back</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        ) : (
-          <OrgSwitcher org={orgData} />
-        )}
+      <SidebarHeader className="h-14 flex items-stretch p-2">
+        <AnimatePresence initial={false} mode="wait">
+          <motion.div
+            key={headerKey}
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.14, ease: "easeOut" }}
+            className="flex w-full"
+          >
+            {isSettings ? (
+              <SidebarMenu className="w-full">
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    tooltip="Back"
+                    onClick={() => {
+                      router.push(settingsReturnTo)
+                    }}
+                    className="h-10 text-xs uppercase tracking-wider text-sidebar-foreground/70 hover:text-sidebar-foreground"
+                  >
+                    <ArrowLeft />
+                    <span>Back</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            ) : isProject ? (
+              <div className="flex w-full items-stretch border border-sidebar-border/70 group-data-[collapsible=icon]:border-transparent">
+                <OptimisticLink
+                  href="/projects"
+                  aria-label="All projects"
+                  title="All projects"
+                  className="flex h-10 w-9 shrink-0 items-center justify-center border-r border-sidebar-border/70 text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground group-data-[collapsible=icon]:hidden"
+                >
+                  <ArrowLeft className="size-4" />
+                </OptimisticLink>
+                <div className="min-w-0 flex-1">
+                  <SidebarProjectSwitcher projectId={projectId ?? undefined} />
+                </div>
+              </div>
+            ) : (
+              <OrgSwitcher org={orgData} />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </SidebarHeader>
       <SidebarSeparator className="mx-0" />
-      {!isSettings && (
+      {!isSettings && !isProject && (
         <div className="px-2 py-2">
           <SidebarProjectSwitcher projectId={projectId ?? undefined} />
         </div>
@@ -422,11 +407,21 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
             </SidebarMenu>
           </SidebarGroup>
         ) : (
-          <NavMain items={navMain} />
+          <AnimatePresence initial={false} mode="wait">
+            <motion.div
+              key={isProject ? "nav-project" : "nav-workspace"}
+              initial={{ opacity: 0, y: 2 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -2 }}
+              transition={{ duration: 0.12, ease: "easeOut" }}
+            >
+              <NavMain items={navMain} />
+            </motion.div>
+          </AnimatePresence>
         )}
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={user} />
+        <NavUser user={user} canAccessPlatform={canAccessPlatform} />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

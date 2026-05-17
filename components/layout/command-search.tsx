@@ -54,8 +54,6 @@ const SEARCH_TYPES = [
   "change_order",
   "contract",
   "proposal",
-  "conversation",
-  "message",
   "rfi",
   "submittal",
   "drawing_set",
@@ -459,9 +457,6 @@ function getIconForType(type: SearchType): LucideIcon {
       return FileText
     case "proposal":
       return CheckCircle
-    case "conversation":
-    case "message":
-      return MessageSquare
     case "rfi":
       return AlertTriangle
     case "submittal":
@@ -505,9 +500,6 @@ function getTypeColor(type: SearchType) {
     case "contract":
     case "proposal":
       return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300"
-    case "conversation":
-    case "message":
-      return "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300"
     case "rfi":
     case "submittal":
       return "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300"

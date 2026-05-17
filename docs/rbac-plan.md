@@ -518,7 +518,7 @@ Phase 3 tracker:
   - `/Users/agustinzenuto/Desktop/Projects/arc/app/(app)/platform/page.tsx`
   - `/Users/agustinzenuto/Desktop/Projects/arc/app/(app)/platform/actions.ts`
   - `/Users/agustinzenuto/Desktop/Projects/arc/components/platform/impersonation-panel.tsx`
-  - `/Users/agustinzenuto/Desktop/Projects/arc/components/layout/platform-session-banner.tsx`
+  - `/Users/agustinzenuto/Desktop/Projects/arc/components/layout/platform-session-control.tsx`
   - `/Users/agustinzenuto/Desktop/Projects/arc/docs/rbac-phase4-validation.md`
 - Code updated:
   - `/Users/agustinzenuto/Desktop/Projects/arc/lib/auth/guards.ts`

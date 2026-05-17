@@ -6,8 +6,10 @@ import type { AppBreadcrumbItem } from "./app-header"
 interface PageTitleContextType {
   title: string | undefined
   breadcrumbs: AppBreadcrumbItem[] | undefined
+  fullBleed: boolean
   setTitle: (title: string) => void
   setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
+  setFullBleed: (value: boolean) => void
 }
 
 const PageTitleContext = createContext<PageTitleContextType | undefined>(undefined)
@@ -21,6 +23,7 @@ interface PageTitleProviderProps {
 export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: initialBreadcrumbs }: PageTitleProviderProps) {
   const [title, setTitle] = React.useState<string | undefined>(initialTitle)
   const [breadcrumbs, setBreadcrumbs] = React.useState<AppBreadcrumbItem[] | undefined>(initialBreadcrumbs)
+  const [fullBleed, setFullBleed] = React.useState<boolean>(false)
 
   useEffect(() => {
     if (initialTitle) {
@@ -35,7 +38,7 @@ export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: 
   }, [initialBreadcrumbs])
 
   return (
-    <PageTitleContext.Provider value={{ title, breadcrumbs, setTitle, setBreadcrumbs }}>
+    <PageTitleContext.Provider value={{ title, breadcrumbs, fullBleed, setTitle, setBreadcrumbs, setFullBleed }}>
       {children}
     </PageTitleContext.Provider>
   )

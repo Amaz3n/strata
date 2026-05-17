@@ -28,9 +28,10 @@ interface AppHeaderProps {
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
   className?: string
+  platformSessionControl?: React.ReactNode
 }
 
-export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
+export function AppHeader({ title, breadcrumbs, className, platformSessionControl }: AppHeaderProps) {
   const pathname = usePathname()
   const { title: contextTitle, breadcrumbs: contextBreadcrumbs } = usePageTitle()
   const effectiveTitle = title || contextTitle
@@ -95,6 +96,7 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
 
         {/* Right section - Actions */}
         <div className="flex items-center gap-2 px-4 flex-1 justify-end">
+          {platformSessionControl}
           <GlobalTasksSheet />
           <NotificationBell />
         </div>
@@ -115,6 +117,7 @@ export function AppHeader({ title, breadcrumbs, className }: AppHeaderProps) {
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
+          {platformSessionControl}
           <CommandSearch />
           <GlobalTasksSheet />
           <NotificationBell />

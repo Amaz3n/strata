@@ -141,6 +141,18 @@ export function ChangeOrderDetailSheet({
 
   const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
   const canApprove = changeOrder.status !== "approved"
+  const financialImpact = changeOrder.metadata?.financial_impact as
+    | {
+        budget_revision_cents?: number
+        allowance_draw_cents?: number
+        billing_status?: string
+        budget_distributions?: Array<{
+          description?: string
+          budget_revision_cents?: number
+          allowance_draw_cents?: number
+        }>
+      }
+    | undefined
 
   const handleApprove = async () => {
     if (!canApprove) return
@@ -290,6 +302,38 @@ export function ChangeOrderDetailSheet({
                   <span>Total</span>
                   <span>{formatMoney(changeOrder.totals.total_cents)}</span>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {financialImpact && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-semibold">Financial Posting</h4>
+              <div className="rounded-lg border bg-muted/40 p-4 space-y-3 text-sm">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Budget revision</p>
+                    <p className="font-semibold">{formatMoney(financialImpact.budget_revision_cents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Allowance draw</p>
+                    <p className="font-semibold">{formatMoney(financialImpact.allowance_draw_cents)}</p>
+                  </div>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                  {(financialImpact.budget_distributions ?? []).map((line, index) => (
+                    <div key={`${line.description ?? "line"}-${index}`} className="flex justify-between gap-3 text-xs">
+                      <span className="line-clamp-1 text-muted-foreground">{line.description ?? `Line ${index + 1}`}</span>
+                      <span className="font-medium">{formatMoney(line.budget_revision_cents)}</span>
+                    </div>
+                  ))}
+                </div>
+                {financialImpact.billing_status && (
+                  <Badge variant="outline" className="text-xs">
+                    Billing: {financialImpact.billing_status.replaceAll("_", " ")}
+                  </Badge>
+                )}
               </div>
             </div>
           )}

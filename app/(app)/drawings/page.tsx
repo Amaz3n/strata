@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { DrawingsSetsView } from "@/components/drawings"
 import { listDrawingSets, listDrawingSheetsWithUrls } from "@/lib/services/drawings"
@@ -7,7 +9,7 @@ interface DrawingsPageProps {
   searchParams: Promise<{ project?: string; set?: string; sheetId?: string }>
 }
 
-export default async function DrawingsPage({ searchParams }: DrawingsPageProps) {
+async function DrawingsData({ searchParams }: DrawingsPageProps) {
   const query = await searchParams
   const projects = await listProjectsForDrawingsAction()
   const selectedProjectId =
@@ -25,17 +27,34 @@ export default async function DrawingsPage({ searchParams }: DrawingsPageProps) 
     query.set && sets.some((set) => set.id === query.set) ? query.set : undefined
 
   return (
+    <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+      <DrawingsSetsView
+        initialSets={sets}
+        initialSheets={sheets}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        initialSelectedSetId={initialSelectedSetId}
+        initialSheetId={query.sheetId}
+      />
+    </div>
+  )
+}
+
+export default function DrawingsPage(props: DrawingsPageProps) {
+  return (
     <PageLayout title="Drawings">
-      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
-        <DrawingsSetsView
-          initialSets={sets}
-          initialSheets={sheets}
-          projects={projects}
-          selectedProjectId={selectedProjectId}
-          initialSelectedSetId={initialSelectedSetId}
-          initialSheetId={query.sheetId}
-        />
-      </div>
+      <Suspense fallback={
+        <div className="p-6 space-y-4">
+          <Skeleton className="h-8 w-48 mb-6" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
+          </div>
+        </div>
+      }>
+        <DrawingsData searchParams={props.searchParams} />
+      </Suspense>
     </PageLayout>
   )
 }

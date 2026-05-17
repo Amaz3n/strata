@@ -6,5 +6,5 @@ interface PageProps {
 
 export default async function InvoicesPage({ params }: PageProps) {
   const { id } = await params
-  redirect(`/projects/${id}/financials?tab=receivables`)
+  redirect(`/projects/${id}/financials/receivables`)
 }
