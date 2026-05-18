@@ -324,6 +324,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
           qbo_fault_type: retryError instanceof QBOError ? retryError.faultType : undefined,
           qbo_fault_code: retryError instanceof QBOError ? retryError.faultCode : undefined,
           qbo_fault_detail: retryError instanceof QBOError ? retryError.faultDetail : undefined,
+          intuit_tid: retryError instanceof QBOError ? retryError.intuitTid : undefined,
         })
         return { success: false, error: retryErrorMessage }
       }
@@ -341,6 +342,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       qbo_fault_type: err instanceof QBOError ? err.faultType : undefined,
       qbo_fault_code: err instanceof QBOError ? err.faultCode : undefined,
       qbo_fault_detail: err instanceof QBOError ? err.faultDetail : undefined,
+      intuit_tid: err instanceof QBOError ? err.intuitTid : undefined,
     })
     return { success: false, error: errorMessage }
   }
@@ -448,6 +450,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
       qbo_fault_type: error instanceof QBOError ? error.faultType : undefined,
       qbo_fault_code: error instanceof QBOError ? error.faultCode : undefined,
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
+      intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
     return { success: false, error: message }
   }
@@ -622,6 +625,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
       qbo_fault_type: error instanceof QBOError ? error.faultType : undefined,
       qbo_fault_code: error instanceof QBOError ? error.faultCode : undefined,
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
+      intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
     return { success: false, error: message }
   }
@@ -801,6 +805,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       qbo_fault_type: error instanceof QBOError ? error.faultType : undefined,
       qbo_fault_code: error instanceof QBOError ? error.faultCode : undefined,
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
+      intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
     return { success: false, error: message }
   }
@@ -901,7 +906,16 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string) {
     const message = error instanceof QBOError ? error.message : error?.message ?? String(error)
     await markSyncRecordError(orgId, "bill_payment", paymentId, message)
     await markConnectionError(orgId, message)
-    logQBO("error", "bill_payment_sync_failed", { orgId, paymentId, error: message })
+    logQBO("error", "bill_payment_sync_failed", {
+      orgId,
+      paymentId,
+      error: message,
+      qbo_status: error instanceof QBOError ? error.status : undefined,
+      qbo_fault_type: error instanceof QBOError ? error.faultType : undefined,
+      qbo_fault_code: error instanceof QBOError ? error.faultCode : undefined,
+      qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
+      intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
+    })
     return { success: false, error: message }
   }
 }

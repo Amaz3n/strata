@@ -2,9 +2,10 @@ import { randomUUID } from "crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { decryptToken, detectInvoiceNumberPattern, encryptToken, refreshAccessToken } from "@/lib/integrations/accounting/qbo-auth"
+import { decryptToken, detectInvoiceNumberPattern, encryptToken, refreshAccessToken, revokeQBOToken } from "@/lib/integrations/accounting/qbo-auth"
 import { recordEvent } from "@/lib/services/events"
 import { logQBO } from "@/lib/services/qbo-logger"
+import { hasExplicitQboSandboxSetting, isQboSandbox, qboApiBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo-config"
 
 export type QBOConnectionStatus = "active" | "expired" | "disconnected" | "error"
 const ACCESS_TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000
@@ -176,6 +177,15 @@ export async function getQBOConnection(orgId?: string): Promise<QBOConnection | 
   return data as QBOConnection
 }
 
+export function getQBOEnvironmentInfo() {
+  return {
+    environment: qboEnvironmentLabel,
+    isSandbox: isQboSandbox,
+    apiBaseUrl: qboApiBaseUrl,
+    hasExplicitSandboxSetting: hasExplicitQboSandboxSetting,
+  }
+}
+
 export async function getQBOAccessToken(
   orgId: string,
 ): Promise<{ token: string; realmId: string } | null> {
@@ -198,6 +208,31 @@ export async function getQBOAccessToken(
 
 export async function disconnectQBO(orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: connection } = await supabase
+    .from("qbo_connections")
+    .select("id, refresh_token, realm_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("status", "active")
+    .maybeSingle()
+
+  if (connection?.refresh_token) {
+    try {
+      await revokeQBOToken(decryptToken(connection.refresh_token))
+      logQBO("info", "token_revoked_on_disconnect", {
+        orgId: resolvedOrgId,
+        connectionId: connection.id,
+        realmId: connection.realm_id,
+      })
+    } catch (error) {
+      logQBO("warn", "token_revoke_failed_on_disconnect", {
+        orgId: resolvedOrgId,
+        connectionId: connection.id,
+        realmId: connection.realm_id,
+        error: String(error).slice(0, 500),
+      })
+    }
+  }
 
   const { error } = await supabase
     .from("qbo_connections")

@@ -8,6 +8,7 @@ import {
   disconnectQBOAction,
   getQBOAccountingSetupAction,
   getQBOConnectionAction,
+  getQBOEnvironmentAction,
   getQBODiagnosticsAction,
   refreshQBOTokenAction,
   retryFailedQBOJobsAction,
@@ -41,6 +42,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   const [isRetryingFailed, startRetryFailed] = useTransition()
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [environment, setEnvironment] = useState<Awaited<ReturnType<typeof getQBOEnvironmentAction>> | null>(null)
   const [diagnostics, setDiagnostics] = useState<{
     outbox?: { pending_or_processing?: number; failed?: number; recent_failures?: Array<{ job_type: string; last_error: string | null; updated_at: string | null }> }
     invoices?: { failed_sync_count?: number }
@@ -73,6 +75,10 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
       project_mapping_mode: connection?.settings?.project_mapping_mode ?? "customer",
     })
   }, [connection])
+
+  useEffect(() => {
+    void getQBOEnvironmentAction().then(setEnvironment).catch(() => setEnvironment(null))
+  }, [])
 
   const expiresInLabel = (() => {
     if (!connection?.token_expires_at) return null
@@ -241,8 +247,15 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
                   {connection?.status === "active" ? <CheckCircle2 className="size-3" /> : <AlertCircle className="size-3" />}
                   {connection ? (connection.status === "active" ? "Connected" : connection.status) : "Not connected"}
                 </Badge>
+                {environment ? (
+                  <Badge variant={environment.isSandbox ? "secondary" : "outline"}>
+                    {environment.environment}
+                  </Badge>
+                ) : null}
               </div>
-              <p className="mt-1 text-sm text-muted-foreground">Sync invoices, payments, and numbering with QuickBooks.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Sync invoices, payments, and numbering with QuickBooks{environment ? ` ${environment.environment}` : ""}.
+              </p>
               {connection && (
                 <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
                   <span>Company: {connection.company_name ?? "QuickBooks Online"}</span>

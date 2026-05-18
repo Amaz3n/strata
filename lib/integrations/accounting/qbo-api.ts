@@ -61,6 +61,10 @@ function getQBOAuthHint(status: number, payload: unknown): string | null {
   return null
 }
 
+function getIntuitTid(response: Response): string | null {
+  return response.headers.get("intuit_tid") ?? response.headers.get("intuit_tid".replace("_", "-"))
+}
+
 interface QueryInvoiceResponse {
   QueryResponse: {
     Invoice?: Array<{ DocNumber?: string }>
@@ -223,7 +227,7 @@ export class QBOClient {
 
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}))
-      throw new QBOError(response.status, errorPayload)
+      throw new QBOError(response.status, errorPayload, getIntuitTid(response))
     }
 
     return response.json()
@@ -710,7 +714,7 @@ export class QBOClient {
 
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}))
-      throw new QBOError(response.status, errorPayload)
+      throw new QBOError(response.status, errorPayload, getIntuitTid(response))
     }
 
     const payload = await response.json().catch(() => ({} as any))
@@ -762,17 +766,19 @@ function formatQboAddress(address?: QBOCustomer["BillAddr"]) {
 export class QBOError extends Error {
   status: number
   qboError: any
+  intuitTid: string | null
   faultType: string | null
   faultCode: string | null
   faultDetail: string | null
 
-  constructor(status: number, error: any) {
+  constructor(status: number, error: any, intuitTid?: string | null) {
     const summary = getQBOFaultSummary(error)
     const hint = getQBOAuthHint(status, error)
     const detail = [summary, hint].filter(Boolean).join(" | ")
     super(detail ? `QBO API Error ${status}: ${detail}` : `QBO API Error ${status}`)
     this.status = status
     this.qboError = error
+    this.intuitTid = intuitTid ?? null
     this.faultType = error?.Fault?.type ?? null
     const firstFault = getFaultErrors(error)[0]
     this.faultCode = firstFault?.code ?? null

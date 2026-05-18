@@ -103,6 +103,27 @@ export async function refreshAccessToken(refreshToken: string): Promise<QBOToken
   return (await response.json()) as QBOTokens
 }
 
+export async function revokeQBOToken(token: string): Promise<void> {
+  const credentials = Buffer.from(
+    `${requireEnv(QBO_CLIENT_ID, "QBO_CLIENT_ID")}:${requireEnv(QBO_CLIENT_SECRET, "QBO_CLIENT_SECRET")}`,
+  ).toString("base64")
+
+  const response = await fetch("https://developer.api.intuit.com/v2/oauth2/tokens/revoke", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Basic ${credentials}`,
+    },
+    body: JSON.stringify({ token }),
+  })
+
+  if (!response.ok) {
+    const error = await response.text().catch(() => "unknown")
+    throw new Error(`QBO token revoke failed: ${error}`)
+  }
+}
+
 export function encryptToken(token: string): string {
   const key = getEncryptionKey()
   const iv = randomBytes(12)

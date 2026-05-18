@@ -4,7 +4,7 @@ import { randomUUID } from "crypto"
 import { cookies } from "next/headers"
 
 import { getQBOAuthUrl } from "@/lib/integrations/accounting/qbo-auth"
-import { disconnectQBO, getQBOConnection, getQBODiagnostics, refreshQBOTokenNow, updateQBOSettings } from "@/lib/services/qbo-connection"
+import { disconnectQBO, getQBOConnection, getQBODiagnostics, getQBOEnvironmentInfo, refreshQBOTokenNow, updateQBOSettings } from "@/lib/services/qbo-connection"
 import {
   createStripeConnectedAccountDashboardLoginLink,
   createStripeConnectedAccountOnboardingLink,
@@ -54,6 +54,10 @@ export async function updateQBOSettingsAction(settings: Record<string, any>) {
 
 export async function getQBOConnectionAction() {
   return getQBOConnection()
+}
+
+export async function getQBOEnvironmentAction() {
+  return getQBOEnvironmentInfo()
 }
 
 export async function getStripeConnectedAccountAction() {

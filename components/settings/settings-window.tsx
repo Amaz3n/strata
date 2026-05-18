@@ -115,6 +115,7 @@ const appInfo = {
   company: "Arc Project Systems LLC",
   version: packageJson.version ?? "0.1.0",
   termsUrl: "/terms",
+  privacyUrl: "/privacy",
   logoUrl: "/arc-logo2.svg",
 }
 
@@ -1481,6 +1482,9 @@ export function SettingsWindow({
                         </Link>
                         <Link href={appInfo.termsUrl} className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
                           Terms
+                        </Link>
+                        <Link href={appInfo.privacyUrl} className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
+                          Privacy
                         </Link>
                         <Link href="/settings/support" className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
                           Support

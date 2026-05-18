@@ -1,4 +1,4 @@
-import { createHmac } from "crypto"
+import { createHmac, timingSafeEqual } from "crypto"
 
 export function computeIntuitWebhookSignature(payload: string, verifierToken: string): string {
   return createHmac("sha256", verifierToken).update(payload, "utf8").digest("base64")
@@ -11,7 +11,11 @@ export function verifyIntuitWebhookSignature(input: {
 }) {
   if (!input.signatureHeader || !input.verifierToken) return false
   const expected = computeIntuitWebhookSignature(input.payload, input.verifierToken)
-  return expected === input.signatureHeader.trim()
+  const received = input.signatureHeader.trim()
+  const expectedBuffer = Buffer.from(expected, "base64")
+  const receivedBuffer = Buffer.from(received, "base64")
+  if (expectedBuffer.length !== receivedBuffer.length) return false
+  return timingSafeEqual(expectedBuffer, receivedBuffer)
 }
 
 type IntuitEntity = {
