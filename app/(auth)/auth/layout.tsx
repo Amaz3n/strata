@@ -7,7 +7,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
       <div className="flex flex-col gap-4 p-6 md:p-10">
         <div className="flex justify-center gap-2 md:justify-start">
           <Link href="/" className="flex items-center gap-2 font-medium">
-            <img src="/logo.svg" alt="Arc" className="size-6" />
+            <img src="/arc-logo2.svg" alt="Arc" className="size-6" />
             <span className="text-sm font-semibold tracking-tight">Arc</span>
           </Link>
         </div>
@@ -44,7 +44,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
 
         {/* Content */}
         <div className="relative flex h-full flex-col items-center justify-center gap-8 p-16">
-          <img src="/logo.svg" alt="" className="size-14 drop-shadow-[0_8px_28px_rgba(120,190,255,0.35)]" />
+          <img src="/arc-logo2.svg" alt="" className="size-14 drop-shadow-[0_8px_28px_rgba(120,190,255,0.35)]" />
           <div className="max-w-md space-y-3 text-center">
             <h2 className="text-2xl font-semibold tracking-tight text-white">
               Build better, together

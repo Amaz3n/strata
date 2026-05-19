@@ -1,6 +1,6 @@
 "use client"
 
-import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
+import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -17,7 +17,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Check, CheckCircle2, ChevronsUpDown, ExternalLink, Loader2, MoreHorizontal, Plus, Receipt, SlidersHorizontal, Sparkles, Upload } from "@/components/icons"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Check, CheckCircle2, ChevronsUpDown, Clock, ExternalLink, Loader2, MoreHorizontal, Plus, Receipt, SlidersHorizontal, Sparkles, Upload, XCircle } from "@/components/icons"
 
 import {
   approveProjectExpenseFormAction,
@@ -28,6 +30,7 @@ import {
   rejectProjectExpenseFormAction,
   syncProjectExpenseToQBOAction,
   updateProjectExpenseAccountingAction,
+  updateProjectExpenseDetailsAction,
   type CreateMyExpenseInput,
   type ReceiptExtractionResult,
 } from "@/app/(app)/projects/[id]/expenses/actions"
@@ -58,6 +61,7 @@ interface ProjectExpense {
   qbo_vendor_id?: string | null
   qbo_vendor_name?: string | null
   vendor_company?: { name?: string | null } | null
+  cost_code_id?: string | null
   cost_code?: { code?: string | null; name?: string | null } | null
 }
 
@@ -147,6 +151,19 @@ function accountLabel(account: { name: string; fullyQualifiedName?: string }) {
   return account.fullyQualifiedName ?? account.name
 }
 
+function costCodeLabel(code: { code?: string | null; name?: string | null }) {
+  return `${code.code ?? ""} ${code.name ?? ""}`.trim() || "Cost code"
+}
+
+function IconTooltip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function findAccount(accounts: { id: string; name: string; fullyQualifiedName?: string }[] | undefined, id: string) {
   return (accounts ?? []).find((account) => account.id === id) ?? null
 }
@@ -194,27 +211,24 @@ function AccountCombobox({
   onSelect: (accountId: string) => void
 }) {
   const accounts = context?.expenseAccounts ?? []
-  const selectedLabel = expense.qbo_expense_account_name ?? "Choose account"
+  const selectedAccount = expense.qbo_expense_account_id ? findAccount(accounts, expense.qbo_expense_account_id) : null
+  const selectedName = selectedAccount?.name ?? expense.qbo_expense_account_name?.split(":").pop()?.trim() ?? "Choose account"
+  const selectedPath = selectedAccount?.fullyQualifiedName ?? expense.qbo_expense_account_name ?? "QBO category"
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-auto min-h-9 w-full justify-between gap-2 px-2 py-1.5 text-left">
-          <span className="flex min-w-0 items-center gap-2">
-            {saving ? <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" /> : <SlidersHorizontal className="size-3.5 shrink-0 text-muted-foreground" />}
+        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
+          <span className="flex min-w-0 items-center">
             <span className="min-w-0">
-              <span className="block truncate text-xs font-medium text-foreground">{selectedLabel}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">
-                {qboTransactionLabel(expense.qbo_transaction_type)}
-                {expense.qbo_vendor_name ? ` · ${expense.qbo_vendor_name}` : ""}
-                {expense.qbo_payment_account_name ? ` · ${expense.qbo_payment_account_name}` : expense.qbo_ap_account_name ? ` · ${expense.qbo_ap_account_name}` : ""}
-              </span>
+              <span className="block truncate text-sm font-medium text-foreground">{selectedName}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">{selectedPath}</span>
             </span>
           </span>
           <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[320px] p-0" align="start">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[320px] p-0" align="start">
         <Command>
           <CommandInput placeholder="Search accounts..." />
           <CommandList>
@@ -227,8 +241,140 @@ function AccountCombobox({
                   <CommandItem key={account.id} value={`${label} ${account.accountType ?? ""}`} onSelect={() => onSelect(account.id)}>
                     <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate">{label}</span>
-                      {account.accountType ? <span className="block truncate text-xs text-muted-foreground">{account.accountType}</span> : null}
+                      <span className="block truncate">{account.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{account.fullyQualifiedName ?? account.accountType ?? label}</span>
+                    </span>
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function VendorCombobox({
+  expense,
+  context,
+  open,
+  disabled,
+  saving,
+  onOpenChange,
+  onSelect,
+}: {
+  expense: ProjectExpense
+  context: ExpenseAccountingContext | null
+  open: boolean
+  disabled?: boolean
+  saving?: boolean
+  onOpenChange: (open: boolean) => void
+  onSelect: (vendorId: string) => void
+}) {
+  const vendors = context?.vendors ?? []
+  const selectedLabel = expense.qbo_vendor_name ?? vendorOf(expense)
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
+          <span className="flex min-w-0 items-center">
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium text-foreground">{selectedLabel}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">{qboTransactionLabel(expense.qbo_transaction_type)}</span>
+            </span>
+          </span>
+          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search vendors..." />
+          <CommandList>
+            <CommandEmpty>No vendors found.</CommandEmpty>
+            <CommandGroup heading="Vendors">
+              <CommandItem value="Auto match/create" onSelect={() => onSelect(AUTO_QBO_VENDOR)}>
+                <Check className={cn("size-4", expense.qbo_vendor_id ? "opacity-0" : "opacity-100")} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">Auto match/create</span>
+                  <span className="block truncate text-xs text-muted-foreground">Use the merchant name on sync</span>
+                </span>
+              </CommandItem>
+              {vendors.map((vendor) => {
+                const selected = vendor.id === expense.qbo_vendor_id
+                return (
+                  <CommandItem key={vendor.id} value={vendor.name} onSelect={() => onSelect(vendor.id)}>
+                    <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{vendor.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">QuickBooks vendor</span>
+                    </span>
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function CostCodeCombobox({
+  expense,
+  context,
+  open,
+  disabled,
+  saving,
+  onOpenChange,
+  onSelect,
+}: {
+  expense: ProjectExpense
+  context: ExpenseAccountingContext | null
+  open: boolean
+  disabled?: boolean
+  saving?: boolean
+  onOpenChange: (open: boolean) => void
+  onSelect: (costCodeId: string | null) => void
+}) {
+  const costCodes = context?.costCodes ?? []
+  const selected = expense.cost_code ?? null
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
+          <span className="flex min-w-0 items-center">
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium text-foreground">{selected?.code ?? "Choose code"}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">{selected ? costCodeLabel(selected) : "Project cost code"}</span>
+            </span>
+          </span>
+          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search cost codes..." />
+          <CommandList>
+            <CommandEmpty>No cost codes found.</CommandEmpty>
+            <CommandGroup heading="Cost codes">
+              <CommandItem value="No cost code" onSelect={() => onSelect(null)}>
+                <Check className={cn("size-4", expense.cost_code_id ? "opacity-0" : "opacity-100")} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">No cost code</span>
+                  <span className="block truncate text-xs text-muted-foreground">Leave uncoded</span>
+                </span>
+              </CommandItem>
+              {costCodes.map((code: any) => {
+                const selectedCode = code.id === expense.cost_code_id
+                return (
+                  <CommandItem key={code.id} value={costCodeLabel(code)} onSelect={() => onSelect(code.id)}>
+                    <Check className={cn("size-4", selectedCode ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{code.code}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{costCodeLabel(code)}</span>
                     </span>
                   </CommandItem>
                 )
@@ -253,6 +399,17 @@ function ExpenseQBOStatus({ expense, compact = false }: { expense: ProjectExpens
       {label}
     </Badge>
   )
+}
+
+function ExpenseStatusIcon({ status }: { status: string }) {
+  const label = statusLabels[status] ?? status
+  if (status === "approved" || status === "invoiced") {
+    return <CheckCircle2 className="h-4 w-4 text-success" aria-label={label} title={label} />
+  }
+  if (status === "rejected") {
+    return <XCircle className="h-4 w-4 text-destructive" aria-label={label} title={label} />
+  }
+  return <Clock className="h-4 w-4 text-muted-foreground" aria-label={label} title={label} />
 }
 
 function isSupportedReceiptFile(file: File | null | undefined) {
@@ -285,6 +442,12 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const [accountingSaving, setAccountingSaving] = useState(false)
   const [openAccountExpenseId, setOpenAccountExpenseId] = useState<string | null>(null)
   const [savingAccountExpenseId, setSavingAccountExpenseId] = useState<string | null>(null)
+  const [openVendorExpenseId, setOpenVendorExpenseId] = useState<string | null>(null)
+  const [savingVendorExpenseId, setSavingVendorExpenseId] = useState<string | null>(null)
+  const [openCostCodeExpenseId, setOpenCostCodeExpenseId] = useState<string | null>(null)
+  const [savingCostCodeExpenseId, setSavingCostCodeExpenseId] = useState<string | null>(null)
+  const [savingMemoExpenseId, setSavingMemoExpenseId] = useState<string | null>(null)
+  const [receiptPreviewExpense, setReceiptPreviewExpense] = useState<ProjectExpense | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const dragDepthRef = useRef(0)
   const [isPending, startTransition] = useTransition()
@@ -541,6 +704,14 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     const qboVendor = draft.qboVendorId === AUTO_QBO_VENDOR ? null : findAccount(accountingContext?.vendors, draft.qboVendorId)
 
     setSavingAccountExpenseId(expense.id)
+    setOpenAccountExpenseId(null)
+    setItems((current) =>
+      current.map((item) =>
+        item.id === expense.id
+          ? { ...item, qbo_expense_account_id: account.id, qbo_expense_account_name: accountLabel(account) }
+          : item,
+      ),
+    )
     try {
       const next = await updateProjectExpenseAccountingAction(projectId, expense.id, {
         qboTransactionType: draft.qboTransactionType,
@@ -554,7 +725,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         qboVendorName: qboVendor ? accountLabel(qboVendor) : (expense.qbo_vendor_name ?? null),
       })
       setItems((next as ProjectExpense[]) ?? [])
-      setOpenAccountExpenseId(null)
       toast.success("QuickBooks account saved")
     } catch (error: any) {
       toast.error("Could not save QuickBooks account", {
@@ -566,17 +736,103 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     }
   }
 
+  async function saveExpenseVendor(expense: ProjectExpense, vendorId: string) {
+    const qboVendor = vendorId === AUTO_QBO_VENDOR ? null : findAccount(accountingContext?.vendors, vendorId)
+    if (vendorId !== AUTO_QBO_VENDOR && !qboVendor) {
+      toast.error("Choose a QuickBooks vendor")
+      return
+    }
+
+    setSavingVendorExpenseId(expense.id)
+    setOpenVendorExpenseId(null)
+    setItems((current) =>
+      current.map((item) =>
+        item.id === expense.id
+          ? { ...item, qbo_vendor_id: qboVendor?.id ?? null, qbo_vendor_name: qboVendor ? accountLabel(qboVendor) : null }
+          : item,
+      ),
+    )
+    try {
+      const next = await updateProjectExpenseAccountingAction(projectId, expense.id, {
+        qboTransactionType: expense.qbo_transaction_type ?? null,
+        qboExpenseAccountId: expense.qbo_expense_account_id ?? null,
+        qboExpenseAccountName: expense.qbo_expense_account_name ?? null,
+        qboPaymentAccountId: expense.qbo_payment_account_id ?? null,
+        qboPaymentAccountName: expense.qbo_payment_account_name ?? null,
+        qboApAccountId: expense.qbo_ap_account_id ?? null,
+        qboApAccountName: expense.qbo_ap_account_name ?? null,
+        qboVendorId: qboVendor?.id ?? null,
+        qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
+      })
+      setItems((next as ProjectExpense[]) ?? [])
+      toast.success("QuickBooks vendor saved")
+    } catch (error: any) {
+      toast.error("Could not save QuickBooks vendor", {
+        description: error?.message ?? "Please try again.",
+      })
+      refresh()
+    } finally {
+      setSavingVendorExpenseId(null)
+    }
+  }
+
+  async function saveExpenseMemo(expense: ProjectExpense, description: string) {
+    setSavingMemoExpenseId(expense.id)
+    setItems((current) => current.map((item) => (item.id === expense.id ? { ...item, description } : item)))
+    try {
+      const next = await updateProjectExpenseDetailsAction(projectId, expense.id, { description })
+      setItems((next as ProjectExpense[]) ?? [])
+    } catch (error: any) {
+      toast.error("Could not save memo", { description: error?.message ?? "Please try again." })
+      refresh()
+    } finally {
+      setSavingMemoExpenseId(null)
+    }
+  }
+
+  async function saveExpenseCostCode(expense: ProjectExpense, costCodeId: string | null) {
+    const costCode = (accountingContext?.costCodes ?? []).find((code: any) => code.id === costCodeId) ?? null
+    setSavingCostCodeExpenseId(expense.id)
+    setOpenCostCodeExpenseId(null)
+    setItems((current) =>
+      current.map((item) =>
+        item.id === expense.id
+          ? {
+              ...item,
+              cost_code_id: costCode?.id ?? null,
+              cost_code: costCode ? { code: costCode.code, name: costCode.name } : null,
+            }
+          : item,
+      ),
+    )
+    try {
+      const next = await updateProjectExpenseDetailsAction(projectId, expense.id, { costCodeId })
+      setItems((next as ProjectExpense[]) ?? [])
+      toast.success("Cost code saved")
+    } catch (error: any) {
+      toast.error("Could not save cost code", { description: error?.message ?? "Please try again." })
+      refresh()
+    } finally {
+      setSavingCostCodeExpenseId(null)
+    }
+  }
+
   function rowActions(expense: ProjectExpense) {
     const isSubmitted = expense.status === "submitted"
     const canSync = expense.status === "approved" && expense.qbo_sync_status !== "synced"
     return (
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <MoreHorizontal className="h-4 w-4" />
-            <span className="sr-only">Expense actions</span>
-          </Button>
-        </DropdownMenuTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <MoreHorizontal className="h-4 w-4" />
+                <span className="sr-only">Expense actions</span>
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>More actions</TooltipContent>
+        </Tooltip>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => openAccounting(expense)}>QuickBooks coding</DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -601,28 +857,31 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   function rowApproveAction(expense: ProjectExpense) {
     const isSubmitted = expense.status === "submitted"
     return (
-      <Button
-        type="button"
-        size="icon"
-        variant="outline"
-        className={cn(
-          "h-8 w-8 rounded-md",
-          isSubmitted
-            ? "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:text-white"
-            : "border-muted bg-muted text-muted-foreground opacity-70",
-        )}
-        disabled={isPending || !isSubmitted}
-        title={isSubmitted ? "Approve" : "Only submitted expenses can be approved"}
-        onClick={() => approve(expense.id)}
-      >
-        <Check className="h-4 w-4" />
-        <span className="sr-only">Approve expense</span>
-      </Button>
+      <IconTooltip label={isSubmitted ? "Approve expense" : "Only submitted expenses can be approved"}>
+        <span>
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className={cn(
+              "h-9 w-9 rounded-md bg-background",
+              isSubmitted
+                ? "border-emerald-600 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                : "border-muted text-muted-foreground opacity-70",
+            )}
+            disabled={isPending || !isSubmitted}
+            onClick={() => approve(expense.id)}
+          >
+            <Check className="h-5 w-5" />
+            <span className="sr-only">Approve expense</span>
+          </Button>
+        </span>
+      </IconTooltip>
     )
   }
 
   return (
-    <>
+    <TooltipProvider>
       <ExpenseForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
@@ -808,6 +1067,21 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         </SheetContent>
       </Sheet>
 
+      <Dialog open={Boolean(receiptPreviewExpense)} onOpenChange={(open) => !open && setReceiptPreviewExpense(null)}>
+        <DialogContent className="max-w-4xl p-0">
+          <DialogHeader className="border-b px-5 py-4">
+            <DialogTitle>{receiptPreviewExpense ? `${vendorOf(receiptPreviewExpense)} receipt` : "Receipt"}</DialogTitle>
+          </DialogHeader>
+          {receiptPreviewExpense?.receipt_file_id ? (
+            <iframe
+              src={`/api/files/${receiptPreviewExpense.receipt_file_id}/raw`}
+              title="Receipt preview"
+              className="h-[75vh] w-full bg-muted"
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       <div
         className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background relative"
         onDragEnter={handlePageDragEnter}
@@ -921,24 +1195,27 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto">
-            <Table className="min-w-[1280px]">
+            <Table className="min-w-[1480px]">
               <TableHeader>
                 <TableRow className="divide-x">
-                  <TableHead className="relative w-[72px] min-w-[72px] py-4 text-center">
+                  <TableHead className="relative w-[72px] min-w-[72px] py-3 text-center">
                     <div className="absolute inset-0 flex items-center justify-center">
                       <Checkbox checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false} onCheckedChange={toggleSelectAll} aria-label="Select all expenses" />
                     </div>
                   </TableHead>
-                  <TableHead className="min-w-[220px] px-4 py-4">Merchant / Vendor</TableHead>
-                  <TableHead className="w-[132px] px-4 py-4 text-center">Date</TableHead>
-                  <TableHead className="w-[132px] px-4 py-4 text-right">Amount</TableHead>
-                  <TableHead className="min-w-[240px] px-4 py-4">QBO Category</TableHead>
-                  <TableHead className="w-[96px] px-4 py-4 text-center">Receipt</TableHead>
-                  <TableHead className="min-w-[220px] px-4 py-4">Memo</TableHead>
-                  <TableHead className="min-w-[180px] px-4 py-4">QBO Vendor</TableHead>
-                  <TableHead className="min-w-[180px] px-4 py-4">Cost Code</TableHead>
-                  <TableHead className="sticky right-0 z-10 w-[112px] min-w-[112px] border-l bg-background px-4 py-4 text-center">
-                    <span className="sr-only">Actions</span>
+                  <TableHead className="min-w-[220px] px-4 py-3">Merchant / Vendor</TableHead>
+                  <TableHead className="w-[132px] px-4 py-3 text-center">Date</TableHead>
+                  <TableHead className="w-[168px] px-4 py-3 text-right">Amount</TableHead>
+                  <TableHead className="min-w-[340px] px-4 py-3">QBO Category</TableHead>
+                  <TableHead className="w-[96px] px-4 py-3 text-center">Receipt</TableHead>
+                  <TableHead className="min-w-[220px] px-4 py-3">Memo</TableHead>
+                  <TableHead className="min-w-[280px] px-4 py-3">QBO Vendor</TableHead>
+                  <TableHead className="min-w-[180px] px-4 py-3">Cost Code</TableHead>
+                  <TableHead className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-3 text-center shadow-[-2px_0_0_hsl(var(--border))]">
+                    <span className="sr-only">Approve</span>
+                  </TableHead>
+                  <TableHead className="sticky right-0 z-10 w-14 min-w-14 border-l bg-background px-2 py-3 text-center shadow-[-1px_0_0_hsl(var(--border))]">
+                    <span className="sr-only">More actions</span>
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -947,30 +1224,30 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                   const vendor = vendorOf(expense)
                   const amount = (expense.amount_cents ?? 0) + (expense.tax_cents ?? 0)
                   return (
-                    <TableRow key={expense.id} data-state={selectedIds.includes(expense.id) ? "selected" : undefined} className="divide-x align-top">
-                      <TableCell className="relative w-[72px] min-w-[72px] py-4 text-center align-middle">
+                    <TableRow key={expense.id} data-state={selectedIds.includes(expense.id) ? "selected" : undefined} className="divide-x align-middle">
+                      <TableCell className="relative w-[72px] min-w-[72px] py-2 text-center align-middle">
                         <div className="absolute inset-0 flex items-center justify-center">
                           <Checkbox checked={selectedIds.includes(expense.id)} onCheckedChange={(checked) => toggleSelectOne(expense.id, checked)} aria-label={`Select expense ${vendor}`} />
                         </div>
                       </TableCell>
-                      <TableCell className="px-4 py-4">
+                      <TableCell className="px-4 py-2">
                         <div className="flex min-w-0 items-center gap-3">
-                          <Avatar className="size-8 rounded-md">
+                          <Avatar className="size-7 rounded-md">
                             <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendor)}</AvatarFallback>
                           </Avatar>
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <div className="truncate text-sm font-semibold">{vendor}</div>
-                            <div className="mt-1 flex min-w-0 items-center gap-2">
-                              <Badge variant="secondary" className={cn("h-5 border px-1.5 text-[10px] font-normal capitalize", statusStyles[expense.status])}>
-                                {statusLabels[expense.status] ?? expense.status}
-                              </Badge>
-                            </div>
                           </div>
+                          <IconTooltip label={statusLabels[expense.status] ?? expense.status}>
+                            <span className="ml-auto flex shrink-0 items-center justify-center">
+                              <ExpenseStatusIcon status={expense.status} />
+                            </span>
+                          </IconTooltip>
                         </div>
                       </TableCell>
-                      <TableCell className="px-4 py-4 text-center text-sm tabular-nums text-muted-foreground">{formatDate(expense.expense_date)}</TableCell>
-                      <TableCell className="px-4 py-4 text-right text-sm font-semibold tabular-nums">{formatCurrency(amount)}</TableCell>
-                      <TableCell className="px-4 py-3">
+                      <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground">{formatDate(expense.expense_date)}</TableCell>
+                      <TableCell className="px-4 py-2 text-right text-sm font-semibold tabular-nums">{formatCurrency(amount)}</TableCell>
+                      <TableCell className="p-0">
                         <AccountCombobox
                           expense={expense}
                           context={accountingContext}
@@ -981,51 +1258,69 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           onSelect={(accountId) => void saveExpenseAccount(expense, accountId)}
                         />
                       </TableCell>
-                      <TableCell className="px-4 py-4 text-center">
+                      <TableCell className="px-4 py-2 text-center">
                         {expense.receipt_file_id ? (
-                          <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                            <a href={`/api/files/${expense.receipt_file_id}/raw`} target="_blank" rel="noreferrer" title="Open receipt" aria-label={`Open receipt for ${vendor}`}>
-                              <Receipt className="h-4 w-4 text-primary" />
-                            </a>
-                          </Button>
+                          <IconTooltip label="Preview receipt">
+                            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => setReceiptPreviewExpense(expense)}>
+                              <Receipt className="h-5 w-5 text-primary" />
+                              <span className="sr-only">Preview receipt</span>
+                            </Button>
+                          </IconTooltip>
                         ) : (
-                          <span className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground" title="No receipt uploaded" aria-label="No receipt uploaded">
-                            <Receipt className="h-4 w-4 opacity-40" />
-                          </span>
+                          <IconTooltip label="No receipt uploaded">
+                            <span className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground" aria-label="No receipt uploaded">
+                              <Receipt className="h-5 w-5 opacity-40" />
+                            </span>
+                          </IconTooltip>
                         )}
                       </TableCell>
-                      <TableCell className="max-w-[260px] px-4 py-4">
-                        <div className="truncate text-sm text-muted-foreground">{expense.description || "—"}</div>
+                      <TableCell className="max-w-[260px] p-0">
+                        <Input
+                          value={expense.description ?? ""}
+                          placeholder="Memo"
+                          className="h-full min-h-11 rounded-none border-0 bg-transparent px-3 shadow-none focus-visible:ring-0"
+                          disabled={savingMemoExpenseId === expense.id}
+                          onChange={(event) => {
+                            const description = event.target.value
+                            setItems((current) => current.map((item) => (item.id === expense.id ? { ...item, description } : item)))
+                          }}
+                          onBlur={(event) => void saveExpenseMemo(expense, event.target.value)}
+                        />
                       </TableCell>
-                      <TableCell className="px-4 py-4">
-                        <div className="flex flex-col gap-1">
-                          <span className="truncate text-sm font-medium">{expense.qbo_vendor_name ?? "Auto match/create"}</span>
-                          <span className="truncate text-xs text-muted-foreground">{qboTransactionLabel(expense.qbo_transaction_type)}</span>
-                          <ExpenseQBOStatus expense={expense} compact />
-                        </div>
+                      <TableCell className="p-0">
+                        <VendorCombobox
+                          expense={expense}
+                          context={accountingContext}
+                          open={openVendorExpenseId === expense.id}
+                          disabled={!accountingContext?.qboConnected || savingVendorExpenseId === expense.id}
+                          saving={savingVendorExpenseId === expense.id}
+                          onOpenChange={(open) => setOpenVendorExpenseId(open ? expense.id : null)}
+                          onSelect={(vendorId) => void saveExpenseVendor(expense, vendorId)}
+                        />
                       </TableCell>
-                      <TableCell className="px-4 py-4">
-                        {expense.cost_code?.code ? (
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">{expense.cost_code.code}</div>
-                            {expense.cost_code.name ? <div className="mt-1 truncate text-xs text-muted-foreground">{expense.cost_code.name}</div> : null}
-                          </div>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">—</span>
-                        )}
+                      <TableCell className="p-0">
+                        <CostCodeCombobox
+                          expense={expense}
+                          context={accountingContext}
+                          open={openCostCodeExpenseId === expense.id}
+                          disabled={savingCostCodeExpenseId === expense.id}
+                          saving={savingCostCodeExpenseId === expense.id}
+                          onOpenChange={(open) => setOpenCostCodeExpenseId(open ? expense.id : null)}
+                          onSelect={(costCodeId) => void saveExpenseCostCode(expense, costCodeId)}
+                        />
                       </TableCell>
-                      <TableCell className="sticky right-0 z-10 w-[112px] min-w-[112px] border-l bg-background px-4 py-4 text-center" onClick={(event) => event.stopPropagation()}>
-                        <div className="flex items-center justify-center gap-1">
-                          {rowApproveAction(expense)}
-                          {rowActions(expense)}
-                        </div>
+                      <TableCell className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-2 text-center shadow-[-2px_0_0_hsl(var(--border))]" onClick={(event) => event.stopPropagation()}>
+                        <div className="flex items-center justify-center">{rowApproveAction(expense)}</div>
+                      </TableCell>
+                      <TableCell className="sticky right-0 z-10 w-14 min-w-14 border-l bg-background px-2 py-2 text-center shadow-[-1px_0_0_hsl(var(--border))]" onClick={(event) => event.stopPropagation()}>
+                        <div className="flex items-center justify-center">{rowActions(expense)}</div>
                       </TableCell>
                     </TableRow>
                   )
                 })}
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={10} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                    <TableCell colSpan={11} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                       <div className="flex flex-col items-center gap-3">
                         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                           <Receipt className="h-6 w-6" />
@@ -1049,6 +1344,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
           </div>
         )}
       </div>
-    </>
+    </TooltipProvider>
   )
 }

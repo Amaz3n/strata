@@ -1,6 +1,7 @@
 "use client"
 
-import React, { createContext, useContext, useEffect } from "react"
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
+import { usePathname } from "next/navigation"
 import type { AppBreadcrumbItem } from "./app-header"
 
 interface PageTitleContextType {
@@ -20,28 +21,46 @@ interface PageTitleProviderProps {
   breadcrumbs?: AppBreadcrumbItem[]
 }
 
+type Scoped<T> = { path: string; value: T } | undefined
+
 export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: initialBreadcrumbs }: PageTitleProviderProps) {
-  const [title, setTitle] = React.useState<string | undefined>(initialTitle)
-  const [breadcrumbs, setBreadcrumbs] = React.useState<AppBreadcrumbItem[] | undefined>(initialBreadcrumbs)
-  const [fullBleed, setFullBleed] = React.useState<boolean>(false)
+  const pathname = usePathname()
 
-  useEffect(() => {
-    if (initialTitle) {
-      setTitle(initialTitle)
-    }
-  }, [initialTitle])
-
-  useEffect(() => {
-    if (initialBreadcrumbs) {
-      setBreadcrumbs(initialBreadcrumbs)
-    }
-  }, [initialBreadcrumbs])
-
-  return (
-    <PageTitleContext.Provider value={{ title, breadcrumbs, fullBleed, setTitle, setBreadcrumbs, setFullBleed }}>
-      {children}
-    </PageTitleContext.Provider>
+  const [scopedTitle, setScopedTitle] = useState<Scoped<string>>(
+    initialTitle ? { path: pathname, value: initialTitle } : undefined,
   )
+  const [scopedBreadcrumbs, setScopedBreadcrumbs] = useState<Scoped<AppBreadcrumbItem[]>>(
+    initialBreadcrumbs ? { path: pathname, value: initialBreadcrumbs } : undefined,
+  )
+  const [fullBleed, setFullBleed] = useState<boolean>(false)
+
+  useEffect(() => {
+    if (initialTitle) setScopedTitle({ path: pathname, value: initialTitle })
+  }, [initialTitle, pathname])
+
+  useEffect(() => {
+    if (initialBreadcrumbs) setScopedBreadcrumbs({ path: pathname, value: initialBreadcrumbs })
+  }, [initialBreadcrumbs, pathname])
+
+  const setTitle = useCallback(
+    (value: string) => setScopedTitle({ path: pathname, value }),
+    [pathname],
+  )
+
+  const setBreadcrumbs = useCallback(
+    (value: AppBreadcrumbItem[]) => setScopedBreadcrumbs({ path: pathname, value }),
+    [pathname],
+  )
+
+  const title = scopedTitle?.path === pathname ? scopedTitle.value : undefined
+  const breadcrumbs = scopedBreadcrumbs?.path === pathname ? scopedBreadcrumbs.value : undefined
+
+  const value = useMemo(
+    () => ({ title, breadcrumbs, fullBleed, setTitle, setBreadcrumbs, setFullBleed }),
+    [title, breadcrumbs, fullBleed, setTitle, setBreadcrumbs],
+  )
+
+  return <PageTitleContext.Provider value={value}>{children}</PageTitleContext.Provider>
 }
 
 export function usePageTitle() {
@@ -51,5 +70,3 @@ export function usePageTitle() {
   }
   return context
 }
-
-

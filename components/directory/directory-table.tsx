@@ -79,14 +79,14 @@ export function DirectoryTable({
   }
 
   return (
-    <div className="rounded-lg border overflow-hidden">
+    <div className="min-h-0 flex-1 overflow-auto">
       <Table>
         <TableHeader>
-          <TableRow className="divide-x">
-            <TableHead className="px-4 py-3">Name</TableHead>
-            <TableHead className="px-4 py-3">Type</TableHead>
-            <TableHead className="px-4 py-3">Detail</TableHead>
-            <TableHead className="w-12 px-4 py-3" />
+          <TableRow className="bg-muted/40 hover:bg-muted/40">
+            <TableHead className="pl-4">Name</TableHead>
+            <TableHead>Type</TableHead>
+            <TableHead>Detail</TableHead>
+            <TableHead className="w-12 pr-4" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -108,8 +108,8 @@ export function DirectoryTable({
             ),
           )}
           {items.length === 0 && (
-            <TableRow className="divide-x">
-              <TableCell colSpan={4} className="text-center text-muted-foreground py-10">
+            <TableRow>
+              <TableCell colSpan={4} className="h-48 text-center text-muted-foreground">
                 No directory results match your filters.
               </TableCell>
             </TableRow>
@@ -142,10 +142,10 @@ function CompanyRow({
   return (
     <>
       <TableRow
-        className="divide-x align-top hover:bg-muted/40 cursor-pointer"
+        className="align-top hover:bg-muted/40 cursor-pointer"
         onClick={() => onSelectCompany?.(item.id)}
       >
-        <TableCell className="font-medium px-4 py-3">
+        <TableCell className="font-medium pl-4">
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
@@ -162,14 +162,14 @@ function CompanyRow({
             <span>{item.name}</span>
           </div>
         </TableCell>
-        <TableCell className="px-4 py-3">
-          <Badge variant="secondary">{item.company_type ?? "Company"}</Badge>
+        <TableCell>
+          <Badge variant="secondary" className="font-normal">{item.company_type ?? "Company"}</Badge>
         </TableCell>
-        <TableCell className="px-4 py-3 text-sm text-muted-foreground">{item.trade || "—"}</TableCell>
-        <TableCell className="px-4 py-3 text-right text-muted-foreground" />
+        <TableCell className="text-sm text-muted-foreground">{item.trade || "—"}</TableCell>
+        <TableCell className="pr-4 text-right text-muted-foreground" />
       </TableRow>
       {expanded && (
-        <TableRow className="divide-x bg-muted/30">
+        <TableRow className="bg-muted/30 hover:bg-muted/30">
           <TableCell colSpan={4} className="px-4 py-4">
             {onAddContactForCompany ? (
               <div className="mb-3 flex justify-end">
@@ -231,20 +231,21 @@ function ContactRow({
 }) {
   return (
     <TableRow
-      className="divide-x align-top hover:bg-muted/40 cursor-pointer"
+      className="align-top hover:bg-muted/40 cursor-pointer"
       onClick={() => onSelectContact?.(item.id)}
     >
-      <TableCell className="font-medium px-4 py-3">
+      <TableCell className="font-medium pl-4">
         <div className="flex items-center gap-2">
+          <span className="inline-block w-8" />
           <User className="h-4 w-4 text-muted-foreground" />
           <span>{item.name}</span>
         </div>
       </TableCell>
-      <TableCell className="px-4 py-3">
-        <Badge variant="secondary">{item.contact_type ?? "Contact"}</Badge>
+      <TableCell>
+        <Badge variant="secondary" className="font-normal">{item.contact_type ?? "Contact"}</Badge>
       </TableCell>
-      <TableCell className="px-4 py-3 text-sm text-muted-foreground">{item.role || "—"}</TableCell>
-      <TableCell className="px-4 py-3 text-right text-muted-foreground" />
+      <TableCell className="text-sm text-muted-foreground">{item.role || "—"}</TableCell>
+      <TableCell className="pr-4 text-right text-muted-foreground" />
     </TableRow>
   )
 }

@@ -1,6 +1,6 @@
 "use server"
 
-import { cookies } from "next/headers"
+import { cookies, headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { z } from "zod"
 
@@ -17,6 +17,11 @@ const signInSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
 })
+
+const TRACKED_DEMO_EMAILS = (process.env.DEMO_USAGE_TRACKING_EMAILS ?? "demo@arcnaples.com")
+  .split(",")
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean)
 
 const signUpSchema = z.object({
   email: z.string().email(),
@@ -71,6 +76,11 @@ export async function signInAction(_prevState: AuthState, formData: FormData): P
     }
 
     await setOrgCookie(membershipState.activeOrgId)
+    await recordDemoLoginIfTracked({
+      orgId: membershipState.activeOrgId,
+      userId: user.id,
+      email: user.email ?? parsed.data.email,
+    })
 
     const { data: aalData, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (aalError) {
@@ -84,6 +94,33 @@ export async function signInAction(_prevState: AuthState, formData: FormData): P
   }
 
   redirect("/")
+}
+
+async function recordDemoLoginIfTracked(input: { orgId: string; userId: string; email: string }) {
+  if (!TRACKED_DEMO_EMAILS.includes(input.email.toLowerCase())) return
+
+  try {
+    const headerStore = await headers()
+    const supabase = createServiceSupabaseClient()
+    const { error } = await supabase.from("events").insert({
+      org_id: input.orgId,
+      event_type: "demo_login",
+      entity_type: "usage",
+      payload: {
+        actor_id: input.userId,
+        actor_email: input.email,
+        user_agent: headerStore.get("user-agent"),
+        referer: headerStore.get("referer"),
+      },
+      channel: "activity",
+    })
+
+    if (error) {
+      console.error("Failed to record demo login", error)
+    }
+  } catch (error) {
+    console.error("Failed to record demo login", error)
+  }
 }
 
 export async function signUpAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {

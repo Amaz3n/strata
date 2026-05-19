@@ -252,7 +252,10 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
   }
 
-  const catalogSupabase = input.supabase ?? createServiceSupabaseClient()
+  // RBAC catalog tables are intentionally not exposed to regular user sessions.
+  // Authorization decisions must inspect roles/role_permissions with service-role
+  // access, while still evaluating the explicit user/org/project ids passed in.
+  const catalogSupabase = createServiceSupabaseClient()
   const knownPermission = await permissionExists(catalogSupabase, input.permission)
   if (!knownPermission) {
     const decision: AuthorizationDecision = {

@@ -8,6 +8,7 @@ import { PageTitleProvider } from "@/components/layout/page-title-context"
 import { AppPageContent } from "@/components/layout/app-page-content"
 import { PlatformSessionControl } from "@/components/layout/platform-session-control"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
+import { DemoUsageTracker } from "@/components/layout/demo-usage-tracker"
 import { OptimisticPathProvider } from "@/lib/navigation/optimistic-pathname"
 import { getCurrentUserAction } from "../actions/user"
 import { getCrmDashboardStats } from "@/lib/services/crm"
@@ -40,6 +41,7 @@ export default async function AppLayout({
   return (
     <SidebarProvider className="h-svh max-h-svh overflow-hidden">
       <OptimisticPathProvider>
+        <DemoUsageTracker />
         <AppSidebar
           user={currentUser}
           pipelineBadgeCount={pipelineBadgeCount}

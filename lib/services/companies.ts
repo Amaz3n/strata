@@ -5,7 +5,7 @@ import { companyFiltersSchema, companyInputSchema, companyUpdateSchema, type Com
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
-import { hasPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { hasPermission, requireAnyPermission } from "@/lib/services/permissions"
 import { getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { setCompanyRequirements } from "@/lib/services/compliance-documents"
 
@@ -74,7 +74,11 @@ export async function listCompanies(orgId?: string, filtersOrContext?: CompanyFi
   }
 
   const { supabase, orgId: resolvedOrgId, userId } = actualContext || await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
   return listCompaniesWithClient(supabase, resolvedOrgId, filters)
 }
 
@@ -119,7 +123,11 @@ export async function listCompaniesWithClient(
 
 export async function getCompany(companyId: string, orgId?: string): Promise<Company & { contacts: Contact[] }> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
 
   const { data, error } = await supabase
     .from("companies")
@@ -212,7 +220,7 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
 export async function createCompany({ input, orgId }: { input: CompanyInput; orgId?: string }): Promise<Company> {
   const parsed = companyInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("companies")
@@ -279,7 +287,7 @@ export async function updateCompany({
 }): Promise<Company> {
   const parsed = companyUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
@@ -418,7 +426,12 @@ export async function archiveCompany(companyId: string, orgId?: string) {
 }
 
 export async function getCompanyContacts(companyId: string, orgId?: string): Promise<Contact[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
   const [{ data: linked, error: linkError }, { data: primaryContacts, error: primaryError }] = await Promise.all([
     supabase
       .from("contact_company_links")

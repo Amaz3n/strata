@@ -43,6 +43,11 @@ export interface UpdateExpenseAccountingInput {
   qboVendorName?: string | null
 }
 
+export interface UpdateExpenseDetailsInput {
+  description?: string | null
+  costCodeId?: string | null
+}
+
 export type ReceiptExtractionResult =
   | { ok: true; data: ExtractedExpenseReceipt }
   | { ok: false; error: string }
@@ -131,6 +136,12 @@ export async function getExpenseAccountingContextAction() {
     .eq("status", "active")
     .maybeSingle()
   const settings = (connection?.settings as Record<string, any> | null) ?? {}
+  const { data: costCodes } = await supabase
+    .from("cost_codes")
+    .select("id, code, name, division, category")
+    .eq("org_id", orgId)
+    .eq("is_active", true)
+    .order("code")
   const client = await QBOClient.forOrg(orgId)
   if (!client) {
     return {
@@ -139,6 +150,7 @@ export async function getExpenseAccountingContextAction() {
       paymentAccounts: [],
       apAccounts: [],
       vendors: [],
+      costCodes: costCodes ?? [],
       defaults: {},
       warning: null,
     }
@@ -158,6 +170,7 @@ export async function getExpenseAccountingContextAction() {
       paymentAccounts,
       apAccounts,
       vendors,
+      costCodes: costCodes ?? [],
       defaults: {
         expenseAccountId: typeof settings.default_expense_account_id === "string" ? settings.default_expense_account_id : "",
         paymentAccountId: typeof settings.default_payment_account_id === "string" ? settings.default_payment_account_id : "",
@@ -173,10 +186,48 @@ export async function getExpenseAccountingContextAction() {
       paymentAccounts: [],
       apAccounts: [],
       vendors: [],
+      costCodes: costCodes ?? [],
       defaults: {},
       warning: error?.message ?? "Unable to load QuickBooks accounting categories.",
     }
   }
+}
+
+export async function updateProjectExpenseDetailsAction(
+  projectId: string,
+  expenseId: string,
+  input: UpdateExpenseDetailsInput,
+) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAuthorization({
+    permission: "bill.write",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project_expense",
+    resourceId: expenseId,
+  })
+
+  const updateData: Record<string, any> = {}
+  if ("description" in input) updateData.description = input.description?.trim() || null
+  if ("costCodeId" in input) updateData.cost_code_id = input.costCodeId || null
+
+  if (Object.keys(updateData).length === 0) {
+    return listProjectExpensesAction(projectId)
+  }
+
+  const { error } = await supabase
+    .from("project_expenses")
+    .update(updateData)
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", expenseId)
+
+  if (error) throw new Error(`Failed to update expense: ${error.message}`)
+  revalidate(projectId)
+  return listProjectExpensesAction(projectId)
 }
 
 export async function approveProjectExpenseFormAction(projectId: string, expenseId: string) {

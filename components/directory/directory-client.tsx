@@ -8,17 +8,27 @@ import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { CompanyForm } from "@/components/companies/company-form"
 import { ContactForm } from "@/components/contacts/contact-form"
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet"
 import { DirectoryTable } from "@/components/directory/directory-table"
-import { Building2, ChevronDown, Plus, Search, User } from "@/components/icons"
+import { Building2, Plus, Search, User } from "@/components/icons"
 
 interface DirectoryClientProps {
   companies: Company[]
   contacts: Contact[]
   canCreate: boolean
   initialView?: "all" | "companies" | "people"
+}
+
+function SummaryCard({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="border-r border-b bg-background p-4 last:border-r-0">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+    </div>
+  )
 }
 
 export function DirectoryClient({
@@ -42,6 +52,22 @@ export function DirectoryClient({
   const [newContactCompanyId, setNewContactCompanyId] = useState<string | undefined>()
   const [detailContactId, setDetailContactId] = useState<string | undefined>()
   const [detailContactOpen, setDetailContactOpen] = useState(false)
+
+  const counts = useMemo(() => {
+    const byType: Record<string, number> = {}
+    for (const c of companies) {
+      byType[c.company_type] = (byType[c.company_type] ?? 0) + 1
+    }
+    const otherTypes = (byType["architect"] ?? 0) + (byType["engineer"] ?? 0) + (byType["other"] ?? 0)
+    return {
+      companies: companies.length,
+      people: contacts.length,
+      subs: byType["subcontractor"] ?? 0,
+      suppliers: byType["supplier"] ?? 0,
+      clients: byType["client"] ?? 0,
+      other: otherTypes,
+    }
+  }, [companies, contacts])
 
   const openCompanyDetail = (id: string) => {
     router.push(`/companies/${id}`)
@@ -76,56 +102,56 @@ export function DirectoryClient({
     setContactDialogOpen(true)
   }
 
-  const viewLabel = view === "all" ? "All" : view === "companies" ? "Companies" : "People"
   const contactFormKey = selectedContact?.id
     ? `edit-${selectedContact.id}`
     : `new-${newContactCompanyId ?? "none"}-${contactDialogOpen ? "open" : "closed"}`
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex w-full flex-col gap-2">
-          <div className="flex w-full max-w-sm items-center gap-2 rounded-md border bg-background px-2 py-1 shadow-sm">
-            <Search className="h-4 w-4 text-muted-foreground" />
+    <div className="flex min-h-full flex-col bg-background">
+      <div className="grid border-t sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <SummaryCard label="Companies" value={counts.companies} />
+        <SummaryCard label="People" value={counts.people} />
+        <SummaryCard label="Subcontractors" value={counts.subs} />
+        <SummaryCard label="Suppliers" value={counts.suppliers} />
+        <SummaryCard label="Clients" value={counts.clients} />
+        <SummaryCard label="Other" value={counts.other} />
+      </div>
+
+      <div className="flex shrink-0 flex-col gap-3 border-b bg-background/95 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <Tabs value={view} onValueChange={(v) => setView(v as typeof view)}>
+          <TabsList>
+            <TabsTrigger value="all">All</TabsTrigger>
+            <TabsTrigger value="companies">Companies</TabsTrigger>
+            <TabsTrigger value="people">People</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center gap-2">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search companies and contacts..."
-              className="h-8 border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+              placeholder="Search companies and contacts"
+              className="h-9 pl-8"
             />
+          </div>
+
+          {canCreate && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 gap-1 px-2">
-                  {viewLabel}
-                  <ChevronDown className="h-3.5 w-3.5" />
+                <Button size="icon" variant="default" className="h-9 w-9">
+                  <Plus className="h-4 w-4" />
+                  <span className="sr-only">Add</span>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-36">
-                <DropdownMenuItem onSelect={() => setView("all")}>All</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setView("companies")}>Companies</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setView("people")}>People</DropdownMenuItem>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => openNewCompany()}>Add company</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => openNewContact()}>Add contact</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-          </div>
+          )}
         </div>
-
-        {canCreate && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" className="h-10 w-10">
-                <Plus className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => openNewCompany()}>
-                Add company
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => openNewContact()}>
-                Add contact
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </div>
 
       <DirectoryTable

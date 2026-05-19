@@ -14,6 +14,7 @@ import Link from "next/link"
 import { getCurrentPlatformAccess, listPlatformOrganizations } from "@/lib/services/platform-access"
 import { provisionPlatformOrgAction } from "@/app/(app)/platform/actions"
 import { ImpersonationPanel } from "@/components/platform/impersonation-panel"
+import { DemoUsageCard } from "@/components/platform/demo-usage-card"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
 import { ProvisionOrgSheet } from "@/components/platform/provision-org-sheet"
 import { getPlatformAiSearchDefaultConfig } from "@/lib/services/ai-config"
@@ -67,6 +68,10 @@ async function PlatformData() {
         </Suspense>
 
         <div className="space-y-6">
+          <Suspense fallback={<Skeleton className="h-80" />}>
+            <DemoUsageCard />
+          </Suspense>
+
           <Card>
             <CardHeader>
               <CardTitle>Impersonation</CardTitle>

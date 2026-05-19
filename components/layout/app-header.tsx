@@ -31,12 +31,56 @@ interface AppHeaderProps {
   platformSessionControl?: React.ReactNode
 }
 
+const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
+  "": "Control Tower",
+  directory: "Directory",
+  companies: "Directory",
+  contacts: "Directory",
+  projects: "Projects",
+  pipeline: "Pipeline",
+  prospects: "Prospects",
+  crm: "CRM",
+  estimates: "Estimates",
+  proposals: "Proposals",
+  schedule: "Schedule",
+  tasks: "Tasks",
+  documents: "Documents",
+  drawings: "Drawings",
+  rfis: "RFIs",
+  submittals: "Submittals",
+  selections: "Selections",
+  decisions: "Decisions",
+  "change-orders": "Change Orders",
+  invoices: "Invoices",
+  payments: "Payments",
+  "financial-control": "Financial Control",
+  signatures: "Signatures",
+  emails: "Emails",
+  warranty: "Warranty",
+  closeout: "Closeout",
+  team: "Team",
+  settings: "Settings",
+  admin: "Admin",
+  platform: "Platform",
+  sharing: "Sharing",
+}
+
+function labelFromPathname(pathname: string): string {
+  const segment = pathname.split("/").filter(Boolean)[0] ?? ""
+  return PATHNAME_FALLBACK_LABELS[segment] ?? "Home"
+}
+
 export function AppHeader({ title, breadcrumbs, className, platformSessionControl }: AppHeaderProps) {
   const pathname = usePathname()
   const { title: contextTitle, breadcrumbs: contextBreadcrumbs } = usePageTitle()
   const effectiveTitle = title || contextTitle
   const effectiveBreadcrumbs = breadcrumbs || contextBreadcrumbs
-  const breadcrumbItems = effectiveBreadcrumbs?.length ? effectiveBreadcrumbs : effectiveTitle ? [{ label: effectiveTitle }] : [{ label: "Home" }]
+  const fallbackLabel = labelFromPathname(pathname)
+  const breadcrumbItems = effectiveBreadcrumbs?.length
+    ? effectiveBreadcrumbs
+    : effectiveTitle
+      ? [{ label: effectiveTitle }]
+      : [{ label: fallbackLabel }]
 
   // Get current page title for mobile display
   const currentPage = breadcrumbItems.length > 0 ? breadcrumbItems[breadcrumbItems.length - 1] : null
