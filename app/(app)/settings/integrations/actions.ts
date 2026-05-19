@@ -1,9 +1,8 @@
 'use server'
 
-import { randomUUID } from "crypto"
 import { cookies } from "next/headers"
 
-import { getQBOAuthUrl } from "@/lib/integrations/accounting/qbo-auth"
+import { createQBOOAuthState, getQBOAuthUrl } from "@/lib/integrations/accounting/qbo-auth"
 import { disconnectQBO, getQBOConnection, getQBODiagnostics, getQBOEnvironmentInfo, refreshQBOTokenNow, updateQBOSettings } from "@/lib/services/qbo-connection"
 import {
   createStripeConnectedAccountDashboardLoginLink,
@@ -20,7 +19,7 @@ export async function connectQBOAction() {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requirePermission("org.admin", { supabase, orgId, userId })
 
-  const state = `${orgId}:${randomUUID()}`
+  const state = createQBOOAuthState(orgId)
   const cookieStore = await cookies()
   const secure = typeof process.env.VERCEL !== "undefined" || process.env.NODE_ENV === "production"
   if (typeof cookieStore.set === "function") {

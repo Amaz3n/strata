@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
 
-import { exchangeCodeForTokens, fetchQBOCompanyInfo } from "@/lib/integrations/accounting/qbo-auth"
+import { exchangeCodeForTokens, fetchQBOCompanyInfo, verifyQBOOAuthState } from "@/lib/integrations/accounting/qbo-auth"
 import { upsertQBOConnection } from "@/lib/services/qbo-connection"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { logQBO } from "@/lib/services/qbo-logger"
@@ -107,15 +107,17 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  if (!savedState || state !== savedState) {
+  const verifiedState = verifyQBOOAuthState(state)
+  if (!verifiedState && (!savedState || state !== savedState)) {
     return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch", "error")
   }
+  const [legacyOrgId, legacyNonce] = state.split(":")
+  const orgId = verifiedState?.orgId ?? legacyOrgId
+  const nonce = verifiedState?.nonce ?? legacyNonce
 
-  const [orgId, nonce] = state.split(":")
   if (!orgId || !nonce) {
     return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch", "error")
   }
-
   try {
     const { user } = await requireOrgMembership(orgId)
     const connectedBy = user.id

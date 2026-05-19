@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto"
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "crypto"
 import { qboApiBaseUrl } from "@/lib/integrations/accounting/qbo-config"
 
 const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID
@@ -34,6 +34,28 @@ function getEncryptionKey(): Buffer {
     // fall through to error
   }
   throw new Error("TOKEN_ENCRYPTION_KEY must be 32 bytes (raw, hex, or base64)")
+}
+
+function signOAuthState(orgId: string, nonce: string): string {
+  return createHmac("sha256", getEncryptionKey()).update(`${orgId}:${nonce}`).digest("base64url")
+}
+
+export function createQBOOAuthState(orgId: string): string {
+  const nonce = randomBytes(16).toString("base64url")
+  return `${orgId}:${nonce}:${signOAuthState(orgId, nonce)}`
+}
+
+export function verifyQBOOAuthState(state: string): { orgId: string; nonce: string } | null {
+  const [orgId, nonce, signature] = state.split(":")
+  if (!orgId || !nonce || !signature) return null
+
+  const expected = signOAuthState(orgId, nonce)
+  const expectedBuffer = Buffer.from(expected)
+  const receivedBuffer = Buffer.from(signature)
+  if (expectedBuffer.length !== receivedBuffer.length) return null
+  if (!timingSafeEqual(expectedBuffer, receivedBuffer)) return null
+
+  return { orgId, nonce }
 }
 
 export function getQBOAuthUrl(state: string): string {
