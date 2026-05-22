@@ -6,6 +6,7 @@ export interface Env {
 
 const DEFAULT_COOKIE_NAME = "arc_tiles"
 const PATH_PREFIXES = ["/drawings-tiles/", "/drawing-tiles/"]
+const R2_KEY_PREFIX = "drawings-tiles"
 
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null
@@ -86,10 +87,14 @@ const worker = {
       return new Response("Unauthorized", { status: 401 })
     }
 
-    const objectKey = url.pathname.slice(matchedPrefix.length)
-    if (!objectKey) {
+    const objectPath = url.pathname.slice(matchedPrefix.length)
+    if (!objectPath) {
       return new Response("Not found", { status: 404 })
     }
+
+    const objectKey = objectPath.startsWith(`${R2_KEY_PREFIX}/`)
+      ? objectPath
+      : `${R2_KEY_PREFIX}/${objectPath}`
 
     const object = await env.DRAWINGS_TILES.get(objectKey)
     if (!object) {

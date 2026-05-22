@@ -8,4 +8,4 @@ routes = [
 
 [[r2_buckets]]
 binding = "DRAWINGS_TILES"
-bucket_name = "drawing-tiles"
+bucket_name = "project-files"

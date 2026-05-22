@@ -12,4 +12,4 @@ This worker protects drawings tiles stored in R2 and serves them via `cdn.arcnap
 
 ## Path mapping
 
-Requests to `/drawing-tiles/<key>` map to R2 object key `<key>` in the `drawing-tiles` bucket.
+Requests to `/drawings-tiles/<key>` map to R2 object key `drawings-tiles/<key>` in the `project-files` bucket.
