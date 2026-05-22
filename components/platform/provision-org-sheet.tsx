@@ -72,6 +72,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
   const [slug, setSlug] = useState("")
   const [billingModel, setBillingModel] = useState<"subscription" | "license">("subscription")
   const [createCheckout, setCreateCheckout] = useState(true)
+  const [sendInvites, setSendInvites] = useState(false)
   const [teamMembers, setTeamMembers] = useState<TeamMemberDraft[]>([])
 
   const subscriptionPlans = useMemo(
@@ -174,7 +175,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                 <section className="flex flex-col gap-4">
                   <div>
                     <h3 className="text-sm font-medium">Primary Owner</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">This person is invited as the organization owner.</p>
+                    <p className="mt-1 text-sm text-muted-foreground">This person is added as the organization owner. You can send the workspace invite now or defer it.</p>
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="flex flex-col gap-2">
@@ -185,6 +186,22 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                       <Label htmlFor="platform-primary-email">Email</Label>
                       <Input id="platform-primary-email" name="primaryEmail" type="email" placeholder="owner@acme.com" required />
                     </div>
+                  </div>
+                  <div className="flex items-start gap-3 rounded-md border bg-muted/20 px-4 py-3">
+                    <Checkbox
+                      id="platform-send-invites"
+                      checked={sendInvites}
+                      onCheckedChange={(checked) => setSendInvites(checked === true)}
+                    />
+                    <div className="grid gap-1.5 leading-none">
+                      <Label htmlFor="platform-send-invites" className="text-sm font-medium">
+                        Send workspace invites now
+                      </Label>
+                      <p className="text-sm text-muted-foreground">
+                        Leave this off to collect payment first and manually prepare the org before the client gets access.
+                      </p>
+                    </div>
+                    <input type="hidden" name="sendInvites" value={sendInvites ? "true" : "false"} />
                   </div>
                 </section>
 

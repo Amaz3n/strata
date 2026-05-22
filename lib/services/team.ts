@@ -191,6 +191,88 @@ async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
   }, {})
 }
 
+export async function createOrgMemberInvite(input: {
+  supabase: SupabaseClient
+  orgId: string
+  actorUserId: string
+  email: string
+  role: OrgRole
+  fullName?: string | null
+  sendEmail?: boolean
+}) {
+  const email = input.email.trim().toLowerCase()
+  const { data: existingUser } = await input.supabase
+    .from("app_users")
+    .select("id, email, full_name, avatar_url")
+    .ilike("email", email)
+    .maybeSingle()
+
+  let targetUserId = existingUser?.id as string | undefined
+  if (!targetUserId) {
+    const result = await createUserForInvite(input.supabase, email)
+    targetUserId = result.userId
+  }
+
+  if (!targetUserId) {
+    throw new Error(`Unable to resolve invited user id for ${email}`)
+  }
+
+  const { error: profileError } = await input.supabase.from("app_users").upsert({
+    id: targetUserId,
+    email,
+    full_name: existingUser?.full_name ?? input.fullName?.trim() ?? null,
+  })
+
+  if (profileError) {
+    throw new Error(`Failed to create invited user profile for ${email}: ${profileError.message}`)
+  }
+
+  const roleId = await resolveRoleId(input.supabase, input.role)
+  const inviteToken = generateInviteToken()
+  const inviteTokenExpiresAt = getInviteTokenExpiry()
+
+  const { data, error } = await input.supabase
+    .from("memberships")
+    .upsert({
+      org_id: input.orgId,
+      user_id: targetUserId,
+      role_id: roleId,
+      status: "invited",
+      invited_by: input.actorUserId,
+      invite_token: inviteToken,
+      invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
+    })
+    .select(
+      `
+      id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
+      role:roles!memberships_role_id_fkey(key, label),
+      invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
+    `,
+    )
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error(`Failed to create membership for ${email}: ${error?.message}`)
+  }
+
+  if (input.sendEmail !== false) {
+    const orgBrand = await getOrgBrand(input.supabase, input.orgId)
+    const inviteLink = getInviteLink(inviteToken)
+    const inviter = data.invited_by_user as { full_name?: string | null; email?: string | null } | null
+    await sendInviteEmail({
+      to: email,
+      inviteLink,
+      orgName: orgBrand.name,
+      orgLogoUrl: orgBrand.logoUrl,
+      inviterName: inviter?.full_name ?? null,
+      inviterEmail: inviter?.email ?? null,
+    })
+  }
+
+  return data
+}
+
 async function mapMfaEnabledByUser(serviceClient: SupabaseClient, userIds: string[]) {
   if (userIds.length === 0) return {}
   const output: Record<string, boolean> = {}

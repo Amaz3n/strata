@@ -1,9 +1,8 @@
-import type { SupabaseClient } from "@supabase/supabase-js"
-
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { syncOrgEntitlementsFromPlan } from "@/lib/services/billing"
+import { createOrgMemberInvite } from "@/lib/services/team"
 
 export interface ProvisionOrgInput {
   name: string
@@ -14,18 +13,11 @@ export interface ProvisionOrgInput {
   primaryName?: string | null
   trialDays?: number | null
   createdBy: string
+  sendInviteEmail?: boolean
 }
 
 function normalizeSlug(slug: string) {
   return slug.toLowerCase().replace(/[^a-z0-9-]/g, "")
-}
-
-async function resolveRoleId(client: SupabaseClient, roleKey: string) {
-  const { data, error } = await client.from("roles").select("id").eq("scope", "org").eq("key", roleKey).maybeSingle()
-  if (error || !data?.id) {
-    throw new Error(`Role ${roleKey} not found`)
-  }
-  return data.id as string
 }
 
 function resolveTrialDays(input?: number | null) {
@@ -65,30 +57,15 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
     throw new Error(orgError?.message ?? "Failed to create organization.")
   }
 
-  const roleId = await resolveRoleId(supabase, "org_owner")
-
-  const { data: invited, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(input.primaryEmail, {
-    data: {
-      full_name: input.primaryName ?? undefined,
-      org_id: org.id,
-    },
+  await createOrgMemberInvite({
+    supabase,
+    orgId: org.id,
+    actorUserId: input.createdBy,
+    email: input.primaryEmail,
+    fullName: input.primaryName,
+    role: "org_owner",
+    sendEmail: input.sendInviteEmail,
   })
-
-  if (inviteError || !invited?.user?.id) {
-    throw new Error(inviteError?.message ?? "Failed to invite primary contact.")
-  }
-
-  const { error: membershipError } = await supabase.from("memberships").upsert({
-    org_id: org.id,
-    user_id: invited.user.id,
-    role_id: roleId,
-    status: "invited",
-    invited_by: input.createdBy,
-  })
-
-  if (membershipError) {
-    throw new Error(membershipError.message)
-  }
 
   if (input.billingModel === "subscription") {
     const trialDays = resolveTrialDays(input.trialDays)
