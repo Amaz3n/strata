@@ -17,12 +17,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { NotificationPreferences } from "@/components/settings/notification-preferences"
+import { AppearanceSettings } from "@/components/settings/appearance-settings"
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
 import { StripeConnectionCard } from "@/components/integrations/stripe-connection-card"
 import { Spinner } from "@/components/ui/spinner"
-import { AlertTriangle, ArrowRight, Bell, Building2, Check, Clock, CreditCard, Link2, Receipt, Settings, Shield, Sparkles, Tag, User as UserIcon, Users, Zap } from "@/components/icons"
+import { AlertTriangle, ArrowRight, Bell, Building2, Check, Clock, CreditCard, Link2, Receipt, Settings, Shield, SlidersHorizontal, Sparkles, Tag, User as UserIcon, Users, Zap } from "@/components/icons"
 import { Info } from "lucide-react"
 import { getQBOConnectionAction, getStripeConnectedAccountAction } from "@/app/(app)/settings/integrations/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
@@ -69,6 +70,12 @@ const sections = [
     label: "Notifications",
     description: "How you get updates",
     icon: Bell,
+  },
+  {
+    value: "appearance",
+    label: "Appearance",
+    description: "Theme and UI size",
+    icon: SlidersHorizontal,
   },
   {
     value: "integrations",
@@ -1335,6 +1342,10 @@ export function SettingsWindow({
                 <div className="mx-auto flex max-w-6xl justify-center">
                   <NotificationPreferences />
                 </div>
+              </TabsContent>
+
+              <TabsContent value="appearance" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
+                <AppearanceSettings />
               </TabsContent>
 
               <TabsContent value="integrations" className="m-0 mt-0 outline-none focus-visible:outline-none">

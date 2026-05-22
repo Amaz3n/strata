@@ -5,6 +5,7 @@ import Script from "next/script"
 import { Analytics } from "@vercel/analytics/react"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
+import { PersonalizationProvider } from "@/components/personalization-provider"
 import { Toaster } from "@/components/ui/sonner"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 
@@ -45,7 +46,10 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          {children}
+          <Script id="arc-ui-size-init" strategy="beforeInteractive">
+            {`try{var s=localStorage.getItem("arc-ui-size");document.documentElement.dataset.uiSize=s==="compact"||s==="comfortable"?s:"default"}catch(e){document.documentElement.dataset.uiSize="default"}`}
+          </Script>
+          <PersonalizationProvider>{children}</PersonalizationProvider>
           <Toaster />
           <Analytics />
           <ServiceWorkerRegister />
