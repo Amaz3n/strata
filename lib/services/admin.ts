@@ -133,15 +133,21 @@ export interface Customer {
   slug: string
   status: string
   billingModel: string
+  billingEmail: string | null
   memberCount: number
   createdAt: string
   subscription?: {
+    id: string
+    planCode: string | null
     status: string
-    planName: string
-    amountCents: number
-    currency: string
-    interval: string
-    currentPeriodEnd: string
+    planName: string | null
+    amountCents: number | null
+    currency: string | null
+    interval: string | null
+    currentPeriodEnd: string | null
+    trialEndsAt: string | null
+    externalCustomerId: string | null
+    externalSubscriptionId: string | null
   } | null
 }
 
@@ -215,6 +221,7 @@ export async function getCustomers({
       slug,
       status,
       billing_model,
+      billing_email,
       created_at
     `, { count: "exact" })
 
@@ -251,9 +258,13 @@ export async function getCustomers({
     const { data: subscriptionData } = await supabase
       .from("subscriptions")
       .select(`
+        id,
         plan_code,
         status,
         current_period_end,
+        trial_ends_at,
+        external_customer_id,
+        external_subscription_id,
         plans (
           name,
           amount_cents,
@@ -270,12 +281,17 @@ export async function getCustomers({
     if (subscriptionData) {
       const plan = Array.isArray(subscriptionData.plans) ? subscriptionData.plans[0] : subscriptionData.plans
       subscription = {
+        id: subscriptionData.id,
+        planCode: subscriptionData.plan_code ?? null,
         status: subscriptionData.status,
         planName: plan?.name ?? subscriptionData.plan_code ?? null,
         amountCents: plan?.amount_cents ?? null,
         currency: plan?.currency ?? null,
         interval: plan?.interval ?? null,
         currentPeriodEnd: subscriptionData.current_period_end ?? null,
+        trialEndsAt: subscriptionData.trial_ends_at ?? null,
+        externalCustomerId: subscriptionData.external_customer_id ?? null,
+        externalSubscriptionId: subscriptionData.external_subscription_id ?? null,
       }
     }
 
@@ -285,6 +301,7 @@ export async function getCustomers({
       slug: org.slug || '',
       status: org.status,
       billingModel: org.billing_model,
+      billingEmail: org.billing_email ?? null,
       memberCount: memberCount || 0,
       createdAt: org.created_at,
       subscription,

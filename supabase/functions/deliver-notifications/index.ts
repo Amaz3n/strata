@@ -18,7 +18,7 @@ serve(async (req) => {
       .select(`
         *,
         app_users!inner(email, full_name),
-        user_notification_prefs(email_enabled)
+        user_notification_prefs(email_enabled, email_type_settings)
       `)
       .eq('id', notificationId)
       .single()
@@ -72,6 +72,9 @@ async function deliverEmail(notification: any): Promise<void> {
   if (!prefs?.email_enabled) {
     throw new Error('Email notifications disabled')
   }
+  if (!isEmailNotificationTypeEnabled(prefs.email_type_settings, notification.notification_type)) {
+    throw new Error('Email notification type disabled')
+  }
 
   const emailResponse = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -93,6 +96,25 @@ async function deliverEmail(notification: any): Promise<void> {
   }
 
   return await emailResponse.json()
+}
+
+function isEmailNotificationTypeEnabled(settings: any, notificationType: string | null | undefined): boolean {
+  if (!notificationType) return true
+
+  const configurableTypes = new Set([
+    'change_order_approved',
+    'recipient_signed',
+    'payment_recorded',
+    'rfi_created',
+    'warranty_request_created',
+    'submittal_decided',
+    'schedule_risk',
+  ])
+
+  if (!configurableTypes.has(notificationType)) return true
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return true
+
+  return settings[notificationType] !== false
 }
 
 function generateEmailHTML(notification: any) {
@@ -139,7 +161,6 @@ function generateEmailHTML(notification: any) {
     </html>
   `
 }
-
 
 
 

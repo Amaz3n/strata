@@ -2,8 +2,14 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { CustomersClient } from "@/components/admin/customers-table"
 import { getCustomers } from "@/lib/services/admin"
-import { extendCustomerTrialAction, provisionCustomerAction } from "@/app/(app)/admin/customers/actions"
+import {
+  extendCustomerTrialAction,
+  provisionCustomerAction,
+  updateCustomerDetailsAction,
+  updateCustomerSubscriptionAction,
+} from "@/app/(app)/admin/customers/actions"
 import { enterOrgContextAction, setOrganizationStatusAction } from "@/app/(app)/platform/actions"
+import { listActiveSubscriptionPlans } from "@/lib/services/billing"
 
 export const dynamic = 'force-dynamic'
 
@@ -19,13 +25,16 @@ export default async function CustomersPage({
   const plan = typeof searchParams.plan === 'string' ? searchParams.plan : 'all'
   const page = typeof searchParams.page === 'string' ? parseInt(searchParams.page) : 1
 
-  const { customers, totalCount, hasNextPage, hasPrevPage } = await getCustomers({
-    search,
-    status: status === 'all' ? undefined : status,
-    plan: plan === 'all' ? undefined : plan,
-    page,
-    limit: 20,
-  })
+  const [{ customers, totalCount, hasNextPage, hasPrevPage }, subscriptionPlans] = await Promise.all([
+    getCustomers({
+      search,
+      status: status === 'all' ? undefined : status,
+      plan: plan === 'all' ? undefined : plan,
+      page,
+      limit: 20,
+    }),
+    listActiveSubscriptionPlans(),
+  ])
 
   return (
     <PageLayout
@@ -45,8 +54,11 @@ export default async function CustomersPage({
           status={status}
           plan={plan}
           page={page}
+          subscriptionPlans={subscriptionPlans}
           onProvision={provisionCustomerAction}
           onExtendTrial={extendCustomerTrialAction}
+          onUpdateCustomer={updateCustomerDetailsAction}
+          onUpdateSubscription={updateCustomerSubscriptionAction}
           onEnterContext={enterOrgContextAction}
           onSetStatus={setOrganizationStatusAction}
         />

@@ -9,10 +9,20 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, MoreHorizontal, Eye, Edit, Copy, DollarSign } from "@/components/icons"
+import { Plus, MoreHorizontal, Eye, Edit, Copy, DollarSign, Trash2 } from "@/components/icons"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { PlanCreateSheet } from "@/components/admin/plan-create-sheet"
-import { createPlanAction } from "@/app/(app)/admin/plans/actions"
+import { createPlanAction, deletePlanAction } from "@/app/(app)/admin/plans/actions"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 type StatusKey = "active" | "inactive"
 
@@ -85,6 +95,31 @@ export function PlansClient({ plans }: PlansClientProps) {
     })
   }
 
+  const [planToDelete, setPlanToDelete] = useState<Plan | null>(null)
+  const [deleting, startDeleting] = useTransition()
+
+  async function handleDelete() {
+    if (!planToDelete) return
+
+    startDeleting(async () => {
+      try {
+        const result = await deletePlanAction(planToDelete.code)
+
+        if (result.error) {
+          toast.error("Failed to delete plan", { description: result.error })
+        } else {
+          toast.success("Plan deleted", { description: result.message })
+          setPlanToDelete(null)
+          // Refresh the page to show the updated plans
+          window.location.reload()
+        }
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Failed to delete plan", { description: error?.message ?? "Please try again." })
+      }
+    })
+  }
+
   return (
     <div className="space-y-4">
       <PlanCreateSheet
@@ -93,6 +128,31 @@ export function PlansClient({ plans }: PlansClientProps) {
         onCreate={handleCreate}
         loading={creating}
       />
+
+      <AlertDialog open={Boolean(planToDelete)} onOpenChange={(open) => !open && setPlanToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete subscription plan?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete the plan <span className="font-semibold text-foreground">"{planToDelete?.name}"</span> (<code className="font-mono bg-muted px-1.5 py-0.5 rounded text-xs">{planToDelete?.code}</code>)? 
+              This action cannot be undone. It will only succeed if the plan is not in use by any active or inactive subscriptions or licenses.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault()
+                handleDelete()
+              }}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting..." : "Delete Plan"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-1 items-center gap-2">
@@ -211,6 +271,13 @@ export function PlansClient({ plans }: PlansClientProps) {
                           <DropdownMenuItem>
                             <Copy className="mr-2 h-4 w-4" />
                             Duplicate
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer"
+                            onClick={() => setPlanToDelete(plan)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete plan
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>

@@ -245,6 +245,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "submittal_decided",
     "change_order_created",
     "change_order_published",
+    "change_order_approved",
     "invoice_created",
     "invoice_updated",
     "invoice_sent",
@@ -252,6 +253,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "vendor_bill_submitted",
     "selection_created",
     "portal_message",
+    "recipient_signed",
     "file_created",
     "file_archived",
     "file_deleted",
@@ -261,6 +263,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "drawing_pin_created",
     "lien_waiver_created",
     "lien_waiver_signed",
+    "warranty_request_created",
   ])
 
   const orgScopedEvents = new Set<string>([
@@ -457,6 +460,19 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         eventId: event.id,
       }
 
+    case "change_order_approved":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "change_order_approved" as NotificationType,
+        title: "Change order approved",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
     case "invoice_sent":
       return {
         orgId: event.org_id,
@@ -479,6 +495,36 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         userId,
         type: "payment_recorded" as NotificationType,
         title: "Payment received",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "recipient_signed":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "recipient_signed" as NotificationType,
+        title: "Signature completed",
+        message: fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "warranty_request_created":
+      if (safePayload.created_via_portal !== true) {
+        return null
+      }
+
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "warranty_request_created" as NotificationType,
+        title: "Warranty request created",
         message: fallbackMessage,
         projectId: projectId ?? undefined,
         entityType: entity_type,
@@ -563,6 +609,8 @@ function titleForEventType(eventType: string): string {
       return "Change order created"
     case "change_order_published":
       return "Change order published"
+    case "change_order_approved":
+      return "Change order approved"
     case "invoice_created":
       return "Invoice created"
     case "invoice_updated":
@@ -573,6 +621,10 @@ function titleForEventType(eventType: string): string {
       return "Payment received"
     case "portal_message":
       return "New portal message"
+    case "recipient_signed":
+      return "Signature completed"
+    case "warranty_request_created":
+      return "Warranty request created"
     default:
       return eventType.replace(/_/g, " ")
   }

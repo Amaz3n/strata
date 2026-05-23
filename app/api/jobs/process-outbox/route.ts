@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { sendEmail } from "@/lib/services/mailer"
+import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
 import {
   createDrawingSheet,
   createSheetVersion,
@@ -585,12 +586,15 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
 
   const { data: prefs } = await supabase
     .from("user_notification_prefs")
-    .select("email_enabled")
+    .select("email_enabled, email_type_settings")
     .eq("org_id", notification.org_id)
     .eq("user_id", notification.user_id)
     .maybeSingle()
 
   if (prefs && prefs.email_enabled === false) {
+    return
+  }
+  if (prefs && !isEmailNotificationTypeEnabled(prefs.email_type_settings, notification.notification_type)) {
     return
   }
 

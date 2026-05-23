@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { authorize, requireAuthorization } from "@/lib/services/authorization"
+import { authorize, listAllPermissionKeys, requireAuthorization } from "@/lib/services/authorization"
 import { isPlatformAdminId } from "@/lib/auth/platform"
 
 type PermissionRow = { role?: { permissions?: { permission_key: string }[] } }
@@ -74,11 +74,23 @@ async function resolveContext(ctx?: Partial<PermissionContext>): Promise<Permiss
 
 export async function getUserPermissions(userId: string, orgId: string, supabase?: SupabaseClient) {
   if (isPlatformAdminId(userId, undefined)) {
-    return ["*"]
+    const client = createServiceSupabaseClient()
+    return ["*", ...(await listAllPermissionKeys(client))]
   }
 
   // Always use service role to bypass restrictive RLS on role_permissions.
   const client = createServiceSupabaseClient()
+  const platformDecision = await authorize({
+    permission: "platform.org.access",
+    userId,
+    orgId,
+    supabase: client,
+  })
+
+  if (platformDecision.allowed) {
+    return ["*", ...(await listAllPermissionKeys(client))]
+  }
+
   return fetchPermissions({ supabase: client, orgId, userId })
 }
 

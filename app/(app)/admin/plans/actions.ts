@@ -103,3 +103,56 @@ export async function createPlanAction(prevState: { error?: string; message?: st
     return { error: error?.message ?? "Failed to create subscription plan" }
   }
 }
+
+export async function deletePlanAction(planCode: string) {
+  const { user } = await requireAuth()
+  await requireAnyPermission(["billing.manage", "platform.billing.manage"], { userId: user.id })
+
+  if (!planCode || typeof planCode !== "string") {
+    return { error: "Invalid plan code" }
+  }
+
+  const supabase = createServiceSupabaseClient()
+
+  try {
+    // 1. Check if the plan is in use by subscriptions
+    const { count: subscriptionCount, error: subError } = await supabase
+      .from("subscriptions")
+      .select("*", { count: "exact", head: true })
+      .eq("plan_code", planCode)
+
+    if (subError) throw subError
+
+    // 2. Check if the plan is in use by licenses
+    const { count: licenseCount, error: licError } = await supabase
+      .from("licenses")
+      .select("*", { count: "exact", head: true })
+      .eq("plan_code", planCode)
+
+    if (licError) throw licError
+
+    if ((subscriptionCount ?? 0) > 0 || (licenseCount ?? 0) > 0) {
+      const parts = []
+      if ((subscriptionCount ?? 0) > 0) parts.push(`${subscriptionCount} subscription(s)`)
+      if ((licenseCount ?? 0) > 0) parts.push(`${licenseCount} license(s)`)
+      return {
+        error: `Cannot delete plan "${planCode}" because it is currently in use by ${parts.join(" and ")}. Please deactivate the plan instead.`
+      }
+    }
+
+    // 3. Delete the plan (this will cascade delete plan_feature_limits)
+    const { error: deleteError } = await supabase
+      .from("plans")
+      .delete()
+      .eq("code", planCode)
+
+    if (deleteError) throw deleteError
+
+    revalidatePath("/admin/plans")
+    return { message: `Plan "${planCode}" has been successfully removed.` }
+  } catch (error: any) {
+    console.error("Failed to delete plan:", error)
+    return { error: error?.message ?? "Failed to delete subscription plan" }
+  }
+}
+

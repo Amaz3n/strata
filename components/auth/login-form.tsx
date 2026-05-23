@@ -5,8 +5,14 @@ import { useActionState, useEffect, useMemo, useState, useTransition } from "rea
 import { useSearchParams } from "next/navigation"
 import { ArrowLeft } from "lucide-react"
 
-import { signInAction, type AuthState } from "@/app/(auth)/auth/actions"
-import { AlertCircle, Loader2, ShieldCheck } from "@/components/icons"
+import {
+  lookupSignInAccountAction,
+  sendFirstPasswordSetupAction,
+  signInAction,
+  type AuthState,
+  type SignInAccountState,
+} from "@/app/(auth)/auth/actions"
+import { AlertCircle, CheckCircle, Loader2, Mail, ShieldCheck } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,12 +32,21 @@ export function LoginForm({
   ...props
 }: React.ComponentProps<"div">) {
   const [state, formAction, pending] = useActionState(signInAction, initialState)
-  const [step, setStep] = useState<"credentials" | "mfa">("credentials")
+  const [step, setStep] = useState<"email" | "password" | "setup" | "mfa">("email")
+  const [email, setEmail] = useState("")
+  const [accountState, setAccountState] = useState<SignInAccountState | null>(null)
+  const [lookupError, setLookupError] = useState<string | null>(null)
+  const [setupMessage, setSetupMessage] = useState<string | null>(null)
+  const [setupError, setSetupError] = useState<string | null>(null)
+  const [isLookupPending, startLookupTransition] = useTransition()
+  const [isSetupPending, startSetupTransition] = useTransition()
   const searchParams = useSearchParams()
   const inactiveAccount = searchParams.get("reason") === "inactive-account"
   const inviteOnlySignup = searchParams.get("reason") === "invite-only"
+  const routeMessage = searchParams.get("message")
   const displayError =
-    state.error ??
+    (step === "password" ? state.error : null) ??
+    lookupError ??
     (inactiveAccount ? "This account has been archived. Contact your organization admin to restore access." : null)
 
   // MFA state
@@ -75,6 +90,58 @@ export function LoginForm({
     return () => window.clearTimeout(timer)
   }, [state.mfaRequired, supabase.auth.mfa])
 
+  const submitEmailLookup = () => {
+    if (isLookupPending) return
+
+    setLookupError(null)
+    setSetupError(null)
+    setSetupMessage(null)
+
+    startLookupTransition(async () => {
+      const result = await lookupSignInAccountAction(email)
+      setAccountState(result)
+
+      if (result.status === "password") {
+        setEmail(result.email)
+        setStep("password")
+        return
+      }
+
+      if (result.status === "setup") {
+        setEmail(result.email)
+        setStep("setup")
+        return
+      }
+
+      setLookupError(result.message ?? "We could not find an active account for that email.")
+    })
+  }
+
+  const sendSetupLink = () => {
+    if (!email || isSetupPending) return
+
+    setSetupError(null)
+    setSetupMessage(null)
+    startSetupTransition(async () => {
+      const result = await sendFirstPasswordSetupAction(email)
+      if (result.error) {
+        setSetupError(result.error)
+        return
+      }
+      setSetupMessage(result.message ?? "Check your email for a secure setup link.")
+    })
+  }
+
+  const goBackToEmail = () => {
+    setStep("email")
+    setAccountState(null)
+    setLookupError(null)
+    setSetupError(null)
+    setSetupMessage(null)
+    setCode("")
+    setMfaError(null)
+  }
+
   const submitMfa = () => {
     if (!factorId || code.length !== 6 || isMfaPending) return
 
@@ -97,7 +164,7 @@ export function LoginForm({
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
-    setStep("credentials")
+    setStep("email")
     setFactorId(null)
     setCode("")
     setMfaError(null)
@@ -106,37 +173,101 @@ export function LoginForm({
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
       <div className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {step === "credentials" ? "Welcome back" : "Two-factor verification"}
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{resolveTitle(step)}</h1>
         <p className="text-sm text-muted-foreground text-balance">
-          {step === "credentials"
-            ? "Enter your credentials to access your account."
-            : "Enter the 6-digit code from your authenticator app."
-          }
+          {resolveDescription(step, accountState?.orgName)}
         </p>
       </div>
 
       <div className="relative overflow-hidden">
-        {/* Credentials step */}
+        {/* Email step */}
         <div
           className={cn(
             "transition-all duration-300 ease-out",
-            step === "mfa" && "-translate-x-full opacity-0 absolute inset-0 pointer-events-none",
+            step !== "email" && "-translate-x-full opacity-0 absolute inset-0 pointer-events-none",
           )}
         >
-          <form action={formAction} className="grid gap-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              submitEmailLookup()
+            }}
+            className="grid gap-4"
+          >
             <div className="grid gap-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email">Work email</Label>
               <Input
                 id="email"
-                name="email"
                 type="email"
                 placeholder="you@company.com"
                 autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    submitEmailLookup()
+                  }
+                }}
                 required
               />
             </div>
+
+            {displayError && (
+              <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
+                <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                <span>{displayError}</span>
+              </div>
+            )}
+
+            {routeMessage && !displayError && (
+              <div className="flex items-start gap-2 border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5 text-sm text-emerald-700 dark:text-emerald-300">
+                <CheckCircle className="mt-0.5 size-4 shrink-0" />
+                <span>{routeMessage}</span>
+              </div>
+            )}
+
+            <Button type="button" className="w-full" onClick={submitEmailLookup} disabled={isLookupPending}>
+              {isLookupPending ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Checking account...
+                </>
+              ) : (
+                "Continue"
+              )}
+            </Button>
+          </form>
+
+          {inviteOnlySignup && (
+            <div className="mt-4 border border-primary/20 bg-primary/5 px-3 py-2.5 text-sm text-primary">
+              Account creation is managed by organization admins. Ask your admin for an invite.
+            </div>
+          )}
+        </div>
+
+        {/* Password step */}
+        <div
+          className={cn(
+            "transition-all duration-300 ease-out",
+            step !== "password" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
+          )}
+        >
+          <form action={formAction} className="grid gap-4">
+            <input type="hidden" name="email" value={email} />
+
+            <div className="flex items-center gap-2 border border-border bg-muted/40 px-3 py-2 text-sm">
+              <Mail className="size-4 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{email}</span>
+              <button
+                type="button"
+                onClick={goBackToEmail}
+                className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+              >
+                Change
+              </button>
+            </div>
+
             <div className="grid gap-2">
               <div className="flex items-center">
                 <Label htmlFor="password">Password</Label>
@@ -175,19 +306,74 @@ export function LoginForm({
               )}
             </Button>
           </form>
+        </div>
 
-          {inviteOnlySignup && (
-            <div className="mt-4 border border-primary/20 bg-primary/5 px-3 py-2.5 text-sm text-primary">
-              Account creation is managed by organization admins. Ask your admin for an invite.
-            </div>
+        {/* First-time setup step */}
+        <div
+          className={cn(
+            "transition-all duration-300 ease-out",
+            step !== "setup" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
           )}
+        >
+          <div className="grid gap-4">
+            <div className="flex items-center gap-2 border border-border bg-muted/40 px-3 py-2 text-sm">
+              <Mail className="size-4 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{email}</span>
+              <button
+                type="button"
+                onClick={goBackToEmail}
+                className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+              >
+                Change
+              </button>
+            </div>
+
+            <div className="border border-primary/20 bg-primary/5 px-4 py-3">
+              <div className="flex items-start gap-3">
+                <div className="grid size-9 shrink-0 place-items-center bg-primary/10 text-primary">
+                  <ShieldCheck className="size-4" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Your account is ready for setup.</p>
+                  <p className="text-sm text-muted-foreground">
+                    We&apos;ll email a secure link so you can create your password and enter the workspace.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {setupError && (
+              <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
+                <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                <span>{setupError}</span>
+              </div>
+            )}
+
+            {setupMessage && (
+              <div className="flex items-start gap-2 border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5 text-sm text-emerald-700 dark:text-emerald-300">
+                <CheckCircle className="mt-0.5 size-4 shrink-0" />
+                <span>{setupMessage}</span>
+              </div>
+            )}
+
+            <Button type="button" className="w-full" onClick={sendSetupLink} disabled={isSetupPending}>
+              {isSetupPending ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Sending setup link...
+                </>
+              ) : (
+                "Email setup link"
+              )}
+            </Button>
+          </div>
         </div>
 
         {/* MFA step */}
         <div
           className={cn(
             "transition-all duration-300 ease-out",
-            step === "credentials" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
+            step !== "mfa" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
           )}
         >
           <div className="mx-auto grid w-full max-w-[15rem] justify-items-center gap-6">
@@ -264,6 +450,32 @@ export function LoginForm({
           </div>
         </div>
       </div>
+
+      <p className="text-center text-xs leading-relaxed text-muted-foreground">
+        By continuing, you agree to Arc&apos;s{" "}
+        <Link href="/terms" className="underline-offset-4 hover:text-foreground hover:underline">
+          Terms of Service
+        </Link>{" "}
+        and{" "}
+        <Link href="/privacy" className="underline-offset-4 hover:text-foreground hover:underline">
+          Privacy Policy
+        </Link>
+        .
+      </p>
     </div>
   )
+}
+
+function resolveTitle(step: "email" | "password" | "setup" | "mfa") {
+  if (step === "password") return "Enter your password"
+  if (step === "setup") return "Set up your account"
+  if (step === "mfa") return "Two-factor verification"
+  return "Welcome to Arc"
+}
+
+function resolveDescription(step: "email" | "password" | "setup" | "mfa", orgName?: string | null) {
+  if (step === "password") return orgName ? `Sign in to ${orgName}.` : "Sign in to your workspace."
+  if (step === "setup") return orgName ? `Create access for ${orgName}.` : "Create access for your workspace."
+  if (step === "mfa") return "Enter the 6-digit code from your authenticator app."
+  return "Enter your work email to continue to your workspace."
 }

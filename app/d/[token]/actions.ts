@@ -8,6 +8,7 @@ import { ENVELOPE_EVENT_TYPES, buildUnifiedSigningUrl } from "@/lib/esign/unifie
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { generateExecutedPdf } from "@/lib/pdfs/esign"
 import { recordESignEvent } from "@/lib/services/esign-events"
+import { recordEvent } from "@/lib/services/events"
 import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
 import { sendEmail } from "@/lib/services/mailer"
 import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
@@ -250,6 +251,20 @@ export async function submitDocumentSignatureAction(input: {
     payload: {
       signing_request_id: signingRequest.id,
       sequence: sequence,
+      signer_role: signerRole,
+      signed_at: nowIso,
+    },
+  })
+
+  await recordEvent({
+    orgId: signingRequest.org_id,
+    eventType: ENVELOPE_EVENT_TYPES.recipientSigned,
+    entityType: "document",
+    entityId: signingRequest.document_id,
+    payload: {
+      project_id: document.project_id,
+      title: `${input.signerName.trim()} signed ${document.title}`,
+      signing_request_id: signingRequest.id,
       signer_role: signerRole,
       signed_at: nowIso,
     },

@@ -7,15 +7,12 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
       <div className="flex flex-col gap-4 p-6 md:p-10">
         <div className="flex justify-center gap-2 md:justify-start">
           <Link href="/" className="flex items-center gap-2 font-medium">
-            <img src="/arc-logo2.svg" alt="Arc" className="size-6" />
+            <img src="/arc-favicon.svg" alt="Arc" className="size-7 shadow-sm" />
             <span className="text-sm font-semibold tracking-tight">Arc</span>
           </Link>
         </div>
         <div className="flex flex-1 items-center justify-center">
           <div className="w-full max-w-sm">{children}</div>
-        </div>
-        <div className="text-center text-xs text-muted-foreground md:text-left">
-          &copy; {new Date().getFullYear()} Arc. All rights reserved.
         </div>
       </div>
       <div className="relative hidden overflow-hidden lg:block">

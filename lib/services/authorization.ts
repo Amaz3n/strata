@@ -66,6 +66,7 @@ function unique(values: string[]) {
 }
 
 const permissionCatalogCache = new Map<string, { exists: boolean; expiresAt: number }>()
+let allPermissionCatalogCache: { permissions: string[]; expiresAt: number } | null = null
 const PERMISSION_CACHE_TTL_MS = 60 * 1000
 
 async function permissionExists(supabase: SupabaseClient, permission: string) {
@@ -88,6 +89,22 @@ async function permissionExists(supabase: SupabaseClient, permission: string) {
   const exists = Boolean(data?.key)
   permissionCatalogCache.set(permission, { exists, expiresAt: now + PERMISSION_CACHE_TTL_MS })
   return exists
+}
+
+export async function listAllPermissionKeys(supabase: SupabaseClient = createServiceSupabaseClient()) {
+  const now = Date.now()
+  if (allPermissionCatalogCache && allPermissionCatalogCache.expiresAt > now) {
+    return allPermissionCatalogCache.permissions
+  }
+
+  const { data, error } = await supabase.from("permissions").select("key").order("key", { ascending: true })
+  if (error) {
+    throw new Error(`Unable to load permission catalog: ${error.message}`)
+  }
+
+  const permissions = unique((data ?? []).map((row: any) => row.key as string).filter(Boolean))
+  allPermissionCatalogCache = { permissions, expiresAt: now + PERMISSION_CACHE_TTL_MS }
+  return permissions
 }
 
 async function fetchOrgPermissions({
@@ -335,6 +352,20 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   if (platformResult.hasMembership) {
     scopesEvaluated.push("platform")
     permissionSet.push(...platformResult.permissions)
+  }
+
+  const hasPlatformOrgAccess =
+    platformResult.permissions.includes("*") || platformResult.permissions.includes("platform.org.access")
+  if (hasPlatformOrgAccess && (resolvedOrgId || input.projectId)) {
+    const allPermissions = await listAllPermissionKeys(supabase)
+    scopesEvaluated.push("platform_org_context")
+    permissionSet.push("*", ...allPermissions)
+    orgPermissionSet.push("*", ...allPermissions)
+    deniedPermissions.length = 0
+    hasOrgMembership = true
+    if (input.projectId) {
+      hasProjectMembership = true
+    }
   }
 
   const denied = unique(deniedPermissions)

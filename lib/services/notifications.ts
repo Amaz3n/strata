@@ -1,7 +1,12 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requireOrgMembership } from "@/lib/auth/context"
-import type { NotificationType, NotificationInput } from "@/lib/types/notifications"
+import {
+  EMAIL_NOTIFICATION_TYPES,
+  type EmailNotificationTypeSettings,
+  type NotificationType,
+  type NotificationInput,
+} from "@/lib/types/notifications"
 
 // Re-export types for backward compatibility
 export type { NotificationType, NotificationInput }
@@ -10,6 +15,7 @@ export interface UserNotificationPreferences {
   email_enabled: boolean
   weekly_snapshot_enabled: boolean
   weekly_snapshot_last_sent_for_week?: string | null
+  email_type_settings: EmailNotificationTypeSettings
 }
 
 export interface NotificationRecord {
@@ -25,7 +31,7 @@ export interface NotificationRecord {
 export class NotificationService {
   // Create notification + queue delivery
   async createAndQueue(input: NotificationInput): Promise<string> {
-    const { supabase } = await requireOrgMembership(input.orgId)
+    const supabase = createServiceSupabaseClient()
 
     // Create notification record
     const { data: notification, error } = await supabase
@@ -125,7 +131,6 @@ export class NotificationService {
     return count || 0
   }
 
-  // Basic preferences (just email on/off for now)
   async getUserPreferences(userId: string, orgId?: string): Promise<UserNotificationPreferences> {
     if (!orgId) {
       // For server actions, we need to get the orgId from context
@@ -133,17 +138,17 @@ export class NotificationService {
 
       const { data, error } = await supabase
         .from('user_notification_prefs')
-        .select('email_enabled, weekly_snapshot_enabled, weekly_snapshot_last_sent_for_week')
+        .select('email_enabled, weekly_snapshot_enabled, weekly_snapshot_last_sent_for_week, email_type_settings')
         .eq('user_id', userId)
         .eq('org_id', resolvedOrgId)
         .single()
 
       if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
         console.error('Failed to get user preferences:', error)
-        return { email_enabled: true, weekly_snapshot_enabled: false } // Default preferences
+        return defaultNotificationPreferences()
       }
 
-      return data || { email_enabled: true, weekly_snapshot_enabled: false }
+      return normalizeNotificationPreferences(data)
     }
 
     // For direct service calls with orgId provided
@@ -151,22 +156,26 @@ export class NotificationService {
 
     const { data, error } = await supabase
       .from('user_notification_prefs')
-      .select('email_enabled, weekly_snapshot_enabled, weekly_snapshot_last_sent_for_week')
+      .select('email_enabled, weekly_snapshot_enabled, weekly_snapshot_last_sent_for_week, email_type_settings')
       .eq('user_id', userId)
       .eq('org_id', orgId)
       .single()
 
     if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
       console.error('Failed to get user preferences:', error)
-      return { email_enabled: true, weekly_snapshot_enabled: false } // Default preferences
+      return defaultNotificationPreferences()
     }
 
-    return data || { email_enabled: true, weekly_snapshot_enabled: false }
+    return normalizeNotificationPreferences(data)
   }
 
   async updateUserPreferences(
     userId: string,
-    input: { email_enabled: boolean; weekly_snapshot_enabled: boolean },
+    input: {
+      email_enabled: boolean
+      weekly_snapshot_enabled: boolean
+      email_type_settings?: EmailNotificationTypeSettings
+    },
     orgId?: string,
   ): Promise<void> {
     let resolvedOrgId = orgId
@@ -186,6 +195,7 @@ export class NotificationService {
         user_id: userId,
         email_enabled: input.email_enabled,
         weekly_snapshot_enabled: input.weekly_snapshot_enabled,
+        ...(input.email_type_settings ? { email_type_settings: normalizeEmailTypeSettings(input.email_type_settings) } : {}),
         updated_at: new Date().toISOString()
       }, {
         onConflict: 'user_id,org_id'
@@ -195,5 +205,46 @@ export class NotificationService {
       console.error('Failed to update user preferences:', error)
       throw new Error(`Failed to update preferences: ${error.message}`)
     }
+  }
+}
+
+export function defaultEmailTypeSettings(): EmailNotificationTypeSettings {
+  return Object.fromEntries(EMAIL_NOTIFICATION_TYPES.map((type) => [type.key, true])) as EmailNotificationTypeSettings
+}
+
+export function normalizeEmailTypeSettings(input: unknown): EmailNotificationTypeSettings {
+  const defaults = defaultEmailTypeSettings()
+  if (!input || typeof input !== "object" || Array.isArray(input)) return defaults
+
+  const source = input as Record<string, unknown>
+  return Object.fromEntries(
+    EMAIL_NOTIFICATION_TYPES.map((type) => [type.key, source[type.key] !== false]),
+  ) as EmailNotificationTypeSettings
+}
+
+export function isEmailNotificationTypeEnabled(
+  settings: unknown,
+  notificationType: string | null | undefined,
+): boolean {
+  if (!notificationType) return true
+  if (!EMAIL_NOTIFICATION_TYPES.some((type) => type.key === notificationType)) return true
+  return normalizeEmailTypeSettings(settings)[notificationType as keyof EmailNotificationTypeSettings] !== false
+}
+
+function defaultNotificationPreferences(): UserNotificationPreferences {
+  return {
+    email_enabled: true,
+    weekly_snapshot_enabled: false,
+    email_type_settings: defaultEmailTypeSettings(),
+  }
+}
+
+function normalizeNotificationPreferences(data: any): UserNotificationPreferences {
+  if (!data) return defaultNotificationPreferences()
+  return {
+    email_enabled: data.email_enabled !== false,
+    weekly_snapshot_enabled: data.weekly_snapshot_enabled === true,
+    weekly_snapshot_last_sent_for_week: data.weekly_snapshot_last_sent_for_week ?? null,
+    email_type_settings: normalizeEmailTypeSettings(data.email_type_settings),
   }
 }

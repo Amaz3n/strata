@@ -15,6 +15,7 @@ export type NotificationType =
   | "submittal_decided"
   | "change_order_created"
   | "change_order_published"
+  | "change_order_approved"
   | "invoice_created"
   | "invoice_updated"
   | "invoice_sent"
@@ -42,6 +43,7 @@ export type NotificationType =
   | "warranty_item_created"
   | "warranty_item_due"
   | "warranty_item_expired"
+  | "warranty_request_created"
   | "contact_created"
   | "contact_updated"
   | "company_created"
@@ -60,6 +62,52 @@ export type NotificationType =
   | "contract_signed"
   | "commitment_created"
   | "commitment_updated"
+  | "recipient_signed"
+
+export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "change_order_approved",
+    label: "Change order approved",
+    description: "Email me when a change order is approved.",
+  },
+  {
+    key: "recipient_signed",
+    label: "Signature completed",
+    description: "Email me when someone signs through the signatures page.",
+  },
+  {
+    key: "payment_recorded",
+    label: "Invoice paid",
+    description: "Email me when an invoice payment is recorded.",
+  },
+  {
+    key: "rfi_created",
+    label: "RFI created",
+    description: "Email me when a new RFI is created.",
+  },
+  {
+    key: "warranty_request_created",
+    label: "Client warranty request",
+    description: "Email me when a client creates a warranty request.",
+  },
+  {
+    key: "submittal_decided",
+    label: "Submittal decided",
+    description: "Email me when a submittal receives a decision.",
+  },
+  {
+    key: "schedule_risk",
+    label: "Schedule risk issue",
+    description: "Email me when Arc flags a schedule risk.",
+  },
+] as const satisfies ReadonlyArray<{
+  key: NotificationType
+  label: string
+  description: string
+}>
+
+export type EmailNotificationType = (typeof EMAIL_NOTIFICATION_TYPES)[number]["key"]
+export type EmailNotificationTypeSettings = Partial<Record<EmailNotificationType, boolean>>
 
 export interface NotificationRecord {
   id: string
@@ -89,4 +137,3 @@ export interface NotificationInput {
   entityId?: string
   eventId?: string
 }
-

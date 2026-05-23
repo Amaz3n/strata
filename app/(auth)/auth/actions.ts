@@ -1,16 +1,26 @@
 "use server"
 
 import { cookies, headers } from "next/headers"
+import { randomBytes } from "node:crypto"
 import { redirect } from "next/navigation"
 import { z } from "zod"
 
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
-import { sendPasswordResetEmail } from "@/lib/services/mailer"
+import { sendInviteEmail, sendPasswordResetEmail } from "@/lib/services/mailer"
 
 export interface AuthState {
   error?: string
   message?: string
   mfaRequired?: boolean
+}
+
+export type SignInAccountStatus = "password" | "setup" | "missing" | "inactive"
+
+export interface SignInAccountState {
+  status: SignInAccountStatus
+  email: string
+  orgName?: string | null
+  message?: string
 }
 
 const signInSchema = z.object({
@@ -32,6 +42,10 @@ const signUpSchema = z.object({
 })
 
 const resetRequestSchema = z.object({
+  email: z.string().email(),
+})
+
+const lookupAccountSchema = z.object({
   email: z.string().email(),
 })
 
@@ -94,6 +108,161 @@ export async function signInAction(_prevState: AuthState, formData: FormData): P
   }
 
   redirect("/")
+}
+
+export async function lookupSignInAccountAction(emailInput: string): Promise<SignInAccountState> {
+  const parsed = lookupAccountSchema.safeParse({ email: emailInput })
+
+  if (!parsed.success) {
+    return {
+      status: "missing",
+      email: "",
+      message: "Enter a valid work email.",
+    }
+  }
+
+  const email = parsed.data.email.trim().toLowerCase()
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: userRow, error: userError } = await serviceClient
+    .from("app_users")
+    .select("id, email")
+    .ilike("email", email)
+    .maybeSingle()
+
+  if (userError) {
+    console.error("Failed to look up sign-in account", userError)
+    return {
+      status: "missing",
+      email,
+      message: "We could not check that account. Try again.",
+    }
+  }
+
+  if (!userRow?.id) {
+    return {
+      status: "missing",
+      email,
+      message: "No Arc account was found for that email.",
+    }
+  }
+
+  const { data: memberships, error: membershipError } = await serviceClient
+    .from("memberships")
+    .select("status, invite_token_expires_at, org:orgs(name)")
+    .eq("user_id", userRow.id)
+    .in("status", ["active", "invited", "suspended"])
+    .order("created_at", { ascending: true })
+
+  if (membershipError) {
+    console.error("Failed to load sign-in memberships", membershipError)
+    return {
+      status: "missing",
+      email,
+      message: "We could not check that account. Try again.",
+    }
+  }
+
+  const activeMembership = memberships?.find((membership) => membership.status === "active")
+  if (activeMembership) {
+    return {
+      status: "password",
+      email,
+      orgName: resolveMembershipOrgName(activeMembership),
+    }
+  }
+
+  const invitedMembership = memberships?.find((membership) => membership.status === "invited")
+  if (invitedMembership) {
+    return {
+      status: "setup",
+      email,
+      orgName: resolveMembershipOrgName(invitedMembership),
+    }
+  }
+
+  const suspendedMembership = memberships?.find((membership) => membership.status === "suspended")
+  if (suspendedMembership) {
+    return {
+      status: "inactive",
+      email,
+      orgName: resolveMembershipOrgName(suspendedMembership),
+      message: "This account has been archived. Contact your organization admin to restore access.",
+    }
+  }
+
+  return {
+    status: "missing",
+    email,
+    message: "No active Arc workspace is assigned to that email.",
+  }
+}
+
+export async function sendFirstPasswordSetupAction(emailInput: string): Promise<AuthState> {
+  const parsed = lookupAccountSchema.safeParse({ email: emailInput })
+
+  if (!parsed.success) {
+    return { error: "Enter a valid work email." }
+  }
+
+  const email = parsed.data.email.trim().toLowerCase()
+  const serviceClient = createServiceSupabaseClient()
+
+  try {
+    const { data: userRow, error: userError } = await serviceClient
+      .from("app_users")
+      .select("id")
+      .ilike("email", email)
+      .maybeSingle()
+
+    if (userError || !userRow?.id) {
+      if (userError) console.error("Failed to resolve setup user", userError)
+      return { message: "If setup is available for that account, we sent a secure setup link." }
+    }
+
+    const { data: membership, error: membershipError } = await serviceClient
+      .from("memberships")
+      .select("id, org_id, org:orgs(name, logo_url)")
+      .eq("user_id", userRow.id)
+      .eq("status", "invited")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (membershipError || !membership?.id) {
+      if (membershipError) console.error("Failed to resolve setup membership", membershipError)
+      return { message: "If setup is available for that account, we sent a secure setup link." }
+    }
+
+    const inviteToken = randomBytes(32).toString("base64url")
+    const inviteTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+
+    const { error: updateError } = await serviceClient
+      .from("memberships")
+      .update({
+        invite_token: inviteToken,
+        invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
+      })
+      .eq("id", membership.id)
+
+    if (updateError) {
+      console.error("Failed to create first-password setup token", updateError)
+      return { error: "We could not send the setup link. Try again." }
+    }
+
+    const org = Array.isArray(membership.org) ? membership.org[0] : membership.org
+    await sendInviteEmail({
+      to: email,
+      inviteLink: `${getSiteUrl()}/auth/accept-invite?token=${inviteToken}`,
+      orgName: org?.name ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+    })
+
+    return { message: "Check your email for a secure setup link." }
+  } catch (error) {
+    console.error("Failed to send first-password setup link", error)
+    return { error: "We could not send the setup link. Try again." }
+  }
 }
 
 async function recordDemoLoginIfTracked(input: { orgId: string; userId: string; email: string }) {
@@ -352,6 +521,11 @@ async function resolveMembershipState(supabase: Awaited<ReturnType<typeof create
     activeOrgId: null,
     hasSuspendedMembership: Boolean(suspendedMembership?.id),
   }
+}
+
+function resolveMembershipOrgName(row: { org?: unknown }) {
+  const org = Array.isArray(row.org) ? row.org[0] : row.org
+  return typeof org === "object" && org && "name" in org ? (org.name as string | null) : null
 }
 
 async function fetchOwnerRoleId(serviceClient: ReturnType<typeof createServiceSupabaseClient>) {

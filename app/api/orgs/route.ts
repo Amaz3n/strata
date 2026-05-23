@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { requireAuth } from "@/lib/auth/context"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { hasPlatformAccessByUserId } from "@/lib/services/platform-access"
 
 export async function GET() {
@@ -10,7 +10,7 @@ export async function GET() {
     const isPlatformAdmin = await hasPlatformAccessByUserId(user.id, user.email ?? undefined)
 
     if (isPlatformAdmin) {
-      const svc = await createServerSupabaseClient()
+      const svc = createServiceSupabaseClient()
       const { data, error } = await svc
         .from("orgs")
         .select("id, name, slug, logo_url, billing_model")

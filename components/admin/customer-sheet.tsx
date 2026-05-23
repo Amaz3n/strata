@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import { format } from "date-fns"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -21,6 +22,7 @@ interface Customer {
   slug: string
   status: string
   billingModel: string
+  billingEmail: string | null
   memberCount: number
   createdAt: string
   subscription?: {
@@ -37,33 +39,54 @@ interface CustomerSheetProps {
   customer: Customer | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onUpdateCustomer: (formData: FormData) => Promise<void>
 }
 
-export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetProps) {
+export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }: CustomerSheetProps) {
   const [activeTab, setActiveTab] = useState("details")
   const [editMode, setEditMode] = useState(false)
   const [editedName, setEditedName] = useState("")
   const [editedSlug, setEditedSlug] = useState("")
   const [editedStatus, setEditedStatus] = useState("")
+  const [editedBillingModel, setEditedBillingModel] = useState("")
+  const [editedBillingEmail, setEditedBillingEmail] = useState("")
+  const [saving, startSaving] = useTransition()
 
   const handleEdit = () => {
     if (customer) {
       setEditedName(customer.name)
       setEditedSlug(customer.slug)
       setEditedStatus(customer.status)
+      setEditedBillingModel(customer.billingModel)
+      setEditedBillingEmail(customer.billingEmail ?? "")
       setEditMode(true)
     }
   }
 
   const handleSave = () => {
-    // TODO: Implement save functionality
-    console.log("Saving customer:", {
-      id: customer?.id,
-      name: editedName,
-      slug: editedSlug,
-      status: editedStatus,
+    if (!customer) return
+
+    const formData = new FormData()
+    formData.set("orgId", customer.id)
+    formData.set("name", editedName)
+    formData.set("slug", editedSlug)
+    formData.set("status", editedStatus)
+    formData.set("billingModel", editedBillingModel)
+    formData.set("billingEmail", editedBillingEmail)
+
+    startSaving(async () => {
+      try {
+        await onUpdateCustomer(formData)
+        toast.success("Organization updated")
+        setEditMode(false)
+        window.location.reload()
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Failed to update organization", {
+          description: error?.message ?? "Please try again.",
+        })
+      }
     })
-    setEditMode(false)
   }
 
   const handleCancel = () => {
@@ -76,6 +99,7 @@ export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetPro
     active: "bg-success/15 text-success border-success/30",
     inactive: "bg-muted text-muted-foreground border-muted",
     suspended: "bg-destructive/15 text-destructive border-destructive/30",
+    archived: "bg-muted text-muted-foreground border-muted",
   }
 
   return (
@@ -186,6 +210,7 @@ export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetPro
                                 <SelectItem value="active">Active</SelectItem>
                                 <SelectItem value="inactive">Inactive</SelectItem>
                                 <SelectItem value="suspended">Suspended</SelectItem>
+                                <SelectItem value="archived">Archived</SelectItem>
                               </SelectContent>
                             </Select>
                           ) : (
@@ -199,11 +224,39 @@ export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetPro
                             Billing Model
                           </Label>
                           <div className="mt-1">
-                            <Badge variant="outline" className="capitalize">
-                              {customer.billingModel}
-                            </Badge>
+                            {editMode ? (
+                              <Select value={editedBillingModel} onValueChange={setEditedBillingModel}>
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="subscription">Subscription</SelectItem>
+                                  <SelectItem value="license">License</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Badge variant="outline" className="capitalize">
+                                {customer.billingModel}
+                              </Badge>
+                            )}
                           </div>
                         </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Billing Email
+                        </Label>
+                        {editMode ? (
+                          <Input
+                            type="email"
+                            value={editedBillingEmail}
+                            onChange={(e) => setEditedBillingEmail(e.target.value)}
+                            placeholder="billing@example.com"
+                          />
+                        ) : (
+                          <p className="text-sm">{customer.billingEmail || "-"}</p>
+                        )}
                       </div>
 
                       <Separator />
@@ -295,10 +348,10 @@ export function CustomerSheet({ customer, open, onOpenChange }: CustomerSheetPro
                         <>
                           <Separator />
                           <div className="flex gap-2 pt-2">
-                            <Button onClick={handleSave} className="flex-1">
-                              Save Changes
+                            <Button onClick={handleSave} className="flex-1" disabled={saving}>
+                              {saving ? "Saving..." : "Save Changes"}
                             </Button>
-                            <Button variant="outline" onClick={handleCancel} className="flex-1">
+                            <Button variant="outline" onClick={handleCancel} className="flex-1" disabled={saving}>
                               Cancel
                             </Button>
                           </div>

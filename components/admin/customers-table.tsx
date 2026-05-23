@@ -1,17 +1,40 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition, type FormEvent } from "react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ChevronDown, Users, Calendar } from "@/components/icons"
+import { ChevronDown, Users, Trash2, CreditCard } from "@/components/icons"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
 import { CustomerSheet } from "./customer-sheet"
 import { ProvisionCustomerSheet } from "./provision-customer-sheet"
 import { CustomerFilters } from "./customer-filters"
+import { deleteOrganizationAction } from "@/app/(app)/admin/customers/actions"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 interface Customer {
   id: string
@@ -19,16 +42,29 @@ interface Customer {
   slug: string
   status: string
   billingModel: string
+  billingEmail: string | null
   memberCount: number
   createdAt: string
   subscription?: {
+    id: string
+    planCode: string | null
     status: string
     planName: string | null
     amountCents: number | null
     currency: string | null
     interval: string | null
     currentPeriodEnd: string | null
+    trialEndsAt: string | null
+    externalCustomerId: string | null
+    externalSubscriptionId: string | null
   } | null
+}
+
+interface SubscriptionPlan {
+  code: string
+  name: string
+  amountCents: number | null
+  interval: string | null
 }
 
 interface CustomersClientProps {
@@ -40,8 +76,11 @@ interface CustomersClientProps {
   status: string
   plan: string
   page: number
+  subscriptionPlans: SubscriptionPlan[]
   onProvision: (formData: FormData) => Promise<any>
   onExtendTrial: (formData: FormData) => Promise<void>
+  onUpdateCustomer: (formData: FormData) => Promise<void>
+  onUpdateSubscription: (formData: FormData) => Promise<void>
   onEnterContext: (formData: FormData) => Promise<void>
   onSetStatus: (formData: FormData) => Promise<void>
 }
@@ -55,8 +94,11 @@ export function CustomersClient({
   status,
   plan,
   page,
+  subscriptionPlans,
   onProvision,
   onExtendTrial,
+  onUpdateCustomer,
+  onUpdateSubscription,
   onEnterContext,
   onSetStatus,
 }: CustomersClientProps) {
@@ -64,6 +106,34 @@ export function CustomersClient({
   const [sheetOpen, setSheetOpen] = useState(false)
   const [provisionOpen, setProvisionOpen] = useState(false)
   const [provisioning, setProvisioning] = useState(false)
+  const [billingCustomer, setBillingCustomer] = useState<Customer | null>(null)
+  const [billingStatus, setBillingStatus] = useState("active")
+  const [savingBilling, startSavingBilling] = useTransition()
+
+  const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null)
+  const [deleteConfirmationText, setDeleteConfirmationText] = useState("")
+  const [deleting, startDeleting] = useTransition()
+
+  const handleDeleteCustomer = async () => {
+    if (!customerToDelete) return
+
+    startDeleting(async () => {
+      try {
+        const result = await deleteOrganizationAction(customerToDelete.id)
+        if (result.error) {
+          toast.error("Failed to delete organization", { description: result.error })
+        } else {
+          toast.success("Organization deleted", { description: result.message })
+          setCustomerToDelete(null)
+          setDeleteConfirmationText("")
+          window.location.reload()
+        }
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Failed to delete organization", { description: error?.message ?? "Please try again." })
+      }
+    })
+  }
 
   const handleViewCustomer = (customer: Customer) => {
     setSelectedCustomer(customer)
@@ -78,6 +148,32 @@ export function CustomersClient({
     } finally {
       setProvisioning(false)
     }
+  }
+
+  const openBillingEditor = (customer: Customer) => {
+    setBillingCustomer(customer)
+    setBillingStatus(customer.subscription?.status ?? "active")
+  }
+
+  const handleBillingSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const formData = new FormData(event.currentTarget)
+
+    startSavingBilling(async () => {
+      try {
+        await onUpdateSubscription(formData)
+        toast.success("Subscription updated", {
+          description: "Local billing state was updated for this organization.",
+        })
+        setBillingCustomer(null)
+        window.location.reload()
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Failed to update subscription", {
+          description: error?.message ?? "Please try again.",
+        })
+      }
+    })
   }
 
   return (
@@ -198,6 +294,10 @@ export function CustomersClient({
                             <button type="submit" className="w-full text-left">Enter Context</button>
                           </DropdownMenuItem>
                         </form>
+                        <DropdownMenuItem onClick={() => openBillingEditor(customer)}>
+                          <CreditCard className="mr-2 h-4 w-4" />
+                          Edit Billing
+                        </DropdownMenuItem>
                         <form action={onExtendTrial}>
                           <input type="hidden" name="orgId" value={customer.id} />
                           <input type="hidden" name="trialDays" value="7" />
@@ -240,6 +340,16 @@ export function CustomersClient({
                         )}
                         <DropdownMenuItem onClick={() => handleViewCustomer(customer)}>
                           View Details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer font-medium"
+                          onClick={() => {
+                            setCustomerToDelete(customer)
+                            setDeleteConfirmationText("")
+                          }}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete Organization
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -291,6 +401,7 @@ export function CustomersClient({
         customer={selectedCustomer}
         open={sheetOpen}
         onOpenChange={setSheetOpen}
+        onUpdateCustomer={onUpdateCustomer}
       />
 
       <ProvisionCustomerSheet
@@ -299,8 +410,169 @@ export function CustomersClient({
         onProvision={handleProvision}
         loading={provisioning}
       />
+
+      <Dialog open={Boolean(billingCustomer)} onOpenChange={(open) => !open && setBillingCustomer(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Billing</DialogTitle>
+            <DialogDescription>
+              Update Arc's local subscription record for {billingCustomer?.name}. Stripe remains the source of truth for payment collection.
+            </DialogDescription>
+          </DialogHeader>
+          {billingCustomer ? (
+            <form onSubmit={handleBillingSubmit} className="space-y-5">
+              <input type="hidden" name="orgId" value={billingCustomer.id} />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="billing-status">Status</Label>
+                  <Select name="status" value={billingStatus} onValueChange={setBillingStatus}>
+                    <SelectTrigger id="billing-status" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="trialing">Trialing</SelectItem>
+                      <SelectItem value="past_due">Past due</SelectItem>
+                      <SelectItem value="canceled">Canceled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="billing-plan">Plan</Label>
+                  <Select name="planCode" defaultValue={billingCustomer.subscription?.planCode ?? "__none"}>
+                    <SelectTrigger id="billing-plan" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none">No plan</SelectItem>
+                      {subscriptionPlans.map((subscriptionPlan) => (
+                        <SelectItem key={subscriptionPlan.code} value={subscriptionPlan.code}>
+                          {subscriptionPlan.name}
+                          {subscriptionPlan.amountCents ? ` - $${(subscriptionPlan.amountCents / 100).toFixed(0)}` : ""}
+                          {subscriptionPlan.interval ? `/${subscriptionPlan.interval}` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="current-period-end">Current period end</Label>
+                  <Input
+                    id="current-period-end"
+                    name="currentPeriodEnd"
+                    type="date"
+                    defaultValue={toDateInputValue(billingCustomer.subscription?.currentPeriodEnd)}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="trial-ends-at">Trial ends</Label>
+                  <Input
+                    id="trial-ends-at"
+                    name="trialEndsAt"
+                    type="date"
+                    defaultValue={toDateInputValue(billingCustomer.subscription?.trialEndsAt)}
+                    disabled={billingStatus === "active"}
+                  />
+                  {billingStatus === "active" ? (
+                    <p className="text-xs text-muted-foreground">Active subscriptions clear the trial end date.</p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="stripe-customer-id">Stripe customer ID</Label>
+                  <Input
+                    id="stripe-customer-id"
+                    name="externalCustomerId"
+                    placeholder="cus_..."
+                    defaultValue={billingCustomer.subscription?.externalCustomerId ?? ""}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="stripe-subscription-id">Stripe subscription ID</Label>
+                  <Input
+                    id="stripe-subscription-id"
+                    name="externalSubscriptionId"
+                    placeholder="sub_..."
+                    defaultValue={billingCustomer.subscription?.externalSubscriptionId ?? ""}
+                  />
+                </div>
+              </div>
+
+              <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                Use this for manual reconciliation only. It updates Arc's local subscription row; it does not create, cancel, or edit a Stripe subscription.
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setBillingCustomer(null)} disabled={savingBilling}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={savingBilling}>
+                  {savingBilling ? "Saving..." : "Save Billing"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={Boolean(customerToDelete)} onOpenChange={(open) => !open && setCustomerToDelete(null)}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete Organization?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              <div>
+                Are you sure you want to delete the organization <span className="font-semibold text-foreground">"{customerToDelete?.name}"</span>?
+              </div>
+              <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-lg border border-destructive/20 font-medium">
+                WARNING: This is extremely destructive and cannot be undone. This will permanently delete the organization, all of its projects, memberships, subscriptions, licenses, files, and all associated data.
+              </div>
+              <div className="space-y-1.5 pt-2">
+                <label className="text-xs font-semibold text-muted-foreground">
+                  To confirm, type <span className="font-mono text-foreground font-bold select-all">"{customerToDelete?.name}"</span> below:
+                </label>
+                <Input
+                  value={deleteConfirmationText}
+                  onChange={(e) => setDeleteConfirmationText(e.target.value)}
+                  placeholder="Enter organization name"
+                  className="w-full"
+                  disabled={deleting}
+                />
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting} onClick={() => setDeleteConfirmationText("")}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault()
+                handleDeleteCustomer()
+              }}
+              disabled={deleting || deleteConfirmationText !== customerToDelete?.name}
+            >
+              {deleting ? "Deleting..." : "Delete Organization"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
+}
+
+function toDateInputValue(value?: string | null) {
+  return value ? value.slice(0, 10) : ""
 }
 
 function getStatusVariant(status: string) {

@@ -1,14 +1,18 @@
 "use client"
 
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
+import type { FormEvent } from "react"
 import Link from "next/link"
 import { usePathname, useSearchParams } from "next/navigation"
+import { toast } from "sonner"
+import { sendSupportRequestAction } from "@/app/actions/support"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   ChevronsUpDown,
   HardHat,
   LogOut,
   Mail,
+  Send,
   Settings,
 } from "@/components/icons"
 import {
@@ -31,8 +35,37 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 import type { User } from "@/lib/types"
 import { useHydrated } from "@/hooks/use-hydrated"
+
+const supportTopics = [
+  { value: "account", label: "Account access" },
+  { value: "billing", label: "Billing" },
+  { value: "project", label: "Project/workflow help" },
+  { value: "technical", label: "Technical issue" },
+  { value: "feedback", label: "Product feedback" },
+  { value: "other", label: "Other" },
+] as const
+
+type SupportTopic = (typeof supportTopics)[number]["value"]
 
 export function NavUser({
   user,
@@ -45,6 +78,7 @@ export function NavUser({
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [signingOut, startSignOut] = useTransition()
+  const [supportOpen, setSupportOpen] = useState(false)
   const hydrated = useHydrated()
   const currentUrl = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
   const settingsHref = `/settings?tab=profile&returnTo=${encodeURIComponent(currentUrl)}`
@@ -140,11 +174,12 @@ export function NavUser({
                   Settings
                 </Link>
               </DropdownMenuItem>
-              <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
-                <a href="mailto:support@arcnaples.com">
-                  <Mail />
-                  Contact Support
-                </a>
+              <DropdownMenuItem
+                className="rounded-none px-2.5 py-2.5"
+                onSelect={() => setSupportOpen(true)}
+              >
+                <Mail />
+                Contact Support
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
@@ -162,7 +197,111 @@ export function NavUser({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <SupportRequestDialog
+          open={supportOpen}
+          onOpenChange={setSupportOpen}
+          pageUrl={currentUrl}
+        />
       </SidebarMenuItem>
     </SidebarMenu>
+  )
+}
+
+function SupportRequestDialog({
+  open,
+  onOpenChange,
+  pageUrl,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  pageUrl: string
+}) {
+  const [topic, setTopic] = useState<SupportTopic>("technical")
+  const [message, setMessage] = useState("")
+  const [pending, startTransition] = useTransition()
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    startTransition(async () => {
+      try {
+        const result = await sendSupportRequestAction({ topic, message, pageUrl })
+
+        if (!result.success) {
+          toast.error("Unable to send support request", {
+            description: result.error,
+          })
+          return
+        }
+
+        toast.success("Support request sent")
+        setMessage("")
+        setTopic("technical")
+        onOpenChange(false)
+      } catch (error) {
+        toast.error("Unable to send support request", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <form onSubmit={handleSubmit} className="grid gap-5">
+          <DialogHeader>
+            <DialogTitle>Contact Support</DialogTitle>
+            <DialogDescription>
+              Send a message to Arc support and include what you were working on.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2">
+            <Label htmlFor="support-topic">Topic</Label>
+            <Select value={topic} onValueChange={(value) => setTopic(value as SupportTopic)}>
+              <SelectTrigger id="support-topic" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {supportTopics.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="support-message">Message</Label>
+            <Textarea
+              id="support-message"
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder="Tell us what happened and what you expected."
+              rows={5}
+              disabled={pending}
+              required
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={pending}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending || message.trim().length < 10}>
+              <Send className="size-4" />
+              {pending ? "Sending..." : "Send message"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

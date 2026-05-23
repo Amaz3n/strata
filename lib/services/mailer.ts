@@ -14,6 +14,7 @@ export interface EmailPayload {
   subject: string
   html: string
   text?: string
+  replyTo?: string | null
   attachments?: Array<{
     filename: string
     content: string
@@ -58,6 +59,7 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
         subject: payload.subject,
         html: payload.html,
         text: payload.text ?? stripHtml(payload.html),
+        reply_to: payload.replyTo ?? undefined,
         attachments: payload.attachments,
       }),
     })
@@ -276,4 +278,3 @@ export async function sendProjectPortalInviteEmail(payload: ProjectPortalInviteE
     html,
   })
 }
-

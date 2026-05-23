@@ -21,6 +21,7 @@ export async function getNotificationPreferencesAction() {
 export async function updateNotificationPreferencesAction(input: {
   emailEnabled: boolean
   weeklySnapshotEnabled: boolean
+  emailTypeSettings?: Record<string, boolean>
 }) {
   const { user } = await requireOrgMembership()
 
@@ -28,6 +29,7 @@ export async function updateNotificationPreferencesAction(input: {
   await service.updateUserPreferences(user.id, {
     email_enabled: input.emailEnabled,
     weekly_snapshot_enabled: input.weeklySnapshotEnabled,
+    email_type_settings: input.emailTypeSettings,
   })
 
   return { success: true }
