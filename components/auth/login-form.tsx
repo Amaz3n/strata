@@ -1,8 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useActionState, useEffect, useMemo, useState, useTransition } from "react"
-import { useSearchParams } from "next/navigation"
+import { useActionState, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { ArrowLeft } from "lucide-react"
 
 import {
@@ -29,8 +28,15 @@ const initialState: AuthState = { error: undefined, message: undefined, mfaRequi
 
 export function LoginForm({
   className,
+  inactiveAccount = false,
+  inviteOnlySignup = false,
+  routeMessage = null,
   ...props
-}: React.ComponentProps<"div">) {
+}: React.ComponentProps<"div"> & {
+  inactiveAccount?: boolean
+  inviteOnlySignup?: boolean
+  routeMessage?: string | null
+}) {
   const [state, formAction, pending] = useActionState(signInAction, initialState)
   const [step, setStep] = useState<"email" | "password" | "setup" | "mfa">("email")
   const [email, setEmail] = useState("")
@@ -40,10 +46,8 @@ export function LoginForm({
   const [setupError, setSetupError] = useState<string | null>(null)
   const [isLookupPending, startLookupTransition] = useTransition()
   const [isSetupPending, startSetupTransition] = useTransition()
-  const searchParams = useSearchParams()
-  const inactiveAccount = searchParams.get("reason") === "inactive-account"
-  const inviteOnlySignup = searchParams.get("reason") === "invite-only"
-  const routeMessage = searchParams.get("message")
+  const emailInputRef = useRef<HTMLInputElement>(null)
+  const passwordInputRef = useRef<HTMLInputElement>(null)
   const displayError =
     (step === "password" ? state.error : null) ??
     lookupError ??
@@ -89,6 +93,17 @@ export function LoginForm({
 
     return () => window.clearTimeout(timer)
   }, [state.mfaRequired, supabase.auth.mfa])
+
+  useEffect(() => {
+    if (step === "email") {
+      emailInputRef.current?.focus()
+      return
+    }
+
+    if (step === "password") {
+      window.requestAnimationFrame(() => passwordInputRef.current?.focus())
+    }
+  }, [step])
 
   const submitEmailLookup = () => {
     if (isLookupPending) return
@@ -197,18 +212,13 @@ export function LoginForm({
             <div className="grid gap-2">
               <Label htmlFor="email">Work email</Label>
               <Input
+                ref={emailInputRef}
                 id="email"
                 type="email"
                 placeholder="you@company.com"
                 autoComplete="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault()
-                    submitEmailLookup()
-                  }
-                }}
                 required
               />
             </div>
@@ -227,7 +237,7 @@ export function LoginForm({
               </div>
             )}
 
-            <Button type="button" className="w-full" onClick={submitEmailLookup} disabled={isLookupPending}>
+            <Button type="submit" className="w-full" disabled={isLookupPending}>
               {isLookupPending ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
@@ -279,6 +289,7 @@ export function LoginForm({
                 </Link>
               </div>
               <Input
+                ref={passwordInputRef}
                 id="password"
                 name="password"
                 type="password"
