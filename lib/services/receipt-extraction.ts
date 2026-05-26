@@ -99,7 +99,8 @@ export async function extractExpenseReceiptFromFile(file: File): Promise<Extract
     throw new Error("Receipt scanning supports files up to 10MB")
   }
 
-  const mimeType = normalizeMimeType(file.type, file.name)
+  const bytes = Buffer.from(await file.arrayBuffer())
+  const mimeType = normalizeMimeType(file.type, file.name, bytes)
   if (!SUPPORTED_MIME_TYPES.has(mimeType)) {
     throw new Error("Receipt scanning supports images and PDFs")
   }
@@ -110,7 +111,6 @@ export async function extractExpenseReceiptFromFile(file: File): Promise<Extract
   }
 
   const model = getReceiptVisionModel()
-  const bytes = Buffer.from(await file.arrayBuffer())
   const rawText = await generateGeminiReceiptExtraction({
     apiKey,
     model,
@@ -138,7 +138,8 @@ export async function extractPayableInvoiceFromFile(file: File): Promise<Extract
     throw new Error("Invoice scanning supports files up to 10MB")
   }
 
-  const mimeType = normalizeMimeType(file.type, file.name)
+  const bytes = Buffer.from(await file.arrayBuffer())
+  const mimeType = normalizeMimeType(file.type, file.name, bytes)
   if (!SUPPORTED_MIME_TYPES.has(mimeType)) {
     throw new Error("Invoice scanning supports images and PDFs")
   }
@@ -149,7 +150,6 @@ export async function extractPayableInvoiceFromFile(file: File): Promise<Extract
   }
 
   const model = getReceiptVisionModel()
-  const bytes = Buffer.from(await file.arrayBuffer())
   const rawText = await generateGeminiExtraction({
     apiKey,
     model,
@@ -183,9 +183,14 @@ export async function extractPayableInvoiceFromFile(file: File): Promise<Extract
   }
 }
 
-function normalizeMimeType(mimeType: string | null | undefined, fileName: string) {
+function normalizeMimeType(mimeType: string | null | undefined, fileName: string, bytes?: Buffer) {
   const normalized = mimeType?.trim().toLowerCase()
-  if (normalized) return normalized
+  if (normalized === "image/jpg" || normalized === "image/pjpeg") return "image/jpeg"
+  if (normalized && SUPPORTED_MIME_TYPES.has(normalized)) return normalized
+
+  const sniffed = sniffReceiptMimeType(bytes)
+  if (sniffed) return sniffed
+
   const lowerName = fileName.toLowerCase()
   if (lowerName.endsWith(".pdf")) return "application/pdf"
   if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) return "image/jpeg"
@@ -193,7 +198,37 @@ function normalizeMimeType(mimeType: string | null | undefined, fileName: string
   if (lowerName.endsWith(".webp")) return "image/webp"
   if (lowerName.endsWith(".heic")) return "image/heic"
   if (lowerName.endsWith(".heif")) return "image/heif"
+  if (normalized?.startsWith("image/")) return normalized
   return "application/octet-stream"
+}
+
+function sniffReceiptMimeType(bytes: Buffer | undefined) {
+  if (!bytes || bytes.length < 12) return null
+
+  if (bytes.subarray(0, 4).toString("ascii") === "%PDF") return "application/pdf"
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"
+  if (
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png"
+  }
+  if (bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp"
+  }
+
+  const brand = bytes.subarray(4, 12).toString("ascii")
+  if (brand.startsWith("ftyp") && /heic|heix|hevc|hevx|mif1|msf1/i.test(brand)) {
+    return "image/heic"
+  }
+
+  return null
 }
 
 function getGeminiApiKey() {
