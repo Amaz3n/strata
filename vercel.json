@@ -2,15 +2,15 @@
   "crons": [
     {
       "path": "/api/qbo/process-outbox",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 2 * * *"
     },
     {
       "path": "/api/qbo/process-webhooks",
-      "schedule": "*/5 * * * *"
+      "schedule": "5 2 * * *"
     },
     {
       "path": "/api/qbo/process-cdc",
-      "schedule": "2,17,32,47 * * * *"
+      "schedule": "10 2 * * *"
     },
     {
       "path": "/api/jobs/process-outbox",
