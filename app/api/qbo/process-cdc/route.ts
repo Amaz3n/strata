@@ -9,6 +9,7 @@ const CRON_SECRET = process.env.CRON_SECRET
 const CDC_ENTITIES = ["Invoice", "Payment", "Purchase", "Bill", "BillPayment"]
 const BATCH_SIZE = 10
 const CDC_OVERLAP_MINUTES = 5
+const MAX_MANUAL_LOOKBACK_MINUTES = 24 * 60
 
 function isAuthorizedCronRequest(request: NextRequest) {
   const isDev = process.env.NODE_ENV !== "production"
@@ -47,7 +48,15 @@ function getChangedRows(payload: any) {
   return rows
 }
 
-export async function POST(request: NextRequest) {
+function getManualLookbackMinutes(request: NextRequest) {
+  const raw = request.nextUrl.searchParams.get("lookback_minutes")
+  if (!raw) return null
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return Math.min(Math.floor(parsed), MAX_MANUAL_LOOKBACK_MINUTES)
+}
+
+async function processQBOCdc(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -66,6 +75,7 @@ export async function POST(request: NextRequest) {
   let scanned = 0
   let inserted = 0
   const nowIso = new Date().toISOString()
+  const manualLookbackMinutes = getManualLookbackMinutes(request)
 
   for (const connection of connections ?? []) {
     const orgId = connection.org_id as string | null
@@ -73,7 +83,9 @@ export async function POST(request: NextRequest) {
 
     const settings = (connection.settings as Record<string, any> | null) ?? {}
     const cursor =
-      typeof settings.qbo_cdc_last_synced_at === "string"
+      manualLookbackMinutes !== null
+        ? Date.now() - manualLookbackMinutes * 60 * 1000
+        : typeof settings.qbo_cdc_last_synced_at === "string"
         ? new Date(settings.qbo_cdc_last_synced_at).getTime()
         : Date.now() - 24 * 60 * 60 * 1000
     const changedSince = new Date(cursor - CDC_OVERLAP_MINUTES * 60 * 1000).toISOString()
@@ -88,7 +100,7 @@ export async function POST(request: NextRequest) {
       for (const row of rows) {
         const eventId = `cdc:${connection.realm_id}:${row.entityName}:${row.id}:${row.lastUpdated}`
         const payloadHash = createHash("sha256").update(eventId).digest("hex")
-        const { error: insertError } = await supabase.from("qbo_webhook_events").insert({
+        const { error: insertError } = await supabase.from("qbo_webhook_events").upsert({
           event_id: eventId,
           payload_hash: payloadHash,
           realm_id: connection.realm_id,
@@ -97,6 +109,11 @@ export async function POST(request: NextRequest) {
           operation: "cdc",
           last_updated: new Date(row.lastUpdated).toISOString(),
           received_at: nowIso,
+          process_status: "pending",
+          process_error: null,
+          processed_at: null,
+        }, {
+          onConflict: "event_id",
         })
         if (!insertError) inserted += 1
       }
@@ -120,6 +137,14 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ connections: connections?.length ?? 0, scanned, inserted })
+}
+
+export async function GET(request: NextRequest) {
+  return processQBOCdc(request)
+}
+
+export async function POST(request: NextRequest) {
+  return processQBOCdc(request)
 }
 
 export const runtime = "nodejs"

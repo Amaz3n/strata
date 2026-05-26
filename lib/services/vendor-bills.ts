@@ -156,7 +156,7 @@ async function replaceBillLineCoding(
     orgId: string
     billId: string
     lines: Array<{
-      cost_code_id: string
+      cost_code_id: string | null
       description: string
       amount_cents: number
       qbo_expense_account_id?: string
@@ -166,15 +166,20 @@ async function replaceBillLineCoding(
 ) {
   if (lines.length === 0) return
 
-  const costCodeIds = Array.from(new Set(lines.map((line) => line.cost_code_id)))
-  const { data: costCodes, error: costCodeError } = await supabase
-    .from("cost_codes")
-    .select("id")
-    .eq("org_id", orgId)
-    .in("id", costCodeIds)
+  const costCodeIds = Array.from(new Set(lines.map((line) => line.cost_code_id))).filter(
+    (id): id is string => typeof id === "string" && id.length > 0,
+  )
 
-  if (costCodeError || (costCodes ?? []).length !== costCodeIds.length) {
-    throw new Error("Cost code not found")
+  if (costCodeIds.length > 0) {
+    const { data: costCodes, error: costCodeError } = await supabase
+      .from("cost_codes")
+      .select("id")
+      .eq("org_id", orgId)
+      .in("id", costCodeIds)
+
+    if (costCodeError || (costCodes ?? []).length !== costCodeIds.length) {
+      throw new Error("Cost code not found")
+    }
   }
 
   const { error: deleteError } = await supabase
@@ -447,10 +452,10 @@ export async function updateVendorBillStatus({
     updateData.approved_by = userId
   }
 
-  const actualLines =
+  let actualLines =
     parsed.actual_lines && parsed.actual_lines.length > 0
       ? parsed.actual_lines.map((line) => ({
-          cost_code_id: line.cost_code_id,
+          cost_code_id: line.cost_code_id ?? null,
           description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
           amount_cents: line.amount_cents,
           qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
@@ -467,6 +472,29 @@ export async function updateVendorBillStatus({
             },
           ]
         : []
+
+  const targetStatus = parsed.status ?? existing.status
+  const isApprovedOrReleased = ["approved", "partial", "paid"].includes(targetStatus)
+
+  if (actualLines.length === 0 && isApprovedOrReleased) {
+    const { data: currentLines } = await supabase
+      .from("bill_lines")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("bill_id", billId)
+
+    if (!currentLines || currentLines.length === 0) {
+      actualLines = [
+        {
+          cost_code_id: null,
+          description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
+          amount_cents: totalCents,
+          qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
+          qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
+        },
+      ]
+    }
+  }
 
   if (actualLines.length > 0) {
     const actualTotal = actualLines.reduce((sum, line) => sum + line.amount_cents, 0)

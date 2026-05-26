@@ -9,9 +9,10 @@ interface Props {
   status: QBOSyncStatus
   syncedAt?: string | null
   qboId?: string | null
+  compact?: boolean
 }
 
-export function QBOSyncBadge({ status, syncedAt, qboId }: Props) {
+export function QBOSyncBadge({ status, syncedAt, qboId, compact = false }: Props) {
   if (!status) return null
 
   const config = {
@@ -46,9 +47,9 @@ export function QBOSyncBadge({ status, syncedAt, qboId }: Props) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Badge variant={variant} className="gap-1 cursor-help">
-          <Icon className="w-3 h-3" />
-          {label}
+        <Badge variant={variant} className={compact ? "h-6 w-6 cursor-help rounded-full p-0" : "gap-1 cursor-help"}>
+          <Icon className={compact ? "mx-auto h-3 w-3" : "w-3 h-3"} />
+          {!compact && label}
         </Badge>
       </TooltipTrigger>
       <TooltipContent>

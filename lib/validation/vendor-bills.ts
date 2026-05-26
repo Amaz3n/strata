@@ -9,7 +9,7 @@ export const vendorBillStatusUpdateSchema = z.object({
   actual_lines: z
     .array(
       z.object({
-        cost_code_id: z.string().uuid("Invalid cost code"),
+        cost_code_id: z.string().uuid("Invalid cost code").nullable().optional(),
         description: z.string().min(1).max(500).optional(),
         amount_cents: z.number().int().min(0),
         qbo_expense_account_id: z.string().optional(),
@@ -34,7 +34,10 @@ export type VendorBillStatusUpdate = z.infer<typeof vendorBillStatusUpdateSchema
 
 // Schema for creating a vendor bill from the sub portal
 export const vendorBillCreateSchema = z.object({
-  commitment_id: z.string().uuid("Invalid commitment"),
+  commitment_id: z.string().uuid("Invalid commitment").nullable().optional(),
+  vendor_name: z.string().max(200).optional(),
+  qbo_vendor_id: z.string().optional(),
+  qbo_vendor_name: z.string().optional(),
   bill_number: z.string().min(1, "Invoice number is required").max(50),
   total_cents: z.number().int().positive("Amount must be greater than zero"),
   bill_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format"),

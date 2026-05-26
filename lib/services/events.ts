@@ -2,6 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { NotificationService } from "@/lib/services/notifications"
+import { authorize } from "@/lib/services/authorization"
 import type { NotificationType } from "@/lib/services/notifications"
 
 type EventChannel = "activity" | "integration" | "notification"
@@ -42,6 +43,9 @@ interface EventRecord {
   payload: Record<string, unknown>
   created_at: string
 }
+
+const FINANCIAL_NOTIFICATION_PERMISSIONS = ["invoice.read", "payment.read", "budget.read", "bill.read", "commitment.read"]
+const RESTRICTED_PROJECT_ROLE_KEYS = new Set(["client", "project_client", "portal_client", "sub", "portal_sub"])
 
 export async function recordEvent(input: EventInput) {
   let resolvedOrgId = input.orgId
@@ -283,6 +287,15 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   ])
 
   if (projectId && projectScopedEvents.has(event.event_type)) {
+    if (event.event_type === "payment_recorded") {
+      return getProjectFinancialNotificationRecipients({
+        supabase,
+        orgId,
+        projectId,
+        actorId,
+      })
+    }
+
     const { data: members, error } = await supabase
       .from("project_members")
       .select("user_id")
@@ -309,6 +322,84 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   }
 
   return uniqUserIds((members ?? []).map((m: any) => m.user_id)).filter((id) => id && id !== actorId)
+}
+
+async function getProjectFinancialNotificationRecipients({
+  supabase,
+  orgId,
+  projectId,
+  actorId,
+}: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  projectId: string
+  actorId: string | null
+}) {
+  const { data: members, error } = await supabase
+    .from("project_members")
+    .select("user_id, status, role:roles(key)")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "active")
+
+  if (error) {
+    console.error("Failed to get project members for payment notification:", error)
+    return []
+  }
+
+  const candidateUserIds = uniqUserIds(
+    (members ?? [])
+      .filter((member: any) => {
+        const role = Array.isArray(member.role) ? member.role[0] : member.role
+        const roleKey = typeof role?.key === "string" ? role.key : null
+        return !roleKey || !RESTRICTED_PROJECT_ROLE_KEYS.has(roleKey)
+      })
+      .map((member: any) => member.user_id),
+  ).filter((id) => id && id !== actorId)
+
+  if (candidateUserIds.length === 0) {
+    return []
+  }
+
+  const { data: activeMemberships, error: membershipError } = await supabase
+    .from("memberships")
+    .select("user_id")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .in("user_id", candidateUserIds)
+
+  if (membershipError) {
+    console.error("Failed to get active org memberships for payment notification:", membershipError)
+    return []
+  }
+
+  const activeUserIds = new Set((activeMemberships ?? []).map((membership: any) => membership.user_id).filter(Boolean))
+  const recipients: string[] = []
+
+  for (const userId of candidateUserIds) {
+    if (!activeUserIds.has(userId)) continue
+
+    const decisions = await Promise.all(
+      FINANCIAL_NOTIFICATION_PERMISSIONS.map((permission) =>
+        authorize({
+          permission,
+          userId,
+          orgId,
+          projectId,
+          supabase,
+          resourceType: "project",
+          resourceId: projectId,
+          policyVersion: "payment-notification-v1",
+        }),
+      ),
+    )
+
+    if (decisions.some((decision) => decision.allowed)) {
+      recipients.push(userId)
+    }
+  }
+
+  return recipients
 }
 
 function buildNotificationFromEvent(event: EventRecord, userId: string) {
@@ -495,7 +586,10 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         userId,
         type: "payment_recorded" as NotificationType,
         title: "Payment received",
-        message: fallbackMessage,
+        message:
+          typeof safePayload.invoice_number === "string" && typeof safePayload.amount_cents === "number"
+            ? `Invoice #${safePayload.invoice_number} was paid for ${formatCurrencyFromCents(safePayload.amount_cents)}.`
+            : fallbackMessage,
         projectId: projectId ?? undefined,
         entityType: entity_type,
         entityId: entity_id,
@@ -575,6 +669,13 @@ function extractProjectIdFromEvent(event: EventRecord): string | null {
 
 function uniqUserIds(userIds: Array<string | null | undefined>): string[] {
   return Array.from(new Set(userIds.filter(Boolean) as string[]))
+}
+
+function formatCurrencyFromCents(cents: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+  }).format(cents / 100)
 }
 
 function titleForEventType(eventType: string): string {

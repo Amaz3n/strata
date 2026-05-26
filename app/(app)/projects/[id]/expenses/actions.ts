@@ -21,13 +21,16 @@ export interface CreateMyExpenseInput {
   taxDollars?: number
   vendorName?: string | null
   paymentMethod?: "cash" | "credit_card" | "check" | "ach" | "company_card" | "reimbursable_personal" | "other" | null
-  qboTransactionType?: "purchase" | "bill" | null
+  qboTransactionType?: "purchase" | null
   qboExpenseAccountId?: string | null
   qboExpenseAccountName?: string | null
   qboPaymentAccountId?: string | null
   qboPaymentAccountName?: string | null
   qboApAccountId?: string | null
   qboApAccountName?: string | null
+  qboVendorId?: string | null
+  qboVendorName?: string | null
+  createQboVendor?: boolean
   notes?: string | null
 }
 
@@ -74,6 +77,20 @@ export async function createMyExpenseAction(projectId: string, formData: FormDat
     throw new Error("Pick the receipt date")
   }
 
+  let qboVendorId = payload.qboVendorId?.trim() || null
+  let qboVendorName = payload.qboVendorName?.trim() || null
+  const vendorName = payload.vendorName?.trim() || null
+
+  if (payload.createQboVendor && vendorName) {
+    const client = await QBOClient.forOrg(orgId)
+    if (!client) {
+      throw new Error("Connect QuickBooks before adding a new QBO vendor")
+    }
+    const vendor = await client.getOrCreateVendor(vendorName)
+    qboVendorId = vendor.Id ? String(vendor.Id) : null
+    qboVendorName = vendor.DisplayName
+  }
+
   const receiptFileId = await uploadCostPlusFile({
     file: formData.get("receipt") as File | null,
     orgId,
@@ -86,15 +103,17 @@ export async function createMyExpenseAction(projectId: string, formData: FormDat
     expenseDate: new Date(payload.expenseDate),
     amountCents: moneyToCents(payload.amountDollars),
     taxCents: moneyToCents(payload.taxDollars),
-    vendorNameText: payload.vendorName?.trim() || null,
+    vendorNameText: vendorName,
     paymentMethod: payload.paymentMethod ?? null,
-    qboTransactionType: payload.qboTransactionType ?? null,
+    qboTransactionType: "purchase",
     qboExpenseAccountId: payload.qboExpenseAccountId ?? null,
     qboExpenseAccountName: payload.qboExpenseAccountName ?? null,
     qboPaymentAccountId: payload.qboPaymentAccountId ?? null,
     qboPaymentAccountName: payload.qboPaymentAccountName ?? null,
-    qboApAccountId: payload.qboApAccountId ?? null,
-    qboApAccountName: payload.qboApAccountName ?? null,
+    qboApAccountId: null,
+    qboApAccountName: null,
+    qboVendorId,
+    qboVendorName,
     description: payload.notes?.trim() || null,
     receiptFileId,
     isBillable: true,

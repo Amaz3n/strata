@@ -17,9 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Check, CheckCircle2, ChevronsUpDown, Clock, ExternalLink, Loader2, MoreHorizontal, Plus, Receipt, SlidersHorizontal, Sparkles, Upload, XCircle } from "@/components/icons"
+import { Check, CheckCircle2, ChevronsUpDown, Clock, ExternalLink, Loader2, MoreHorizontal, Plus, Receipt, RefreshCcw, SlidersHorizontal, Sparkles, Upload, XCircle } from "@/components/icons"
 
 import {
   approveProjectExpenseFormAction,
@@ -34,7 +33,11 @@ import {
   type CreateMyExpenseInput,
   type ReceiptExtractionResult,
 } from "@/app/(app)/projects/[id]/expenses/actions"
+import { getFileAction, getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
 import { ExpenseForm } from "@/components/expenses/expense-form"
+import { FileViewer } from "@/components/files/file-viewer"
+import type { FileWithDetails } from "@/components/files/types"
+import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 import { cn } from "@/lib/utils"
 
 interface ProjectExpense {
@@ -72,14 +75,12 @@ interface ExpensesClientProps {
 
 type ExpenseAccountingContext = Awaited<ReturnType<typeof getExpenseAccountingContextAction>>
 type AccountingDraft = {
-  qboTransactionType: "purchase" | "bill"
   qboExpenseAccountId: string
   qboPaymentAccountId: string
-  qboApAccountId: string
   qboVendorId: string
 }
 
-type StatusKey = "submitted" | "approved" | "rejected" | "invoiced" | "draft" | string
+type QueueFilter = "all" | "needs_review" | "ready" | "synced"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -169,20 +170,25 @@ function findAccount(accounts: { id: string; name: string; fullyQualifiedName?: 
 }
 
 function defaultAccountingDraft(expense: ProjectExpense, context: ExpenseAccountingContext | null): AccountingDraft {
-  const type = expense.qbo_transaction_type ?? (expense.payment_method === "reimbursable_personal" ? "bill" : "purchase")
-
   return {
-    qboTransactionType: type,
     qboExpenseAccountId: expense.qbo_expense_account_id ?? context?.defaults?.expenseAccountId ?? "",
     qboPaymentAccountId: expense.qbo_payment_account_id ?? (expense.payment_method === "company_card" ? context?.defaults?.creditCardAccountId : context?.defaults?.paymentAccountId) ?? "",
-    qboApAccountId: expense.qbo_ap_account_id ?? context?.defaults?.apAccountId ?? "",
     qboVendorId: expense.qbo_vendor_id ?? AUTO_QBO_VENDOR,
   }
 }
 
-function qboTransactionLabel(type?: "purchase" | "bill" | null) {
-  if (type === "bill") return "Bill"
-  return "Purchase"
+function hasRequiredQboCoding(expense: ProjectExpense) {
+  if (!expense.qbo_expense_account_id) return false
+  return Boolean(expense.qbo_payment_account_id)
+}
+
+function needsQboReview(expense: ProjectExpense) {
+  if (expense.qbo_sync_status === "needs_review" || expense.qbo_sync_status === "error") return true
+  return expense.status === "approved" && expense.qbo_sync_status !== "synced" && !hasRequiredQboCoding(expense)
+}
+
+function readyForQboSync(expense: ProjectExpense) {
+  return expense.status === "approved" && expense.qbo_sync_status !== "synced" && !needsQboReview(expense)
 }
 
 function qboDeepLink(expense: ProjectExpense) {
@@ -282,7 +288,7 @@ function VendorCombobox({
           <span className="flex min-w-0 items-center">
             <span className="min-w-0">
               <span className="block truncate text-sm font-medium text-foreground">{selectedLabel}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">{qboTransactionLabel(expense.qbo_transaction_type)}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">QuickBooks vendor</span>
             </span>
           </span>
           <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -432,8 +438,9 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ProjectExpense[]>(initialExpenses)
   const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [syncSheetOpen, setSyncSheetOpen] = useState(false)
   const [isPageDragging, setIsPageDragging] = useState(false)
   const [pendingReceipt, setPendingReceipt] = useState<PendingReceipt | null>(null)
   const [accountingContext, setAccountingContext] = useState<ExpenseAccountingContext | null>(null)
@@ -447,7 +454,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const [openCostCodeExpenseId, setOpenCostCodeExpenseId] = useState<string | null>(null)
   const [savingCostCodeExpenseId, setSavingCostCodeExpenseId] = useState<string | null>(null)
   const [savingMemoExpenseId, setSavingMemoExpenseId] = useState<string | null>(null)
-  const [receiptPreviewExpense, setReceiptPreviewExpense] = useState<ProjectExpense | null>(null)
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const dragDepthRef = useRef(0)
   const [isPending, startTransition] = useTransition()
@@ -455,8 +463,12 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const filtered = useMemo(() => {
     const term = search.toLowerCase().trim()
     return items.filter((expense) => {
-      const matchesStatus = statusFilter === "all" || expense.status === statusFilter
-      if (!matchesStatus) return false
+      const matchesQueue =
+        queueFilter === "all" ||
+        (queueFilter === "needs_review" && needsQboReview(expense)) ||
+        (queueFilter === "ready" && readyForQboSync(expense)) ||
+        (queueFilter === "synced" && expense.qbo_sync_status === "synced")
+      if (!matchesQueue) return false
       if (!term) return true
       return [
         vendorOf(expense),
@@ -470,7 +482,17 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         expense.expense_date ?? "",
       ].some((value) => String(value).toLowerCase().includes(term))
     })
-  }, [items, search, statusFilter])
+  }, [items, search, queueFilter])
+
+  const filterCounts = useMemo(
+    () => ({
+      all: items.length,
+      needs_review: items.filter(needsQboReview).length,
+      ready: items.filter(readyForQboSync).length,
+      synced: items.filter((expense) => expense.qbo_sync_status === "synced").length,
+    }),
+    [items],
+  )
 
   const refresh = useCallback(() => {
     startTransition(async () => {
@@ -545,6 +567,50 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     const formData = new FormData()
     formData.append("receipt", receipt)
     return extractExpenseReceiptAction(projectId, formData)
+  }
+
+  async function openReceiptPreview(expense: ProjectExpense) {
+    if (!expense.receipt_file_id) return
+    const fallbackUrl = `/api/files/${expense.receipt_file_id}/raw`
+    const fallbackFile: FileWithDetails = {
+      id: expense.receipt_file_id,
+      org_id: "",
+      project_id: projectId,
+      file_name: `${vendorOf(expense)} receipt`,
+      storage_path: "",
+      mime_type: "application/pdf",
+      size_bytes: 0,
+      visibility: "private",
+      category: "financials",
+      created_at: expense.expense_date ?? new Date().toISOString(),
+      download_url: fallbackUrl,
+    }
+
+    setViewerFile(fallbackFile)
+    setViewerOpen(true)
+
+    try {
+      const file = await getFileAction(expense.receipt_file_id)
+      if (!file) return
+      const downloadUrl = await getFileDownloadUrlAction(file.id)
+      setViewerFile({
+        ...(file as FileWithDetails),
+        category: (file.category ?? "financials") as FileWithDetails["category"],
+        download_url: downloadUrl,
+        thumbnail_url: file.mime_type?.startsWith("image/") ? downloadUrl : undefined,
+      })
+    } catch (error: any) {
+      toast.error("Could not load receipt preview", { description: error?.message ?? "Try again." })
+    }
+  }
+
+  async function handleDownloadFile(file: FileWithDetails) {
+    try {
+      const url = await getFileDownloadUrlAction(file.id)
+      window.open(url, "_blank", "noopener,noreferrer")
+    } catch (error: any) {
+      toast.error("Could not download file", { description: error?.message ?? "Try again." })
+    }
   }
 
   function handlePageDragEnter(event: DragEvent<HTMLDivElement>) {
@@ -644,14 +710,13 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     if (!accountingExpense || !accountingDraft) return
     const expenseAccount = findAccount(accountingContext?.expenseAccounts, accountingDraft.qboExpenseAccountId)
     const paymentAccount = findAccount(accountingContext?.paymentAccounts, accountingDraft.qboPaymentAccountId)
-    const apAccount = findAccount(accountingContext?.apAccounts, accountingDraft.qboApAccountId)
     const qboVendor = accountingDraft.qboVendorId === AUTO_QBO_VENDOR ? null : findAccount(accountingContext?.vendors, accountingDraft.qboVendorId)
 
     if (!expenseAccount) {
       toast.error("Choose a QuickBooks account")
       return
     }
-    if (accountingDraft.qboTransactionType === "purchase" && !paymentAccount) {
+    if (!paymentAccount) {
       toast.error("Choose the QuickBooks account this was paid from")
       return
     }
@@ -659,13 +724,13 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     setAccountingSaving(true)
     try {
       const next = await updateProjectExpenseAccountingAction(projectId, accountingExpense.id, {
-        qboTransactionType: accountingDraft.qboTransactionType,
+        qboTransactionType: "purchase",
         qboExpenseAccountId: expenseAccount.id,
         qboExpenseAccountName: accountLabel(expenseAccount),
-        qboPaymentAccountId: accountingDraft.qboTransactionType === "purchase" ? (paymentAccount?.id ?? null) : null,
-        qboPaymentAccountName: accountingDraft.qboTransactionType === "purchase" && paymentAccount ? accountLabel(paymentAccount) : null,
-        qboApAccountId: accountingDraft.qboTransactionType === "bill" ? (apAccount?.id ?? null) : null,
-        qboApAccountName: accountingDraft.qboTransactionType === "bill" && apAccount ? accountLabel(apAccount) : null,
+        qboPaymentAccountId: paymentAccount.id,
+        qboPaymentAccountName: accountLabel(paymentAccount),
+        qboApAccountId: null,
+        qboApAccountName: null,
         qboVendorId: qboVendor?.id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
       })
@@ -700,7 +765,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
 
     const draft = defaultAccountingDraft(expense, accountingContext)
     const paymentAccount = findAccount(accountingContext?.paymentAccounts, draft.qboPaymentAccountId)
-    const apAccount = findAccount(accountingContext?.apAccounts, draft.qboApAccountId)
     const qboVendor = draft.qboVendorId === AUTO_QBO_VENDOR ? null : findAccount(accountingContext?.vendors, draft.qboVendorId)
 
     setSavingAccountExpenseId(expense.id)
@@ -714,13 +778,13 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     )
     try {
       const next = await updateProjectExpenseAccountingAction(projectId, expense.id, {
-        qboTransactionType: draft.qboTransactionType,
+        qboTransactionType: "purchase",
         qboExpenseAccountId: account.id,
         qboExpenseAccountName: accountLabel(account),
-        qboPaymentAccountId: draft.qboTransactionType === "purchase" ? (paymentAccount?.id ?? expense.qbo_payment_account_id ?? null) : null,
-        qboPaymentAccountName: draft.qboTransactionType === "purchase" ? (paymentAccount ? accountLabel(paymentAccount) : (expense.qbo_payment_account_name ?? null)) : null,
-        qboApAccountId: draft.qboTransactionType === "bill" ? (apAccount?.id ?? expense.qbo_ap_account_id ?? null) : null,
-        qboApAccountName: draft.qboTransactionType === "bill" ? (apAccount ? accountLabel(apAccount) : (expense.qbo_ap_account_name ?? null)) : null,
+        qboPaymentAccountId: paymentAccount?.id ?? expense.qbo_payment_account_id ?? null,
+        qboPaymentAccountName: paymentAccount ? accountLabel(paymentAccount) : (expense.qbo_payment_account_name ?? null),
+        qboApAccountId: null,
+        qboApAccountName: null,
         qboVendorId: qboVendor?.id ?? expense.qbo_vendor_id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : (expense.qbo_vendor_name ?? null),
       })
@@ -754,13 +818,13 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     )
     try {
       const next = await updateProjectExpenseAccountingAction(projectId, expense.id, {
-        qboTransactionType: expense.qbo_transaction_type ?? null,
+        qboTransactionType: "purchase",
         qboExpenseAccountId: expense.qbo_expense_account_id ?? null,
         qboExpenseAccountName: expense.qbo_expense_account_name ?? null,
         qboPaymentAccountId: expense.qbo_payment_account_id ?? null,
         qboPaymentAccountName: expense.qbo_payment_account_name ?? null,
-        qboApAccountId: expense.qbo_ap_account_id ?? null,
-        qboApAccountName: expense.qbo_ap_account_name ?? null,
+        qboApAccountId: null,
+        qboApAccountName: null,
         qboVendorId: qboVendor?.id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
       })
@@ -834,6 +898,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
           <TooltipContent>More actions</TooltipContent>
         </Tooltip>
         <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => openAccounting(expense)}>Edit</DropdownMenuItem>
           <DropdownMenuItem onClick={() => openAccounting(expense)}>QuickBooks coding</DropdownMenuItem>
           <DropdownMenuSeparator />
           {isSubmitted ? (
@@ -893,6 +958,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         isSubmitting={isPending}
       />
 
+      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} />
+
       <Sheet open={Boolean(accountingExpense)} onOpenChange={closeAccounting}>
         <SheetContent side="right" className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] flex flex-col p-0 shadow-2xl">
           <SheetHeader className="border-b bg-muted/30 px-6 pb-4 pt-6">
@@ -929,32 +996,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                 {accountingExpense.qbo_sync_error ? (
                   <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">{accountingExpense.qbo_sync_error}</div>
                 ) : null}
-
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">Transaction type</Label>
-                  <Select
-                    value={accountingDraft.qboTransactionType}
-                    onValueChange={(value) =>
-                      setAccountingDraft((draft) =>
-                        draft
-                          ? {
-                              ...draft,
-                              qboTransactionType: value as "purchase" | "bill",
-                            }
-                          : draft,
-                      )
-                    }
-                    disabled={!accountingContext?.qboConnected || accountingSaving}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="purchase">Paid expense / purchase</SelectItem>
-                      <SelectItem value="bill">Vendor bill due later</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
 
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">QBO vendor</Label>
@@ -998,47 +1039,25 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                   </Select>
                 </div>
 
-                {accountingDraft.qboTransactionType === "bill" ? (
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">Accounts payable account</Label>
-                    <Select
-                      value={accountingDraft.qboApAccountId}
-                      onValueChange={(value) => setAccountingDraft((draft) => (draft ? { ...draft, qboApAccountId: value } : draft))}
-                      disabled={!accountingContext?.qboConnected || accountingSaving}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Default AP account" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(accountingContext?.apAccounts ?? []).map((account) => (
-                          <SelectItem key={account.id} value={account.id}>
-                            {accountLabel(account)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">Paid from</Label>
-                    <Select
-                      value={accountingDraft.qboPaymentAccountId}
-                      onValueChange={(value) => setAccountingDraft((draft) => (draft ? { ...draft, qboPaymentAccountId: value } : draft))}
-                      disabled={!accountingContext?.qboConnected || accountingSaving}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Bank or credit card" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(accountingContext?.paymentAccounts ?? []).map((account) => (
-                          <SelectItem key={account.id} value={account.id}>
-                            {accountLabel(account)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">Paid from</Label>
+                  <Select
+                    value={accountingDraft.qboPaymentAccountId}
+                    onValueChange={(value) => setAccountingDraft((draft) => (draft ? { ...draft, qboPaymentAccountId: value } : draft))}
+                    disabled={!accountingContext?.qboConnected || accountingSaving}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Bank or credit card" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(accountingContext?.paymentAccounts ?? []).map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {accountLabel(account)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
                 {qboDeepLink(accountingExpense) ? (
                   <Button variant="outline" size="sm" asChild>
@@ -1067,20 +1086,16 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         </SheetContent>
       </Sheet>
 
-      <Dialog open={Boolean(receiptPreviewExpense)} onOpenChange={(open) => !open && setReceiptPreviewExpense(null)}>
-        <DialogContent className="max-w-4xl p-0">
-          <DialogHeader className="border-b px-5 py-4">
-            <DialogTitle>{receiptPreviewExpense ? `${vendorOf(receiptPreviewExpense)} receipt` : "Receipt"}</DialogTitle>
-          </DialogHeader>
-          {receiptPreviewExpense?.receipt_file_id ? (
-            <iframe
-              src={`/api/files/${receiptPreviewExpense.receipt_file_id}/raw`}
-              title="Receipt preview"
-              className="h-[75vh] w-full bg-muted"
-            />
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      <FileViewer
+        file={viewerFile}
+        files={viewerFile ? [viewerFile] : []}
+        open={viewerOpen}
+        onOpenChange={(open) => {
+          setViewerOpen(open)
+          if (!open) setViewerFile(null)
+        }}
+        onDownload={handleDownloadFile}
+      />
 
       <div
         className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background relative"
@@ -1106,24 +1121,41 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         ) : null}
         <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
-            <Input placeholder="Search vendor, code..." className="w-full sm:w-72" value={search} onChange={(event) => setSearch(event.target.value)} />
-            <div className="flex items-center gap-2">
-              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
-                <SelectTrigger className="w-full sm:w-40">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  {(["submitted", "approved", "rejected", "invoiced", "draft"] as StatusKey[]).map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {statusLabels[status]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <Input placeholder="Search vendor, code..." className="h-[42px] w-full sm:w-72" value={search} onChange={(event) => setSearch(event.target.value)} />
+            <div className="flex w-full overflow-x-auto border bg-muted/20 p-1 sm:w-auto">
+              {([
+                { key: "all", label: "All" },
+                { key: "needs_review", label: "Needs coding" },
+                { key: "ready", label: "Ready to sync" },
+                { key: "synced", label: "Synced" },
+              ] as Array<{ key: QueueFilter; label: string }>).map((filter) => (
+                <button
+                  key={filter.key}
+                  type="button"
+                  onClick={() => setQueueFilter(filter.key)}
+                  className={cn(
+                    "flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium transition-colors",
+                    queueFilter === filter.key
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <span>{filter.label}</span>
+                  <span className={cn(
+                    "px-1.5 py-0.5 text-[10px] tabular-nums",
+                    queueFilter === filter.key ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground",
+                  )}>
+                    {filterCounts[filter.key]}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
+            <Button type="button" variant="outline" onClick={() => setSyncSheetOpen(true)} className="w-full sm:w-auto">
+              <RefreshCcw className="mr-2 h-4 w-4" />
+              Sync all
+            </Button>
             <Button onClick={openBlankExpense} className="w-full sm:w-auto">
               <Plus className="mr-2 h-4 w-4" />
               New expense
@@ -1261,7 +1293,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                       <TableCell className="px-4 py-2 text-center">
                         {expense.receipt_file_id ? (
                           <IconTooltip label="Preview receipt">
-                            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => setReceiptPreviewExpense(expense)}>
+                            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => void openReceiptPreview(expense)}>
                               <Receipt className="h-5 w-5 text-primary" />
                               <span className="sr-only">Preview receipt</span>
                             </Button>

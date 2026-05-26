@@ -5,7 +5,7 @@ import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo-query"
 
 describe("escapeQboQueryLiteral", () => {
   it("escapes apostrophes for QBO query literals", () => {
-    expect(escapeQboQueryLiteral("O'Brien")).toBe("O''Brien")
+    expect(escapeQboQueryLiteral("O'Brien")).toBe("O\\'Brien")
   })
 
   it("leaves strings without apostrophes unchanged", () => {
@@ -13,6 +13,10 @@ describe("escapeQboQueryLiteral", () => {
   })
 
   it("escapes multiple apostrophes", () => {
-    expect(escapeQboQueryLiteral("Bob's \"Aunt's\" Co")).toBe("Bob''s \"Aunt''s\" Co")
+    expect(escapeQboQueryLiteral("Bob's \"Aunt's\" Co")).toBe("Bob\\'s \"Aunt\\'s\" Co")
+  })
+
+  it("escapes backslashes before apostrophes", () => {
+    expect(escapeQboQueryLiteral("Bob\\Alice's Co")).toBe("Bob\\\\Alice\\'s Co")
   })
 })

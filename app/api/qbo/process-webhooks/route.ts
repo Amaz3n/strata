@@ -123,24 +123,34 @@ async function resolveLocalInvoiceIdByQboId(
   orgId: string,
   qboInvoiceId: string,
 ) {
-  const { data: invoiceSync } = await supabase
+  const { data: invoiceRows } = await supabase
+    .from("invoices")
+    .select("id, status, qbo_sync_status, qbo_synced_at, updated_at")
+    .eq("org_id", orgId)
+    .eq("qbo_id", qboInvoiceId)
+    .order("qbo_synced_at", { ascending: false, nullsFirst: false })
+    .order("updated_at", { ascending: false })
+    .limit(10)
+
+  const invoiceMatch = (invoiceRows ?? []).find((row: any) => row.qbo_sync_status === "synced" && row.status !== "draft")
+    ?? (invoiceRows ?? []).find((row: any) => row.status !== "draft")
+    ?? invoiceRows?.[0]
+
+  if (invoiceMatch?.id) return invoiceMatch.id as string
+
+  const { data: invoiceSyncRows } = await supabase
     .from("qbo_sync_records")
-    .select("entity_id")
+    .select("entity_id, status, last_synced_at")
     .eq("org_id", orgId)
     .eq("entity_type", "invoice")
     .eq("qbo_id", qboInvoiceId)
-    .maybeSingle()
+    .order("last_synced_at", { ascending: false })
+    .limit(10)
 
-  if (invoiceSync?.entity_id) return invoiceSync.entity_id as string
+  const syncMatch = (invoiceSyncRows ?? []).find((row: any) => row.status === "synced")
+    ?? invoiceSyncRows?.[0]
 
-  const { data: invoiceRow } = await supabase
-    .from("invoices")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("qbo_id", qboInvoiceId)
-    .maybeSingle()
-
-  return (invoiceRow?.id as string | undefined) ?? null
+  return (syncMatch?.entity_id as string | undefined) ?? null
 }
 
 async function upsertInvoiceSyncRecord(params: {
@@ -453,7 +463,7 @@ async function resolveLocalVendorBillIdByQboId(
     .from("qbo_sync_records")
     .select("entity_id")
     .eq("org_id", orgId)
-    .eq("entity_type", "vendor_bill")
+    .eq("entity_type", "bill")
     .eq("qbo_id", qboId)
     .maybeSingle()
 
@@ -556,7 +566,7 @@ async function reconcileVendorBillFromQbo(params: {
     {
       org_id: params.orgId,
       connection_id: params.connectionId,
-      entity_type: "vendor_bill",
+      entity_type: "bill",
       entity_id: billId,
       qbo_id: params.qboId,
       qbo_sync_token: qboBill.SyncToken ?? null,
@@ -631,21 +641,44 @@ async function reconcileBillPaymentFromQbo(params: {
     updated += 1
   }
 
-  await params.supabase.from("qbo_sync_records").upsert(
-    {
-      org_id: params.orgId,
-      connection_id: params.connectionId,
-      entity_type: "bill_payment",
-      entity_id: randomUUID(),
-      qbo_id: params.qboBillPaymentId,
-      qbo_sync_token: billPayment.SyncToken ?? null,
-      last_synced_at: new Date().toISOString(),
-      status: "synced",
-      error_message: null,
-      metadata: { source: "qbo_inbound" },
-    },
-    { onConflict: "org_id,entity_type,entity_id" },
-  )
+  const nowIso = new Date().toISOString()
+  const syncRecord = {
+    org_id: params.orgId,
+    connection_id: params.connectionId,
+    entity_type: "bill_payment",
+    entity_id: randomUUID(),
+    qbo_id: params.qboBillPaymentId,
+    qbo_sync_token: billPayment.SyncToken ?? null,
+    last_synced_at: nowIso,
+    status: "synced",
+    error_message: null,
+    metadata: { source: "qbo_inbound" },
+  }
+  const { data: existingSyncRecord } = await params.supabase
+    .from("qbo_sync_records")
+    .select("entity_id")
+    .eq("org_id", params.orgId)
+    .eq("entity_type", "bill_payment")
+    .eq("qbo_id", params.qboBillPaymentId)
+    .maybeSingle()
+
+  if (existingSyncRecord?.entity_id) {
+    await params.supabase
+      .from("qbo_sync_records")
+      .update({
+        connection_id: syncRecord.connection_id,
+        qbo_sync_token: syncRecord.qbo_sync_token,
+        last_synced_at: syncRecord.last_synced_at,
+        status: syncRecord.status,
+        error_message: syncRecord.error_message,
+        metadata: syncRecord.metadata,
+      })
+      .eq("org_id", params.orgId)
+      .eq("entity_type", "bill_payment")
+      .eq("qbo_id", params.qboBillPaymentId)
+  } else {
+    await params.supabase.from("qbo_sync_records").insert(syncRecord)
+  }
 
   return updated > 0 ? { reconciled: true as const } : { reconciled: false as const, reason: "No local bill matched linked QBO bill" }
 }
@@ -662,7 +695,7 @@ function extractLinkedInvoiceQboIds(payment: QBOPaymentSnapshot | null) {
   return Array.from(invoiceQboIds)
 }
 
-export async function POST(request: NextRequest) {
+async function processQBOWebhookEvents(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -880,6 +913,14 @@ export async function POST(request: NextRequest) {
 
   logQBO("info", "process_webhooks_complete", { processed, reconciled })
   return NextResponse.json({ processed, reconciled })
+}
+
+export async function GET(request: NextRequest) {
+  return processQBOWebhookEvents(request)
+}
+
+export async function POST(request: NextRequest) {
+  return processQBOWebhookEvents(request)
 }
 
 async function markEventProcessed(

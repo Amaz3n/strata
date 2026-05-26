@@ -3,40 +3,45 @@
 import { type ReactNode, useMemo, useState } from "react"
 import { format } from "date-fns"
 import {
+  Check,
+  CheckCircle2,
+  ChevronsUpDown,
+  Clock,
   MoreHorizontal,
   Plus,
+  Receipt,
   Search,
-  FileText,
-  Receipt, 
-  CheckCircle2, 
-  Clock,
-  ExternalLink,
   Trash2,
-  Filter,
-  ShieldCheck,
-  AlertTriangle
+  ExternalLink,
 } from "lucide-react"
+
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { 
-  DropdownMenu, 
-  DropdownMenuContent, 
-  DropdownMenuItem, 
-  DropdownMenuLabel, 
-  DropdownMenuSeparator, 
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuCheckboxItem
 } from "@/components/ui/dropdown-menu"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
+
+type QBOVendorOption = { id: string; name: string }
 
 interface PayablesExplorerProps {
   projectId: string
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
+  qboVendors?: QBOVendorOption[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   onAddPayable?: () => void
@@ -44,16 +49,19 @@ interface PayablesExplorerProps {
   onApprove?: (bill: VendorBillSummary) => void
   onRecordPayment?: (bill: VendorBillSummary) => void
   onSyncQbo?: (bill: VendorBillSummary) => void
+  onOpenSyncSheet?: () => void
   onDelete?: (bill: VendorBillSummary) => void
   onViewFiles?: (bill: VendorBillSummary) => void
+  onSelectQboVendor?: (bill: VendorBillSummary, vendorId: string) => void
+  onSelectCostCode?: (bill: VendorBillSummary, costCodeId: string | null) => void
   toolbarLeading?: ReactNode
   fullBleed?: boolean
 }
 
 export function PayablesExplorer({
-  projectId,
   vendorBills,
   costCodes,
+  qboVendors = [],
   complianceRules,
   complianceStatusByCompanyId,
   onAddPayable,
@@ -61,323 +69,434 @@ export function PayablesExplorer({
   onApprove,
   onRecordPayment,
   onSyncQbo,
+  onOpenSyncSheet,
   onDelete,
   onViewFiles,
+  onSelectQboVendor,
+  onSelectCostCode,
   toolbarLeading,
   fullBleed = false,
 }: PayablesExplorerProps) {
   const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [queueFilter, setQueueFilter] = useState<"all" | "needs_review" | "ready" | "synced">("needs_review")
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [openVendorBillId, setOpenVendorBillId] = useState<string | null>(null)
+  const [openCostCodeBillId, setOpenCostCodeBillId] = useState<string | null>(null)
 
-  function getPaymentGate(bill: VendorBillSummary) {
-    const status = bill.company_id ? complianceStatusByCompanyId[bill.company_id] : null
-    const missingCompliance = Boolean(complianceRules.block_payment_on_missing_docs && status && !status.is_compliant)
-    const missingWaiver = Boolean(
-      complianceRules.block_payment_on_missing_docs &&
-        complianceRules.require_lien_waiver &&
-        bill.lien_waiver_status !== "received",
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    return vendorBills.filter((bill) => {
+      const matchesSearch =
+        !query ||
+        bill.company_name?.toLowerCase().includes(query) ||
+        bill.qbo_vendor_name?.toLowerCase().includes(query) ||
+        bill.bill_number?.toLowerCase().includes(query) ||
+        bill.commitment_title?.toLowerCase().includes(query) ||
+        bill.actual_cost_code_code?.toLowerCase().includes(query) ||
+        bill.actual_cost_code_name?.toLowerCase().includes(query)
+
+      const needsCoding = bill.status === "pending" || !bill.qbo_vendor_id || !bill.actual_cost_code_id
+      const ready = bill.status !== "pending" && !needsCoding && bill.qbo_sync_status !== "synced"
+      const matchesQueue =
+        queueFilter === "all" ||
+        (queueFilter === "needs_review" && needsCoding) ||
+        (queueFilter === "ready" && ready) ||
+        (queueFilter === "synced" && bill.qbo_sync_status === "synced")
+
+      return matchesSearch && matchesQueue
+    })
+  }, [vendorBills, search, queueFilter])
+
+  const filterCounts = useMemo(() => {
+    return vendorBills.reduce(
+      (counts, bill) => {
+        const needsCoding = bill.status === "pending" || !bill.qbo_vendor_id || !bill.actual_cost_code_id
+        const ready = bill.status !== "pending" && !needsCoding && bill.qbo_sync_status !== "synced"
+        counts.all += 1
+        if (needsCoding) counts.needs_review += 1
+        if (ready) counts.ready += 1
+        if (bill.qbo_sync_status === "synced") counts.synced += 1
+        return counts
+      },
+      { all: 0, needs_review: 0, ready: 0, synced: 0 },
     )
+  }, [vendorBills])
 
-    if (missingCompliance || missingWaiver) {
-      const reasons = [
-        missingCompliance ? "Compliance docs" : null,
-        missingWaiver ? "Lien waiver" : null,
-      ].filter(Boolean)
-      return {
-        blocked: true,
-        label: reasons.join(" + "),
-      }
-    }
+  const visibleIds = filtered.map((bill) => bill.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
+  const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id))
 
-    return {
-      blocked: false,
-      label: bill.status === "pending" ? "Needs approval" : "Clear",
+  function toggleSelectAll(checked: boolean | "indeterminate") {
+    if (checked) {
+      setSelectedIds((current) => Array.from(new Set([...current, ...visibleIds])))
+    } else {
+      setSelectedIds((current) => current.filter((id) => !visibleIds.includes(id)))
     }
   }
 
-  const filtered = useMemo(() => {
-    return vendorBills.filter((bill) => {
-      const matchesSearch = !search || 
-        bill.company_name?.toLowerCase().includes(search.toLowerCase()) ||
-        bill.bill_number?.toLowerCase().includes(search.toLowerCase()) ||
-        bill.commitment_title?.toLowerCase().includes(search.toLowerCase())
-      
-      const matchesStatus = statusFilter === "all" || bill.status === statusFilter
-      
-      return matchesSearch && matchesStatus
-    })
-  }, [vendorBills, search, statusFilter])
+  function toggleSelectOne(id: string, checked: boolean | "indeterminate") {
+    setSelectedIds((current) => checked ? Array.from(new Set([...current, id])) : current.filter((item) => item !== id))
+  }
 
   return (
     <div className={fullBleed ? "flex h-full w-full flex-col overflow-hidden bg-background" : "flex h-full flex-col overflow-hidden bg-background"}>
-      <div
-        className={
-          fullBleed
-            ? "sticky top-0 z-20 flex min-h-14 w-full flex-col border-b bg-background/95 shadow-[0_1px_0_rgba(0,0,0,0.02)] backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:flex-row sm:items-stretch"
-            : "flex min-h-14 shrink-0 flex-col border-b bg-background/95 backdrop-blur sm:flex-row sm:items-stretch"
-        }
-      >
-        {toolbarLeading && (
-          <div className="flex min-w-0 items-stretch px-4 sm:border-r sm:px-6 lg:px-8">{toolbarLeading}</div>
-        )}
-        <div
-          className={
-            toolbarLeading
-              ? "flex w-full flex-col gap-2 px-4 py-3 sm:flex-1 sm:flex-row sm:items-center sm:justify-end sm:px-4 sm:py-2 lg:px-6"
-              : "flex w-full flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-2 lg:px-8"
-          }
-        >
-          <div className={toolbarLeading ? "w-full sm:max-w-sm lg:max-w-md xl:max-w-lg" : "w-full sm:max-w-xs"}>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Search payables"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="h-9 rounded-md bg-muted/30 pl-9 pr-12 shadow-none transition-colors focus-visible:bg-background"
-              />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 border-0 shadow-none hover:bg-background"
-                  >
-                    <Filter className="h-4 w-4" />
-                    {statusFilter !== "all" && (
-                      <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary" />
-                    )}
-                    <span className="sr-only">Filters</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Filter by status</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuCheckboxItem checked={statusFilter === "all"} onCheckedChange={() => setStatusFilter("all")}>
-                    Any status
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem checked={statusFilter === "pending"} onCheckedChange={() => setStatusFilter("pending")}>
-                    Pending
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem checked={statusFilter === "approved"} onCheckedChange={() => setStatusFilter("approved")}>
-                    Approved
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem checked={statusFilter === "partial"} onCheckedChange={() => setStatusFilter("partial")}>
-                    Partial
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem checked={statusFilter === "paid"} onCheckedChange={() => setStatusFilter("paid")}>
-                    Paid
-                  </DropdownMenuCheckboxItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+      <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
+        {toolbarLeading ? <div className="min-w-0">{toolbarLeading}</div> : null}
+        <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search vendor, bill..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              className="h-[42px] rounded-none bg-muted/30 pl-9 shadow-none"
+            />
           </div>
-
-          <div className="flex flex-row gap-2">
-            <Button
-              size={fullBleed ? "sm" : "default"}
-              onClick={onAddPayable}
-              className="h-9 flex-1 whitespace-nowrap sm:flex-none"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              New payable
-            </Button>
+          <div className="flex w-full overflow-x-auto border bg-muted/20 p-1 sm:w-auto">
+            {([
+              { key: "all", label: "All" },
+              { key: "needs_review", label: "Needs review" },
+              { key: "ready", label: "Ready to sync" },
+              { key: "synced", label: "Synced" },
+            ] as const).map((filter) => (
+              <button
+                key={filter.key}
+                type="button"
+                onClick={() => setQueueFilter(filter.key)}
+                className={cn(
+                  "flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium transition-colors",
+                  queueFilter === filter.key ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <span>{filter.label}</span>
+                <span className={cn("px-1.5 py-0.5 text-[10px] tabular-nums", queueFilter === filter.key ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground")}>
+                  {filterCounts[filter.key]}
+                </span>
+              </button>
+            ))}
           </div>
+        </div>
+        <div className="flex w-full gap-2 sm:w-auto">
+          <Button type="button" variant="outline" onClick={onOpenSyncSheet} className="w-full sm:w-auto">
+            <ExternalLink className="mr-2 h-4 w-4" />
+            Sync all
+          </Button>
+          <Button type="button" onClick={onAddPayable} className="w-full sm:w-auto">
+            <Plus className="mr-2 h-4 w-4" />
+            New payable
+          </Button>
         </div>
       </div>
 
-      {/* Main Table Content */}
-      <div className="flex-1 overflow-hidden">
-        <ScrollArea className="h-full">
-          <table className="w-full border-collapse text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/40 backdrop-blur-sm border-b shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
-              <tr>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground w-12"></th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Company</th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Commitment</th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Bill #</th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Due Date</th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Status</th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">QBO</th>
-                <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Payment Gate</th>
-                <th className="px-4 py-3 text-right font-semibold text-muted-foreground">Amount</th>
-                <th className="px-4 py-3 text-center font-semibold text-muted-foreground w-16">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-20 text-center text-muted-foreground">
-                    <div className="flex flex-col items-center gap-2">
-                      <Receipt className="h-8 w-8 opacity-20" />
-                      <p>No payables found</p>
+      <div className="min-h-0 flex-1 overflow-auto">
+        <Table className="min-w-[1320px]">
+          <TableHeader>
+            <TableRow className="divide-x">
+              <TableHead className="relative w-[72px] min-w-[72px] py-3 text-center">
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Checkbox checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false} onCheckedChange={toggleSelectAll} aria-label="Select all payables" />
+                </div>
+              </TableHead>
+              <TableHead className="min-w-[240px] px-4 py-3">Vendor / Company</TableHead>
+              <TableHead className="w-[132px] px-4 py-3 text-center">Due Date</TableHead>
+              <TableHead className="w-[150px] px-4 py-3 text-right">Amount</TableHead>
+              <TableHead className="min-w-[220px] px-4 py-3">Commitment</TableHead>
+              <TableHead className="w-[140px] px-4 py-3">Bill #</TableHead>
+              <TableHead className="w-[96px] px-4 py-3 text-center">Receipt</TableHead>
+              <TableHead className="min-w-[280px] px-4 py-3">QBO Vendor</TableHead>
+              <TableHead className="min-w-[220px] px-4 py-3">Cost Code</TableHead>
+              <TableHead className="sticky right-0 z-10 w-[112px] min-w-[112px] border-l bg-background px-3 py-3 text-center shadow-[-1px_0_0_hsl(var(--border))]">
+                Actions
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.map((bill) => (
+              <TableRow key={bill.id} data-state={selectedIds.includes(bill.id) ? "selected" : undefined} className="divide-x align-middle">
+                <TableCell className="relative w-[72px] min-w-[72px] py-2 text-center align-middle">
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Checkbox checked={selectedIds.includes(bill.id)} onCheckedChange={(checked) => toggleSelectOne(bill.id, checked)} aria-label={`Select payable ${vendorLabel(bill)}`} />
+                  </div>
+                </TableCell>
+                <TableCell className="px-4 py-2" onClick={() => onViewDetails?.(bill)}>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Avatar className="size-7 rounded-md">
+                      <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendorLabel(bill))}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold">{vendorLabel(bill)}</div>
+                      <div className="truncate text-[11px] text-muted-foreground">{bill.company_name && bill.qbo_vendor_name ? bill.company_name : "Payable"}</div>
                     </div>
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((bill) => {
-                  const paymentGate = getPaymentGate(bill)
-                  return (
-                    <tr
-                      key={bill.id}
-                      className="group hover:bg-muted/10 transition-colors cursor-pointer"
-                      onClick={() => onViewDetails?.(bill)}
+                    <span className="ml-auto flex shrink-0 items-center justify-center" title={statusLabel(bill.status)}>
+                      <PayableStatusIcon status={bill.status} />
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground">{bill.due_date ? format(new Date(`${bill.due_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
+                <TableCell className="px-4 py-2 text-right text-sm font-semibold tabular-nums">{formatCurrency(bill.total_cents ?? 0)}</TableCell>
+                <TableCell className="px-4 py-2">
+                  <div className="max-w-[240px] truncate text-sm text-muted-foreground" title={bill.commitment_title}>
+                    {bill.commitment_title ?? "No commitment"}
+                  </div>
+                </TableCell>
+                <TableCell className="px-4 py-2">
+                  <code className="text-xs font-mono bg-muted px-1.5 py-0.5 uppercase tracking-wider">{bill.bill_number ?? "—"}</code>
+                </TableCell>
+                <TableCell className="px-4 py-2 text-center" onClick={(event) => event.stopPropagation()}>
+                  {bill.file_id ? (
+                    <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => onViewFiles?.(bill)}>
+                      <Receipt className="h-5 w-5 text-primary" />
+                      <span className="sr-only">Preview receipt</span>
+                    </Button>
+                  ) : (
+                    <span className="inline-flex h-9 w-9 items-center justify-center text-muted-foreground" aria-label="No receipt uploaded">
+                      <Receipt className="h-5 w-5 opacity-40" />
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="p-0">
+                  <PayableVendorCombobox
+                    bill={bill}
+                    vendors={qboVendors}
+                    open={openVendorBillId === bill.id}
+                    onOpenChange={(open) => setOpenVendorBillId(open ? bill.id : null)}
+                    onSelect={(vendorId) => onSelectQboVendor?.(bill, vendorId)}
+                  />
+                </TableCell>
+                <TableCell className="p-0">
+                  <PayableCostCodeCombobox
+                    bill={bill}
+                    costCodes={costCodes}
+                    open={openCostCodeBillId === bill.id}
+                    onOpenChange={(open) => setOpenCostCodeBillId(open ? bill.id : null)}
+                    onSelect={(costCodeId) => onSelectCostCode?.(bill, costCodeId)}
+                  />
+                </TableCell>
+                <TableCell className="sticky right-0 z-10 w-[112px] min-w-[112px] border-l bg-background px-3 py-2 text-center shadow-[-1px_0_0_hsl(var(--border))]" onClick={(event) => event.stopPropagation()}>
+                  <div className="flex items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      className={cn(
+                        "h-9 w-9 rounded-md bg-background",
+                        bill.status === "pending" ? "border-emerald-600 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700" : "border-muted text-muted-foreground opacity-70",
+                      )}
+                      disabled={bill.status !== "pending"}
+                      onClick={() => onApprove?.(bill)}
                     >
-                    <td className="px-4 py-3 text-center">
-                      <div className="h-8 w-8 rounded bg-muted/30 flex items-center justify-center text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary transition-colors">
-                        <FileText className="h-4 w-4" />
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-semibold text-foreground group-hover:text-primary transition-colors">{bill.company_name ?? "—"}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-muted-foreground truncate max-w-[200px]" title={bill.commitment_title}>
-                        {bill.commitment_title ?? "—"}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <code className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded uppercase tracking-wider">
-                        {bill.bill_number ?? "—"}
-                      </code>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2 text-muted-foreground group-hover:text-foreground transition-colors">
-                        <Clock className="h-3.5 w-3.5" />
-                        <span>{bill.due_date ? format(new Date(bill.due_date), "MMM d, yyyy") : "—"}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      {billStatusBadge(bill.status)}
-                    </td>
-                    <td className="px-4 py-3">
-                      {qboStatusBadge(bill.qbo_sync_status, bill.qbo_sync_error)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge
-                        variant="outline"
-                        className={
-                          paymentGate.blocked
-                            ? "border-destructive/30 bg-destructive/10 text-destructive"
-                            : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                        }
-                      >
-                        {paymentGate.blocked ? (
-                          <AlertTriangle className="mr-1 h-3 w-3" />
-                        ) : (
-                          <ShieldCheck className="mr-1 h-3 w-3" />
-                        )}
-                        {paymentGate.label}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="font-bold tabular-nums text-foreground group-hover:text-primary transition-colors">
-                        {formatCurrency(bill.total_cents ?? 0)}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Actions</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-56 shadow-xl">
-                          <DropdownMenuLabel>Payable Actions</DropdownMenuLabel>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => onViewFiles?.(bill)}>
-                            <ExternalLink className="mr-2 h-4 w-4 text-muted-foreground" />
-                            View Attachments
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem 
-                            onClick={() => onApprove?.(bill)}
-                            disabled={bill.status === "approved" || bill.status === "paid" || bill.status === "partial"}
-                          >
-                            <CheckCircle2 className="mr-2 h-4 w-4 text-emerald-500" />
-                            Approve for Payment
-                          </DropdownMenuItem>
-                          <DropdownMenuItem 
-                            onClick={() => onRecordPayment?.(bill)}
-                            disabled={(bill.status !== "approved" && bill.status !== "partial") || paymentGate.blocked}
-                          >
-                            <Receipt className="mr-2 h-4 w-4 text-blue-500" />
-                            Record Payment
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => onSyncQbo?.(bill)}
-                            disabled={bill.status === "pending" || bill.qbo_sync_status === "pending"}
-                          >
-                            <ExternalLink className="mr-2 h-4 w-4 text-muted-foreground" />
-                            Sync to QuickBooks
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onDelete?.(bill)}>
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete Payable
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </td>
-                  </tr>
-                )})
-              )}
-            </tbody>
-          </table>
-        </ScrollArea>
+                      <Check className="h-5 w-5" />
+                      <span className="sr-only">Approve payable</span>
+                    </Button>
+                    <RowActions bill={bill} onEdit={onViewDetails} onViewFiles={onViewFiles} onDelete={onDelete} />
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+            {filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={10} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                      <Receipt className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <p className="font-medium">No payables found</p>
+                      <p className="text-sm text-muted-foreground">Upload a bill or adjust the current filter.</p>
+                    </div>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : null}
+          </TableBody>
+        </Table>
       </div>
-      
-      {/* Mini Summary Footer */}
+
       <div className="h-10 shrink-0 border-t bg-muted/10 px-4 flex items-center justify-between text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
-        <div>{filtered.length} total records showing</div>
+        <div>{filtered.length} records showing</div>
         <div className="flex gap-4">
-          <span>Unpaid: {formatCurrency(vendorBills.reduce((sum, b) => sum + ((b.total_cents ?? 0) - (b.paid_cents ?? 0)), 0))}</span>
-          <span className="text-emerald-600">Paid: {formatCurrency(vendorBills.reduce((sum, b) => sum + (b.paid_cents ?? 0), 0))}</span>
+          <span>Unpaid: {formatCurrency(vendorBills.reduce((sum, bill) => sum + ((bill.total_cents ?? 0) - (bill.paid_cents ?? 0)), 0))}</span>
+          <span>Paid: {formatCurrency(vendorBills.reduce((sum, bill) => sum + (bill.paid_cents ?? 0), 0))}</span>
         </div>
       </div>
     </div>
   )
 }
 
-function billStatusBadge(status?: string) {
-  const s = (status ?? "pending").toLowerCase()
-  const map: Record<string, { label: string; tone: string }> = {
-    paid: { label: "Paid", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
-    partial: { label: "Partial", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
-    approved: { label: "Approved", tone: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20" },
-    pending: { label: "Pending", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
-  }
-  const config = map[s] ?? map.pending
+function PayableVendorCombobox({
+  bill,
+  vendors,
+  open,
+  onOpenChange,
+  onSelect,
+}: {
+  bill: VendorBillSummary
+  vendors: QBOVendorOption[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSelect: (vendorId: string) => void
+}) {
+  const selectedLabel = bill.qbo_vendor_name ?? vendorLabel(bill)
   return (
-    <Badge variant="outline" className={cn("text-[10px] font-bold uppercase tracking-tight", config.tone)}>
-      {config.label}
-    </Badge>
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium text-foreground">{selectedLabel}</span>
+            <span className="block truncate text-[11px] text-muted-foreground">QuickBooks vendor</span>
+          </span>
+          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search vendors..." />
+          <CommandList className="max-h-72 overflow-y-auto">
+            <CommandEmpty>No vendors found.</CommandEmpty>
+            <CommandGroup heading="Vendors">
+              {vendors.map((vendor) => {
+                const selected = vendor.id === bill.qbo_vendor_id
+                return (
+                  <CommandItem key={vendor.id} value={vendor.name} onSelect={() => onSelect(vendor.id)}>
+                    <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{vendor.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">QuickBooks vendor</span>
+                    </span>
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 
-function qboStatusBadge(status?: string, error?: string) {
-  const s = (status ?? "not_synced").toLowerCase()
-  const map: Record<string, { label: string; tone: string }> = {
-    synced: { label: "Synced", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
-    pending: { label: "Pending", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
-    error: { label: "Error", tone: "bg-destructive/10 text-destructive border-destructive/20" },
-    needs_review: { label: "Review", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
-    skipped: { label: "Off", tone: "bg-muted text-muted-foreground border-border" },
-    not_synced: { label: "Not synced", tone: "bg-muted text-muted-foreground border-border" },
-  }
-  const config = map[s] ?? map.not_synced
+function PayableCostCodeCombobox({
+  bill,
+  costCodes,
+  open,
+  onOpenChange,
+  onSelect,
+}: {
+  bill: VendorBillSummary
+  costCodes: CostCode[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSelect: (costCodeId: string | null) => void
+}) {
+  const selected = bill.actual_cost_code_id ? costCodes.find((code) => code.id === bill.actual_cost_code_id) : null
   return (
-    <Badge variant="outline" title={error} className={cn("text-[10px] font-bold uppercase tracking-tight", config.tone)}>
-      {config.label}
-    </Badge>
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium text-foreground">{selected?.code ?? bill.actual_cost_code_code ?? "Choose code"}</span>
+            <span className="block truncate text-[11px] text-muted-foreground">{selected ? costCodeLabel(selected) : bill.actual_cost_code_name ?? "Project cost code"}</span>
+          </span>
+          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search cost codes..." />
+          <CommandList className="max-h-72 overflow-y-auto">
+            <CommandEmpty>No cost codes found.</CommandEmpty>
+            <CommandGroup heading="Cost codes">
+              <CommandItem value="No cost code" onSelect={() => onSelect(null)}>
+                <Check className={cn("size-4", bill.actual_cost_code_id ? "opacity-0" : "opacity-100")} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">No cost code</span>
+                  <span className="block truncate text-xs text-muted-foreground">Leave uncoded</span>
+                </span>
+              </CommandItem>
+              {costCodes.map((code) => {
+                const selectedCode = code.id === bill.actual_cost_code_id
+                return (
+                  <CommandItem key={code.id} value={costCodeLabel(code)} onSelect={() => onSelect(code.id)}>
+                    <Check className={cn("size-4", selectedCode ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{code.code}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{costCodeLabel(code)}</span>
+                    </span>
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
+}
+
+function RowActions({
+  bill,
+  onEdit,
+  onViewFiles,
+  onDelete,
+}: {
+  bill: VendorBillSummary
+  onEdit?: (bill: VendorBillSummary) => void
+  onViewFiles?: (bill: VendorBillSummary) => void
+  onDelete?: (bill: VendorBillSummary) => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-9 w-9">
+          <MoreHorizontal className="h-4 w-4" />
+          <span className="sr-only">Actions</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel>Payable Actions</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => onEdit?.(bill)}>Edit</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => onViewFiles?.(bill)}>View attachments</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onDelete?.(bill)}>
+          <Trash2 className="mr-2 h-4 w-4" />
+          Delete payable
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function PayableStatusIcon({ status }: { status?: string }) {
+  if (status === "paid" || status === "approved" || status === "partial") {
+    return <CheckCircle2 className="h-4 w-4 text-success" />
+  }
+  return <Clock className="h-4 w-4 text-muted-foreground" />
+}
+
+function vendorLabel(bill: VendorBillSummary) {
+  return bill.qbo_vendor_name ?? bill.company_name ?? "No vendor"
+}
+
+function statusLabel(status?: string) {
+  if (status === "paid") return "Paid"
+  if (status === "partial") return "Partially paid"
+  if (status === "approved") return "Approved"
+  return "Pending"
+}
+
+function initialsFor(value: string) {
+  const parts = value.trim().split(/\s+/).filter(Boolean)
+  return (parts[0]?.[0] ?? "?").concat(parts[1]?.[0] ?? "").toUpperCase()
+}
+
+function costCodeLabel(code: CostCode) {
+  return [code.code, code.name].filter(Boolean).join(" · ")
 }
 
 function formatCurrency(cents: number) {
-  return (cents / 100).toLocaleString("en-US", { 
-    style: "currency", 
-    currency: "USD", 
-    maximumFractionDigits: 0 
+  return (cents / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
   })
 }

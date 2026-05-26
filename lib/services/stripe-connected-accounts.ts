@@ -201,6 +201,8 @@ async function upsertStripeConnectedAccountRow(params: {
   defaultCurrency?: string | null
   dashboardType?: string | null
   requirementCollection?: string | null
+  feesPayer?: string | null
+  lossesPayments?: string | null
   onboardingStartedAt?: string | null
   onboardingCompletedAt?: string | null
   disabledReason?: string | null
@@ -211,7 +213,7 @@ async function upsertStripeConnectedAccountRow(params: {
   const supabase = createServiceSupabaseClient()
   const { data: existing } = await supabase
     .from("stripe_connected_accounts")
-    .select("id, status, onboarding_started_at, onboarding_completed_at")
+    .select("id, status, onboarding_started_at, onboarding_completed_at, metadata")
     .eq("org_id", params.orgId)
     .maybeSingle()
 
@@ -229,6 +231,19 @@ async function upsertStripeConnectedAccountRow(params: {
     params.onboardingCompletedAt ??
     (params.chargesEnabled && params.payoutsEnabled ? new Date().toISOString() : existing?.onboarding_completed_at ?? null)
 
+  const existingResponsibilities =
+    ((existing?.metadata as Record<string, any> | null)?.stripe_responsibilities as Record<string, any> | undefined) ?? {}
+
+  const metadata = {
+    ...((existing?.metadata as Record<string, any> | null) ?? {}),
+    ...(params.metadata ?? {}),
+    stripe_responsibilities: {
+      ...existingResponsibilities,
+      fees_payer: params.feesPayer ?? existingResponsibilities.fees_payer ?? null,
+      losses_payments: params.lossesPayments ?? existingResponsibilities.losses_payments ?? null,
+    },
+  }
+
   const payload = {
     org_id: params.orgId,
     stripe_account_id: params.stripeAccountId,
@@ -245,7 +260,7 @@ async function upsertStripeConnectedAccountRow(params: {
     disabled_reason: params.disabledReason ?? null,
     requirements_currently_due: params.requirementsCurrentlyDue ?? [],
     requirements_eventually_due: params.requirementsEventuallyDue ?? [],
-    metadata: params.metadata ?? {},
+    metadata,
     created_by: params.createdBy ?? null,
   }
 
@@ -273,6 +288,8 @@ function mapStripeRecordToConnection(stripeRecord: Awaited<ReturnType<typeof ret
     defaultCurrency: stripeRecord.default_currency,
     dashboardType: stripeRecord.dashboard_type,
     requirementCollection: stripeRecord.requirement_collection,
+    feesPayer: stripeRecord.fees_payer,
+    lossesPayments: stripeRecord.losses_payments,
     disabledReason: stripeRecord.disabled_reason,
     requirementsCurrentlyDue: stripeRecord.requirements_currently_due,
     requirementsEventuallyDue: stripeRecord.requirements_eventually_due,
@@ -281,6 +298,11 @@ function mapStripeRecordToConnection(stripeRecord: Awaited<ReturnType<typeof ret
 
 export function isStripeConnectedAccountReady(connection: StripeConnectedAccount | null | undefined) {
   return Boolean(connection?.charges_enabled && connection?.payouts_enabled)
+}
+
+export function hasBuilderPaymentResponsibility(connection: StripeConnectedAccount | null | undefined) {
+  const responsibilities = connection?.metadata?.stripe_responsibilities as Record<string, unknown> | undefined
+  return responsibilities?.fees_payer === "account" && responsibilities?.losses_payments === "stripe"
 }
 
 export async function getStripeConnectedAccount(orgId?: string) {
@@ -329,6 +351,18 @@ export async function syncStripeConnectedAccountFromStripeAccount(account: Strip
     return null
   }
 
+  if (!existing?.org_id) {
+    const { data: currentForOrg } = await supabase
+      .from("stripe_connected_accounts")
+      .select("stripe_account_id")
+      .eq("org_id", orgId)
+      .maybeSingle()
+
+    if (currentForOrg?.stripe_account_id && currentForOrg.stripe_account_id !== account.id) {
+      return null
+    }
+  }
+
   const stripeRecord = await retrieveStripeConnectedAccount(account.id)
   return upsertStripeConnectedAccountRow({
     orgId,
@@ -345,7 +379,20 @@ export async function syncStripeConnectedAccountFromStripeAccount(account: Strip
 export async function createOrGetStripeConnectedAccount(orgId?: string) {
   const existing = await getStripeConnectedAccount(orgId)
   if (existing) {
-    return existing
+    const stripeRecord = await retrieveStripeConnectedAccount(existing.stripe_account_id)
+    const synced = await upsertStripeConnectedAccountRow({
+      orgId: existing.org_id,
+      ...mapStripeRecordToConnection(stripeRecord),
+      onboardingStartedAt: existing.onboarding_started_at ?? null,
+      onboardingCompletedAt:
+        stripeRecord.charges_enabled && stripeRecord.payouts_enabled
+          ? existing.onboarding_completed_at ?? new Date().toISOString()
+          : existing.onboarding_completed_at ?? null,
+      metadata: existing.metadata ?? {},
+    })
+    if (hasBuilderPaymentResponsibility(synced)) {
+      return synced
+    }
   }
 
   const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -421,6 +468,9 @@ export async function requireReadyStripeConnectedAccount(orgId?: string) {
   if (!connection || !isStripeConnectedAccountReady(connection)) {
     throw new Error("Online payments are not configured for this organization yet.")
   }
+  if (!hasBuilderPaymentResponsibility(connection)) {
+    throw new Error("Online payments must be reconnected before accepting invoice payments.")
+  }
   return connection
 }
 
@@ -436,9 +486,23 @@ export async function requireReadyStripeConnectedAccountForOrg(orgId: string) {
     throw new Error("Online payments are not configured for this organization yet.")
   }
 
-  const connection = mapConnection(data)
+  const existing = mapConnection(data)
+  const stripeRecord = await retrieveStripeConnectedAccount(existing.stripe_account_id)
+  const connection = await upsertStripeConnectedAccountRow({
+    orgId,
+    ...mapStripeRecordToConnection(stripeRecord),
+    onboardingStartedAt: existing.onboarding_started_at ?? null,
+    onboardingCompletedAt:
+      stripeRecord.charges_enabled && stripeRecord.payouts_enabled
+        ? existing.onboarding_completed_at ?? new Date().toISOString()
+        : existing.onboarding_completed_at ?? null,
+    metadata: existing.metadata ?? {},
+  })
   if (!isStripeConnectedAccountReady(connection)) {
     throw new Error("Online payments are not configured for this organization yet.")
+  }
+  if (!hasBuilderPaymentResponsibility(connection)) {
+    throw new Error("Online payments must be reconnected before accepting invoice payments.")
   }
 
   return connection

@@ -2,7 +2,7 @@
 
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
-import { CalendarIcon, Check, ChevronDown, Download, Plus, Send, X } from "lucide-react"
+import { CalendarIcon, Check, ChevronDown, Download, Plus, Send, UserRound, X } from "lucide-react"
 import { NumberFlowLite, partitionParts } from "number-flow"
 
 import type { ChangeOrder, Contact, CostCode, Invoice, Project } from "@/lib/types"
@@ -18,7 +18,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -27,6 +34,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { buildPartyDetailsBlock, parsePartyDetailsBlock } from "@/lib/invoices/party-details"
+import { UnbilledCostsPicker, type CostSelection } from "@/components/invoices/unbilled-costs-picker"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -177,45 +185,50 @@ function parseDate(dateStr: string): Date | undefined {
 function GhostInput({ className, ...props }: React.ComponentProps<typeof Input>) {
   return (
     <Input
-      className={`border-transparent bg-transparent shadow-none hover:border-input focus:border-input transition-colors ${className ?? ""}`}
+      className={cn(
+        "border-transparent bg-transparent shadow-none transition-colors hover:border-input focus:border-input",
+        className,
+      )}
       {...props}
     />
   )
 }
 
-/* Date picker button with calendar popover */
-function DatePicker({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
+/* Date picker button with calendar popover — fills its container; the caller supplies the label */
+function DatePicker({ value, onChange, className }: { value: string; onChange: (v: string) => void; className?: string }) {
   const [open, setOpen] = useState(false)
   const date = parseDate(value)
 
   return (
-    <div className="flex items-center justify-end gap-2">
-      <span className="text-muted-foreground text-sm">{label}</span>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 h-7 px-2 text-sm rounded border border-transparent hover:border-input transition-colors text-right"
-          >
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-7 w-full items-center gap-1.5 rounded-none border border-transparent px-2 text-sm transition-colors hover:border-input",
+            className,
+          )}
+        >
+          <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className={cn("flex-1 text-right tabular-nums", !date && "text-muted-foreground")}>
             {date ? format(date, "MMM d, yyyy") : "Pick date"}
-            <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-auto p-0" align="end">
-          <Calendar
-            mode="single"
-            selected={date}
-            onSelect={(d) => {
-              if (d) {
-                onChange(format(d, "yyyy-MM-dd"))
-                setOpen(false)
-              }
-            }}
-            defaultMonth={date}
-          />
-        </PopoverContent>
-      </Popover>
-    </div>
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-0" align="end">
+        <Calendar
+          mode="single"
+          selected={date}
+          onSelect={(d) => {
+            if (d) {
+              onChange(format(d, "yyyy-MM-dd"))
+              setOpen(false)
+            }
+          }}
+          defaultMonth={date}
+        />
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -296,32 +309,29 @@ interface QboLineAccountPickerProps {
   valueId: string | null
   valueLabel: string | null
   accounts: QBOIncomeAccountOption[]
-  defaultAccountId: string | null
   onSelect: (account: { id: string | null; name: string | null }) => void
   onCreateAccount: (name: string) => Promise<QBOIncomeAccountOption>
+  triggerClassName?: string
 }
 
 function QboLineAccountPicker({
   valueId,
   valueLabel,
   accounts,
-  defaultAccountId,
   onSelect,
   onCreateAccount,
+  triggerClassName,
 }: QboLineAccountPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [creating, setCreating] = useState(false)
 
   const selectedAccount = valueId ? accounts.find((account) => account.id === valueId) ?? null : null
-  const defaultAccount = defaultAccountId ? accounts.find((account) => account.id === defaultAccountId) ?? null : null
   const displayLabel = selectedAccount
     ? formatQboAccountLabel(selectedAccount)
     : valueId
       ? (valueLabel ?? valueId)
-      : defaultAccount
-        ? `Default: ${formatQboAccountLabel(defaultAccount)}`
-        : "Default"
+      : "Pick account"
   const normalizedQuery = query.trim()
   const hasExactMatch = accounts.some((account) => {
     const lowerQuery = normalizedQuery.toLowerCase()
@@ -331,12 +341,6 @@ function QboLineAccountPicker({
     )
   })
   const showCreate = normalizedQuery.length > 0 && !hasExactMatch
-
-  const selectDefault = () => {
-    onSelect({ id: null, name: null })
-    setOpen(false)
-    setQuery("")
-  }
 
   const selectAccount = (account: QBOIncomeAccountOption) => {
     onSelect({ id: account.id, name: formatQboAccountLabel(account) })
@@ -360,22 +364,21 @@ function QboLineAccountPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-5 max-w-[140px] items-center rounded-sm px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+          className={cn(
+            "inline-flex h-5 max-w-[140px] items-center rounded-none px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground",
+            triggerClassName,
+          )}
           title={displayLabel}
         >
           <span className="truncate">{displayLabel}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[300px] overflow-hidden p-0" align="start">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[300px] overflow-hidden p-0" align="start">
         <Command>
           <CommandInput placeholder="Search QBO account..." value={query} onValueChange={setQuery} />
           <CommandList className="max-h-64 overscroll-contain" onWheelCapture={(event) => event.stopPropagation()}>
             <CommandEmpty>No matching accounts.</CommandEmpty>
             <CommandGroup heading="Accounts">
-              <CommandItem value="__default__" onSelect={selectDefault}>
-                Use default account
-                <Check className={cn("ml-auto h-3.5 w-3.5", !valueId ? "opacity-100" : "opacity-0")} />
-              </CommandItem>
               {accounts.map((account) => {
                 const label = formatQboAccountLabel(account)
                 return (
@@ -441,7 +444,7 @@ export function InvoiceComposerSheet({
   const initialProjectName = projects.find((project) => project.id === initialProjectId)?.name ?? "Project"
 
   const [projectId, setProjectId] = useState<string | undefined>(initialProjectId)
-  const [source, setSource] = useState<BillingSource>("manual")
+  // Linked references (kept as metadata); the effective source_type is derived at submit from these + cost lines.
   const [sourceDrawId, setSourceDrawId] = useState<string>("none")
   const [sourceChangeOrderId, setSourceChangeOrderId] = useState<string>("none")
   const [drawOptions, setDrawOptions] = useState<DrawOption[]>([])
@@ -449,21 +452,21 @@ export function InvoiceComposerSheet({
   const [qboConnected, setQboConnected] = useState(false)
   const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
   const [qboCustomers, setQboCustomers] = useState<QBOCustomerOption[]>([])
-  const [qboDefaultIncomeAccountId, setQboDefaultIncomeAccountId] = useState<string | null>(null)
   const [qboDiagnostics, setQboDiagnostics] = useState<QboDiagnostics | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
   const [approvedCostsLoading, setApprovedCostsLoading] = useState(false)
-  const [approvedCostsSummary, setApprovedCostsSummary] = useState<{
-    costCount: number
-    totalBillableCents: number
-  } | null>(null)
+  const [costPickerOpen, setCostPickerOpen] = useState(false)
 
   const [invoiceNumber, setInvoiceNumber] = useState(invoice?.invoice_number ?? "")
   const [title, setTitle] = useState(invoice?.title ?? initialProjectName)
   const [issueDate, setIssueDate] = useState(invoice?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
   const [dueDate, setDueDate] = useState(invoice?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
   const [customerId, setCustomerId] = useState<string>(
-    invoice?.metadata?.qbo_customer_id ? `qbo:${invoice.metadata.qbo_customer_id}` : (invoice?.metadata?.customer_id ?? "none"),
+    (invoice?.metadata?.customer_id as string | undefined) ??
+      (invoice?.metadata?.qbo_customer_id ? `qbo:${invoice.metadata.qbo_customer_id}` : "none"),
+  )
+  const [linkedQboCustomerId, setLinkedQboCustomerId] = useState<string | null>(
+    (invoice?.metadata?.qbo_customer_id as string | null | undefined) ?? null,
   )
   const [customerDetails, setCustomerDetails] = useState(
     buildPartyDetailsBlock({
@@ -506,10 +509,12 @@ export function InvoiceComposerSheet({
   )
 
   const selectedContact = useMemo(() => contactsSorted.find((contact) => contact.id === customerId), [contactsSorted, customerId])
-  const selectedQboCustomer = useMemo(
-    () => (customerId.startsWith("qbo:") ? qboCustomers.find((customer) => `qbo:${customer.id}` === customerId) : undefined),
-    [customerId, qboCustomers],
-  )
+  const selectedQboCustomer = useMemo(() => {
+    if (linkedQboCustomerId) {
+      return qboCustomers.find((customer) => customer.id === linkedQboCustomerId)
+    }
+    return customerId.startsWith("qbo:") ? qboCustomers.find((customer) => `qbo:${customer.id}` === customerId) : undefined
+  }, [customerId, linkedQboCustomerId, qboCustomers])
   const selectedProjectName = useMemo(
     () => projects.find((project) => project.id === projectId)?.name ?? "Project",
     [projectId, projects],
@@ -519,6 +524,38 @@ export function InvoiceComposerSheet({
     qboConnected &&
       (qboIncomeAccounts.length === 0 || qboDiagnostics?.accountLoadWarning || qboDiagnostics?.connectionLastError),
   )
+  const showQboAccountColumn = qboConnected || contextLoading
+  const customerOptions = useMemo(() => {
+    const matchedQboIds = new Set<string>()
+    const matchQboCustomer = (contact: Contact) => {
+      const contactEmail = contact.email?.trim().toLowerCase()
+      const contactName = contact.full_name.trim().toLowerCase()
+      return qboCustomers.find((customer) => {
+        const qboEmail = customer.email?.trim().toLowerCase()
+        if (qboEmail && contactEmail && qboEmail === contactEmail) return true
+        return customer.name.trim().toLowerCase() === contactName
+      })
+    }
+
+    const arcOptions = financialContacts.map((contact) => {
+      const qboMatch = matchQboCustomer(contact)
+      if (qboMatch) matchedQboIds.add(qboMatch.id)
+      return {
+        value: contact.id,
+        label: contact.full_name,
+        detail: qboMatch ? "Arc + QuickBooks" : "Arc",
+      }
+    })
+    const qboOnlyOptions = qboCustomers
+      .filter((customer) => !matchedQboIds.has(customer.id))
+      .map((customer) => ({
+        value: `qbo:${customer.id}`,
+        label: customer.name,
+        detail: customer.email ? `QuickBooks · ${customer.email}` : "QuickBooks",
+      }))
+
+    return [...arcOptions, ...qboOnlyOptions]
+  }, [financialContacts, qboCustomers])
 
   const lineTotals = useMemo(() => {
     const subtotal = lines.reduce((sum, line) => {
@@ -574,14 +611,13 @@ export function InvoiceComposerSheet({
   }, [mode])
 
   const resetForCreate = useCallback(() => {
-    setSource("manual")
     setSourceDrawId("none")
     setSourceChangeOrderId("none")
-    setApprovedCostsSummary(null)
     setTitle(selectedProjectName)
     setIssueDate(format(new Date(), "yyyy-MM-dd"))
     setDueDate(format(addDays(new Date(), composerSettings.defaultPaymentTermsDays), "yyyy-MM-dd"))
     setCustomerId("none")
+    setLinkedQboCustomerId(null)
     setCustomerDetails("")
     setFromDetails(
       buildPartyDetailsBlock({
@@ -608,15 +644,21 @@ export function InvoiceComposerSheet({
     ])
   }, [builderInfo?.address, builderInfo?.email, builderInfo?.name, composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays, selectedProjectName])
 
+  // Append generated lines, dropping any leading blank placeholder rows so sources stack cleanly.
+  const appendLines = (incoming: ComposerLine[]) => {
+    if (incoming.length === 0) return
+    setLines((prev) => {
+      const kept = prev.filter((line) => line.description.trim() !== "" || line.unit_cost.trim() !== "")
+      return [...kept, ...incoming]
+    })
+  }
+
   const applyDrawToInvoice = (drawId: string) => {
     const draw = drawOptions.find((option) => option.id === drawId)
     if (!draw) return
-    setSource("draw")
     setSourceDrawId(drawId)
-    setSourceChangeOrderId("none")
-    setApprovedCostsSummary(null)
     setDueDate(draw.due_date ?? dueDate)
-    setLines([
+    appendLines([
       {
         id: crypto.randomUUID(),
         description: draw.title,
@@ -635,13 +677,10 @@ export function InvoiceComposerSheet({
     const changeOrder = changeOrderOptions.find((option) => option.id === changeOrderId)
     if (!changeOrder) return
 
-    setSource("change_order")
-    setSourceDrawId("none")
     setSourceChangeOrderId(changeOrderId)
-    setApprovedCostsSummary(null)
 
     if (Array.isArray(changeOrder.lines) && changeOrder.lines.length > 0) {
-      setLines(
+      appendLines(
         changeOrder.lines.map((line) => ({
           id: crypto.randomUUID(),
           description: line.description ?? "",
@@ -655,7 +694,7 @@ export function InvoiceComposerSheet({
         })),
       )
     } else {
-      setLines([
+      appendLines([
         {
           id: crypto.randomUUID(),
           description: changeOrder.title,
@@ -671,50 +710,37 @@ export function InvoiceComposerSheet({
     }
   }
 
-  const applyApprovedCostsToInvoice = async () => {
+  // Insert grouped cost lines for the costs chosen in the picker. Lines carry billable_cost_ids,
+  // which the save path uses to mark those costs billed (and prevent double-billing).
+  const handleCostSelection = async (selection: CostSelection) => {
     if (!projectId) {
-      toast.error("Pick a project before linking approved costs")
-      return
+      toast.error("Pick a project first")
+      throw new Error("missing project")
     }
-    if (!enableApprovedCostsSource) {
-      toast.error("Approved-cost invoicing is available for cost-plus or T&M projects")
-      return
-    }
-
     setApprovedCostsLoading(true)
     try {
-      const today = format(new Date(), "yyyy-MM-dd")
       const result = await generateInvoiceFromCostsAction({
         projectId,
-        dateRange: { from: "1970-01-01", to: today },
-        groupBy: "cost_code",
-        includeAllowanceVariances: true,
+        dateRange: selection.dateRange,
+        billableCostIds: selection.billableCostIds,
+        groupBy: selection.groupBy,
+        includeAllowanceVariances: false,
         dryRun: true,
       })
 
       const previewLines = result.invoicePreview?.lines ?? []
       if (previewLines.length === 0) {
-        setApprovedCostsSummary(null)
-        toast.info("No approved costs are ready to invoice")
+        toast.info("Nothing billable in the selected costs")
         return
       }
 
-      setSource("from_costs")
-      setSourceDrawId("none")
-      setSourceChangeOrderId("none")
-      setTaxRate(0)
-      setTitle(`Approved costs through ${format(new Date(), "MMM d, yyyy")}`)
-      setApprovedCostsSummary({
-        costCount: result.costCount ?? 0,
-        totalBillableCents: result.totalBillableCents ?? 0,
-      })
-      setLines(
+      appendLines(
         previewLines.map((line: any) => ({
           id: crypto.randomUUID(),
-          description: String(line.description ?? "Approved costs"),
+          description: String(line.description ?? "Costs"),
           quantity: "1",
           unit: "LS",
-          unit_cost: ((Number(line.billable_cents ?? 0)) / 100).toFixed(2),
+          unit_cost: (Number(line.billable_cents ?? 0) / 100).toFixed(2),
           taxable: false,
           cost_code_id: line.cost_code_id ?? null,
           qbo_income_account_id: null,
@@ -725,9 +751,10 @@ export function InvoiceComposerSheet({
           markup_percent: typeof line.markup_percent === "number" ? line.markup_percent : null,
         })),
       )
+      toast.success(`Added ${previewLines.length} cost ${previewLines.length === 1 ? "line" : "lines"}`)
     } catch (error: any) {
-      setApprovedCostsSummary(null)
-      toast.error("Could not load approved costs", { description: error?.message ?? "Try again." })
+      toast.error("Could not add costs", { description: error?.message ?? "Try again." })
+      throw error
     } finally {
       setApprovedCostsLoading(false)
     }
@@ -744,19 +771,17 @@ export function InvoiceComposerSheet({
     }
 
     setProjectId(invoice?.project_id ?? defaultProjectId ?? projects[0]?.id)
-    setSource(((invoice?.metadata?.source_type as BillingSource | undefined) ?? "manual"))
     setSourceDrawId((invoice?.metadata?.source_draw_id as string | undefined) ?? "none")
     setSourceChangeOrderId((invoice?.metadata?.source_change_order_id as string | undefined) ?? "none")
-    setApprovedCostsSummary(null)
     setInvoiceNumber(invoice?.invoice_number ?? "")
     setTitle(invoice?.title ?? "Invoice")
     setIssueDate(invoice?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
     setDueDate(invoice?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
     setCustomerId(
-      invoice?.metadata?.qbo_customer_id
-        ? `qbo:${invoice.metadata.qbo_customer_id}`
-        : ((invoice?.metadata?.customer_id as string) ?? "none"),
+      (invoice?.metadata?.customer_id as string | undefined) ??
+        (invoice?.metadata?.qbo_customer_id ? `qbo:${invoice.metadata.qbo_customer_id}` : "none"),
     )
+    setLinkedQboCustomerId((invoice?.metadata?.qbo_customer_id as string | null | undefined) ?? null)
     setCustomerDetails(
       buildPartyDetailsBlock({
         name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
@@ -780,6 +805,7 @@ export function InvoiceComposerSheet({
   useEffect(() => {
     if (customerDetails.trim().length === 0 && customerId !== "none") {
       setCustomerId("none")
+      setLinkedQboCustomerId(null)
     }
   }, [customerDetails, customerId])
 
@@ -804,9 +830,6 @@ export function InvoiceComposerSheet({
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
         setQboCustomers(result.qboCustomers ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
-        const defaultIncomeAccountId =
-          typeof result.qboDefaultIncomeAccountId === "string" ? result.qboDefaultIncomeAccountId : null
-        setQboDefaultIncomeAccountId(defaultIncomeAccountId)
         const defaults = {
           defaultPaymentTermsDays: Number(result.settings?.defaultPaymentTermsDays ?? 15),
           defaultInvoiceNote: String(result.settings?.defaultInvoiceNote ?? ""),
@@ -828,7 +851,6 @@ export function InvoiceComposerSheet({
         setQboIncomeAccounts([])
         setQboCustomers([])
         setQboDiagnostics(null)
-        setQboDefaultIncomeAccountId(null)
         setComposerSettings({ defaultPaymentTermsDays: 15, defaultInvoiceNote: "" })
         toast.error("Unable to load billing sources", { description: error?.message ?? "Try again." })
       })
@@ -883,6 +905,13 @@ export function InvoiceComposerSheet({
     setCustomerId(contactId)
     const contact = financialContacts.find((item) => item.id === contactId)
     if (contact) {
+      const matchedQboCustomer = qboCustomers.find((customer) => {
+        const qboEmail = customer.email?.trim().toLowerCase()
+        const contactEmail = contact.email?.trim().toLowerCase()
+        if (qboEmail && contactEmail && qboEmail === contactEmail) return true
+        return customer.name.trim().toLowerCase() === contact.full_name.trim().toLowerCase()
+      })
+      setLinkedQboCustomerId(matchedQboCustomer?.id ?? null)
       setCustomerDetails(
         buildPartyDetailsBlock({
           name: contact.full_name,
@@ -897,6 +926,7 @@ export function InvoiceComposerSheet({
     const customer = qboCustomers.find((item) => item.id === qboCustomerId)
     if (!customer) return
     setCustomerId(`qbo:${customer.id}`)
+    setLinkedQboCustomerId(customer.id)
     setCustomerDetails(
       buildPartyDetailsBlock({
         name: customer.name,
@@ -981,6 +1011,11 @@ export function InvoiceComposerSheet({
       return
     }
 
+    if (qboConnected && qboIncomeAccounts.length > 0 && parsedLines.some((line) => !line.qbo_income_account_id)) {
+      toast.error("Pick a QuickBooks account for every line item")
+      return
+    }
+
     const mergedNotes = notes.trim()
     const parsedCustomerDetails = parsePartyDetailsBlock(customerDetails)
     const parsedFromDetails = parsePartyDetailsBlock(fromDetails)
@@ -992,14 +1027,25 @@ export function InvoiceComposerSheet({
         ? invoice.status
         : "saved"
 
+    // Derive the effective source_type from actual content: cost lines win (they drive billed-marking),
+    // then a linked draw, then a linked change order, otherwise manual. Reference links are sent whenever set.
+    const hasCostLines = lines.some((line) => (line.billable_cost_ids?.length ?? 0) > 0)
+    const derivedSourceType: BillingSource = hasCostLines
+      ? "from_costs"
+      : sourceDrawId !== "none"
+        ? "draw"
+        : sourceChangeOrderId !== "none"
+          ? "change_order"
+          : "manual"
+
     const payload: InvoiceInput = {
       project_id: projectId,
       invoice_number: invoiceNumber.trim(),
       customer_id: customerId === "none" || customerId.startsWith("qbo:") ? undefined : customerId,
       customer_name: parsedCustomerDetails.name.trim() || selectedContact?.full_name || selectedQboCustomer?.name || undefined,
       customer_address: parsedCustomerDetails.address.trim() || undefined,
-      qbo_customer_id: selectedQboCustomer?.id,
-      qbo_customer_name: selectedQboCustomer?.name,
+      qbo_customer_id: selectedQboCustomer?.id ?? null,
+      qbo_customer_name: selectedQboCustomer?.name ?? null,
       from_name: parsedFromDetails.name.trim() || undefined,
       from_email: parsedFromDetails.email.trim() || undefined,
       from_address: parsedFromDetails.address.trim() || undefined,
@@ -1014,9 +1060,9 @@ export function InvoiceComposerSheet({
       lines: parsedLines,
       sent_to_emails: recipientEmails,
       payment_terms_days: paymentTermsDays,
-      source_type: source,
-      source_draw_id: source === "draw" && sourceDrawId !== "none" ? sourceDrawId : undefined,
-      source_change_order_id: source === "change_order" && sourceChangeOrderId !== "none" ? sourceChangeOrderId : undefined,
+      source_type: derivedSourceType,
+      source_draw_id: sourceDrawId !== "none" ? sourceDrawId : undefined,
+      source_change_order_id: sourceChangeOrderId !== "none" ? sourceChangeOrderId : undefined,
       qbo_income_account_id: null,
       qbo_income_account_name: null,
     }
@@ -1074,36 +1120,49 @@ export function InvoiceComposerSheet({
   const sendDisabled = Boolean(isSubmitting || submittingMode || generatingPdf || !projectId || lines.length === 0)
   const saveAndDownloadBusy = submittingMode === "save_and_download" || generatingPdf
 
-  const sourceValue = source === "draw" && sourceDrawId !== "none"
-    ? sourceDrawId
-    : source === "change_order" && sourceChangeOrderId !== "none"
-      ? sourceChangeOrderId
-      : source === "from_costs"
-        ? "approved_costs"
-        : "none"
+  // Linked references shown as removable chips in the toolbar.
+  const linkedDraw = sourceDrawId !== "none" ? drawOptions.find((draw) => draw.id === sourceDrawId) ?? null : null
+  const linkedChangeOrder =
+    sourceChangeOrderId !== "none"
+      ? changeOrderOptions.find((co) => co.id === sourceChangeOrderId) ?? null
+      : null
+  // Summary of cost-derived lines (lines carrying billable_cost_ids), shown as an informational chip.
+  const costSummary = useMemo(() => {
+    const costLines = lines.filter((line) => (line.billable_cost_ids?.length ?? 0) > 0)
+    if (costLines.length === 0) return null
+    const costCount = costLines.reduce((sum, line) => sum + (line.billable_cost_ids?.length ?? 0), 0)
+    const totalBillableCents = costLines.reduce(
+      (sum, line) => sum + Math.round((Number(line.quantity) || 0) * (Number(line.unit_cost) || 0) * 100),
+      0,
+    )
+    return { costCount, totalBillableCents }
+  }, [lines])
+  const hasAddSources = enableApprovedCostsSource || drawOptions.length > 0 || changeOrderOptions.length > 0
 
-  const handleSourceChange = (value: string) => {
-    if (value === "none") {
-      setSource("manual")
-      setSourceDrawId("none")
-      setSourceChangeOrderId("none")
-      setApprovedCostsSummary(null)
-      return
-    }
-    if (value === "approved_costs") {
-      void applyApprovedCostsToInvoice()
-      return
-    }
-    const draw = drawOptions.find((d) => d.id === value)
-    if (draw) {
-      applyDrawToInvoice(value)
-      return
-    }
-    const co = changeOrderOptions.find((c) => c.id === value)
-    if (co) {
-      applyChangeOrderToInvoice(value)
-    }
-  }
+  // Shared grid + label styling so the header band and every line row stay in lockstep.
+  // Account and cost-code columns only appear when relevant, so the template is built dynamically.
+  // The remove control is absolutely positioned (no reserved column) so Tax sits flush right.
+  const showCostCodeColumn = costCodes.length > 0
+  const lineGridTemplate = [
+    showQboAccountColumn ? "150px" : null,
+    showCostCodeColumn ? "120px" : null,
+    "minmax(0, 1fr)", // description
+    "72px", // qty
+    "120px", // price
+    "120px", // amount
+    "44px", // tax
+  ]
+    .filter(Boolean)
+    .join(" ")
+  // Show the customer picker only while Bill To is empty and there's actually something to pick.
+  const showCustomerPicker = showCustomerSelector && (customerOptions.length > 0 || contextLoading)
+  const headerLabel = "text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70"
+  // Borderless control that fills its cell vertically and reveals its outline on hover/focus.
+  const ghostTrigger =
+    "h-full w-full justify-start rounded-none border border-transparent bg-transparent px-2 text-sm shadow-none transition-colors hover:border-input focus:ring-0 focus-visible:ring-0 [&>svg]:size-3.5 [&>svg]:opacity-40"
+  // Strip the native number spinners from qty/price.
+  const noSpinner =
+    "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -1112,47 +1171,51 @@ export function InvoiceComposerSheet({
         mobileFullscreen
         className="sm:max-w-5xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 bg-background border"
       >
-        {/* ── TOOLBAR ── */}
-        <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2.5 shrink-0">
-          <Select value={sourceValue} onValueChange={handleSourceChange}>
-            <SelectTrigger className="w-[240px] h-8 text-xs">
-              <SelectValue placeholder="Link source (optional)" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No linked source</SelectItem>
-              {enableApprovedCostsSource ? <SelectItem value="approved_costs">Approved costs</SelectItem> : null}
-              {drawOptions.length > 0 && (
-                <>
-                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Draws</div>
-                  {drawOptions.map((draw) => (
-                    <SelectItem key={draw.id} value={draw.id}>
-                      Draw {draw.draw_number} — {draw.title}
-                    </SelectItem>
-                  ))}
-                </>
-              )}
-              {changeOrderOptions.length > 0 && (
-                <>
-                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Change Orders</div>
-                  {changeOrderOptions.map((co) => (
-                    <SelectItem key={co.id} value={co.id}>
-                      {co.title}
-                    </SelectItem>
-                  ))}
-                </>
-              )}
-            </SelectContent>
-          </Select>
-
-          {(contextLoading || approvedCostsLoading) && <Badge variant="outline" className="text-xs h-6">Loading...</Badge>}
-          {source === "from_costs" && approvedCostsSummary ? (
-            <Badge variant="secondary" className="h-6 text-xs">
-              {approvedCostsSummary.costCount} costs / {formatMoney(approvedCostsSummary.totalBillableCents / 100)}
+        {/* ── TOOLBAR: linked references & cost summary (collapses when empty) ── */}
+        {(linkedDraw || linkedChangeOrder || costSummary || contextLoading || approvedCostsLoading) && (
+        <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2 shrink-0">
+          {linkedDraw && (
+            <Badge variant="secondary" className="h-6 gap-1.5 rounded-none pr-1 text-xs">
+              Draw {linkedDraw.draw_number} — {linkedDraw.title}
+              <button
+                type="button"
+                onClick={() => setSourceDrawId("none")}
+                className="rounded-none p-0.5 hover:bg-foreground/10"
+                aria-label="Unlink draw"
+              >
+                <X className="h-3 w-3" />
+              </button>
             </Badge>
-          ) : null}
+          )}
+          {linkedChangeOrder && (
+            <Badge variant="secondary" className="h-6 gap-1.5 rounded-none pr-1 text-xs">
+              {linkedChangeOrder.title}
+              <button
+                type="button"
+                onClick={() => setSourceChangeOrderId("none")}
+                className="rounded-none p-0.5 hover:bg-foreground/10"
+                aria-label="Unlink change order"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          )}
+          {costSummary && (
+            <Badge variant="secondary" className="h-6 rounded-none text-xs">
+              {costSummary.costCount} {costSummary.costCount === 1 ? "cost" : "costs"} ·{" "}
+              {formatMoney(costSummary.totalBillableCents / 100)}
+            </Badge>
+          )}
+          {(contextLoading || approvedCostsLoading) && (
+            <Badge variant="outline" className="h-6 gap-1.5 rounded-none text-xs">
+              <Spinner className="size-3" />
+              Loading…
+            </Badge>
+          )}
         </div>
+        )}
         {showQboWarning && (
-          <div className="border-b bg-amber-50/60 px-4 py-2 text-xs text-amber-900">
+          <div className="border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
             {qboDiagnostics?.accountLoadWarning ||
               qboDiagnostics?.connectionLastError ||
               "QuickBooks is connected, but no income accounts were found."}
@@ -1168,40 +1231,48 @@ export function InvoiceComposerSheet({
               <h1 className="text-2xl font-bold tracking-tight text-foreground">Invoice</h1>
               <p className="mt-1 text-sm text-muted-foreground">{selectedProjectName}</p>
             </div>
-            <div className="text-right text-sm space-y-1.5 shrink-0">
-              <div className="flex items-center justify-end gap-2">
-                <span className="text-muted-foreground whitespace-nowrap">Invoice #</span>
+            <div className="shrink-0">
+              <div className="grid grid-cols-[auto_9rem] items-center gap-x-3 gap-y-1 text-sm">
+                <span className="text-right text-muted-foreground">Invoice #</span>
                 <GhostInput
                   value={invoiceNumber}
                   onChange={(e) => setInvoiceNumber(e.target.value)}
-                  className="w-28 h-7 text-right text-sm px-2"
-                  placeholder="—"
+                  disabled={numberLoading}
+                  placeholder={numberLoading ? "Reserving…" : "—"}
+                  className="h-7 w-full px-2 text-right text-sm tabular-nums"
                 />
-              </div>
-              {numberLoading && <p className="text-xs text-muted-foreground">Reserving...</p>}
-              {!numberLoading && numberSource === "qbo" && (
-                <p className="text-xs text-muted-foreground">Number reserved from QuickBooks</p>
-              )}
-              <DatePicker value={issueDate} onChange={setIssueDate} label="Issue" />
-              <DatePicker value={dueDate} onChange={setDueDate} label="Due" />
-              <div className="flex items-center justify-end gap-2">
-                <span className="text-muted-foreground whitespace-nowrap">Net</span>
-                <Input
+
+                <span className="text-right text-muted-foreground">Issued</span>
+                <DatePicker value={issueDate} onChange={setIssueDate} />
+
+                <span className="text-right text-muted-foreground">Due</span>
+                <DatePicker value={dueDate} onChange={setDueDate} />
+
+                <span className="text-right text-muted-foreground">Net</span>
+                <GhostInput
                   type="number"
+                  inputMode="numeric"
                   min="0"
                   max="365"
                   value={paymentTermsDays}
                   onChange={(e) => setPaymentTermsDays(Number(e.target.value || 0))}
-                  className="h-7 w-16 text-right text-sm px-2 border-transparent bg-transparent shadow-none hover:border-input focus:border-input transition-colors"
+                  className={cn("h-7 w-full px-2 text-right text-sm tabular-nums", noSpinner)}
                 />
               </div>
+              {!numberLoading && qboConnected && numberSource === "local" && (
+                <p className="ml-auto mt-1.5 max-w-[180px] text-right text-[11px] leading-snug text-muted-foreground/70">
+                  Arc fallback — QuickBooks may renumber on sync.
+                </p>
+              )}
             </div>
           </div>
 
           {/* ── FROM / BILL TO ── */}
           <div className="mt-6 grid grid-cols-2 gap-3">
-            <div className="rounded border border-border/60 p-4">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">From</p>
+            <div className="border border-border/60 p-4">
+              <div className="flex h-5 items-center">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">From</p>
+              </div>
               <Textarea
                 value={fromDetails}
                 onChange={(e) => setFromDetails(e.target.value)}
@@ -1209,25 +1280,39 @@ export function InvoiceComposerSheet({
                 className="mt-2 min-h-[124px] border-transparent bg-transparent text-sm shadow-none hover:border-input focus:border-input transition-colors leading-relaxed"
               />
             </div>
-            <div className="rounded border border-border/60 p-4">
-              <div className="flex items-center justify-between gap-2">
+            <div className="border border-border/60 p-4">
+              <div className="flex h-5 items-center justify-between gap-2">
                 <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">Bill To</p>
                 {!showCustomerSelector && (
-                  <button
-                    type="button"
-                    onClick={() => setCustomerDetails("")}
-                    className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    Clear
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {selectedQboCustomer && (
+                      <Badge variant="secondary" className="h-5 gap-1 px-1.5 text-[10px]">
+                        <Check className="h-3 w-3" />
+                        QuickBooks
+                      </Badge>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomerDetails("")
+                        setCustomerId("none")
+                        setLinkedQboCustomerId(null)
+                      }}
+                      className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      Change
+                    </button>
+                  </div>
                 )}
               </div>
-              {showCustomerSelector && (
+
+              {showCustomerPicker && (
                 <Select
                   value={customerId}
                   onValueChange={(value) => {
                     if (value === "none") {
                       setCustomerId("none")
+                      setLinkedQboCustomerId(null)
                       setCustomerDetails("")
                       return
                     }
@@ -1238,111 +1323,86 @@ export function InvoiceComposerSheet({
                     selectContact(value)
                   }}
                 >
-                  <SelectTrigger className="mt-2 h-8 text-sm border-transparent bg-transparent shadow-none hover:border-input focus:border-input transition-colors">
-                    <SelectValue placeholder="Select contact" />
+                  <SelectTrigger className="mt-2 h-9 rounded-none border-input bg-transparent text-sm shadow-none transition-colors hover:bg-muted/40 data-[placeholder]:text-muted-foreground">
+                    <span className="flex items-center gap-2 truncate">
+                      <UserRound className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                      <SelectValue placeholder="Select a customer" />
+                    </span>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">No linked contact</SelectItem>
-                    {financialContacts.map((contact) => (
-                      <SelectItem key={contact.id} value={contact.id}>
-                        {contact.full_name}
+                    {customerOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate">{option.label}</span>
+                          <span className="text-xs text-muted-foreground">{option.detail}</span>
+                        </span>
                       </SelectItem>
                     ))}
-                    {qboCustomers.length > 0 && (
-                      <>
-                        {financialContacts.length > 0 ? <SelectItem value="__qbo_header" disabled>QuickBooks customers</SelectItem> : null}
-                        {qboCustomers.map((customer) => (
-                          <SelectItem key={`qbo-${customer.id}`} value={`qbo:${customer.id}`}>
-                            {customer.name}
-                          </SelectItem>
-                        ))}
-                      </>
+                    {contextLoading && (
+                      <SelectItem value="__loading_qbo_customers" disabled>
+                        Loading QuickBooks customers...
+                      </SelectItem>
+                    )}
+                    {!contextLoading && qboConnected && qboCustomers.length === 0 && (
+                      <SelectItem value="__no_qbo_customers" disabled>
+                        No QuickBooks customers found
+                      </SelectItem>
                     )}
                   </SelectContent>
                 </Select>
               )}
+
               <Textarea
                 value={customerDetails}
                 onChange={(e) => setCustomerDetails(e.target.value)}
-                placeholder={"Name\nemail@customer.com\nBilling address"}
-                className="mt-2 min-h-[124px] border-transparent bg-transparent text-sm shadow-none hover:border-input focus:border-input transition-colors leading-relaxed"
+                placeholder={
+                  showCustomerPicker ? "…or enter billing details manually" : "Name\nemail@customer.com\nBilling address"
+                }
+                className={cn(
+                  "mt-2 border-transparent bg-transparent text-sm leading-relaxed shadow-none transition-colors hover:border-input focus:border-input",
+                  showCustomerPicker ? "min-h-[80px]" : "min-h-[124px]",
+                )}
               />
             </div>
           </div>
 
           {/* ── LINE ITEMS ── */}
           <div className="mt-6">
-            {/* Column headers */}
-            <div className="grid grid-cols-[1fr_64px_64px_96px_96px_28px] items-end gap-x-1.5 px-3 pb-1.5">
-              <span className="text-[11px] text-muted-foreground font-medium pl-2">Description</span>
-              <span className="text-[11px] text-muted-foreground font-medium text-center">Qty</span>
-              <span className="text-[11px] text-muted-foreground font-medium text-center">Unit</span>
-              <span className="text-[11px] text-muted-foreground font-medium text-right pr-2">Price</span>
-              <span className="text-[11px] text-muted-foreground font-medium text-right">Amount</span>
-              <span />
-            </div>
+            {/* Line items table */}
+            <div className="overflow-hidden border border-border/60">
+              {/* Header band */}
+              <div
+                className="grid items-center gap-x-2 border-b border-border/60 bg-muted/30 px-3 py-2"
+                style={{ gridTemplateColumns: lineGridTemplate }}
+              >
+                {showQboAccountColumn && <span className={cn(headerLabel, "pl-2")}>Account</span>}
+                {showCostCodeColumn && <span className={cn(headerLabel, "pl-2")}>Cost code</span>}
+                <span className={cn(headerLabel, "pl-2")}>Description</span>
+                <span className={cn(headerLabel, "text-center")}>Qty</span>
+                <span className={cn(headerLabel, "pr-2 text-right")}>Price</span>
+                <span className={cn(headerLabel, "pr-2 text-right")}>Amount</span>
+                <span className={cn(headerLabel, "text-center")}>Tax</span>
+              </div>
 
-            {/* Line items */}
-            <div className="rounded border border-border/60 divide-y divide-border/40">
-              {lines.map((line) => {
-                const selectedCostCode = costCodes.find((c) => c.id === line.cost_code_id)
-                const lineAmount = (Number(line.quantity) || 0) * (Number(line.unit_cost) || 0)
-                const hasMeta = qboConnected || costCodes.length > 0
-
-                return (
-                  <div key={line.id} className="group">
-                    {/* Primary row */}
-                    <div className="grid grid-cols-[1fr_64px_64px_96px_96px_28px] items-center gap-x-1.5 px-1.5 pt-2 pb-1">
-                      <GhostInput
-                        value={line.description}
-                        onChange={(e) => updateLine(line.id, "description", e.target.value)}
-                        placeholder="Line item description"
-                        className="h-8 text-sm px-2"
-                      />
-                      <GhostInput
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={line.quantity}
-                        onChange={(e) => updateLine(line.id, "quantity", e.target.value)}
-                        className="h-8 text-sm px-2 text-center"
-                      />
-                      <GhostInput
-                        value={line.unit}
-                        onChange={(e) => updateLine(line.id, "unit", e.target.value)}
-                        className="h-8 text-sm px-2 text-center"
-                      />
-                      <GhostInput
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={line.unit_cost}
-                        onChange={(e) => updateLine(line.id, "unit_cost", e.target.value)}
-                        className="h-8 text-sm px-2 text-right"
-                        placeholder="0.00"
-                      />
-                      <div className="text-right text-sm font-medium tabular-nums pr-0.5">
-                        {formatMoney(lineAmount)}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeLine(line.id)}
-                        disabled={lines.length === 1}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive disabled:invisible mx-auto"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-
-                    {/* Meta row — account, cost code, tax */}
-                    <div className="flex items-center gap-2 pl-4 pr-2 pb-2 text-[10px]">
-                      {qboConnected && (
-                        <>
+              {/* Rows */}
+              <div className="divide-y divide-border/50">
+                {lines.map((line) => {
+                  const selectedCostCode = costCodes.find((c) => c.id === line.cost_code_id)
+                  const lineAmount = (Number(line.quantity) || 0) * (Number(line.unit_cost) || 0)
+                  return (
+                    <div
+                      key={line.id}
+                      className="group relative grid min-h-[46px] items-stretch gap-x-2 px-3 transition-colors hover:bg-muted/20"
+                      style={{ gridTemplateColumns: lineGridTemplate }}
+                    >
+                      {showQboAccountColumn &&
+                        (contextLoading && !qboConnected ? (
+                          <div className="flex items-center px-2 text-sm text-muted-foreground">Loading…</div>
+                        ) : (
                           <QboLineAccountPicker
                             valueId={line.qbo_income_account_id}
                             valueLabel={line.qbo_income_account_name}
                             accounts={qboIncomeAccounts}
-                            defaultAccountId={qboDefaultIncomeAccountId}
                             onSelect={({ id, name }) =>
                               setLines((prev) =>
                                 prev.map((current) =>
@@ -1362,25 +1422,26 @@ export function InvoiceComposerSheet({
                                 throw error
                               }
                             }}
+                            triggerClassName={cn(
+                              ghostTrigger,
+                              "max-w-none",
+                              line.qbo_income_account_id ? "text-foreground" : "text-muted-foreground",
+                            )}
                           />
-                          {costCodes.length > 0 && <span className="text-muted-foreground/30">·</span>}
-                        </>
-                      )}
-                      {costCodes.length > 0 && (
+                        ))}
+                      {showCostCodeColumn && (
                         <Select
                           value={line.cost_code_id ?? "none"}
-                          onValueChange={(value) => updateLine(line.id, "cost_code_id", value === "none" ? null : value)}
+                          onValueChange={(value) =>
+                            updateLine(line.id, "cost_code_id", value === "none" ? null : value)
+                          }
                         >
                           <SelectTrigger
-                            className={cn(
-                              "h-5 w-auto max-w-[140px] min-w-0 shrink rounded-sm border-0 px-0 py-0 shadow-none focus:ring-0 gap-0.5 bg-transparent transition-colors text-[10px] [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:shrink-0 [&>svg]:text-muted-foreground/40",
-                              selectedCostCode
-                                ? "text-muted-foreground hover:text-foreground"
-                                : "text-muted-foreground/40 hover:text-muted-foreground",
-                            )}
+                            title={selectedCostCode ? `${selectedCostCode.code} — ${selectedCostCode.name}` : undefined}
+                            className={cn(ghostTrigger, selectedCostCode ? "text-foreground" : "text-muted-foreground")}
                           >
-                            <SelectValue placeholder="Cost code">
-                              {selectedCostCode ? selectedCostCode.code : "Cost code"}
+                            <SelectValue placeholder="—">
+                              {selectedCostCode ? selectedCostCode.code : "—"}
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
@@ -1393,38 +1454,115 @@ export function InvoiceComposerSheet({
                           </SelectContent>
                         </Select>
                       )}
-                      {hasMeta && <span className="text-muted-foreground/30">·</span>}
-                      <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                      <GhostInput
+                        value={line.description}
+                        onChange={(e) => updateLine(line.id, "description", e.target.value)}
+                        placeholder="Description"
+                        className="h-full rounded-none px-2 text-sm font-medium"
+                      />
+                      <GhostInput
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="0.01"
+                        value={line.quantity}
+                        onChange={(e) => updateLine(line.id, "quantity", e.target.value)}
+                        className={cn("h-full rounded-none px-2 text-center text-sm tabular-nums", noSpinner)}
+                      />
+                      <GhostInput
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="0.01"
+                        value={line.unit_cost}
+                        onChange={(e) => updateLine(line.id, "unit_cost", e.target.value)}
+                        placeholder="0.00"
+                        className={cn("h-full rounded-none px-2 text-right text-sm tabular-nums", noSpinner)}
+                      />
+                      <div className="flex items-center justify-end pr-2 text-sm font-semibold tabular-nums">
+                        {formatMoney(lineAmount)}
+                      </div>
+                      <div className="flex items-center justify-center">
                         <Checkbox
                           checked={line.taxable}
                           onCheckedChange={(checked) => updateLine(line.id, "taxable", checked === true)}
-                          className="size-3 rounded-[2px] shadow-none"
+                          className="size-4 rounded-[2px] shadow-none"
+                          aria-label={`Tax line ${line.description || "item"}`}
                         />
-                        <span className={cn(
-                          "text-[10px] transition-colors",
-                          line.taxable ? "text-muted-foreground" : "text-muted-foreground/40",
-                        )}>
-                          Tax
-                        </span>
-                      </label>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeLine(line.id)}
+                        disabled={lines.length === 1}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 rounded-none p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:hidden"
+                        aria-label="Remove line"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
                     </div>
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
             </div>
 
-            {/* Add line */}
-            <div className="flex justify-end mt-2">
-              <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground" onClick={addLine}>
-                <Plus className="mr-1 h-3 w-3" />
+            {/* Add line / Add from source */}
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 rounded-none border-dashed text-xs font-medium"
+                onClick={addLine}
+              >
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
                 Add line
               </Button>
+              {hasAddSources && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-8 rounded-none text-xs font-medium text-muted-foreground">
+                      <Plus className="mr-1.5 h-3.5 w-3.5" />
+                      Add from…
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-80 w-60 overflow-y-auto">
+                    {enableApprovedCostsSource && (
+                      <DropdownMenuItem onSelect={() => setCostPickerOpen(true)}>Unbilled costs…</DropdownMenuItem>
+                    )}
+                    {drawOptions.length > 0 && (
+                      <>
+                        {enableApprovedCostsSource && <DropdownMenuSeparator />}
+                        <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                          Draws
+                        </DropdownMenuLabel>
+                        {drawOptions.map((draw) => (
+                          <DropdownMenuItem key={draw.id} onSelect={() => applyDrawToInvoice(draw.id)}>
+                            Draw {draw.draw_number} — {draw.title}
+                          </DropdownMenuItem>
+                        ))}
+                      </>
+                    )}
+                    {changeOrderOptions.length > 0 && (
+                      <>
+                        {(enableApprovedCostsSource || drawOptions.length > 0) && <DropdownMenuSeparator />}
+                        <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                          Change orders
+                        </DropdownMenuLabel>
+                        {changeOrderOptions.map((co) => (
+                          <DropdownMenuItem key={co.id} onSelect={() => applyChangeOrderToInvoice(co.id)}>
+                            {co.title}
+                          </DropdownMenuItem>
+                        ))}
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             </div>
           </div>
 
           {/* ── NOTES + TOTALS ── */}
           <div className="mt-4 grid grid-cols-[1fr_auto] gap-6 items-start">
-            <div className="rounded border border-border/60 p-4 min-h-[100px]">
+            <div className="border border-border/60 p-4 min-h-[100px]">
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium mb-2">Payment details</p>
               <Textarea
                 value={notes}
@@ -1434,7 +1572,7 @@ export function InvoiceComposerSheet({
               />
             </div>
 
-            <div className="rounded border border-border/60 p-4 w-56">
+            <div className="border border-border/60 p-4 w-56">
               <div className="space-y-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Subtotal</span>
@@ -1536,6 +1674,12 @@ export function InvoiceComposerSheet({
           </div>
         </div>
       </SheetContent>
+      <UnbilledCostsPicker
+        open={costPickerOpen}
+        onOpenChange={setCostPickerOpen}
+        projectId={projectId}
+        onConfirm={handleCostSelection}
+      />
     </Sheet>
   )
 }

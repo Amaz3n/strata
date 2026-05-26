@@ -49,6 +49,7 @@ export async function recordPaymentAction(input: unknown) {
     const payment = await recordPayment(parsed)
     if (parsed.invoice_id) {
       revalidatePath(`/invoices/${parsed.invoice_id}`)
+      revalidatePath("/invoices")
     }
     return payment
   } catch (error) {

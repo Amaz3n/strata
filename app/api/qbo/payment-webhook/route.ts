@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
 
   let inserted = 0
   for (const event of events) {
-    const { error } = await supabase.from("qbo_webhook_events").insert({
+    const { error } = await supabase.from("qbo_webhook_events").upsert({
       event_id: event.eventId,
       payload_hash: payloadHash,
       realm_id: event.realmId,
@@ -66,6 +66,11 @@ export async function POST(request: NextRequest) {
       operation: event.operation,
       last_updated: event.lastUpdated !== "unknown-time" ? new Date(event.lastUpdated).toISOString() : null,
       received_at: new Date().toISOString(),
+      process_status: "pending",
+      process_error: null,
+      processed_at: null,
+    }, {
+      onConflict: "event_id",
     })
     if (!error) inserted += 1
   }

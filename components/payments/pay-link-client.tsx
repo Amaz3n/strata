@@ -15,6 +15,7 @@ interface PayLinkClientProps {
   invoice: Invoice
   publishableKey: string
   clientSecret: string
+  connectedAccountId?: string | null
 }
 
 function formatMoney(cents?: number | null, currency = "USD") {
@@ -117,8 +118,11 @@ function PaymentForm({ invoice, token }: { invoice: Invoice; token: string }) {
   )
 }
 
-export function PayLinkClient({ token, invoice, publishableKey, clientSecret }: PayLinkClientProps) {
-  const stripePromise = useMemo(() => loadStripe(publishableKey), [publishableKey])
+export function PayLinkClient({ token, invoice, publishableKey, clientSecret, connectedAccountId }: PayLinkClientProps) {
+  const stripePromise = useMemo(
+    () => loadStripe(publishableKey, connectedAccountId ? { stripeAccount: connectedAccountId } : undefined),
+    [publishableKey, connectedAccountId],
+  )
 
   if (!clientSecret) {
     return <div className="p-4 text-sm text-red-600">Unable to start payment: missing client secret.</div>
@@ -136,7 +140,6 @@ export function PayLinkClient({ token, invoice, publishableKey, clientSecret }: 
     </Elements>
   )
 }
-
 
 
 

@@ -265,6 +265,7 @@ export async function createOrgMemberInvite(input: {
       inviteLink,
       orgName: orgBrand.name,
       orgLogoUrl: orgBrand.logoUrl,
+      orgSlug: orgBrand.slug,
       inviterName: inviter?.full_name ?? null,
       inviterEmail: inviter?.email ?? null,
     })
@@ -368,12 +369,12 @@ function shouldBypassInviteRateLimit(message: string) {
 }
 
 async function getOrgBrand(client: SupabaseClient, orgId: string) {
-  const { data, error } = await client.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle()
+  const { data, error } = await client.from("orgs").select("name, logo_url, slug").eq("id", orgId).maybeSingle()
   if (error) {
     console.error("Failed to load org brand", error)
-    return { name: null, logoUrl: null }
+    return { name: null, logoUrl: null, slug: null }
   }
-  return { name: data?.name ?? null, logoUrl: data?.logo_url ?? null }
+  return { name: data?.name ?? null, logoUrl: data?.logo_url ?? null, slug: data?.slug ?? null }
 }
 
 async function createUserForInvite(client: SupabaseClient, email: string) {
@@ -719,6 +720,7 @@ export async function inviteTeamMember({
     inviteLink,
     orgName: orgBrand.name,
     orgLogoUrl: orgBrand.logoUrl,
+    orgSlug: orgBrand.slug,
     inviterName: inviter?.full_name ?? null,
     inviterEmail: inviter?.email ?? null,
   })
@@ -1002,6 +1004,7 @@ export async function resendInvite(membershipId: string, orgId?: string) {
     inviteLink,
     orgName: orgBrand.name,
     orgLogoUrl: orgBrand.logoUrl,
+    orgSlug: orgBrand.slug,
     inviterName: inviterData?.full_name ?? null,
     inviterEmail: inviterData?.email ?? null,
   })

@@ -32,8 +32,8 @@ export const DEFAULT_PAYMENT_FEE_POLICY: PaymentFeePolicy = {
   achFeeFixedCents: 0,
   achFeeCapCents: 500,
   cardEnabled: true,
-  cardFeePercent: 3,
-  cardFeeFixedCents: 0,
+  cardFeePercent: 2.9,
+  cardFeeFixedCents: 30,
   cardFeeCapCents: null,
 }
 
@@ -85,8 +85,12 @@ export function calculatePaymentFeeQuote(params: {
   const feePercent = isAch ? policy.achFeePercent : policy.cardFeePercent
   const feeFixedCents = isAch ? policy.achFeeFixedCents : policy.cardFeeFixedCents
   const feeCapCents = isAch ? policy.achFeeCapCents : policy.cardFeeCapCents
-  const percentageFee = Math.ceil((invoiceBalanceCents * feePercent) / 100)
-  const uncappedFee = Math.max(0, percentageFee + feeFixedCents)
+  const feeRate = feePercent / 100
+  const grossedUpTotal =
+    feeRate > 0 && feeRate < 1
+      ? Math.ceil((invoiceBalanceCents + feeFixedCents) / (1 - feeRate))
+      : invoiceBalanceCents + feeFixedCents
+  const uncappedFee = Math.max(0, grossedUpTotal - invoiceBalanceCents)
   const feeCents = enabled ? (feeCapCents == null ? uncappedFee : Math.min(uncappedFee, feeCapCents)) : 0
 
   return {

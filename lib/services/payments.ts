@@ -231,6 +231,16 @@ function toStripeMethod(method?: string | null): OnlinePaymentMethod | null {
   return method === "ach" || method === "card" ? method : null
 }
 
+function metadataInt(metadata: Record<string, any> | undefined, key: string) {
+  const value = metadata?.[key]
+  if (typeof value === "number" && Number.isFinite(value)) return Math.round(value)
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseInt(value, 10)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
 async function buildPaymentIntentAmounts(params: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
@@ -488,8 +498,6 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     project_id: invoice.project_id,
     description: `Invoice ${parsed.invoice_id}`,
     connected_account_id: connectedAccount.stripe_account_id,
-    application_fee_amount: amounts.paymentMethodFeeCents,
-    on_behalf_of_account_id: connectedAccount.stripe_account_id,
     payment_method_types: stripePaymentMethodTypesFor(parsed.method),
     metadata: {
       ...amounts.metadata,
@@ -510,11 +518,11 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     client_secret: stripeIntent.client_secret,
     provider_intent_id: stripeIntent.provider_intent_id,
     connected_account_id: connectedAccount.stripe_account_id,
-    charge_type: "destination",
-    application_fee_amount: amounts.paymentMethodFeeCents,
+    charge_type: "direct",
+    application_fee_amount: 0,
     processor_fee_cents: 0,
-    platform_fee_cents: amounts.paymentMethodFeeCents,
-    on_behalf_of_account_id: connectedAccount.stripe_account_id,
+    platform_fee_cents: 0,
+    on_behalf_of_account_id: null,
     idempotency_key: stripeIntent.provider_intent_id,
     metadata: {
       ...(parsed.metadata ?? {}),
@@ -569,8 +577,6 @@ export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoic
     project_id: invoice.project_id,
     description: `Invoice ${invoice.invoice_number ?? invoice.id}`,
     connected_account_id: connectedAccount.stripe_account_id,
-    application_fee_amount: amounts.paymentMethodFeeCents,
-    on_behalf_of_account_id: connectedAccount.stripe_account_id,
     payment_method_types: stripePaymentMethodTypesFor(input.method),
     metadata: {
       ...amounts.metadata,
@@ -589,11 +595,11 @@ export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoic
     client_secret: stripeIntent.client_secret,
     provider_intent_id: stripeIntent.provider_intent_id,
     connected_account_id: connectedAccount.stripe_account_id,
-    charge_type: "destination",
-    application_fee_amount: amounts.paymentMethodFeeCents,
+    charge_type: "direct",
+    application_fee_amount: 0,
     processor_fee_cents: 0,
-    platform_fee_cents: amounts.paymentMethodFeeCents,
-    on_behalf_of_account_id: connectedAccount.stripe_account_id,
+    platform_fee_cents: 0,
+    on_behalf_of_account_id: null,
     idempotency_key: stripeIntent.provider_intent_id,
     metadata: {
       payment_method_choice: input.method,
@@ -659,12 +665,18 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     if (existing) return mapPayment(existing)
   }
 
+  const grossCents = metadataInt(parsed.metadata, "payment_method_total_cents") ?? parsed.amount_cents
+  const processorFeeCents = metadataInt(parsed.metadata, "processor_fee_cents") ?? (parsed.fee_cents ?? 0)
+  const platformFeeCents = metadataInt(parsed.metadata, "platform_fee_cents") ?? 0
+  const applicationFeeCents = metadataInt(parsed.metadata, "application_fee_cents") ?? platformFeeCents
+  const totalFeeCents = processorFeeCents + platformFeeCents
+
   const payload = {
     org_id: resolvedOrgId,
     project_id: invoice.project_id,
     invoice_id: invoiceId,
     amount_cents: parsed.amount_cents,
-    gross_cents: parsed.amount_cents,
+    gross_cents: grossCents,
     currency: parsed.currency ?? "usd",
     method: parsed.method ?? "ach",
     provider: parsed.provider ?? "stripe",
@@ -673,13 +685,13 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     connected_account_id: parsed.metadata?.connected_account_id,
     status: parsed.status ?? "succeeded",
     reference: parsed.reference ?? null,
-    fee_cents: parsed.fee_cents ?? 0,
-    processor_fee_cents: parsed.metadata?.processor_fee_cents ?? (parsed.fee_cents ?? 0),
-    platform_fee_cents: parsed.metadata?.platform_fee_cents ?? 0,
-    application_fee_cents: parsed.metadata?.application_fee_cents ?? 0,
+    fee_cents: totalFeeCents,
+    processor_fee_cents: processorFeeCents,
+    platform_fee_cents: platformFeeCents,
+    application_fee_cents: applicationFeeCents,
     provider_balance_transaction_id: parsed.metadata?.provider_balance_transaction_id,
     provider_transfer_id: parsed.metadata?.provider_transfer_id,
-    net_cents: parsed.amount_cents - (parsed.fee_cents ?? 0),
+    net_cents: grossCents - totalFeeCents,
     metadata: parsed.metadata ?? {},
     idempotency_key: parsed.idempotency_key ?? null,
   }
@@ -717,9 +729,16 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "payment_recorded",
-    entityType: "payment",
-    entityId: paymentRow.id,
-    payload: { invoice_id: invoiceId, amount_cents: parsed.amount_cents, status: parsed.status },
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: {
+      invoice_id: invoiceId,
+      payment_id: paymentRow.id,
+      project_id: invoice.project_id,
+      invoice_number: invoice.invoice_number,
+      amount_cents: parsed.amount_cents,
+      status: parsed.status ?? "succeeded",
+    },
   })
 
   // Auto-generate conditional lien waiver for this payment (best-effort).

@@ -22,6 +22,14 @@ interface Props {
 
 function statusLabel(connection: StripeConnectedAccount | null) {
   if (!connection) return "Not connected"
+  const responsibilities = connection.metadata?.stripe_responsibilities as Record<string, unknown> | undefined
+  if (
+    connection.charges_enabled &&
+    connection.payouts_enabled &&
+    (responsibilities?.fees_payer !== "account" || responsibilities?.losses_payments !== "stripe")
+  ) {
+    return "Reconnect required"
+  }
   switch (connection.status) {
     case "active":
       return "Ready"
@@ -90,7 +98,9 @@ export function StripeConnectionCard({ connection, canManage = false, onConnecti
   }
 
   const currentlyDue = connection?.requirements_currently_due ?? []
-  const isReady = Boolean(connection?.charges_enabled && connection?.payouts_enabled)
+  const responsibilities = connection?.metadata?.stripe_responsibilities as Record<string, unknown> | undefined
+  const hasProtectedResponsibility = responsibilities?.fees_payer === "account" && responsibilities?.losses_payments === "stripe"
+  const isReady = Boolean(connection?.charges_enabled && connection?.payouts_enabled && hasProtectedResponsibility)
 
   return (
     <Card className="overflow-hidden rounded-none border-0 py-0 shadow-none">
@@ -167,6 +177,12 @@ export function StripeConnectionCard({ connection, canManage = false, onConnecti
                     </ul>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {!hasProtectedResponsibility && (
+              <div className="border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+                Reconnect Stripe before accepting invoice payments. The previous connection used platform-side fee or loss responsibility.
               </div>
             )}
 

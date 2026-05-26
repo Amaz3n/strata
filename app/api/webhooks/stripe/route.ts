@@ -177,7 +177,8 @@ export async function POST(request: NextRequest) {
 
     if (event.type === "charge.succeeded") {
       const chargeEvent = event.data.object as Stripe.Charge
-      const charge = await retrieveStripeChargeWithBalanceTransaction(chargeEvent.id)
+      const eventConnectedAccountId = typeof event.account === "string" && event.account.length > 0 ? event.account : null
+      const charge = await retrieveStripeChargeWithBalanceTransaction(chargeEvent.id, eventConnectedAccountId)
       const balanceTransaction =
         charge.balance_transaction && typeof charge.balance_transaction !== "string"
           ? charge.balance_transaction
@@ -190,7 +191,7 @@ export async function POST(request: NextRequest) {
       const paymentIntentId = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id
       const transferId = typeof charge.transfer === "string" ? charge.transfer : null
       const connectedAccountId =
-        typeof charge.transfer_data?.destination === "string" ? charge.transfer_data.destination : null
+        eventConnectedAccountId ?? (typeof charge.transfer_data?.destination === "string" ? charge.transfer_data.destination : null)
 
       await supabase
         .from("payment_intents")

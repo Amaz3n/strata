@@ -11,11 +11,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Drawer, DrawerContent } from "@/components/ui/drawer"
-import { CalendarDays, Camera, Loader2, Receipt, Send, Sparkles, Upload, X } from "@/components/icons"
+import { CalendarDays, Camera, Check, ChevronsUpDown, Loader2, Plus, Receipt, Send, Sparkles, Upload, X } from "@/components/icons"
 
 import type { CreateMyExpenseInput, ReceiptExtractionResult } from "@/app/(app)/projects/[id]/expenses/actions"
 
@@ -23,12 +24,14 @@ type ExtractedReceiptData = Extract<ReceiptExtractionResult, { ok: true }>["data
 
 type DateOption = "today" | "yesterday" | "custom"
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string; accountType?: string }
+type QBOVendorOption = { id: string; name: string }
 
 interface ExpenseAccountingContext {
   qboConnected: boolean
   expenseAccounts: QBOAccountOption[]
   paymentAccounts: QBOAccountOption[]
   apAccounts: QBOAccountOption[]
+  vendors: QBOVendorOption[]
   defaults?: {
     expenseAccountId?: string
     paymentAccountId?: string
@@ -218,10 +221,11 @@ function useExpenseFormState() {
   const [tax, setTax] = useState("")
   const [vendor, setVendor] = useState("")
   const [paymentMethod, setPaymentMethod] = useState<CreateMyExpenseInput["paymentMethod"]>(null)
-  const [qboTransactionType, setQboTransactionType] = useState<CreateMyExpenseInput["qboTransactionType"]>("purchase")
   const [qboExpenseAccountId, setQboExpenseAccountId] = useState("")
   const [qboPaymentAccountId, setQboPaymentAccountId] = useState("")
-  const [qboApAccountId, setQboApAccountId] = useState("")
+  const [qboVendorId, setQboVendorId] = useState("")
+  const [createQboVendor, setCreateQboVendor] = useState(false)
+  const [vendorPickerOpen, setVendorPickerOpen] = useState(false)
   const [notes, setNotes] = useState("")
   const [receipt, setReceipt] = useState<File | null>(null)
   function reset() {
@@ -229,10 +233,11 @@ function useExpenseFormState() {
     setTax("")
     setVendor("")
     setPaymentMethod(null)
-    setQboTransactionType("purchase")
     setQboExpenseAccountId("")
     setQboPaymentAccountId("")
-    setQboApAccountId("")
+    setQboVendorId("")
+    setCreateQboVendor(false)
+    setVendorPickerOpen(false)
     setNotes("")
     setReceipt(null)
   }
@@ -241,10 +246,11 @@ function useExpenseFormState() {
     tax, setTax,
     vendor, setVendor,
     paymentMethod, setPaymentMethod,
-    qboTransactionType, setQboTransactionType,
     qboExpenseAccountId, setQboExpenseAccountId,
     qboPaymentAccountId, setQboPaymentAccountId,
-    qboApAccountId, setQboApAccountId,
+    qboVendorId, setQboVendorId,
+    createQboVendor, setCreateQboVendor,
+    vendorPickerOpen, setVendorPickerOpen,
     notes, setNotes,
     receipt, setReceipt,
     reset,
@@ -263,9 +269,154 @@ function accountLabel(account: QBOAccountOption) {
   return account.fullyQualifiedName ?? account.name
 }
 
+function normalizeVendorName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase()
+}
+
+function findVendor(vendors: QBOVendorOption[], id: string) {
+  return vendors.find((vendor) => vendor.id === id) ?? null
+}
+
 function paymentMethodFromAccount(account: QBOAccountOption | null, fallback: CreateMyExpenseInput["paymentMethod"]) {
   if (fallback) return fallback
   return String(account?.accountType ?? "").toLowerCase() === "credit card" ? "company_card" : "cash"
+}
+
+function VendorField({
+  context,
+  form,
+  inputId,
+  placeholder = "Select or type vendor",
+}: {
+  context?: ExpenseAccountingContext | null
+  form: ReturnType<typeof useExpenseFormState>
+  inputId?: string
+  placeholder?: string
+}) {
+  const vendors = useMemo(() => context?.vendors ?? [], [context?.vendors])
+  const vendorName = form.vendor.trim()
+  const exactVendor = vendorName
+    ? vendors.find((vendor) => normalizeVendorName(vendor.name) === normalizeVendorName(vendorName)) ?? null
+    : null
+  const selectedVendor = form.qboVendorId ? findVendor(vendors, form.qboVendorId) : null
+  const showAddButton = Boolean(context?.qboConnected && vendorName && !exactVendor && !form.createQboVendor)
+  const showVendorPicker = context === null || context?.qboConnected
+  const triggerLabel = form.createQboVendor && vendorName
+    ? vendorName
+    : ((exactVendor ?? selectedVendor)?.name ?? vendorName) || placeholder
+  const triggerDescription = context === null
+    ? "Loading vendors"
+    : context?.qboConnected
+    ? form.createQboVendor && vendorName
+      ? "New QBO vendor"
+      : exactVendor || selectedVendor
+        ? "QuickBooks vendor"
+        : null
+    : "Vendor"
+
+  useEffect(() => {
+    if (!context?.qboConnected || form.createQboVendor) return
+    const match = vendorName
+      ? vendors.find((vendor) => normalizeVendorName(vendor.name) === normalizeVendorName(vendorName)) ?? null
+      : null
+    if ((match?.id ?? "") !== form.qboVendorId) {
+      form.setQboVendorId(match?.id ?? "")
+    }
+  }, [context?.qboConnected, form, form.createQboVendor, form.qboVendorId, vendorName, vendors])
+
+  function handleVendorChange(value: string) {
+    form.setVendor(value)
+    form.setCreateQboVendor(false)
+    const match = vendors.find((vendor) => normalizeVendorName(vendor.name) === normalizeVendorName(value)) ?? null
+    form.setQboVendorId(match?.id ?? "")
+  }
+
+  function selectExistingVendor(vendor: QBOVendorOption) {
+    form.setVendor(vendor.name)
+    form.setQboVendorId(vendor.id)
+    form.setCreateQboVendor(false)
+    form.setVendorPickerOpen(false)
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={inputId} className="text-xs text-muted-foreground">
+        Vendor <span className="text-muted-foreground/60">(optional)</span>
+      </Label>
+      {showVendorPicker ? (
+        <Popover open={form.vendorPickerOpen} onOpenChange={form.setVendorPickerOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              id={inputId}
+              type="button"
+              variant="outline"
+              role="combobox"
+              aria-expanded={form.vendorPickerOpen}
+              className="h-11 justify-between px-3 text-left"
+            >
+              <span className="min-w-0 flex-1">
+                <span className={cn("block truncate text-sm", !vendorName && !selectedVendor && "text-muted-foreground")}>
+                  {triggerLabel}
+                </span>
+                {triggerDescription ? <span className="block truncate text-xs text-muted-foreground">{triggerDescription}</span> : null}
+              </span>
+              <ChevronsUpDown data-icon="inline-end" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+            <Command shouldFilter={false}>
+              <CommandInput
+                value={form.vendor}
+                onValueChange={handleVendorChange}
+                placeholder="Search or type vendor..."
+              />
+              <CommandList className="max-h-72 overflow-y-auto">
+                <CommandEmpty>
+                  {context === null ? "Loading QBO vendors..." : vendorName ? "No matching QBO vendors." : "No QBO vendors found."}
+                </CommandEmpty>
+                <CommandGroup heading={context === null ? "Loading" : "QuickBooks vendors"}>
+                  {vendors
+                    .filter((vendor) => !vendorName || normalizeVendorName(vendor.name).includes(normalizeVendorName(vendorName)))
+                    .map((vendor) => {
+                      const selected = vendor.id === form.qboVendorId || normalizeVendorName(vendor.name) === normalizeVendorName(vendorName)
+                      return (
+                        <CommandItem key={vendor.id} value={vendor.name} onSelect={() => selectExistingVendor(vendor)}>
+                          <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
+                          <span className="truncate">{vendor.name}</span>
+                        </CommandItem>
+                      )
+                    })}
+                </CommandGroup>
+                {showAddButton ? (
+                  <CommandGroup heading="New vendor">
+                    <CommandItem
+                      value={`Add ${vendorName}`}
+                      onSelect={() => {
+                        form.setQboVendorId("")
+                        form.setCreateQboVendor(true)
+                        form.setVendorPickerOpen(false)
+                      }}
+                    >
+                      <Plus className="size-4" />
+                      <span className="truncate">Add "{vendorName}" as new QBO vendor</span>
+                    </CommandItem>
+                  </CommandGroup>
+                ) : null}
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      ) : (
+        <Input
+          id={inputId}
+          value={form.vendor}
+          onChange={(event) => handleVendorChange(event.target.value)}
+          placeholder={placeholder}
+          className="text-sm transition-colors"
+        />
+      )}
+    </div>
+  )
 }
 
 function AccountingFields({
@@ -277,32 +428,18 @@ function AccountingFields({
 }) {
   if (!context?.qboConnected) return null
 
-  const isBill = form.qboTransactionType === "bill"
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
       <div>
         <Label className="text-xs uppercase tracking-wide text-muted-foreground">QuickBooks</Label>
         <p className="mt-1 text-xs text-muted-foreground">
-          Choose how this cost should hit accounting once it is approved.
+          Choose the category and account used for this paid expense once it is approved.
         </p>
       </div>
 
       {context.warning ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">{context.warning}</p> : null}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Transaction</Label>
-          <Select value={form.qboTransactionType ?? "purchase"} onValueChange={(value) => form.setQboTransactionType(value as "purchase" | "bill")}>
-            <SelectTrigger className="h-9">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="purchase">Paid expense</SelectItem>
-              <SelectItem value="bill">Vendor bill due later</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
         <div className="space-y-1.5">
           <Label className="text-xs text-muted-foreground">Account</Label>
           <Select value={form.qboExpenseAccountId} onValueChange={form.setQboExpenseAccountId}>
@@ -318,25 +455,7 @@ function AccountingFields({
             </SelectContent>
           </Select>
         </div>
-      </div>
 
-      {isBill ? (
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Accounts payable account</Label>
-          <Select value={form.qboApAccountId} onValueChange={form.setQboApAccountId}>
-            <SelectTrigger className="h-9">
-              <SelectValue placeholder="Default AP account" />
-            </SelectTrigger>
-            <SelectContent>
-              {context.apAccounts.map((account) => (
-                <SelectItem key={account.id} value={account.id}>
-                  {accountLabel(account)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      ) : (
         <div className="space-y-1.5">
           <Label className="text-xs text-muted-foreground">Paid from</Label>
           <Select value={form.qboPaymentAccountId} onValueChange={form.setQboPaymentAccountId}>
@@ -352,7 +471,7 @@ function AccountingFields({
             </SelectContent>
           </Select>
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -598,9 +717,6 @@ function DesktopExpenseSheet({ open, onOpenChange, onSubmit, onExtractReceipt, a
     if (!form.qboPaymentAccountId && accountingContext.defaults?.paymentAccountId) {
       form.setQboPaymentAccountId(accountingContext.defaults.paymentAccountId)
     }
-    if (!form.qboApAccountId && accountingContext.defaults?.apAccountId) {
-      form.setQboApAccountId(accountingContext.defaults.apAccountId)
-    }
   }, [open, accountingContext, form])
 
   async function submit() {
@@ -611,7 +727,7 @@ function DesktopExpenseSheet({ open, onOpenChange, onSubmit, onExtractReceipt, a
     }
     const expenseAccount = findAccount(accountingContext?.expenseAccounts ?? [], form.qboExpenseAccountId)
     const paymentAccount = findAccount(accountingContext?.paymentAccounts ?? [], form.qboPaymentAccountId)
-    const apAccount = findAccount(accountingContext?.apAccounts ?? [], form.qboApAccountId)
+    const qboVendor = findVendor(accountingContext?.vendors ?? [], form.qboVendorId)
     try {
       await onSubmit(
         {
@@ -619,14 +735,17 @@ function DesktopExpenseSheet({ open, onOpenChange, onSubmit, onExtractReceipt, a
           amountDollars: amountNum,
           taxDollars: Number(form.tax) || 0,
           vendorName: form.vendor.trim() || null,
-          paymentMethod: form.qboTransactionType === "bill" ? "reimbursable_personal" : paymentMethodFromAccount(paymentAccount, form.paymentMethod),
-          qboTransactionType: form.qboTransactionType ?? null,
+          paymentMethod: paymentMethodFromAccount(paymentAccount, form.paymentMethod),
+          qboTransactionType: "purchase",
           qboExpenseAccountId: expenseAccount?.id ?? null,
           qboExpenseAccountName: expenseAccount ? accountLabel(expenseAccount) : null,
           qboPaymentAccountId: paymentAccount?.id ?? null,
           qboPaymentAccountName: paymentAccount ? accountLabel(paymentAccount) : null,
-          qboApAccountId: apAccount?.id ?? null,
-          qboApAccountName: apAccount ? accountLabel(apAccount) : null,
+          qboApAccountId: null,
+          qboApAccountName: null,
+          qboVendorId: qboVendor?.id ?? null,
+          qboVendorName: qboVendor?.name ?? null,
+          createQboVendor: form.createQboVendor,
           notes: form.notes.trim() || null,
         },
         form.receipt,
@@ -673,18 +792,7 @@ function DesktopExpenseSheet({ open, onOpenChange, onSubmit, onExtractReceipt, a
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="exp-vendor" className="text-xs text-muted-foreground">
-              Vendor <span className="text-muted-foreground/60">(optional)</span>
-            </Label>
-            <Input
-              id="exp-vendor"
-              value={form.vendor}
-              onChange={(event) => form.setVendor(event.target.value)}
-              placeholder="Home Depot, rental house, etc."
-              className={cn("text-sm transition-colors", receiptScan.isExtracting && "border-primary/30 bg-primary/5")}
-            />
-          </div>
+          <VendorField context={accountingContext} form={form} inputId="exp-vendor" />
 
           <ReceiptScanDropzone
             receipt={form.receipt}
@@ -786,9 +894,6 @@ function MobileExpenseDrawer({ open, onOpenChange, onSubmit, onExtractReceipt, a
     if (!form.qboPaymentAccountId && accountingContext.defaults?.paymentAccountId) {
       form.setQboPaymentAccountId(accountingContext.defaults.paymentAccountId)
     }
-    if (!form.qboApAccountId && accountingContext.defaults?.apAccountId) {
-      form.setQboApAccountId(accountingContext.defaults.apAccountId)
-    }
   }, [open, accountingContext, form])
 
   async function submit() {
@@ -799,7 +904,7 @@ function MobileExpenseDrawer({ open, onOpenChange, onSubmit, onExtractReceipt, a
     }
     const expenseAccount = findAccount(accountingContext?.expenseAccounts ?? [], form.qboExpenseAccountId)
     const paymentAccount = findAccount(accountingContext?.paymentAccounts ?? [], form.qboPaymentAccountId)
-    const apAccount = findAccount(accountingContext?.apAccounts ?? [], form.qboApAccountId)
+    const qboVendor = findVendor(accountingContext?.vendors ?? [], form.qboVendorId)
     try {
       await onSubmit(
         {
@@ -807,14 +912,17 @@ function MobileExpenseDrawer({ open, onOpenChange, onSubmit, onExtractReceipt, a
           amountDollars: amountNum,
           taxDollars: Number(form.tax) || 0,
           vendorName: form.vendor.trim() || null,
-          paymentMethod: form.qboTransactionType === "bill" ? "reimbursable_personal" : paymentMethodFromAccount(paymentAccount, form.paymentMethod),
-          qboTransactionType: form.qboTransactionType ?? null,
+          paymentMethod: paymentMethodFromAccount(paymentAccount, form.paymentMethod),
+          qboTransactionType: "purchase",
           qboExpenseAccountId: expenseAccount?.id ?? null,
           qboExpenseAccountName: expenseAccount ? accountLabel(expenseAccount) : null,
           qboPaymentAccountId: paymentAccount?.id ?? null,
           qboPaymentAccountName: paymentAccount ? accountLabel(paymentAccount) : null,
-          qboApAccountId: apAccount?.id ?? null,
-          qboApAccountName: apAccount ? accountLabel(apAccount) : null,
+          qboApAccountId: null,
+          qboApAccountName: null,
+          qboVendorId: qboVendor?.id ?? null,
+          qboVendorName: qboVendor?.name ?? null,
+          createQboVendor: form.createQboVendor,
           notes: form.notes.trim() || null,
         },
         form.receipt,
@@ -839,12 +947,7 @@ function MobileExpenseDrawer({ open, onOpenChange, onSubmit, onExtractReceipt, a
 
           <AmountPicker value={form.amount} onChange={form.setAmount} isScanning={receiptScan.isExtracting} />
 
-          <Input
-            value={form.vendor}
-            onChange={(event) => form.setVendor(event.target.value)}
-            placeholder="Vendor (optional)"
-            className={cn("h-11 text-base transition-colors", receiptScan.isExtracting && "border-primary/30 bg-primary/5")}
-          />
+          <VendorField context={accountingContext} form={form} inputId="mobile-exp-vendor" />
 
           <ReceiptScanDropzone
             receipt={form.receipt}

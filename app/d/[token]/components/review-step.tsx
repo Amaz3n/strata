@@ -4,7 +4,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-import { formatFieldValue, isFieldComplete, normalizeFieldLabel, type SigningField } from "./types"
+import { isFieldComplete, normalizeFieldLabel, type SigningField } from "./types"
 
 interface ReviewStepProps {
   documentTitle: string
@@ -39,10 +39,10 @@ export function ReviewStep({
   const missingRequired = requiredFields.filter((field) => !isFieldComplete(field, values))
 
   return (
-    <section className="mx-auto w-full max-w-4xl rounded-lg border bg-card p-4 sm:p-6">
-      <div className="space-y-1">
-        <p className="text-xs text-muted-foreground">Final review</p>
-        <h2 className="text-xl font-semibold">Review and sign {documentTitle}</h2>
+    <section className="mx-auto w-full max-w-2xl rounded-lg border bg-card p-4 sm:p-6">
+      <div className="space-y-1 text-center">
+        <p className="text-xs text-muted-foreground">Final step</p>
+        <h2 className="text-xl font-semibold">Sign {documentTitle}</h2>
       </div>
 
       {missingRequired.length > 0 ? (
@@ -58,7 +58,7 @@ export function ReviewStep({
           </div>
         </div>
       ) : (
-        <div className="mt-4 flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           <CheckCircle2 className="h-4 w-4" />
           All required fields are complete.
         </div>
@@ -76,7 +76,7 @@ export function ReviewStep({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="review-signer-email">Email (optional)</Label>
+          <Label htmlFor="review-signer-email">Email</Label>
           <Input
             id="review-signer-email"
             value={signerEmail}
@@ -87,47 +87,15 @@ export function ReviewStep({
         </div>
       </div>
 
-      <div className="mt-5 space-y-3">
-        <p className="text-sm font-semibold">Responses</p>
-        <div className="space-y-2">
-          {visibleFields.map((field) => {
-            const value = values[field.id]
-            const complete = isFieldComplete(field, values)
-            const label = normalizeFieldLabel(field)
-
-            return (
-              <div
-                key={field.id}
-                className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{label}</p>
-                  <p className="text-xs text-muted-foreground">{field.required === false ? "Optional" : "Required"}</p>
-                </div>
-                <div className="max-w-[55%] text-right">
-                  {field.field_type === "signature" && typeof value === "string" && value.length > 0 ? (
-                    <img src={value} alt={label} className="h-10 w-32 rounded border bg-background object-contain" />
-                  ) : (
-                    <p className="truncate text-sm text-muted-foreground">{formatFieldValue(field, value) || (complete ? "Completed" : "Not set")}</p>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-
-          {visibleFields.length === 0 ? (
-            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-              No fields were assigned to this signer.
-            </div>
-          ) : null}
-        </div>
-      </div>
-
       <div className="mt-5 rounded-md border bg-muted/40 p-3">
         <div className="flex items-start gap-2">
           <Checkbox id="consent" checked={consentChecked} onCheckedChange={(checked) => onConsentChange(checked === true)} />
           <Label htmlFor="consent" className="text-sm leading-5">
-            I agree to sign this document electronically and understand this signature is legally binding.
+            I agree to use electronic records and signatures for this document, I can access and retain the document
+            electronically, and I intend my electronic signature to be legally binding.{" "}
+            <a href="/esign-terms" target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
+              Electronic signature terms
+            </a>
           </Label>
         </div>
       </div>
@@ -139,7 +107,7 @@ export function ReviewStep({
         <Button
           type="button"
           className="px-5"
-          disabled={missingRequired.length > 0 || !consentChecked || !signerName.trim() || isSubmitting}
+          disabled={missingRequired.length > 0 || !consentChecked || !signerName.trim() || !signerEmail.trim() || isSubmitting}
           onClick={onSubmit}
         >
           {isSubmitting ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <PenLine className="mr-1.5 h-4 w-4" />}

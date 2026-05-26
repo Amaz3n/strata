@@ -3,15 +3,14 @@
 import { useState, useTransition, useEffect } from "react"
 import { toast } from "sonner"
 import { format } from "date-fns"
-import { 
+import {
+  Check,
+  ChevronsUpDown,
   Receipt, 
-  Plus, 
   Upload, 
   X, 
   Calendar as CalendarIcon, 
-  Building2, 
   FileText,
-  AlertCircle
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -21,10 +20,24 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Calendar } from "@/components/ui/calendar"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
-import { createProjectVendorBillAction, listProjectCommitmentsForPayablesAction } from "@/app/(app)/projects/[id]/payables/actions"
+import {
+  createProjectVendorBillAction,
+  extractPayableInvoiceAction,
+  getPayablesAccountingContextAction,
+  listProjectCommitmentsForPayablesAction,
+} from "@/app/(app)/projects/[id]/payables/actions"
 import type { CommitmentSummary } from "@/lib/services/commitments"
+
+type QBOVendorOption = { id: string; name: string }
+
+const NO_COMMITMENT = "__no_commitment__"
+
+function normalizeName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase()
+}
 
 interface AddPayableSheetProps {
   projectId: string
@@ -42,9 +55,15 @@ export function AddPayableSheet({
   const [isPending, startTransition] = useTransition()
   const [commitments, setCommitments] = useState<CommitmentSummary[]>([])
   const [loadingCommitments, setLoadingCommitments] = useState(false)
+  const [qboVendors, setQboVendors] = useState<QBOVendorOption[]>([])
+  const [qboEnabled, setQboEnabled] = useState(false)
+  const [loadingQboVendors, setLoadingQboVendors] = useState(false)
 
   // Form state
-  const [commitmentId, setCommitmentId] = useState("")
+  const [commitmentId, setCommitmentId] = useState(NO_COMMITMENT)
+  const [vendorName, setVendorName] = useState("")
+  const [qboVendorId, setQboVendorId] = useState("")
+  const [vendorPickerOpen, setVendorPickerOpen] = useState(false)
   const [billNumber, setBillNumber] = useState("")
   const [amountDollars, setAmountDollars] = useState("")
   const [billDate, setBillDate] = useState<Date>(new Date())
@@ -52,19 +71,80 @@ export function AddPayableSheet({
   const [description, setDescription] = useState("")
   const [file, setFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const [isScanning, setIsScanning] = useState(false)
 
   useEffect(() => {
     if (open) {
       setLoadingCommitments(true)
+      setLoadingQboVendors(true)
       listProjectCommitmentsForPayablesAction(projectId)
         .then(setCommitments)
-        .catch(err => toast.error("Failed to load commitments"))
+        .catch(() => toast.error("Failed to load commitments"))
         .finally(() => setLoadingCommitments(false))
+      getPayablesAccountingContextAction()
+        .then((context) => {
+          setQboEnabled(Boolean(context.enabled))
+          setQboVendors(context.vendors ?? [])
+        })
+        .catch(() => {
+          setQboEnabled(false)
+          setQboVendors([])
+        })
+        .finally(() => setLoadingQboVendors(false))
     }
   }, [open, projectId])
 
   const amountCents = Math.round((Number.parseFloat(amountDollars) || 0) * 100)
-  const isValid = commitmentId && billNumber && amountCents > 0 && billDate
+  const isValid = billNumber && amountCents > 0 && billDate && (vendorName.trim() || commitmentId !== NO_COMMITMENT)
+  const selectedVendor = qboVendorId ? qboVendors.find((vendor) => vendor.id === qboVendorId) : null
+  const visibleVendors = qboVendors.filter(
+    (vendor) => !vendorName.trim() || normalizeName(vendor.name).includes(normalizeName(vendorName)),
+  )
+
+  function applyVendor(value: string) {
+    setVendorName(value)
+    const exact = qboVendors.find((vendor) => normalizeName(vendor.name) === normalizeName(value))
+    setQboVendorId(exact?.id ?? "")
+    if (value.trim()) {
+      const matchingCommitment = commitments.find(
+        (commitment) => commitment.company_name && normalizeName(commitment.company_name) === normalizeName(value),
+      )
+      if (matchingCommitment) setCommitmentId(matchingCommitment.id)
+    }
+  }
+
+  function selectVendor(vendor: QBOVendorOption) {
+    applyVendor(vendor.name)
+    setQboVendorId(vendor.id)
+    setVendorPickerOpen(false)
+  }
+
+  async function handleFileSelected(nextFile: File | null) {
+    setFile(nextFile)
+    if (!nextFile) return
+
+    setIsScanning(true)
+    try {
+      const formData = new FormData()
+      formData.append("invoice", nextFile)
+      const result = await extractPayableInvoiceAction(projectId, formData)
+      if (!result.ok) {
+        toast.error(result.error)
+        return
+      }
+
+      const data = result.data
+      if (data.vendorName) applyVendor(data.vendorName)
+      if (data.billNumber) setBillNumber(data.billNumber)
+      if (data.totalDollars !== null) setAmountDollars(data.totalDollars.toFixed(2))
+      if (data.billDate) setBillDate(new Date(`${data.billDate}T00:00:00`))
+      if (data.dueDate) setDueDate(new Date(`${data.dueDate}T00:00:00`))
+      if (data.description) setDescription(data.description)
+      toast.success("Invoice details scanned")
+    } finally {
+      setIsScanning(false)
+    }
+  }
 
   const handleSubmit = () => {
     startTransition(async () => {
@@ -82,7 +162,10 @@ export function AddPayableSheet({
         }
 
         await createProjectVendorBillAction(projectId, {
-          commitment_id: commitmentId,
+          commitment_id: commitmentId === NO_COMMITMENT ? null : commitmentId,
+          vendor_name: vendorName.trim() || undefined,
+          qbo_vendor_id: qboVendorId || undefined,
+          qbo_vendor_name: selectedVendor?.name ?? (vendorName.trim() || undefined),
           bill_number: billNumber,
           total_cents: amountCents,
           bill_date: format(billDate, "yyyy-MM-dd"),
@@ -103,7 +186,9 @@ export function AddPayableSheet({
   }
 
   const resetForm = () => {
-    setCommitmentId("")
+    setCommitmentId(NO_COMMITMENT)
+    setVendorName("")
+    setQboVendorId("")
     setBillNumber("")
     setAmountDollars("")
     setBillDate(new Date())
@@ -140,9 +225,10 @@ export function AddPayableSheet({
                     <span className="text-[10px] text-muted-foreground uppercase font-bold">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
                   </div>
                 </div>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setFile(null)}>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleFileSelected(null)}>
                   <X className="h-4 w-4" />
                 </Button>
+                {isScanning ? <span className="text-xs text-muted-foreground">Scanning invoice...</span> : null}
               </div>
             ) : (
               <div 
@@ -159,7 +245,7 @@ export function AddPayableSheet({
                   type="file" 
                   className="hidden" 
                   accept="application/pdf,image/*" 
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  onChange={(e) => handleFileSelected(e.target.files?.[0] || null)}
                 />
               </div>
             )}
@@ -168,12 +254,48 @@ export function AddPayableSheet({
           {/* Details Section */}
           <div className="space-y-6">
             <div className="space-y-2">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Vendor</Label>
+              <Popover open={vendorPickerOpen} onOpenChange={setVendorPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button type="button" variant="outline" role="combobox" className="h-11 w-full justify-between px-3 text-left">
+                    <span className={cn("truncate", !vendorName && "text-muted-foreground")}>
+                      {selectedVendor?.name ?? (vendorName || "Select or type vendor")}
+                    </span>
+                    <ChevronsUpDown data-icon="inline-end" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                  <Command shouldFilter={false}>
+                    <CommandInput value={vendorName} onValueChange={applyVendor} placeholder="Search or type vendor..." />
+                    <CommandList className="max-h-72 overflow-y-auto">
+                      <CommandEmpty>{loadingQboVendors ? "Loading QBO vendors..." : "No matching QBO vendors."}</CommandEmpty>
+                      <CommandGroup heading={qboEnabled ? "QuickBooks vendors" : "Vendor"}>
+                        {visibleVendors.map((vendor) => {
+                          const selected = vendor.id === qboVendorId || normalizeName(vendor.name) === normalizeName(vendorName)
+                          return (
+                            <CommandItem key={vendor.id} value={vendor.name} onSelect={() => selectVendor(vendor)}>
+                              <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
+                              <span className="truncate">{vendor.name}</span>
+                            </CommandItem>
+                          )
+                        })}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Source Commitment</Label>
               <Select value={commitmentId} onValueChange={setCommitmentId}>
                 <SelectTrigger className="h-11">
                   <SelectValue placeholder={loadingCommitments ? "Loading..." : "Select commitment or contract"} />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={NO_COMMITMENT}>
+                    <span className="font-medium">No commitment</span>
+                  </SelectItem>
                   {commitments.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       <div className="flex flex-col">
@@ -260,10 +382,10 @@ export function AddPayableSheet({
           <Button variant="outline" className="w-full h-11" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button 
             className="w-full h-11 shadow-lg" 
-            disabled={!isValid || isPending || isUploading}
+            disabled={!isValid || isPending || isUploading || isScanning}
             onClick={handleSubmit}
           >
-            {isPending || isUploading ? (isUploading ? "Uploading..." : "Saving...") : "Add Payable"}
+            {isScanning ? "Scanning..." : isPending || isUploading ? (isUploading ? "Uploading..." : "Saving...") : "Add Payable"}
           </Button>
         </SheetFooter>
       </SheetContent>

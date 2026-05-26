@@ -230,6 +230,7 @@ function PaymentSection({
   const [isDark, setIsDark] = useState(false)
   const [selectedQuote, setSelectedQuote] = useState<PaymentFeeQuote | null>(null)
   const [clientSecret, setClientSecret] = useState<string | null>(null)
+  const [stripeAccountId, setStripeAccountId] = useState<string | null>(null)
   const [isCreatingIntent, setIsCreatingIntent] = useState(false)
   const [intentError, setIntentError] = useState<string | null>(null)
 
@@ -244,7 +245,10 @@ function PaymentSection({
     }
   }, [])
 
-  const stripePromise = useMemo(() => loadStripe(payment.publishableKey), [payment.publishableKey])
+  const stripePromise = useMemo(
+    () => loadStripe(payment.publishableKey, stripeAccountId ? { stripeAccount: stripeAccountId } : undefined),
+    [payment.publishableKey, stripeAccountId],
+  )
   const appearance = useMemo(() => getStripeAppearance(isDark), [isDark])
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
@@ -255,6 +259,7 @@ function PaymentSection({
     if (!quote.enabled || isPaid || isCreatingIntent) return
     setSelectedQuote(quote)
     setClientSecret(null)
+    setStripeAccountId(null)
     setIntentError(null)
     setIsCreatingIntent(true)
     try {
@@ -266,6 +271,7 @@ function PaymentSection({
         throw new Error("Stripe did not return a payment form secret.")
       }
       setClientSecret(intent.client_secret)
+      setStripeAccountId(intent.connected_account_id ?? null)
     } catch (err) {
       setIntentError(err instanceof Error ? err.message : "Unable to start payment.")
     } finally {

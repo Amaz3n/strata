@@ -3,7 +3,7 @@
 import { z } from "zod"
 
 import { requireOrgMembership } from "@/lib/auth/context"
-import { sendEmail } from "@/lib/services/mailer"
+import { sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const SUPPORT_RECIPIENTS = ["agustin@arcnaples.com", "gabi@arcnaples.com"]
@@ -36,7 +36,7 @@ export async function sendSupportRequestAction(input: z.input<typeof supportRequ
   const service = createServiceSupabaseClient()
   const { data: org } = await service
     .from("orgs")
-    .select("name")
+    .select("name, slug")
     .eq("id", orgId)
     .maybeSingle()
 
@@ -92,6 +92,7 @@ export async function sendSupportRequestAction(input: z.input<typeof supportRequ
       parsed.data.message,
     ].join("\n"),
     replyTo: requesterEmail,
+    from: getOrgSenderEmail(org?.slug, org?.name),
   })
 
   if (!sent) {

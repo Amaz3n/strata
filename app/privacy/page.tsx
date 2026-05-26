@@ -23,6 +23,7 @@ const sections = [
     body: [
       "We collect account and contact information, organization information, project records, financial workflow data, invoices, payments metadata, documents, files, messages, comments, activity logs, integration settings, support requests, and other information you or your authorized users provide to Arc.",
       "We also collect technical information such as device and browser information, IP address, usage events, authentication events, error logs, security logs, and similar operational data needed to operate and protect the service.",
+      "If you use electronic signature features, we may collect signer names, email addresses, signature images or typed signature renderings, initials, field responses, consent text, signing timestamps, viewed timestamps, IP addresses, user agents, signing request identifiers, envelope identifiers, document identifiers, file identifiers, document hashes, and audit evidence needed to operate the signing workflow and support attribution, integrity, retention, and dispute resolution.",
     ],
   },
   {

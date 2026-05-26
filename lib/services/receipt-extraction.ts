@@ -58,12 +58,35 @@ const extractedReceiptSchema = z.object({
   notes: notesSchema.default([]),
 })
 
+const extractedPayableInvoiceSchema = z.object({
+  vendor_name: z.string().nullable().default(null),
+  bill_number: z.string().nullable().default(null),
+  bill_date: dateSchema.default(null),
+  due_date: dateSchema.default(null),
+  total_cents: centsSchema.default(null),
+  description: z.string().nullable().default(null),
+  confidence: confidenceSchema.default("low"),
+  notes: notesSchema.default([]),
+})
+
 export interface ExtractedExpenseReceipt {
   vendorName: string | null
   expenseDate: string | null
   totalDollars: number | null
   taxDollars: number | null
   paymentMethod: "cash" | "credit_card" | "check" | "ach" | "company_card" | "reimbursable_personal" | "other" | null
+  description: string | null
+  confidence: "high" | "medium" | "low"
+  notes: string[]
+  model: string
+}
+
+export interface ExtractedPayableInvoice {
+  vendorName: string | null
+  billNumber: string | null
+  billDate: string | null
+  dueDate: string | null
+  totalDollars: number | null
   description: string | null
   confidence: "high" | "medium" | "low"
   notes: string[]
@@ -102,6 +125,57 @@ export async function extractExpenseReceiptFromFile(file: File): Promise<Extract
     totalDollars: centsToDollars(parsed.total_cents),
     taxDollars: centsToDollars(parsed.tax_cents),
     paymentMethod: parsed.payment_method,
+    description: cleanString(parsed.description),
+    confidence: parsed.confidence,
+    notes: parsed.notes.map((note) => note.trim()).filter(Boolean).slice(0, 4),
+    model,
+  }
+}
+
+export async function extractPayableInvoiceFromFile(file: File): Promise<ExtractedPayableInvoice> {
+  if (!file || file.size === 0) throw new Error("Choose an invoice to scan")
+  if (file.size > MAX_RECEIPT_EXTRACTION_SIZE) {
+    throw new Error("Invoice scanning supports files up to 10MB")
+  }
+
+  const mimeType = normalizeMimeType(file.type, file.name)
+  if (!SUPPORTED_MIME_TYPES.has(mimeType)) {
+    throw new Error("Invoice scanning supports images and PDFs")
+  }
+
+  const apiKey = getGeminiApiKey()
+  if (!apiKey) {
+    throw new Error("Invoice scanning is not configured")
+  }
+
+  const model = getReceiptVisionModel()
+  const bytes = Buffer.from(await file.arrayBuffer())
+  const rawText = await generateGeminiExtraction({
+    apiKey,
+    model,
+    mimeType,
+    base64: bytes.toString("base64"),
+    prompt: [
+      "Extract construction payable invoice or vendor bill data from this image or PDF.",
+      "Return only JSON with these keys:",
+      "vendor_name, bill_number, bill_date, due_date, total_cents, description, confidence, notes.",
+      "bill_number should be the invoice number, bill number, or reference number if visible.",
+      "bill_date and due_date must be YYYY-MM-DD or null.",
+      "total_cents must be the final invoice amount due, including tax and discounts.",
+      "description should be a short work/material summary, not a full line-item dump.",
+      "confidence must be high, medium, or low.",
+      "If a value is uncertain, use null and explain briefly in notes.",
+    ].join("\n"),
+    errorLabel: "invoice",
+  })
+  const parsed = parsePayableInvoiceJson(rawText)
+
+  return {
+    vendorName: cleanString(parsed.vendor_name),
+    billNumber: cleanString(parsed.bill_number),
+    billDate: parsed.bill_date,
+    dueDate: parsed.due_date,
+    totalDollars: centsToDollars(parsed.total_cents),
     description: cleanString(parsed.description),
     confidence: parsed.confidence,
     notes: parsed.notes.map((note) => note.trim()).filter(Boolean).slice(0, 4),
@@ -149,6 +223,42 @@ async function generateGeminiReceiptExtraction({
   mimeType: string
   base64: string
 }) {
+  return generateGeminiExtraction({
+    apiKey,
+    model,
+    mimeType,
+    base64,
+    prompt: [
+      "Extract job-site expense receipt data from this image or PDF.",
+      "Return only JSON with these keys:",
+      "vendor_name, expense_date, total_cents, tax_cents, payment_method, description, confidence, notes.",
+      "expense_date must be YYYY-MM-DD or null.",
+      "total_cents must be the final amount paid, including tax and discounts.",
+      "tax_cents should be the sales tax amount if visible, otherwise null.",
+      "payment_method must be one of: cash, credit_card, check, ach, company_card, reimbursable_personal, other, or null.",
+      "description should be a short purchase summary, not a full line-item dump.",
+      "confidence must be high, medium, or low.",
+      "If a value is uncertain, use null and explain briefly in notes.",
+    ].join("\n"),
+    errorLabel: "receipt",
+  })
+}
+
+async function generateGeminiExtraction({
+  apiKey,
+  model,
+  mimeType,
+  base64,
+  prompt,
+  errorLabel,
+}: {
+  apiKey: string
+  model: string
+  mimeType: string
+  base64: string
+  prompt: string
+  errorLabel: string
+}) {
   const normalizedModel = model.startsWith("models/") ? model : `models/${model}`
   const endpoint = process.env.GEMINI_BASE_URL?.replace(/\/$/, "") || "https://generativelanguage.googleapis.com/v1beta"
   const response = await fetch(`${endpoint}/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`, {
@@ -160,18 +270,7 @@ async function generateGeminiReceiptExtraction({
           role: "user",
           parts: [
             {
-              text: [
-                "Extract job-site expense receipt data from this image or PDF.",
-                "Return only JSON with these keys:",
-                "vendor_name, expense_date, total_cents, tax_cents, payment_method, description, confidence, notes.",
-                "expense_date must be YYYY-MM-DD or null.",
-                "total_cents must be the final amount paid, including tax and discounts.",
-                "tax_cents should be the sales tax amount if visible, otherwise null.",
-                "payment_method must be one of: cash, credit_card, check, ach, company_card, reimbursable_personal, other, or null.",
-                "description should be a short purchase summary, not a full line-item dump.",
-                "confidence must be high, medium, or low.",
-                "If a value is uncertain, use null and explain briefly in notes.",
-              ].join("\n"),
+              text: prompt,
             },
             {
               inline_data: {
@@ -191,13 +290,13 @@ async function generateGeminiReceiptExtraction({
 
   if (!response.ok) {
     const body = await response.text()
-    console.warn(`[ReceiptExtraction] Gemini request failed: ${response.status} ${body}`)
-    throw new Error("Could not scan receipt")
+    console.warn(`[ReceiptExtraction] Gemini ${errorLabel} request failed: ${response.status} ${body}`)
+    throw new Error(`Could not scan ${errorLabel}`)
   }
 
   const payload = await response.json()
   const text = extractGeminiResponseText(payload)
-  if (!text) throw new Error("Receipt scan returned no data")
+  if (!text) throw new Error(`${errorLabel[0]?.toUpperCase() ?? "File"}${errorLabel.slice(1)} scan returned no data`)
   return text
 }
 
@@ -241,6 +340,40 @@ function parseReceiptShape(value: unknown) {
   return null
 }
 
+function parsePayableInvoiceJson(rawText: string) {
+  const direct = tryParseJson(rawText)
+  const directParsed = parsePayableInvoiceShape(direct)
+  if (directParsed) return directParsed
+
+  const fenced = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]
+  const fencedJson = fenced ? tryParseJson(fenced) : null
+  const fencedParsed = parsePayableInvoiceShape(fencedJson)
+  if (fencedParsed) return fencedParsed
+
+  const firstBrace = rawText.indexOf("{")
+  const lastBrace = rawText.lastIndexOf("}")
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const sliced = tryParseJson(rawText.slice(firstBrace, lastBrace + 1))
+    const slicedParsed = parsePayableInvoiceShape(sliced)
+    if (slicedParsed) return slicedParsed
+  }
+
+  throw new Error("Could not read invoice details")
+}
+
+function parsePayableInvoiceShape(value: unknown) {
+  if (!value) return null
+  const normalized = normalizePayableInvoicePayload(value)
+  const parsed = extractedPayableInvoiceSchema.safeParse(normalized)
+  if (parsed.success) return parsed.data
+
+  console.warn("[ReceiptExtraction] Could not parse invoice model JSON", {
+    issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).slice(0, 6),
+    keys: normalized && typeof normalized === "object" ? Object.keys(normalized as Record<string, unknown>).slice(0, 20) : [],
+  })
+  return null
+}
+
 function normalizeReceiptPayload(value: unknown): Record<string, unknown> | null {
   const record = Array.isArray(value) ? value[0] : value
   if (!record || typeof record !== "object") return null
@@ -253,6 +386,23 @@ function normalizeReceiptPayload(value: unknown): Record<string, unknown> | null
     tax_cents: pickFirst(source, ["tax_cents", "taxCents", "tax_amount_cents", "taxAmountCents", "tax", "tax_amount", "taxAmount", "sales_tax", "salesTax"]),
     payment_method: pickFirst(source, ["payment_method", "paymentMethod", "payment", "tender", "tender_type", "tenderType", "card_type", "cardType"]),
     description: pickFirst(source, ["description", "summary", "memo", "notes", "purchase_summary", "purchaseSummary"]),
+    confidence: pickFirst(source, ["confidence", "confidence_level", "confidenceLevel"]),
+    notes: pickFirst(source, ["notes", "warnings", "uncertainties", "explanation"]),
+  }
+}
+
+function normalizePayableInvoicePayload(value: unknown): Record<string, unknown> | null {
+  const record = Array.isArray(value) ? value[0] : value
+  if (!record || typeof record !== "object") return null
+  const source = record as Record<string, unknown>
+
+  return {
+    vendor_name: pickFirst(source, ["vendor_name", "vendorName", "vendor", "supplier", "supplier_name", "subcontractor", "company", "company_name"]),
+    bill_number: pickFirst(source, ["bill_number", "billNumber", "invoice_number", "invoiceNumber", "invoice_no", "invoiceNo", "doc_number", "docNumber", "reference", "reference_number"]),
+    bill_date: pickFirst(source, ["bill_date", "billDate", "invoice_date", "invoiceDate", "date", "issued_date", "issuedDate"]),
+    due_date: pickFirst(source, ["due_date", "dueDate", "payment_due_date", "paymentDueDate", "due"]),
+    total_cents: pickFirst(source, ["total_cents", "totalCents", "amount_due_cents", "amountDueCents", "total", "total_amount", "totalAmount", "amount_due", "amountDue", "balance_due", "balanceDue"]),
+    description: pickFirst(source, ["description", "summary", "memo", "notes", "work_summary", "workSummary", "scope"]),
     confidence: pickFirst(source, ["confidence", "confidence_level", "confidenceLevel"]),
     notes: pickFirst(source, ["notes", "warnings", "uncertainties", "explanation"]),
   }

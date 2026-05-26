@@ -9,14 +9,14 @@ import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/typ
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
   createInvoiceAction,
+  deleteInvoiceAction,
   generateInvoiceLinkAction,
   getInvoiceDetailAction,
   listInvoicesAction,
   manualResyncInvoiceAction,
-  retryFailedInvoiceSyncsAction,
   sendInvoiceReminderAction,
-  syncPendingInvoicesNowAction,
   updateInvoiceAction,
+  voidInvoiceAction,
 } from "@/app/(app)/invoices/actions"
 import { InvoiceComposerSheet } from "@/components/invoices/invoice-composer-sheet"
 import { Badge } from "@/components/ui/badge"
@@ -24,6 +24,16 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   DropdownMenu,
@@ -38,10 +48,10 @@ import {
   DropdownMenuTrigger,
   DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
-import { Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search } from "@/components/icons"
+import { Ban, Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
-import { InvoiceSyncQueueSheet } from "@/components/invoices/invoice-sync-queue-sheet"
+import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 
 type StatusKey = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
@@ -96,6 +106,7 @@ interface InvoicesClientProps {
   enableApprovedCostsSource?: boolean
   toolbarLeading?: ReactNode
   fullBleed?: boolean
+  projectScoped?: boolean
 }
 
 export function InvoicesClient({
@@ -108,6 +119,7 @@ export function InvoicesClient({
   enableApprovedCostsSource,
   toolbarLeading,
   fullBleed = false,
+  projectScoped = false,
 }: InvoicesClientProps) {
   const [items, setItems] = useState<Invoice[]>(invoices)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -135,13 +147,12 @@ export function InvoicesClient({
   >()
   const [isResyncing, setIsResyncing] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
-  const [queueRefreshing, setQueueRefreshing] = useState(false)
-  const [queueSyncingPending, setQueueSyncingPending] = useState(false)
-  const [queueRetryingFailed, setQueueRetryingFailed] = useState(false)
-  const [queueSyncingInvoiceId, setQueueSyncingInvoiceId] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null)
+  const [voidingInvoice, setVoidingInvoice] = useState<Invoice | null>(null)
+  const [deletingInvoice, setDeletingInvoice] = useState<Invoice | null>(null)
+  const [destructiveActionLoading, setDestructiveActionLoading] = useState(false)
   const didAutoOpen = useRef(false)
 
   useEffect(() => {
@@ -196,9 +207,9 @@ export function InvoicesClient({
   const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id)) && !allVisibleSelected
   const qboPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
   const qboErrorCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "error").length, [items])
+  const isProjectScoped = projectScoped
 
   async function refreshInvoices() {
-    setQueueRefreshing(true)
     try {
       const scopedProjectId = projects.length === 1 ? projects[0]?.id : undefined
       const fresh = await listInvoicesAction(scopedProjectId)
@@ -208,60 +219,6 @@ export function InvoicesClient({
       toast.error("Could not refresh invoices", {
         description: error?.message ?? "Please try again.",
       })
-    } finally {
-      setQueueRefreshing(false)
-    }
-  }
-
-  async function handleQueueSyncPending() {
-    setQueueSyncingPending(true)
-    try {
-      const result = await syncPendingInvoicesNowAction()
-      toast.success("Sync run complete", {
-        description: `${result.processed ?? 0} pending invoices synced`,
-      })
-      await refreshInvoices()
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Sync failed", {
-        description: error?.message ?? "Please try again.",
-      })
-    } finally {
-      setQueueSyncingPending(false)
-    }
-  }
-
-  async function handleQueueRetryFailed() {
-    setQueueRetryingFailed(true)
-    try {
-      const result = await retryFailedInvoiceSyncsAction()
-      toast.success("Retry queued", {
-        description: `${result.retried_invoices ?? 0} failed invoices retried`,
-      })
-      await refreshInvoices()
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Retry failed", {
-        description: error?.message ?? "Please try again.",
-      })
-    } finally {
-      setQueueRetryingFailed(false)
-    }
-  }
-
-  async function handleQueueSyncOne(invoiceId: string) {
-    setQueueSyncingInvoiceId(invoiceId)
-    try {
-      await manualResyncInvoiceAction(invoiceId)
-      toast.success("Invoice synced")
-      await refreshInvoices()
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Sync failed", {
-        description: error?.message ?? "Please try again.",
-      })
-    } finally {
-      setQueueSyncingInvoiceId(null)
     }
   }
 
@@ -351,6 +308,43 @@ export function InvoicesClient({
       })
     } finally {
       setSendingReminderId(null)
+    }
+  }
+
+  async function handleVoidInvoice() {
+    if (!voidingInvoice) return
+    setDestructiveActionLoading(true)
+    try {
+      const updated = await voidInvoiceAction(voidingInvoice.id)
+      setItems((prev) => prev.map((invoice) => (invoice.id === updated.id ? updated : invoice)))
+      setVoidingInvoice(null)
+      toast.success("Invoice voided")
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not void invoice", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setDestructiveActionLoading(false)
+    }
+  }
+
+  async function handleDeleteInvoice() {
+    if (!deletingInvoice) return
+    setDestructiveActionLoading(true)
+    try {
+      await deleteInvoiceAction(deletingInvoice.id)
+      setItems((prev) => prev.filter((invoice) => invoice.id !== deletingInvoice.id))
+      setSelectedIds((prev) => prev.filter((id) => id !== deletingInvoice.id))
+      setDeletingInvoice(null)
+      toast.success("Invoice deleted")
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not delete invoice", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setDestructiveActionLoading(false)
     }
   }
 
@@ -538,25 +532,7 @@ export function InvoicesClient({
         mode="edit"
         invoice={editingInvoice}
       />
-      <InvoiceSyncQueueSheet
-        open={queueOpen}
-        onOpenChange={setQueueOpen}
-        invoices={items}
-        projects={projects}
-        onRefreshInvoices={refreshInvoices}
-        onSyncPending={handleQueueSyncPending}
-        onRetryFailed={handleQueueRetryFailed}
-        onSyncOne={handleQueueSyncOne}
-        refreshing={queueRefreshing}
-        syncingPending={queueSyncingPending}
-        retryingFailed={queueRetryingFailed}
-        syncingInvoiceId={queueSyncingInvoiceId}
-        onOpenInvoice={handleOpenDetail}
-        onEditInvoice={(invoice) => {
-          setEditingInvoice(invoice)
-          setEditOpen(true)
-        }}
-      />
+      <QboSyncSheet open={queueOpen} onOpenChange={setQueueOpen} onOpenInvoice={handleOpenDetail} />
 
       <AnimatePresence>
         <div className={fullBleed ? "overflow-hidden border-b" : "rounded-lg border overflow-hidden"}>
@@ -573,12 +549,12 @@ export function InvoicesClient({
                   </div>
                 </TableHead>
                 <TableHead className="min-w-[90px] px-4 py-4">Invoice No.</TableHead>
-                <TableHead className="px-4 py-4">Project</TableHead>
+                {!isProjectScoped && <TableHead className="px-4 py-4">Project</TableHead>}
                 <TableHead className="px-4 py-4 text-center">Issue date</TableHead>
                 <TableHead className="px-4 py-4 text-center">Due date</TableHead>
                 <TableHead className="text-right px-4 py-4">Amount</TableHead>
+                {isProjectScoped && <TableHead className="text-right px-4 py-4">Balance</TableHead>}
                 <TableHead className="px-4 py-4 text-center">Status</TableHead>
-                <TableHead className="px-4 py-4 text-center">QuickBooks</TableHead>
                 <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
               </TableRow>
             </TableHeader>
@@ -586,6 +562,7 @@ export function InvoicesClient({
               {filtered.map((invoice) => {
                 const projectName = (invoice.project_id ? projectLookup[invoice.project_id]?.name : "") ?? "Unknown project"
                 const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
+                const balance = formatMoneyFromCents(invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? invoice.total_cents ?? invoice.totals?.total_cents)
                 const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
                 return (
                   <TableRow key={invoice.id} className="align-top divide-x">
@@ -610,7 +587,7 @@ export function InvoicesClient({
                         </button>
                       </div>
                     </TableCell>
-                    <TableCell className="px-4 py-4 text-muted-foreground">{projectName}</TableCell>
+                    {!isProjectScoped && <TableCell className="px-4 py-4 text-muted-foreground">{projectName}</TableCell>}
                     <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
                       {invoice.issue_date ? format(new Date(invoice.issue_date), "MMM d, yyyy") : "—"}
                     </TableCell>
@@ -620,13 +597,23 @@ export function InvoicesClient({
                     <TableCell className="px-4 py-4 text-right">
                       <div className="font-semibold">{total}</div>
                     </TableCell>
+                    {isProjectScoped && (
+                      <TableCell className="px-4 py-4 text-right">
+                        <div className="font-semibold">{balance}</div>
+                      </TableCell>
+                    )}
                     <TableCell className="px-4 py-4 text-center">
-                      <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}>
-                        {statusLabels[resolveStatusKey(invoice.status)]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="px-4 py-4 text-center">
-                      <QBOSyncBadge status={invoice.qbo_sync_status} syncedAt={invoice.qbo_synced_at ?? undefined} qboId={invoice.qbo_id ?? undefined} />
+                      <div className="flex items-center justify-center gap-2">
+                        <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}>
+                          {statusLabels[resolveStatusKey(invoice.status)]}
+                        </Badge>
+                        <QBOSyncBadge
+                          status={invoice.qbo_sync_status}
+                          syncedAt={invoice.qbo_synced_at ?? undefined}
+                          qboId={invoice.qbo_id ?? undefined}
+                          compact
+                        />
+                      </div>
                     </TableCell>
                     <TableCell className="text-center w-12 px-4 py-4">
                       <div className="flex justify-center">
@@ -658,6 +645,33 @@ export function InvoicesClient({
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
+                              disabled={invoice.status === "paid" || invoice.status === "partial" || invoice.status === "void"}
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                setVoidingInvoice(invoice)
+                              }}
+                            >
+                              <Ban className="mr-2 h-4 w-4" />
+                              Void invoice
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={
+                                !["draft", "saved"].includes(resolveStatusKey(invoice.status)) ||
+                                invoice.client_visible === true ||
+                                Boolean(invoice.sent_at) ||
+                                Boolean(invoice.qbo_id)
+                              }
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                setDeletingInvoice(invoice)
+                              }}
+                              className="text-destructive focus:text-destructive"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete invoice
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
                               disabled={invoice.status === "paid" || invoice.status === "void" || sendingReminderId === invoice.id}
                               onSelect={(event) => {
                                 event.preventDefault()
@@ -676,7 +690,7 @@ export function InvoicesClient({
               })}
               {filtered.length === 0 && !isCreating && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={isProjectScoped ? 8 : 8} className="py-10 text-center text-muted-foreground">
                     <div className="flex flex-col items-center gap-4">
                       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                         <FolderOpen className="h-6 w-6" />
@@ -695,7 +709,7 @@ export function InvoicesClient({
               )}
               {isCreating && filtered.length === 0 && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={9}>
+                  <TableCell colSpan={isProjectScoped ? 8 : 8}>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {[...Array(3)].map((_, idx) => (
                         <Skeleton key={idx} className="h-24 w-full rounded-md" />
@@ -742,6 +756,12 @@ export function InvoicesClient({
             setIsResyncing(false)
           }
         }}
+        onPaymentRecorded={async () => {
+          await refreshInvoices()
+          if (detailInvoice) {
+            await handleOpenDetail(detailInvoice.id)
+          }
+        }}
         onEdit={
           detailInvoice
             ? () => {
@@ -752,6 +772,44 @@ export function InvoicesClient({
             : undefined
         }
       />
+
+      <AlertDialog open={Boolean(voidingInvoice)} onOpenChange={(open) => !open && setVoidingInvoice(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Void invoice?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases linked draws or billable costs so they can be invoiced again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={destructiveActionLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={destructiveActionLoading} onClick={() => void handleVoidInvoice()}>
+              {destructiveActionLoading ? "Voiding..." : "Void invoice"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={Boolean(deletingInvoice)} onOpenChange={(open) => !open && setDeletingInvoice(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete invoice?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes the unsent invoice {deletingInvoice?.invoice_number ?? ""}. Sent, synced, or paid invoices should be voided instead.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={destructiveActionLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={destructiveActionLoading}
+              onClick={() => void handleDeleteInvoice()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {destructiveActionLoading ? "Deleting..." : "Delete invoice"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

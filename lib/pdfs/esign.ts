@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
+import sharp from "sharp"
 
 type FieldType = "signature" | "initials" | "text" | "date" | "checkbox" | "name"
 
@@ -12,12 +13,70 @@ export interface ESignField {
   h: number
 }
 
+export interface ESignAuditTrailItem {
+  label: string
+  value: string | null | undefined
+}
+
 function decodeDataUrl(dataUrl: string): Uint8Array {
   const [, base64] = dataUrl.split(",")
   if (!base64) {
     throw new Error("Invalid data URL")
   }
   return Buffer.from(base64, "base64")
+}
+
+async function trimSignatureImage(bytes: Uint8Array | Buffer) {
+  try {
+    return await sharp(bytes, { limitInputPixels: 20_000_000 })
+      .trim({ threshold: 12 })
+      .png()
+      .toBuffer()
+  } catch {
+    return bytes
+  }
+}
+
+function wrapText(text: string, font: any, size: number, maxWidth: number) {
+  const words = text.split(/\s+/).filter(Boolean)
+  const lines: string[] = []
+  let current = ""
+
+  const pushLongToken = (token: string) => {
+    let slice = ""
+    for (const char of token) {
+      const next = `${slice}${char}`
+      if (slice && font.widthOfTextAtSize(next, size) > maxWidth) {
+        lines.push(slice)
+        slice = char
+      } else {
+        slice = next
+      }
+    }
+    return slice
+  }
+
+  for (const word of words.length ? words : [text]) {
+    if (font.widthOfTextAtSize(word, size) > maxWidth) {
+      if (current) {
+        lines.push(current)
+        current = ""
+      }
+      current = pushLongToken(word)
+      continue
+    }
+
+    const next = current ? `${current} ${word}` : word
+    if (font.widthOfTextAtSize(next, size) > maxWidth) {
+      if (current) lines.push(current)
+      current = word
+    } else {
+      current = next
+    }
+  }
+
+  if (current) lines.push(current)
+  return lines.length ? lines : [""]
 }
 
 function resolveFieldValue(
@@ -33,10 +92,12 @@ export async function generateExecutedPdf({
   pdfBytes,
   fields,
   values,
+  auditTrail,
 }: {
   pdfBytes: Uint8Array | Buffer
   fields: ESignField[]
   values: Record<string, any>
+  auditTrail?: ESignAuditTrailItem[]
 }): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(pdfBytes)
   const pages = pdfDoc.getPages()
@@ -94,9 +155,9 @@ export async function generateExecutedPdf({
 
     if (field.field_type === "signature" && typeof value === "string") {
       const bytes = decodeDataUrl(value)
-      const isPng = value.startsWith("data:image/png")
-      const image = isPng ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes)
-      const scale = Math.min(w / image.width, h / image.height)
+      const trimmedBytes = await trimSignatureImage(bytes)
+      const image = await pdfDoc.embedPng(trimmedBytes)
+      const scale = Math.min((w * 0.99) / image.width, (h * 0.99) / image.height)
       const drawWidth = image.width * scale
       const drawHeight = image.height * scale
       page.drawImage(image, {
@@ -117,6 +178,92 @@ export async function generateExecutedPdf({
         font,
         color: rgb(0.15, 0.15, 0.15),
       })
+    }
+  }
+
+  if (auditTrail?.length) {
+    let auditPage = pdfDoc.addPage()
+    const { width, height } = auditPage.getSize()
+    const margin = 48
+    const labelWidth = 142
+    const valueX = margin + labelWidth + 10
+    const valueWidth = width - valueX - margin
+    const valueSize = 9
+    const lineHeight = 13
+    let cursorY = height - margin
+
+    const startAuditPage = (includeTitle: boolean) => {
+      if (includeTitle) {
+        auditPage.drawText("Electronic Signature Certificate", {
+          x: margin,
+          y: cursorY,
+          size: 18,
+          font,
+          color: rgb(0.08, 0.08, 0.08),
+        })
+        cursorY -= 28
+
+        auditPage.drawText("This certificate summarizes audit evidence recorded by Arc for this executed document.", {
+          x: margin,
+          y: cursorY,
+          size: 10,
+          font,
+          color: rgb(0.25, 0.25, 0.25),
+        })
+        cursorY -= 24
+      } else {
+        auditPage.drawText("Electronic Signature Certificate, continued", {
+          x: margin,
+          y: cursorY,
+          size: 12,
+          font,
+          color: rgb(0.18, 0.18, 0.18),
+        })
+        cursorY -= 24
+      }
+    }
+
+    const addAuditPage = () => {
+      auditPage = pdfDoc.addPage()
+      cursorY = height - margin
+      startAuditPage(false)
+    }
+
+    startAuditPage(true)
+
+    for (const item of auditTrail) {
+      const label = `${item.label}:`
+      const value = String(item.value ?? "Not recorded")
+      const valueLines = wrapText(value, font, valueSize, valueWidth)
+      const rowHeight = Math.max(lineHeight, valueLines.length * lineHeight) + 4
+
+      if (cursorY - rowHeight < margin) {
+        addAuditPage()
+      }
+
+      auditPage.drawText(label, {
+        x: margin,
+        y: cursorY,
+        size: valueSize,
+        font,
+        color: rgb(0.12, 0.12, 0.12),
+      })
+
+      for (const line of valueLines) {
+        if (cursorY < margin) {
+          addAuditPage()
+        }
+        auditPage.drawText(line, {
+          x: valueX,
+          y: cursorY,
+          size: valueSize,
+          font,
+          color: rgb(0.25, 0.25, 0.25),
+        })
+        cursorY -= lineHeight
+      }
+
+      cursorY -= 4
     }
   }
 

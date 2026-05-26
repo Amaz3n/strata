@@ -115,6 +115,7 @@ export function ReceivablesTab({
             enableApprovedCostsSource={enableApprovedCostsSource}
             toolbarLeading={renderTabList()}
             fullBleed
+            projectScoped
           />
         </TabsContent>
 

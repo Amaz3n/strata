@@ -7,7 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { sendEmail, renderEmailTemplate } from "@/lib/services/mailer"
+import { sendEmail, renderEmailTemplate, getOrgSenderEmail } from "@/lib/services/mailer"
 import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { markReservationUsed } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
@@ -458,6 +458,65 @@ async function syncDrawInvoiceLink(params: {
   }
 }
 
+async function releaseInvoiceSourceLinks(params: {
+  supabase: SupabaseClient
+  orgId: string
+  invoiceId: string
+  metadata?: Record<string, any> | null
+}) {
+  const { supabase, orgId, invoiceId, metadata } = params
+  const sourceDrawId = typeof metadata?.source_draw_id === "string" ? metadata.source_draw_id : null
+
+  if (sourceDrawId) {
+    const { error } = await supabase
+      .from("draw_schedules")
+      .update({ invoice_id: null, status: "pending" })
+      .eq("org_id", orgId)
+      .eq("id", sourceDrawId)
+      .eq("invoice_id", invoiceId)
+
+    if (error) {
+      throw new Error(`Failed to release draw invoice link: ${error.message}`)
+    }
+  }
+
+  const { error: costError } = await supabase
+    .from("billable_costs")
+    .update({
+      invoice_id: null,
+      invoice_line_id: null,
+      status: "open",
+      billed_at: null,
+    })
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+
+  if (costError) {
+    throw new Error(`Failed to release billed costs: ${costError.message}`)
+  }
+
+  const { error: retainageError } = await supabase
+    .from("retainage")
+    .update({ status: "released", release_invoice_id: null })
+    .eq("org_id", orgId)
+    .eq("release_invoice_id", invoiceId)
+
+  if (retainageError) {
+    throw new Error(`Failed to release retainage links: ${retainageError.message}`)
+  }
+
+  const { error: invoiceRetainageError } = await supabase
+    .from("retainage")
+    .delete()
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+    .neq("status", "paid")
+
+  if (invoiceRetainageError) {
+    throw new Error(`Failed to remove invoice retainage: ${invoiceRetainageError.message}`)
+  }
+}
+
 function mapInvoiceRow(row: InvoiceRow): Invoice {
   const metadata = row.metadata ?? {}
   const lines = (metadata.lines as InvoiceLine[] | undefined) ?? []
@@ -677,6 +736,8 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
         ...parsedCustomerDetails,
         qbo_customer_id: input.qbo_customer_id ?? null,
         qbo_customer_name: input.qbo_customer_name ?? null,
+        qbo_income_account_id: input.qbo_income_account_id ?? null,
+        qbo_income_account_name: input.qbo_income_account_name ?? null,
         org_name: orgData?.name ?? null,
         org_email: orgData?.email ?? null,
         org_phone: orgData?.phone ?? null,
@@ -1011,8 +1072,8 @@ export async function updateInvoice({
       customer_name: input.customer_name ?? (existing.metadata as any)?.customer_name,
       customer_address: input.customer_address ?? (existing.metadata as any)?.customer_address,
       customer_email: (input.sent_to_emails ?? [])[0] ?? (existing.metadata as any)?.customer_email,
-      qbo_customer_id: input.qbo_customer_id ?? (existing.metadata as any)?.qbo_customer_id ?? null,
-      qbo_customer_name: input.qbo_customer_name ?? (existing.metadata as any)?.qbo_customer_name ?? null,
+      qbo_customer_id: input.qbo_customer_id ?? null,
+      qbo_customer_name: input.qbo_customer_name ?? null,
       from_name: input.from_name ?? (existing.metadata as any)?.from_name ?? null,
       from_email: input.from_email ?? (existing.metadata as any)?.from_email ?? null,
       from_address: input.from_address ?? (existing.metadata as any)?.from_address ?? null,
@@ -1023,8 +1084,8 @@ export async function updateInvoice({
       billing_context: sourceContext?.metadata ?? (existing.metadata as any)?.billing_context ?? null,
       retainage_percent: sourceContext?.retainagePercent ?? (existing.metadata as any)?.retainage_percent ?? null,
       retainage_amount_cents: sourceContext?.retainageAmountCents ?? (existing.metadata as any)?.retainage_amount_cents ?? null,
-      qbo_income_account_id: input.qbo_income_account_id ?? (existing.metadata as any)?.qbo_income_account_id ?? null,
-      qbo_income_account_name: input.qbo_income_account_name ?? (existing.metadata as any)?.qbo_income_account_name ?? null,
+      qbo_income_account_id: input.qbo_income_account_id ?? null,
+      qbo_income_account_name: input.qbo_income_account_name ?? null,
     },
     sent_at: sentAt,
     sent_to_emails: sentTo,
@@ -1140,6 +1201,146 @@ export async function updateInvoice({
   }
 
   return mapInvoiceRow(data as InvoiceRow)
+}
+
+async function assertInvoiceHasNoPayments(params: { supabase: SupabaseClient; orgId: string; invoiceId: string }) {
+  const { supabase, orgId, invoiceId } = params
+  const { count, error } = await supabase
+    .from("payments")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+    .neq("status", "failed")
+
+  if (error) {
+    throw new Error(`Failed to check invoice payments: ${error.message}`)
+  }
+  if ((count ?? 0) > 0) {
+    throw new Error("Invoices with recorded payments cannot be deleted or voided.")
+  }
+}
+
+export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, project_id, invoice_number, status, metadata, qbo_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+
+  if (error || !existing) {
+    throw new Error(error?.message ?? "Invoice not found")
+  }
+  if (existing.status === "void") {
+    return mapInvoiceRow(existing as InvoiceRow)
+  }
+  if (existing.status === "paid" || existing.status === "partial") {
+    throw new Error("Paid or partially paid invoices cannot be voided.")
+  }
+
+  await assertInvoiceHasNoPayments({ supabase, orgId: resolvedOrgId, invoiceId })
+  await releaseInvoiceSourceLinks({
+    supabase,
+    orgId: resolvedOrgId,
+    invoiceId,
+    metadata: (existing.metadata as Record<string, any> | null) ?? null,
+  })
+
+  const nextMetadata = {
+    ...((existing.metadata as Record<string, any> | null) ?? {}),
+    voided_at: new Date().toISOString(),
+    voided_by: userId,
+  }
+  const { data, error: updateError } = await supabase
+    .from("invoices")
+    .update({
+      status: "void",
+      client_visible: false,
+      balance_due_cents: 0,
+      metadata: nextMetadata,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .select(
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+    )
+    .single()
+
+  if (updateError || !data) {
+    throw new Error(`Failed to void invoice: ${updateError?.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "invoice_voided",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: { invoice_number: existing.invoice_number, project_id: existing.project_id },
+  })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: existing,
+    after: data,
+  })
+
+  return mapInvoiceRow(data as InvoiceRow)
+}
+
+export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, project_id, invoice_number, status, client_visible, sent_at, metadata, qbo_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+
+  if (error || !existing) {
+    throw new Error(error?.message ?? "Invoice not found")
+  }
+  if (!["draft", "saved"].includes(existing.status) || existing.client_visible || existing.sent_at || existing.qbo_id) {
+    throw new Error("Only unsent draft or saved invoices can be deleted. Void sent or synced invoices instead.")
+  }
+
+  await assertInvoiceHasNoPayments({ supabase, orgId: resolvedOrgId, invoiceId })
+  await releaseInvoiceSourceLinks({
+    supabase,
+    orgId: resolvedOrgId,
+    invoiceId,
+    metadata: (existing.metadata as Record<string, any> | null) ?? null,
+  })
+
+  await supabase.from("invoice_lines").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
+  await supabase.from("qbo_sync_records").delete().eq("org_id", resolvedOrgId).eq("entity_type", "invoice").eq("entity_id", invoiceId)
+  await supabase.from("invoice_views").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
+
+  const { error: deleteError } = await supabase.from("invoices").delete().eq("org_id", resolvedOrgId).eq("id", invoiceId)
+  if (deleteError) {
+    throw new Error(`Failed to delete invoice: ${deleteError.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "invoice_deleted",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: { invoice_number: existing.invoice_number, project_id: existing.project_id },
+  })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: existing,
+  })
+
+  return { projectId: existing.project_id as string | null }
 }
 
 export async function getInvoiceForPortal(invoiceId: string, orgId: string, projectId: string) {
@@ -1308,7 +1509,7 @@ async function sendInvoiceEmail({
       .eq("id", invoiceId)
       .eq("org_id", orgId)
       .maybeSingle(),
-    supabase.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle(),
+    supabase.from("orgs").select("name, logo_url, slug").eq("id", orgId).maybeSingle(),
   ])
 
   if (error || !invoice) {
@@ -1363,6 +1564,7 @@ async function sendInvoiceEmail({
     to: uniqueRecipients,
     subject,
     html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
   })
 
   const mergedRecipients = Array.from(new Set([...(invoice.sent_to_emails ?? []), ...uniqueRecipients]))

@@ -5,7 +5,7 @@ import { createHash, randomBytes, randomUUID } from "crypto"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
-import { sendEmail } from "@/lib/services/mailer"
+import { sendEmail, getOrgSenderEmail, renderStandardEmailLayout } from "@/lib/services/mailer"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { enqueueProjectExpenseSync } from "@/lib/services/qbo-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -133,7 +133,7 @@ function addDays(dateText: string, days: number) {
   return date.toISOString().slice(0, 10)
 }
 
-function calculateMarkupCents(costCents: number, percent: number) {
+export function calculateMarkupCents(costCents: number, percent: number) {
   return Math.round((costCents * percent) / 100)
 }
 
@@ -295,7 +295,7 @@ async function requireProjectFinancialAccess({
   })
 }
 
-async function getProjectCostContract(supabase: SupabaseClient, orgId: string, projectId: string) {
+export async function getProjectCostContract(supabase: SupabaseClient, orgId: string, projectId: string) {
   const { data, error } = await supabase
     .from("contracts")
     .select("id, contract_type, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, snapshot")
@@ -939,12 +939,15 @@ export async function createTimeEntryApprovalLink(timeEntryId: string, orgId?: s
 
 export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: entry, error } = await supabase
-    .from("time_entries")
-    .select("id, project_id, worker_name, work_date, hours, notes, cost_cents, project:projects(name)")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .maybeSingle()
+  const [{ data: entry, error }, { data: org }] = await Promise.all([
+    supabase
+      .from("time_entries")
+      .select("id, project_id, worker_name, work_date, hours, notes, cost_cents, project:projects(name)")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", timeEntryId)
+      .maybeSingle(),
+    supabase.from("orgs").select("name, logo_url, slug").eq("id", resolvedOrgId).maybeSingle(),
+  ])
 
   if (error || !entry) throw new Error("Time entry not found")
   await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: entry.project_id, permission: "bill.approve" })
@@ -969,20 +972,41 @@ export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgI
 
   const projectName = Array.isArray((entry as any).project) ? (entry as any).project[0]?.name : (entry as any).project?.name
   const amount = `$${(Number(entry.cost_cents ?? 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  
+  const title = `Time Entry Approval Requested`
+  const messageHtml = `
+    <p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6; color: #2f2f2f;">${contact?.full_name ? `Hi ${contact.full_name},` : "Hi,"}</p>
+    <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6; color: #2f2f2f;">A time entry is ready for your approval.</p>
+    
+    <div style="margin-top: 16px; padding: 14px 16px; border: 1px solid #e1e1e1; background-color: #fafafa;">
+      <p style="margin: 0 0 8px 0; color: #424242; font-size: 13px; line-height: 1.5;"><span style="color: #6a6a6a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;">Project:</span> <span style="color: #111111; font-weight: 600;">${projectName ?? "Project"}</span></p>
+      <p style="margin: 0 0 8px 0; color: #424242; font-size: 13px; line-height: 1.5;"><span style="color: #6a6a6a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;">Worker:</span> <span style="color: #111111; font-weight: 600;">${entry.worker_name ?? "Crew time"}</span></p>
+      <p style="margin: 0 0 8px 0; color: #424242; font-size: 13px; line-height: 1.5;"><span style="color: #6a6a6a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;">Date:</span> <span style="color: #111111; font-weight: 600;">${entry.work_date}</span></p>
+      <p style="margin: 0 0 8px 0; color: #424242; font-size: 13px; line-height: 1.5;"><span style="color: #6a6a6a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;">Hours:</span> <span style="color: #111111; font-weight: 600;">${Number(entry.hours ?? 0).toFixed(2)}</span></p>
+      <p style="margin: 0; color: #424242; font-size: 13px; line-height: 1.5;"><span style="color: #6a6a6a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;">Cost:</span> <span style="color: #111111; font-weight: 700;">${amount}</span></p>
+    </div>
+    
+    ${entry.notes ? `
+      <div style="margin-top: 16px; padding: 16px; border: 1px solid #e1e1e1; background-color: #ffffff;">
+        <p style="margin: 0 0 8px 0; color: #626262; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;">Notes</p>
+        <p style="margin: 0; color: #222222; font-size: 13px; line-height: 1.6; white-space: pre-wrap;">${entry.notes}</p>
+      </div>
+    ` : ""}
+  `
+  const html = renderStandardEmailLayout({
+    title,
+    messageHtml,
+    buttonText: "Approve Time Entry",
+    buttonUrl: approval.url,
+    orgName: org?.name ?? "Arc",
+    orgLogoUrl: org?.logo_url ?? null,
+  })
+
   const sent = await sendEmail({
     to: [recipientEmail],
     subject: `Approval needed: ${Number(entry.hours ?? 0).toFixed(2)} hours on ${projectName ?? "your project"}`,
-    html: `
-      <p>${contact?.full_name ? `Hi ${contact.full_name},` : "Hi,"}</p>
-      <p>A time entry is ready for your approval.</p>
-      <p><strong>Project:</strong> ${projectName ?? "Project"}<br/>
-      <strong>Worker:</strong> ${entry.worker_name ?? "Crew time"}<br/>
-      <strong>Date:</strong> ${entry.work_date}<br/>
-      <strong>Hours:</strong> ${Number(entry.hours ?? 0).toFixed(2)}<br/>
-      <strong>Cost:</strong> ${amount}</p>
-      ${entry.notes ? `<p>${entry.notes}</p>` : ""}
-      <p><a href="${approval.url}">Approve time entry</a></p>
-    `,
+    html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
   })
 
   await recordEvent({
@@ -1063,6 +1087,8 @@ export async function createProjectExpense(input: ProjectExpenseInput, orgId?: s
     qbo_payment_account_name: parsed.qboPaymentAccountName ?? null,
     qbo_ap_account_id: parsed.qboApAccountId ?? null,
     qbo_ap_account_name: parsed.qboApAccountName ?? null,
+    qbo_vendor_id: parsed.qboVendorId ?? null,
+    qbo_vendor_name: parsed.qboVendorName ?? null,
     submitted_by_user_id: userId,
     status: "submitted",
   }

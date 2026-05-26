@@ -40,7 +40,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ProjectAvatar } from "@/components/ui/project-avatar"
 
 import { PortalLinkCreator } from "@/components/sharing/portal-link-creator"
-import { PortalInvitePanel } from "@/components/sharing/portal-invite-panel"
 import { AccessTokenList } from "@/components/sharing/access-token-list"
 import { PortalAccountList } from "@/components/sharing/portal-account-list"
 import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
@@ -332,19 +331,19 @@ export function ProjectOverviewActions({
               <SheetContent
                 side="right"
                 mobileFullscreen
-                className="sm:max-w-md sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 overflow-hidden fast-sheet-animation"
+                className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 overflow-hidden fast-sheet-animation"
               >
                 <div className="flex h-full min-h-0 flex-col">
-                  <div className="border-b px-4 py-3 sm:px-5 sm:py-4">
+                  <div className="border-b px-4 py-3.5 sm:px-5 sm:py-4 bg-muted/10">
                     <SheetHeader className="text-left">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center bg-primary/10 rounded-lg">
-                          <Link2 className="h-4 w-4 text-primary" />
+                        <div className="flex h-9 w-9 items-center justify-center bg-primary/10 rounded-xl border border-primary/20">
+                          <Share2 className="h-4 w-4 text-primary" />
                         </div>
                         <div>
-                          <SheetTitle className="text-base font-semibold">Invite people into the project</SheetTitle>
-                          <SheetDescription className="text-xs text-muted-foreground">
-                            Email a secure project invite first. Direct links remain available below when you need them.
+                          <SheetTitle className="text-sm font-bold tracking-tight text-foreground">Share Project Access</SheetTitle>
+                          <SheetDescription className="text-[11px] text-muted-foreground leading-normal mt-0.5">
+                            Securely invite homeowners and subcontractors via email or direct shareable links.
                           </SheetDescription>
                         </div>
                       </div>
@@ -353,27 +352,12 @@ export function ProjectOverviewActions({
 
                   <ScrollArea className="flex-1 min-h-0 overflow-x-hidden">
                     <div className="space-y-4 p-4 sm:p-5 overflow-hidden">
-                      <div className="border bg-card p-4 rounded-lg">
-                        <PortalInvitePanel
+                      <div className="border bg-card p-5 rounded-none shadow-sm">
+                        <PortalLinkCreator
+                          projectId={project.id}
                           project={project}
                           contacts={contacts}
                           projectVendors={projectVendors}
-                          onInviteSent={handleTokenCreated}
-                        />
-                      </div>
-
-                      <div className="border bg-card p-4 rounded-lg">
-                        <div className="mb-4 flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium">Direct links</p>
-                            <p className="text-xs text-muted-foreground">
-                              Secondary path for manual sharing, troubleshooting, or special cases.
-                            </p>
-                          </div>
-                          <Badge variant="outline">Advanced</Badge>
-                        </div>
-                        <PortalLinkCreator
-                          projectId={project.id}
                           onCreated={handleTokenCreated}
                           enabled={sharingSheetOpen}
                         />
@@ -475,17 +459,7 @@ export function ProjectOverviewActions({
                   <Link2 className="mr-2 h-4 w-4" />
                   Setup wizard
                 </DropdownMenuItem>
-                {contract && (
-                  <DropdownMenuItem
-                    onSelect={(e) => {
-                      e.preventDefault()
-                      setContractSheetOpen(true)
-                    }}
-                  >
-                    <ShieldCheck className="mr-2 h-4 w-4" />
-                    View contract
-                  </DropdownMenuItem>
-                )}
+
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive">Archive project</DropdownMenuItem>
               </DropdownMenuContent>

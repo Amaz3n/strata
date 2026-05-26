@@ -78,6 +78,7 @@ export function PortalPublicClient({
       orgName={data.org.name}
       project={data.project}
       workspace={workspace}
+      logoUrl={data.org.logo_url}
       isMobile={isMobile}
       activeTab={activeTab as any}
       onTabChange={setActiveTab as any}

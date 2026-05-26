@@ -10,7 +10,9 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
@@ -23,6 +25,7 @@ import {
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 import { generateInvoicePdfAction } from "@/app/(app)/invoices/actions"
+import { recordPaymentAction } from "@/app/(app)/payments/actions"
 import { toast } from "sonner"
 
 type Props = {
@@ -38,6 +41,7 @@ type Props = {
   onManualResync?: () => Promise<void>
   manualResyncing?: boolean
   onEdit?: () => void
+  onPaymentRecorded?: () => Promise<void> | void
 }
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -107,10 +111,16 @@ export function InvoiceDetailSheet({
   onManualResync,
   manualResyncing,
   onEdit,
+  onPaymentRecorded,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false)
+  const [paymentAmount, setPaymentAmount] = useState("")
+  const [paymentMethod, setPaymentMethod] = useState<"ach" | "card" | "wire" | "check">("ach")
+  const [paymentReference, setPaymentReference] = useState("")
+  const [recordingPayment, setRecordingPayment] = useState(false)
 
   useEffect(() => {
     if (!open || !invoice?.id) return
@@ -220,6 +230,8 @@ export function InvoiceDetailSheet({
   const subtotal = invoice?.totals?.subtotal_cents ?? invoice?.subtotal_cents ?? 0
   const tax = invoice?.totals?.tax_cents ?? invoice?.tax_cents ?? 0
   const total = invoice?.totals?.total_cents ?? invoice?.total_cents ?? subtotal + tax
+  const balanceDue = invoice?.balance_due_cents ?? invoice?.totals?.balance_due_cents ?? total
+  const canRecordPayment = Boolean(invoice?.id && !["paid", "void"].includes(String(invoice?.status ?? "")) && balanceDue > 0)
   const metadata = (invoice?.metadata as Record<string, any>) ?? {}
   const sentToArray = invoice?.sent_to_emails ?? (metadata.sent_to ?? metadata.sentTo ?? []) ?? []
   const customerName = (invoice?.customer_name as string | undefined) ?? metadata.customer_name ?? sentToArray?.[0] ?? "Customer"
@@ -269,6 +281,50 @@ export function InvoiceDetailSheet({
     }
   }
 
+  const openRecordPaymentDialog = () => {
+    setPaymentAmount(((balanceDue ?? 0) / 100).toFixed(2))
+    setPaymentMethod("ach")
+    setPaymentReference("")
+    setPaymentDialogOpen(true)
+  }
+
+  const handleRecordPayment = async () => {
+    if (!invoice?.id) return
+    const amountCents = Math.round(Number(paymentAmount) * 100)
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      toast.error("Enter a payment amount")
+      return
+    }
+    if (amountCents > balanceDue) {
+      toast.error("Payment is greater than the balance due")
+      return
+    }
+
+    setRecordingPayment(true)
+    try {
+      await recordPaymentAction({
+        invoice_id: invoice.id,
+        provider: "manual",
+        provider_payment_id: `manual:${invoice.id}:${Date.now()}`,
+        amount_cents: amountCents,
+        currency: "usd",
+        method: paymentMethod,
+        status: "succeeded",
+        reference: paymentReference.trim() || undefined,
+        metadata: {
+          source: "arc_manual_invoice_payment",
+        },
+      })
+      toast.success(amountCents >= balanceDue ? "Invoice marked paid" : "Payment recorded")
+      setPaymentDialogOpen(false)
+      await onPaymentRecorded?.()
+    } catch (error: any) {
+      toast.error("Could not record payment", { description: error?.message ?? "Please try again." })
+    } finally {
+      setRecordingPayment(false)
+    }
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       {trigger ? <SheetTrigger asChild>{trigger}</SheetTrigger> : null}
@@ -308,8 +364,15 @@ export function InvoiceDetailSheet({
                 <div className="flex flex-col gap-4">
                   <span className="text-4xl font-semibold leading-none select-text">{formatMoneyFromCents(total)}</span>
                   <div className="grid grid-cols-2 gap-3">
-                    <Button type="button" variant="secondary" size="sm" className="w-full justify-center">
-                      Remind
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="w-full justify-center"
+                      onClick={openRecordPaymentDialog}
+                      disabled={!canRecordPayment}
+                    >
+                      Mark paid
                     </Button>
                     <Button
                       type="button"
@@ -367,6 +430,10 @@ export function InvoiceDetailSheet({
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>Sent to</span>
               <span className="text-foreground">{sentToValue ?? "—"}</span>
+            </div>
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
+              <span>Balance due</span>
+              <span className="text-foreground">{formatMoneyFromCents(balanceDue)}</span>
             </div>
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>Invoice no.</span>
@@ -503,6 +570,60 @@ export function InvoiceDetailSheet({
             </Accordion>
           )}
         </div>
+        <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Record payment</DialogTitle>
+              <DialogDescription>
+                Add a manual payment for {invoice?.invoice_number ?? "this invoice"}. This updates the Arc balance and queues the payment for QuickBooks sync.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="invoice-payment-amount">Amount</label>
+                <Input
+                  id="invoice-payment-amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={paymentAmount}
+                  onChange={(event) => setPaymentAmount(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Method</label>
+                <Select value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as typeof paymentMethod)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ach">ACH</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="wire">Wire</SelectItem>
+                    <SelectItem value="check">Check</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="invoice-payment-reference">Reference</label>
+                <Input
+                  id="invoice-payment-reference"
+                  value={paymentReference}
+                  onChange={(event) => setPaymentReference(event.target.value)}
+                  placeholder="Check number, note, or QBO payment ref"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setPaymentDialogOpen(false)} disabled={recordingPayment}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleRecordPayment} disabled={recordingPayment}>
+                {recordingPayment ? "Recording..." : "Record payment"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </SheetContent>
     </Sheet>
   )

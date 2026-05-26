@@ -32,6 +32,7 @@ export default async function InvoicePortalPage({ params }: Params) {
         clientSecret: string
         publishableKey: string
         token: string
+        connectedAccountId?: string | null
       }
     | null = null
 
@@ -51,6 +52,7 @@ export default async function InvoicePortalPage({ params }: Params) {
           clientSecret: intent.client_secret,
           publishableKey,
           token,
+          connectedAccountId: intent.connected_account_id ?? null,
         }
       }
     } catch (err) {

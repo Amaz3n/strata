@@ -25,7 +25,6 @@ export interface CreateStripeIntentParams {
   customer_id?: string
   connected_account_id?: string
   application_fee_amount?: number
-  on_behalf_of_account_id?: string
   payment_method_types?: string[]
   metadata?: Record<string, string>
 }
@@ -46,6 +45,8 @@ export interface StripeConnectedAccountResult {
   default_currency: string | null
   dashboard_type: string | null
   requirement_collection: string | null
+  fees_payer: string | null
+  losses_payments: string | null
   disabled_reason: string | null
   requirements_currently_due: string[]
   requirements_eventually_due: string[]
@@ -53,7 +54,12 @@ export interface StripeConnectedAccountResult {
 
 function mapStripeConnectedAccount(account: Stripe.Account): StripeConnectedAccountResult {
   const controller = ((account as Stripe.Account & { controller?: unknown }).controller ?? null) as
-    | { stripe_dashboard?: { type?: string | null }; requirement_collection?: string | null }
+    | {
+        fees?: { payer?: string | null }
+        losses?: { payments?: string | null }
+        stripe_dashboard?: { type?: string | null }
+        requirement_collection?: string | null
+      }
     | null
   const requirements = account.requirements ?? null
   const requirementsCurrentlyDue = requirements?.currently_due ?? []
@@ -76,6 +82,8 @@ function mapStripeConnectedAccount(account: Stripe.Account): StripeConnectedAcco
     default_currency: account.default_currency ?? null,
     dashboard_type: typeof controller?.stripe_dashboard?.type === "string" ? controller.stripe_dashboard.type : null,
     requirement_collection: typeof controller?.requirement_collection === "string" ? controller.requirement_collection : null,
+    fees_payer: typeof controller?.fees?.payer === "string" ? controller.fees.payer : null,
+    losses_payments: typeof controller?.losses?.payments === "string" ? controller.losses.payments : null,
     disabled_reason: requirements?.disabled_reason ?? null,
     requirements_currently_due: Array.isArray(requirementsCurrentlyDue) ? requirementsCurrentlyDue : [],
     requirements_eventually_due: Array.isArray(requirementsEventuallyDue) ? requirementsEventuallyDue : [],
@@ -85,35 +93,33 @@ function mapStripeConnectedAccount(account: Stripe.Account): StripeConnectedAcco
 export async function createStripePaymentIntent(params: CreateStripeIntentParams): Promise<StripeIntentResult> {
   const paymentMethodTypes = params.payment_method_types ?? ["us_bank_account", "card"]
 
-  const intent = await getStripe().paymentIntents.create({
-    amount: params.amount_cents,
-    currency: params.currency,
-    payment_method_types: paymentMethodTypes,
-    description: params.description,
-    customer: params.customer_id,
-    metadata: {
-      org_id: params.org_id,
-      project_id: params.project_id ?? "",
-      invoice_id: params.invoice_id,
-      connected_account_id: params.connected_account_id ?? "",
-      ...params.metadata,
-    },
-    application_fee_amount: params.application_fee_amount,
-    transfer_data: params.connected_account_id
-      ? {
-          destination: params.connected_account_id,
-        }
-      : undefined,
-    on_behalf_of: params.on_behalf_of_account_id ?? undefined,
-    payment_method_options: {
-      us_bank_account: {
-        financial_connections: {
-          permissions: ["payment_method", "balances"],
+  const intent = await getStripe().paymentIntents.create(
+    {
+      amount: params.amount_cents,
+      currency: params.currency,
+      payment_method_types: paymentMethodTypes,
+      description: params.description,
+      customer: params.customer_id,
+      metadata: {
+        org_id: params.org_id,
+        project_id: params.project_id ?? "",
+        invoice_id: params.invoice_id,
+        connected_account_id: params.connected_account_id ?? "",
+        charge_type: params.connected_account_id ? "direct" : "platform",
+        ...params.metadata,
+      },
+      application_fee_amount: params.application_fee_amount && params.application_fee_amount > 0 ? params.application_fee_amount : undefined,
+      payment_method_options: {
+        us_bank_account: {
+          financial_connections: {
+            permissions: ["payment_method", "balances"],
+          },
+          verification_method: "instant",
         },
-        verification_method: "instant",
       },
     },
-  })
+    params.connected_account_id ? { stripeAccount: params.connected_account_id } : undefined,
+  )
 
   return {
     provider_intent_id: intent.id,
@@ -146,9 +152,10 @@ export async function createStripeConnectedAccount(params: {
     email: params.email ?? undefined,
     business_profile: params.businessName ? { name: params.businessName } : undefined,
     controller: {
-      fees: { payer: "application" },
-      losses: { payments: "application" },
-      stripe_dashboard: { type: "express" },
+      fees: { payer: "account" },
+      losses: { payments: "stripe" },
+      requirement_collection: "stripe",
+      stripe_dashboard: { type: "full" },
     } as Stripe.AccountCreateParams.Controller,
     capabilities: {
       card_payments: { requested: true },
@@ -185,10 +192,14 @@ export async function createStripeDashboardLoginLink(accountId: string) {
   return getStripe().accounts.createLoginLink(accountId)
 }
 
-export async function retrieveStripeChargeWithBalanceTransaction(chargeId: string) {
-  return getStripe().charges.retrieve(chargeId, {
-    expand: ["balance_transaction"],
-  })
+export async function retrieveStripeChargeWithBalanceTransaction(chargeId: string, connectedAccountId?: string | null) {
+  return getStripe().charges.retrieve(
+    chargeId,
+    {
+      expand: ["balance_transaction"],
+    },
+    connectedAccountId ? { stripeAccount: connectedAccountId } : undefined,
+  )
 }
 
 export async function attachPaymentMethod(customerId: string, paymentMethodId: string) {
@@ -242,14 +253,13 @@ export function mapStripeEventToDomain(event: Stripe.Event) {
     case "payment_intent.succeeded": {
       const intent = event.data.object as Stripe.PaymentIntent
       const invoiceBalanceCents = Number.parseInt(intent.metadata.invoice_balance_cents ?? "", 10)
-      const paymentMethodFeeCents = Number.parseInt(intent.metadata.payment_method_fee_cents ?? "", 10)
       return {
         type: "payment_succeeded" as const,
         provider_payment_id: intent.id,
         amount_cents: Number.isFinite(invoiceBalanceCents) && invoiceBalanceCents > 0 ? invoiceBalanceCents : intent.amount,
         currency: intent.currency,
         method: mapPaymentMethodType(intent.metadata.payment_method_choice ?? intent.payment_method_types?.[0] ?? "ach"),
-        fee_cents: Number.isFinite(paymentMethodFeeCents) && paymentMethodFeeCents > 0 ? paymentMethodFeeCents : 0,
+        fee_cents: 0,
         metadata: intent.metadata,
         invoice_id: intent.metadata.invoice_id,
         org_id: intent.metadata.org_id,

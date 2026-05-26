@@ -27,7 +27,9 @@ import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { sendEmail } from "@/lib/services/mailer"
+import { renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { SignatureEmail } from "@/lib/emails/signature-email"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   buildOrgScopedPath,
   createFilesUploadUrl,
@@ -161,25 +163,38 @@ async function issueSigningLinkForRequest(
 }
 
 async function sendSignerRequestEmail(input: {
+  orgId: string
   toEmail: string
   documentTitle: string
   signingUrl: string
   recipientName?: string
   isReminder?: boolean
 }) {
-  const greeting = input.recipientName?.trim() ? `Hi ${input.recipientName.trim()},` : "Hello,"
+  const supabase = createServiceSupabaseClient()
+  const { data: org } = await supabase.from("orgs").select("name, logo_url").eq("id", input.orgId).maybeSingle()
   const subject = input.isReminder ? `Reminder: Signature requested - ${input.documentTitle}` : `Signature requested: ${input.documentTitle}`
+  const html = await renderEmailTemplate(
+    SignatureEmail({
+      documentTitle: input.documentTitle,
+      signingLink: input.signingUrl,
+      recipientName: input.recipientName,
+      orgName: org?.name ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+      eventLabel: input.isReminder ? "Signature Reminder" : "Signature Request",
+      headline: input.isReminder ? "Signature still needed" : "Document ready for signature",
+      bodyText: input.isReminder
+        ? "This is a reminder that your signature is still needed."
+        : "You have a document ready for signature.",
+      detailLabel: "Signature",
+      detailText: "Open the document to review all pages, complete required fields, and sign electronically.",
+      buttonText: "Review and Sign",
+    }),
+  )
 
   await sendEmail({
     to: [input.toEmail],
     subject,
-    html: `
-      <p>${greeting}</p>
-      <p>${input.isReminder ? "This is a reminder that your signature is still needed." : "You have a document ready for signature."}</p>
-      <p><a href="${input.signingUrl}">Review and sign document</a></p>
-      <p>If the button does not work, copy this link:</p>
-      <p>${input.signingUrl}</p>
-    `,
+    html,
   })
 }
 
@@ -987,6 +1002,7 @@ export async function sendDocumentEnvelopeAction(input: {
       })
 
       await sendSignerRequestEmail({
+        orgId,
         toEmail: request.sent_to_email as string,
         documentTitle: document.title,
         signingUrl: link.url,
@@ -1315,6 +1331,7 @@ export async function sendDocumentSigningReminderAction(signingRequestId: string
   })
 
   await sendSignerRequestEmail({
+    orgId,
     toEmail: request.sent_to_email,
     documentTitle: document.title,
     signingUrl: link.url,
@@ -2183,6 +2200,7 @@ export async function resendEnvelopeAction(input: { envelopeId: string }) {
       })
 
       await sendSignerRequestEmail({
+        orgId,
         toEmail: request.sent_to_email as string,
         documentTitle: sourceDocument?.title ?? "Document",
         signingUrl: link.url,

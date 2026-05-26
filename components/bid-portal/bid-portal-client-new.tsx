@@ -99,6 +99,7 @@ export function BidPortalClientNew({ token, access, data, pinRequired = false, w
       orgName={access.org.name}
       project={project}
       workspace={workspace}
+      logoUrl={access.org.logo_url}
       isMobile={isMobile}
       activeTab={activeTab}
       onTabChange={setActiveTab}

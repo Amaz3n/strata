@@ -222,7 +222,7 @@ export async function sendFirstPasswordSetupAction(emailInput: string): Promise<
 
     const { data: membership, error: membershipError } = await serviceClient
       .from("memberships")
-      .select("id, org_id, org:orgs(name, logo_url)")
+      .select("id, org_id, org:orgs(name, logo_url, slug)")
       .eq("user_id", userRow.id)
       .eq("status", "invited")
       .order("created_at", { ascending: true })
@@ -256,6 +256,7 @@ export async function sendFirstPasswordSetupAction(emailInput: string): Promise<
       inviteLink: `${getSiteUrl()}/auth/accept-invite?token=${inviteToken}`,
       orgName: org?.name ?? null,
       orgLogoUrl: org?.logo_url ?? null,
+      orgSlug: org?.slug ?? null,
     })
 
     return { message: "Check your email for a secure setup link." }
@@ -427,6 +428,7 @@ export async function requestPasswordResetAction(_prevState: AuthState, formData
       resetLink: resetUrl,
       orgName: orgBrand.name,
       orgLogoUrl: orgBrand.logoUrl,
+      orgSlug: orgBrand.orgSlug,
     })
   } catch (error) {
     console.error("Failed to send password reset email", error)
@@ -603,7 +605,7 @@ function getSiteUrl() {
 }
 
 async function resolveOrgBrandForEmail(serviceClient: ReturnType<typeof createServiceSupabaseClient>, email: string) {
-  const fallback = { name: "Arc" as string | null, logoUrl: null as string | null }
+  const fallback = { name: "Arc" as string | null, logoUrl: null as string | null, orgSlug: null as string | null }
 
   const { data: userRow, error: userError } = await serviceClient
     .from("app_users")
@@ -622,7 +624,7 @@ async function resolveOrgBrandForEmail(serviceClient: ReturnType<typeof createSe
 
   const { data: membershipRow, error: membershipError } = await serviceClient
     .from("memberships")
-    .select("org:orgs(name, logo_url)")
+    .select("org:orgs(name, logo_url, slug)")
     .eq("user_id", userRow.id)
     .in("status", ["active", "invited"])
     .order("created_at", { ascending: true })
@@ -635,8 +637,8 @@ async function resolveOrgBrandForEmail(serviceClient: ReturnType<typeof createSe
   }
 
   const rawOrg = membershipRow?.org as
-    | { name?: string | null; logo_url?: string | null }
-    | Array<{ name?: string | null; logo_url?: string | null }>
+    | { name?: string | null; logo_url?: string | null; slug?: string | null }
+    | Array<{ name?: string | null; logo_url?: string | null; slug?: string | null }>
     | null
   const org = Array.isArray(rawOrg) ? (rawOrg[0] ?? null) : rawOrg
   if (!org) {
@@ -646,5 +648,6 @@ async function resolveOrgBrandForEmail(serviceClient: ReturnType<typeof createSe
   return {
     name: org.name ?? "Arc",
     logoUrl: org.logo_url ?? null,
+    orgSlug: org.slug ?? null,
   }
 }

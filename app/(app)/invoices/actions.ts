@@ -3,13 +3,23 @@
 import { revalidatePath } from "next/cache"
 import sharp from "sharp"
 
-import { createInvoice, ensureInvoiceToken, getInvoiceWithLines, listInvoiceViews, listInvoices, updateInvoice } from "@/lib/services/invoices"
+import {
+  createInvoice,
+  deleteInvoice,
+  ensureInvoiceToken,
+  getInvoiceWithLines,
+  listInvoiceViews,
+  listInvoices,
+  updateInvoice,
+  voidInvoice,
+} from "@/lib/services/invoices"
 import { forceSyncInvoiceToQBO, retryFailedQBOSyncJobs, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
+import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents } from "@/lib/services/cost-plus"
 import { renderInvoicePdf } from "@/lib/pdfs/invoice"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { createFileRecord } from "@/lib/services/files"
@@ -246,6 +256,26 @@ export async function updateInvoiceAction(invoiceId: string, input: unknown) {
   return invoice
 }
 
+export async function voidInvoiceAction(invoiceId: string) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+  const invoice = await voidInvoice({ invoiceId })
+  revalidatePath("/invoices")
+  if (invoice.project_id) {
+    revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+  }
+  return invoice
+}
+
+export async function deleteInvoiceAction(invoiceId: string) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+  const result = await deleteInvoice({ invoiceId })
+  revalidatePath("/invoices")
+  if (result.projectId) {
+    revalidatePath(`/projects/${result.projectId}/financials/receivables`)
+  }
+  return { success: true }
+}
+
 export async function generateInvoiceLinkAction(invoiceId: string) {
   if (!invoiceId) {
     throw new Error("Invoice id is required")
@@ -360,7 +390,7 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
     daysOverdue = Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
   }
 
-  const { data: org } = await supabase.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle()
+  const { data: org } = await supabase.from("orgs").select("name, logo_url, slug").eq("id", orgId).maybeSingle()
 
   await sendReminderEmail({
     to: recipientEmail,
@@ -372,6 +402,7 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
     payLink,
     orgName: org?.name ?? null,
     orgLogoUrl: org?.logo_url ?? null,
+    orgSlug: org?.slug ?? null,
   })
 
   return { success: true }
@@ -408,12 +439,28 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
     }
   }
 
+  let billedChangeOrderIds = new Set<string>()
+  if (projectId) {
+    const { data: invoiceRows } = await supabase
+      .from("invoices")
+      .select("status, metadata")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .neq("status", "void")
+
+    billedChangeOrderIds = new Set(
+      (invoiceRows ?? [])
+        .map((row: any) => (row.metadata as Record<string, any> | null)?.source_change_order_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    )
+  }
+
   const changeOrders = projectId
     ? await listChangeOrders({ orgId, projectId })
         .then((rows) =>
           rows.filter((co) => {
             const status = String(co.status ?? "").toLowerCase()
-            return status === "approved" || status === "pending"
+            return (status === "approved" || status === "pending") && !billedChangeOrderIds.has(co.id)
           }),
         )
         .catch(() => [])
@@ -486,6 +533,54 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
       defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
     },
   }
+}
+
+/**
+ * Unbilled, billable costs for a cost-plus / T&M project — feeds the invoice composer's
+ * "Add from → Unbilled costs" picker. Only status "open", billable, and not yet on an invoice.
+ */
+export async function listUnbilledCostsAction(projectId: string) {
+  if (!projectId) return { costs: [] }
+  const { supabase, orgId } = await requireOrgContext()
+  const contract = await getProjectCostContract(supabase, orgId, projectId)
+  const data = await listCostPlusTabData(projectId, orgId)
+  
+  const costs = []
+  for (const cost of data.billableCosts ?? []) {
+    if (cost.status !== "open" || !cost.is_billable || cost.invoice_id) continue
+
+    let resolvedMarkupPercent = cost.markup_percent_resolved
+    let resolvedMarkupCents = cost.markup_cents
+    let resolvedBillableCents = cost.billable_cents
+
+    if (contract) {
+      const markup = await resolveMarkupPercent({
+        supabase,
+        orgId,
+        contractId: contract.id,
+        costCodeId: cost.cost_code_id,
+        occurredOn: new Date(cost.occurred_on),
+      })
+      resolvedMarkupPercent = markup.percent
+      resolvedMarkupCents = calculateMarkupCents(cost.cost_cents, markup.percent)
+      resolvedBillableCents = cost.cost_cents + resolvedMarkupCents
+    }
+
+    costs.push({
+      id: cost.id,
+      occurredOn: cost.occurred_on,
+      description: cost.description ?? "",
+      sourceType: cost.source_type,
+      costCodeId: cost.cost_code_id,
+      costCode: cost.cost_code_code,
+      costCodeName: cost.cost_code_name,
+      costCents: cost.cost_cents,
+      markupCents: resolvedMarkupCents,
+      markupPercent: resolvedMarkupPercent,
+      billableCents: resolvedBillableCents,
+    })
+  }
+  return { costs }
 }
 
 export async function generateInvoicePdfAction(

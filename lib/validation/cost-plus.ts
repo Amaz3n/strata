@@ -50,6 +50,8 @@ export const projectExpenseInputSchema = z.object({
   qboPaymentAccountName: z.string().max(255).optional().nullable(),
   qboApAccountId: z.string().max(80).optional().nullable(),
   qboApAccountName: z.string().max(255).optional().nullable(),
+  qboVendorId: z.string().max(80).optional().nullable(),
+  qboVendorName: z.string().max(255).optional().nullable(),
 })
 
 export const markupRuleInputSchema = z.object({

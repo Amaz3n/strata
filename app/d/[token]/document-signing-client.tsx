@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { submitDocumentSignatureAction } from "./actions"
 import { FieldNavigator } from "./components/field-navigator"
 import { PdfFieldViewer } from "./components/pdf-field-viewer"
+import { ReviewStep } from "./components/review-step"
 import { SignatureCapture } from "./components/signature-capture"
 import { SigningHeader } from "./components/signing-header"
 import { SuccessScreen } from "./components/success-screen"
@@ -24,9 +25,13 @@ interface DocumentSigningClientProps {
   fields: SigningField[]
   prefilledValues: Record<string, any>
   signerRole: string
+  signerEmail?: string | null
 }
 
-type SigningStep = "fields" | "success"
+type SigningStep = "fields" | "review" | "success"
+
+const ELECTRONIC_SIGNATURE_CONSENT_TEXT =
+  "I agree to use electronic records and signatures for this document, I can access and retain the document electronically, and I intend my electronic signature to be legally binding."
 
 function getTodayIsoDate() {
   return new Date().toISOString().split("T")[0]
@@ -39,6 +44,7 @@ export function DocumentSigningClient({
   fields,
   prefilledValues,
   signerRole,
+  signerEmail: initialSignerEmail,
 }: DocumentSigningClientProps) {
   const [PDFComponents, setPDFComponents] = useState<{ Document: any; Page: any } | null>(null)
   const [pageCount, setPageCount] = useState(0)
@@ -47,7 +53,8 @@ export function DocumentSigningClient({
   const [activeFieldId, setActiveFieldId] = useState<string | null>(null)
 
   const [signerName, setSignerName] = useState("")
-  const [signerEmail] = useState("")
+  const [signerEmail, setSignerEmail] = useState(initialSignerEmail ?? "")
+  const [consentChecked, setConsentChecked] = useState(false)
 
   const [values, setValues] = useState<Record<string, unknown>>(prefilledValues ?? {})
   const [adoptedSignature, setAdoptedSignature] = useState<string | null>(null)
@@ -268,9 +275,24 @@ export function DocumentSigningClient({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [goToNextField, goToPreviousField, step])
 
-  const handleSubmit = () => {
+  const handleFinishFields = () => {
     if (!allRequiredComplete) {
       toast.error("Complete all required fields before finishing")
+      return
+    }
+
+    setStep("review")
+  }
+
+  const handleSubmit = () => {
+    if (!allRequiredComplete) {
+      toast.error("Complete all required fields before signing")
+      setStep("fields")
+      return
+    }
+
+    if (!consentChecked) {
+      toast.error("Review and accept the electronic signature disclosure before signing")
       return
     }
 
@@ -288,7 +310,7 @@ export function DocumentSigningClient({
           signerName: resolvedSignerName,
           signerEmail,
           values,
-          consentText: "I agree to sign this document electronically.",
+          consentText: ELECTRONIC_SIGNATURE_CONSENT_TEXT,
         })
 
         setSignedAt(new Date())
@@ -312,6 +334,27 @@ export function DocumentSigningClient({
           signerEmail={signerEmail}
           signedAt={signedAt}
           executedDocumentUrl={executedDocumentUrl}
+        />
+      </div>
+    )
+  }
+
+  if (step === "review") {
+    return (
+      <div className="min-h-screen bg-background px-4 py-8">
+        <ReviewStep
+          documentTitle={document.title}
+          signerName={signerName}
+          signerEmail={signerEmail}
+          values={values}
+          visibleFields={visibleFields}
+          consentChecked={consentChecked}
+          isSubmitting={isPending}
+          onSignerNameChange={setSignerName}
+          onSignerEmailChange={setSignerEmail}
+          onConsentChange={setConsentChecked}
+          onBack={() => setStep("fields")}
+          onSubmit={handleSubmit}
         />
       </div>
     )
@@ -353,7 +396,7 @@ export function DocumentSigningClient({
           allRequiredComplete={allRequiredComplete}
           onPrevious={goToPreviousField}
           onNext={goToNextField}
-          onFinish={handleSubmit}
+          onFinish={handleFinishFields}
         />
       ) : null}
 

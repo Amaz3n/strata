@@ -18,6 +18,7 @@ interface ExternalPortalShellProps<TTab extends string> {
   orgName: string
   project: Project
   workspace?: ExternalPortalWorkspaceContext | null
+  logoUrl?: string | null
   isMobile: boolean
   activeTab: TTab
   onTabChange: (tab: TTab) => void
@@ -33,6 +34,7 @@ export function ExternalPortalShell<TTab extends string>({
   orgName,
   project,
   workspace = null,
+  logoUrl = null,
   isMobile,
   activeTab,
   onTabChange,
@@ -58,7 +60,7 @@ export function ExternalPortalShell<TTab extends string>({
 
   return (
     <div className="min-h-screen flex flex-col bg-background font-sans">
-      <PortalHeader orgName={orgName} project={project} workspace={workspace} />
+      <PortalHeader orgName={orgName} project={project} workspace={workspace} logoUrl={logoUrl} />
 
       {isMobile ? (
         <>

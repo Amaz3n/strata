@@ -4,6 +4,7 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ReviewQueueTable } from "@/components/cost-inbox/review-queue-table"
+import { QboImportLauncher } from "@/components/integrations/qbo-import-launcher"
 import { getProjectAction, getProjectContractAction } from "@/app/(app)/projects/[id]/actions"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { loadFinancialsReviewQueueData } from "@/lib/services/financials-review-queue"
@@ -63,6 +64,9 @@ async function InboxContent({ id }: { id: string }) {
       ]}
       fullBleed
     >
+      <div className="flex items-center justify-end border-b bg-muted/20 px-4 py-2 sm:px-6 lg:px-8">
+        <QboImportLauncher projectId={project.id} projectName={project.name} />
+      </div>
       <ReviewQueueTable
         projectId={project.id}
         timeEntries={reviewQueue.timeEntries}

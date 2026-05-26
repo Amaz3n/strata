@@ -15,11 +15,120 @@ export interface EmailPayload {
   html: string
   text?: string
   replyTo?: string | null
+  from?: string
   attachments?: Array<{
     filename: string
     content: string
     contentType?: string
   }>
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+}
+
+function getSendingDomain(): string {
+  const emailMatch = RESEND_FROM_EMAIL.match(/<(.+)>|(\S+@\S+)/)
+  const email = emailMatch ? (emailMatch[1] || emailMatch[2]) : RESEND_FROM_EMAIL
+  const parts = email.split("@")
+  return parts[1] || "app.arcnaples.com"
+}
+
+export function getOrgSenderEmail(orgSlug?: string | null, orgName?: string | null): string {
+  if (!orgSlug) return RESEND_FROM_EMAIL
+  
+  const domain = getSendingDomain()
+  // Resend's free tier sandbox ONLY allows sending from onboarding@resend.dev
+  if (domain === "resend.dev") {
+    return RESEND_FROM_EMAIL
+  }
+  
+  const cleanSlug = orgSlug.toLowerCase().trim().replace(/[^a-z0-9-]/g, "")
+  const friendlyName = orgName ? orgName.replace(/"/g, '\\"') : "Arc"
+  
+  return `"${friendlyName}" <${cleanSlug}@${domain}>`
+}
+
+export function renderStandardEmailLayout(args: {
+  title: string
+  messageHtml: string
+  buttonText?: string
+  buttonUrl?: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  appUrl?: string
+}): string {
+  const orgName = args.orgName || "Arc"
+  const appUrl = (args.appUrl || process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
+  
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(args.title)}</title>
+  </head>
+  <body style="background-color: #ececea; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 32px 0;">
+    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 620px; background-color: #ffffff; border: 1px solid #dcdcdc; border-collapse: collapse; margin: 0 auto;">
+      <!-- Header -->
+      <tr>
+        <td style="text-align: center; padding: 36px 40px 22px 40px; border-bottom: 1px solid #ebebeb;">
+          ${args.orgLogoUrl ? `
+            <img src="${args.orgLogoUrl}" alt="${escapeHtml(orgName)}" width="56" height="56" style="border: 1px solid #d6d6d6; background-color: #ffffff; display: block; margin: 0 auto; padding: 6px;" />
+          ` : `
+            <div style="margin: 0 auto 12px auto; width: 56px; height: 56px; line-height: 56px; text-align: center; border: 1px solid #d6d6d6; background-color: #ffffff; color: #111111; font-weight: 700; font-size: 18px;">
+              ${escapeHtml(orgName.slice(0, 1).toUpperCase())}
+            </div>
+          `}
+          <div style="margin: 12px 0 0 0; color: #111111; font-size: 15px; font-weight: 700;">${escapeHtml(orgName)}</div>
+          <div style="margin: 4px 0 0 0; color: #6b6b6b; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Notification</div>
+        </td>
+      </tr>
+      
+      <!-- Content -->
+      <tr>
+        <td style="padding: 30px 40px 32px 40px;">
+          <div style="margin: 0 0 10px 0; color: #666666; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">Update</div>
+          <h1 style="margin: 0 0 16px 0; color: #111111; font-size: 28px; line-height: 1.2; font-weight: 700; letter-spacing: -0.5px;">${escapeHtml(args.title)}</h1>
+          
+          <div style="margin: 0 0 24px 0; color: #2f2f2f; font-size: 14px; line-height: 1.6;">
+            ${args.messageHtml}
+          </div>
+          
+          ${args.buttonUrl ? `
+            <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin: 26px auto 16px auto;">
+              <tr>
+                <td align="center" style="background-color: #3A70EE; border-radius: 4px;">
+                  <a href="${args.buttonUrl}" style="background-color: #3A70EE; color: #ffffff; border: 1px solid #3A70EE; text-decoration: none; font-size: 14px; font-weight: 700; padding: 12px 24px; display: inline-block; border-radius: 4px;">
+                    ${escapeHtml(args.buttonText || 'Open in Arc')}
+                  </a>
+                </td>
+              </tr>
+            </table>
+            <p style="margin: 16px 0 0 0; color: #666666; font-size: 12px; line-height: 1.65; text-align: center;">
+              If the button does not open, <a href="${args.buttonUrl}" style="color: #3A70EE; text-decoration: underline;">open secure link</a>
+            </p>
+          ` : ''}
+        </td>
+      </tr>
+      
+      <!-- Footer -->
+      <tr>
+        <td style="padding: 18px 40px 22px 40px; background-color: #ffffff; border-top: 1px solid #ebebeb; text-align: center;">
+          <div style="margin: 0 0 8px 0; color: #777777; font-size: 12px; line-height: 1.5;">Sent via Arc</div>
+          <div style="margin: 0; color: #999999; font-size: 11px; line-height: 1.5;">
+            <a href="${appUrl}/settings" style="color: #777777; text-decoration: underline;">Manage Notification Settings</a>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`
 }
 
 /**
@@ -54,7 +163,7 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: RESEND_FROM_EMAIL,
+        from: payload.from ?? RESEND_FROM_EMAIL,
         to: recipients,
         subject: payload.subject,
         html: payload.html,
@@ -90,6 +199,7 @@ export interface ReminderEmailPayload {
   payLink: string
   orgName?: string | null
   orgLogoUrl?: string | null
+  orgSlug?: string | null
 }
 
 /**
@@ -127,6 +237,7 @@ export async function sendReminderEmail(payload: ReminderEmailPayload): Promise<
     to: [payload.to],
     subject,
     html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   }
 
   await sendEmail(emailPayload)
@@ -143,6 +254,7 @@ export interface InviteEmailPayload {
   orgLogoUrl?: string | null
   inviterName?: string | null
   inviterEmail?: string | null
+  orgSlug?: string | null
 }
 
 export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void> {
@@ -161,6 +273,7 @@ export async function sendInviteEmail(payload: InviteEmailPayload): Promise<void
     to: [payload.to],
     subject: `You have been invited to join ${payload.orgName ?? "Arc"}`,
     html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })
 }
 
@@ -169,6 +282,7 @@ export interface PasswordResetEmailPayload {
   resetLink: string
   orgName?: string | null
   orgLogoUrl?: string | null
+  orgSlug?: string | null
 }
 
 export async function sendPasswordResetEmail(payload: PasswordResetEmailPayload): Promise<void> {
@@ -185,6 +299,7 @@ export async function sendPasswordResetEmail(payload: PasswordResetEmailPayload)
     to: [payload.to],
     subject: `Reset your ${payload.orgName ?? "Arc"} password`,
     html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })
 }
 
@@ -216,6 +331,7 @@ export interface BidInviteEmailPayload {
   orgName?: string | null
   orgLogoUrl?: string | null
   bidLink: string
+  orgSlug?: string | null
 }
 
 export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promise<void> {
@@ -247,6 +363,7 @@ export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promis
     to: [payload.to],
     subject: `Invitation to Bid: ${payload.bidPackageTitle}`,
     html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })
 }
 
@@ -258,6 +375,7 @@ export interface ProjectPortalInviteEmailPayload {
   orgName?: string | null
   orgLogoUrl?: string | null
   portalLink: string
+  orgSlug?: string | null
 }
 
 export async function sendProjectPortalInviteEmail(payload: ProjectPortalInviteEmailPayload): Promise<boolean> {
@@ -276,5 +394,6 @@ export async function sendProjectPortalInviteEmail(payload: ProjectPortalInviteE
     to: [payload.to],
     subject: `${payload.projectName} is ready in Arc`,
     html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })
 }

@@ -677,6 +677,45 @@ export class QBOClient {
     return this.request<any>("GET", `cdc?${params.toString()}`)
   }
 
+  /**
+   * Run a raw entity query and return the matching rows. Used by the QBO import flow to enumerate
+   * transactions that may not yet exist in Arc. `whereClause` should NOT include the "WHERE" keyword.
+   */
+  private async queryEntity<T = any>(
+    entity: string,
+    opts?: { whereClause?: string; orderBy?: string; startPosition?: number; maxResults?: number },
+  ): Promise<T[]> {
+    const maxResults = Math.min(Math.max(opts?.maxResults ?? 100, 1), 1000)
+    const startPosition = Math.max(opts?.startPosition ?? 1, 1)
+    const where = opts?.whereClause ? ` WHERE ${opts.whereClause}` : ""
+    const orderBy = opts?.orderBy ? ` ORDERBY ${opts.orderBy}` : ""
+    const query = `SELECT * FROM ${entity}${where}${orderBy} STARTPOSITION ${startPosition} MAXRESULTS ${maxResults}`
+    const result = await this.request<{ QueryResponse?: Record<string, T[] | undefined> }>(
+      "GET",
+      `query?query=${encodeURIComponent(query)}`,
+    )
+    return (result.QueryResponse?.[entity] as T[] | undefined) ?? []
+  }
+
+  /**
+   * List transactions of the given QBO entity type for the import picker. Optionally filtered to
+   * those on or after `sinceDate` (YYYY-MM-DD), most recent first.
+   */
+  async listTransactionsForImport(
+    entity: "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment",
+    opts?: { sinceDate?: string | null; maxResults?: number },
+  ): Promise<any[]> {
+    const since =
+      opts?.sinceDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.sinceDate)
+        ? `TxnDate >= '${this.toQboStringLiteral(opts.sinceDate)}'`
+        : undefined
+    return this.queryEntity<any>(entity, {
+      whereClause: since,
+      orderBy: "TxnDate DESC",
+      maxResults: opts?.maxResults ?? 200,
+    })
+  }
+
   async uploadAttachmentForEntity(params: {
     entityType: "Invoice" | "Purchase" | "Bill" | "BillPayment" | "PurchaseOrder" | "VendorCredit"
     entityId: string
@@ -705,7 +744,7 @@ export class QBOClient {
       fileBytes.byteOffset,
       fileBytes.byteOffset + fileBytes.byteLength,
     ) as ArrayBuffer
-    form.append("file_metadata_01", new Blob([JSON.stringify(metadata)], { type: "application/json" }))
+    form.append("file_metadata_01", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "attachment.json")
     form.append("file_content_01", new Blob([fileArrayBuffer], { type: params.contentType }), params.fileName)
 
     const response = await this.fetchEndpoint("POST", "upload", {

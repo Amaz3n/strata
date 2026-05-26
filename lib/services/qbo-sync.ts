@@ -193,7 +193,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     qboInvoice = {
       Id: existingSync.data?.qbo_id,
       SyncToken: existingSync.data?.qbo_sync_token,
-      Sparse: existingSync.data?.qbo_id ? true : undefined,
       DocNumber: typedInvoice.invoice_number,
       TxnDate: typedInvoice.issue_date ?? new Date().toISOString().split("T")[0],
       DueDate: typedInvoice.due_date ?? undefined,
@@ -236,6 +235,71 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
 
     return { success: true, qbo_id: result.Id }
   } catch (err: any) {
+    if (err instanceof QBOError && isStaleObjectError(err) && existingSync.data?.qbo_id) {
+      try {
+        const latestInvoice = await client.getInvoiceById(existingSync.data.qbo_id)
+        if (!latestInvoice?.SyncToken) {
+          throw new Error("Unable to refresh QuickBooks invoice sync token")
+        }
+
+        const retryInvoice = {
+          ...qboInvoice,
+          SyncToken: latestInvoice.SyncToken,
+        }
+        const retryResult = await client.updateInvoice(retryInvoice as any)
+
+        await upsertSyncRecord({
+          orgId,
+          entityId: invoiceId,
+          qboId: retryResult.Id!,
+          syncToken: retryResult.SyncToken,
+          entityType: "invoice",
+        })
+
+        await supabase
+          .from("invoices")
+          .update({
+            qbo_id: retryResult.Id,
+            qbo_synced_at: new Date().toISOString(),
+            qbo_sync_status: "synced",
+          })
+          .eq("id", invoiceId)
+
+        await rememberQBOInvoiceNumberCursor(orgId, retryResult.DocNumber ?? typedInvoice.invoice_number)
+        await syncInvoicePdfAttachmentToQBO({
+          client,
+          supabase,
+          orgId,
+          invoiceId,
+          qboInvoiceId: retryResult.Id!,
+        })
+        await markConnectionHealthy(orgId)
+        logQBO("warn", "invoice_sync_stale_token_retried", {
+          orgId,
+          invoiceId,
+          qboId: retryResult.Id,
+        })
+
+        return { success: true, qbo_id: retryResult.Id }
+      } catch (retryError: any) {
+        const retryErrorMessage = retryError instanceof QBOError ? retryError.message : retryError?.message ?? "Stale sync token retry failed"
+        await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
+        await markSyncRecordError(orgId, "invoice", invoiceId, retryErrorMessage)
+        await markConnectionError(orgId, retryErrorMessage)
+        logQBO("error", "invoice_sync_stale_token_retry_failed", {
+          orgId,
+          invoiceId,
+          error: retryErrorMessage,
+          qbo_status: retryError instanceof QBOError ? retryError.status : undefined,
+          qbo_fault_type: retryError instanceof QBOError ? retryError.faultType : undefined,
+          qbo_fault_code: retryError instanceof QBOError ? retryError.faultCode : undefined,
+          qbo_fault_detail: retryError instanceof QBOError ? retryError.faultDetail : undefined,
+          intuit_tid: retryError instanceof QBOError ? retryError.intuitTid : undefined,
+        })
+        return { success: false, error: retryErrorMessage }
+      }
+    }
+
     if (err instanceof QBOError && isDuplicateDocNumber(err)) {
       try {
         const lastNumber = await client.getLastInvoiceNumber()
@@ -535,7 +599,6 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
     const baseTxn = {
       Id: existingSync?.qbo_id ?? typedExpense.qbo_id ?? undefined,
       SyncToken: existingSync?.qbo_sync_token ?? undefined,
-      Sparse: existingSync?.qbo_id || typedExpense.qbo_id ? true : undefined,
       TxnDate: typedExpense.expense_date,
       PrivateNote: typedExpense.description ?? undefined,
       Line: [line],
@@ -727,7 +790,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       .from("qbo_sync_records")
       .select("qbo_id, qbo_sync_token")
       .eq("org_id", orgId)
-      .eq("entity_type", "vendor_bill")
+      .eq("entity_type", "bill")
       .eq("entity_id", billId)
       .maybeSingle()
     const existingQboId = existingSync?.qbo_id ?? typedBill.qbo_id ?? undefined
@@ -737,7 +800,6 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
     const qboBill = {
       Id: existingQboId,
       SyncToken: existingSync?.qbo_sync_token ?? existingQboBill?.SyncToken ?? undefined,
-      Sparse: existingQboId ? true : undefined,
       DocNumber: typedBill.bill_number ?? undefined,
       TxnDate: typedBill.bill_date ?? new Date().toISOString().slice(0, 10),
       DueDate: typedBill.due_date ?? undefined,
@@ -759,7 +821,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       entityId: billId,
       qboId: result.Id!,
       syncToken: result.SyncToken,
-      entityType: "vendor_bill",
+      entityType: "bill",
     })
 
     await supabase
@@ -795,7 +857,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       .update({ qbo_sync_status: "error", qbo_sync_error: message.slice(0, 4000) })
       .eq("org_id", orgId)
       .eq("id", billId)
-    await markSyncRecordError(orgId, "vendor_bill", billId, message)
+    await markSyncRecordError(orgId, "bill", billId, message)
     await markConnectionError(orgId, message)
     logQBO("error", "vendor_bill_sync_failed", {
       orgId,
@@ -1266,7 +1328,9 @@ async function syncProjectExpenseReceiptAttachmentToQBO(params: {
     .eq("id", params.receiptFileId)
     .maybeSingle()
 
-  if (!file?.storage_path || !file?.file_name) return
+  if (!file?.storage_path || !file?.file_name) {
+    throw new Error("Receipt file was not found for QBO attachment upload")
+  }
 
   try {
     const bytes = await downloadFilesObject({
@@ -1307,6 +1371,7 @@ async function syncProjectExpenseReceiptAttachmentToQBO(params: {
       fileId: params.receiptFileId,
       error: error?.message ?? String(error),
     })
+    throw error
   }
 }
 
@@ -1332,7 +1397,9 @@ async function syncVendorBillAttachmentToQBO(params: {
     .eq("id", params.fileId)
     .maybeSingle()
 
-  if (!file?.storage_path || !file?.file_name) return
+  if (!file?.storage_path || !file?.file_name) {
+    throw new Error("Bill file was not found for QBO attachment upload")
+  }
 
   try {
     const bytes = await downloadFilesObject({
@@ -1371,6 +1438,7 @@ async function syncVendorBillAttachmentToQBO(params: {
       fileId: params.fileId,
       error: error?.message ?? String(error),
     })
+    throw error
   }
 }
 
@@ -1511,4 +1579,9 @@ async function getOrCreateProjectCustomer(params: {
 function isDuplicateDocNumber(error: QBOError) {
   const detail = JSON.stringify(error.qboError ?? {}).toLowerCase()
   return detail.includes("docnumber") || detail.includes("duplicate") || detail.includes("already exists")
+}
+
+function isStaleObjectError(error: QBOError) {
+  const detail = JSON.stringify(error.qboError ?? {}).toLowerCase()
+  return error.faultCode === "5010" || detail.includes("stale object")
 }

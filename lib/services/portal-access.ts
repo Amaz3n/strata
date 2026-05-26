@@ -593,7 +593,7 @@ export async function loadClientPortalData({
   const supabase = createServiceSupabaseClient()
 
   const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, financialSummary] = await Promise.all([
-    supabase.from("orgs").select("id, name").eq("id", orgId).single(),
+    supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
     supabase
       .from("projects")
       .select("id, org_id, name, status, start_date, end_date, location, created_at, updated_at")
@@ -650,7 +650,10 @@ export async function loadClientPortalData({
   const warrantyRequests = await fetchWarrantyRequests(supabase, orgId, projectId)
 
   return {
-    org: { name: orgRow.data.name },
+    org: {
+      name: orgRow.data.name,
+      logo_url: orgRow.data.logo_url ?? undefined,
+    },
     project: {
       id: projectRow.data.id,
       org_id: projectRow.data.org_id,

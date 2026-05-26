@@ -2,7 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { sendEmail } from "@/lib/services/mailer"
+import { sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { attachFile, attachFileWithServiceRole } from "@/lib/services/file-links"
 import type { Submittal } from "@/lib/types"
 import type { SubmittalDecisionInput, SubmittalInput, SubmittalItemInput } from "@/lib/validation/submittals"
@@ -253,17 +253,15 @@ async function sendSubmittalEmail({
   decisionNote?: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: submittal, error } = await supabase
-    .from("submittals")
-    .select(
-      `
-      id, org_id, project_id, submittal_number, title, description, status,
-      submitted_by_contact_id, reviewed_by, project:projects(name, client_id)
-    `,
-    )
-    .eq("id", submittalId)
-    .eq("org_id", orgId)
-    .maybeSingle()
+  const [{ data: submittal, error }, { data: org }] = await Promise.all([
+    supabase
+      .from("submittals")
+      .select("id, org_id, project_id, submittal_number, title, description, status, submitted_by_contact_id, reviewed_by, project:projects(name, client_id)")
+      .eq("id", submittalId)
+      .eq("org_id", orgId)
+      .maybeSingle(),
+    supabase.from("orgs").select("name, slug").eq("id", orgId).maybeSingle(),
+  ])
 
   if (error || !submittal) {
     console.warn("Unable to load submittal for email notification", error)
@@ -321,6 +319,7 @@ async function sendSubmittalEmail({
     to: recipients,
     subject,
     html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
   })
 }async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: string | null; full_name?: string } | null> {
   const { data, error } = await supabase.from("app_users").select("email, full_name").eq("id", userId).maybeSingle()

@@ -245,6 +245,7 @@ export default async function DocumentSigningPage({ params }: Params) {
       fields={fields ?? []}
       prefilledValues={prefilledValues}
       signerRole={signerRole}
+      signerEmail={signingRequest.sent_to_email}
     />
   )
 }

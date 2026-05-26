@@ -60,6 +60,23 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
   await cleanupExpiredReservations(resolvedOrgId)
 
   const connection = await getQBOConnection(resolvedOrgId)
+  const { data: existingUserReservation } = await serviceSupabase
+    .from("qbo_invoice_reservations")
+    .select("id, reserved_number")
+    .eq("org_id", resolvedOrgId)
+    .eq("reserved_by", userId)
+    .eq("status", "reserved")
+    .order("reserved_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (existingUserReservation?.id && existingUserReservation.reserved_number) {
+    return {
+      number: existingUserReservation.reserved_number,
+      source: connection && connection.settings?.invoice_number_sync !== false ? "qbo" : "local",
+      reservation_id: existingUserReservation.id,
+    }
+  }
 
   if (connection && connection.settings?.invoice_number_sync !== false) {
     const client = await QBOClient.forOrg(resolvedOrgId)
@@ -78,6 +95,7 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
             .from("qbo_invoice_reservations")
             .select("reserved_number")
             .eq("org_id", resolvedOrgId)
+            .eq("status", "reserved")
             .order("reserved_at", { ascending: false })
             .limit(1)
             .maybeSingle(),
@@ -86,7 +104,6 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
         let cursor =
           pickLatestInvoiceNumber(
             [
-              connection.settings.last_known_invoice_number ?? null,
               qboLastNumber,
               lastInvoice.data?.invoice_number ?? null,
               latestReservation.data?.reserved_number ?? null,
@@ -108,7 +125,6 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
             .single()
 
           if (!error && data?.id) {
-            await rememberQBOInvoiceNumberCursor(resolvedOrgId, nextNumber)
             return {
               number: nextNumber,
               source: "qbo",
@@ -143,7 +159,20 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
     .limit(1)
     .maybeSingle()
 
-  const lastNumber = lastInvoice?.invoice_number ?? "0"
+  const { data: latestReservation } = await serviceSupabase
+    .from("qbo_invoice_reservations")
+    .select("reserved_number")
+    .eq("org_id", resolvedOrgId)
+    .eq("status", "reserved")
+    .order("reserved_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const lastNumber =
+    pickLatestInvoiceNumber(
+      [lastInvoice?.invoice_number ?? null, latestReservation?.reserved_number ?? null],
+      connection?.settings,
+    ) ?? "0"
   const nextNumber = incrementInvoiceNumber(lastNumber, connection?.settings)
 
   return {

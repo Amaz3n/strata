@@ -19,6 +19,7 @@ interface Props {
     clientSecret: string
     publishableKey: string
     token: string
+    connectedAccountId?: string | null
   } | null
   receipts?: Receipt[] | null
   costDetails?: Array<BillableCost & { source_company_name?: string | null; source_status?: string | null; proof_file_id?: string | null }> | null
@@ -213,6 +214,7 @@ function PaymentSection({
     clientSecret: string
     publishableKey: string
     token: string
+    connectedAccountId?: string | null
   }
 }) {
   const [isDark, setIsDark] = useState(false)
@@ -228,7 +230,10 @@ function PaymentSection({
     }
   }, [])
 
-  const stripePromise = useMemo(() => loadStripe(payment.publishableKey), [payment.publishableKey])
+  const stripePromise = useMemo(
+    () => loadStripe(payment.publishableKey, payment.connectedAccountId ? { stripeAccount: payment.connectedAccountId } : undefined),
+    [payment.publishableKey, payment.connectedAccountId],
+  )
   const appearance = useMemo(() => getStripeAppearance(isDark), [isDark])
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0

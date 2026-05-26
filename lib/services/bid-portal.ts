@@ -352,7 +352,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
   const resolvedOrgId = projectResult.data.org_id ?? tokenRow.org_id
   const { data: orgResult, error: orgError } = await supabase
     .from("orgs")
-    .select("id, name")
+    .select("id, name, logo_url")
     .eq("id", resolvedOrgId)
     .maybeSingle()
 
@@ -406,7 +406,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     org: {
       id: orgResult.id,
       name: orgResult.name,
-      logo_url: null,
+      logo_url: orgResult.logo_url ?? null,
     },
   }
 }

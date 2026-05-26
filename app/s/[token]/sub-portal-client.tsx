@@ -128,6 +128,7 @@ export function SubPortalClient({
       orgName={data.org.name}
       project={data.project}
       workspace={workspace}
+      logoUrl={data.org.logo_url}
       isMobile={isMobile}
       activeTab={activeTab}
       onTabChange={setActiveTab}

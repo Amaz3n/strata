@@ -48,7 +48,7 @@ function isAuthorizedCronRequest(request: NextRequest) {
   return isVercelCron
 }
 
-export async function POST(request: NextRequest) {
+async function processQBOOutbox(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -198,4 +198,12 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ processed, failed, keepalive, recoveredStale })
+}
+
+export async function GET(request: NextRequest) {
+  return processQBOOutbox(request)
+}
+
+export async function POST(request: NextRequest) {
+  return processQBOOutbox(request)
 }

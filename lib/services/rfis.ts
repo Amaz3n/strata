@@ -2,7 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { attachFile } from "@/lib/services/file-links"
 import { requirePermission } from "@/lib/services/permissions"
@@ -701,7 +701,7 @@ async function sendRfiEmail({
 
   const { data: org } = await supabase
     .from("orgs")
-    .select("name, logo_url")
+    .select("name, logo_url, slug")
     .eq("id", orgId)
     .maybeSingle()
 
@@ -869,6 +869,7 @@ async function sendRfiEmail({
       to: [to],
       subject,
       html,
+      from: getOrgSenderEmail(org?.slug, org?.name),
     })
     if (sent) {
       sentRecipients.push(to)

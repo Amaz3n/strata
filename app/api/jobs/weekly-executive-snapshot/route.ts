@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { WeeklyExecutiveSnapshotEmail } from "@/lib/emails/weekly-executive-snapshot-email"
-import { renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   buildWeeklyExecutiveSnapshotForOrg,
@@ -34,6 +34,7 @@ type OrgRow = {
   id: string
   name: string | null
   logo_url: string | null
+  slug: string | null
 }
 
 function isAuthorizedCronRequest(request: NextRequest) {
@@ -115,7 +116,7 @@ async function executeSnapshotJob(request: NextRequest) {
       .in("id", userIds),
     supabase
       .from("orgs")
-      .select("id, name, logo_url")
+      .select("id, name, logo_url, slug")
       .in("id", orgIds),
   ])
 
@@ -171,6 +172,7 @@ async function executeSnapshotJob(request: NextRequest) {
     const orgMeta = orgById.get(orgId)
     const orgName = orgMeta?.name ?? "Arc"
     const orgLogoUrl = orgMeta?.logo_url ?? null
+    const orgSlug = orgMeta?.slug ?? null
 
     for (const recipient of recipients) {
       const user = userById.get(recipient.user_id)
@@ -202,6 +204,7 @@ async function executeSnapshotJob(request: NextRequest) {
           to: [email],
           subject: `${orgName} Weekly Executive Snapshot · ${snapshot.weekLabel}`,
           html,
+          from: getOrgSenderEmail(orgSlug, orgName),
         })
 
         if (!ok) {

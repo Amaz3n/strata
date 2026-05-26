@@ -11,6 +11,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { AuthorizationError } from "@/lib/services/authorization"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import { syncVendorBillToQBO } from "@/lib/services/qbo-sync"
+import { extractPayableInvoiceFromFile, type ExtractedPayableInvoice } from "@/lib/services/receipt-extraction"
 
 function rethrowTypedAuthError(error: unknown): never {
   if (error instanceof AuthorizationError) {
@@ -42,28 +43,34 @@ export async function createProjectVendorBillAction(projectId: string, input: un
   const parsed = vendorBillCreateSchema.parse(input)
   const supabase = createServiceSupabaseClient()
 
-  // 1. Verify commitment
-  const { data: commitment, error: commitmentError } = await supabase
-    .from("commitments")
-    .select("id, total_cents")
-    .eq("id", parsed.commitment_id)
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
+  let commitment: { id: string; total_cents: number | null } | null = null
+  if (parsed.commitment_id) {
+    const { data, error: commitmentError } = await supabase
+      .from("commitments")
+      .select("id, total_cents")
+      .eq("id", parsed.commitment_id)
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .maybeSingle()
 
-  if (commitmentError || !commitment) {
-    throw new Error("Commitment not found")
+    if (commitmentError || !data) {
+      throw new Error("Commitment not found")
+    }
+    commitment = data
   }
 
   // 2. Check for over-budget
-  const { data: existingBills } = await supabase
-    .from("vendor_bills")
-    .select("total_cents")
-    .eq("commitment_id", parsed.commitment_id)
-    .eq("org_id", orgId)
+  let isOverBudget = false
+  if (parsed.commitment_id && commitment) {
+    const { data: existingBills } = await supabase
+      .from("vendor_bills")
+      .select("total_cents")
+      .eq("commitment_id", parsed.commitment_id)
+      .eq("org_id", orgId)
 
-  const totalBilled = (existingBills ?? []).reduce((sum: number, b: any) => sum + (b.total_cents ?? 0), 0)
-  const isOverBudget = (totalBilled + parsed.total_cents) > (commitment.total_cents ?? 0)
+    const totalBilled = (existingBills ?? []).reduce((sum: number, b: any) => sum + (b.total_cents ?? 0), 0)
+    isOverBudget = (totalBilled + parsed.total_cents) > (commitment.total_cents ?? 0)
+  }
 
   // 3. Insert
   const { data, error } = await supabase
@@ -71,7 +78,7 @@ export async function createProjectVendorBillAction(projectId: string, input: un
     .insert({
       org_id: orgId,
       project_id: projectId,
-      commitment_id: parsed.commitment_id,
+      commitment_id: parsed.commitment_id ?? null,
       bill_number: parsed.bill_number,
       total_cents: parsed.total_cents,
       currency: "usd",
@@ -82,14 +89,17 @@ export async function createProjectVendorBillAction(projectId: string, input: un
       submitted_by_contact_id: null, // Internal upload
       metadata: {
         description: parsed.description,
+        vendor_name: parsed.vendor_name || parsed.qbo_vendor_name || undefined,
         period_start: parsed.period_start,
         period_end: parsed.period_end,
         internal_upload: true,
         over_budget: isOverBudget,
       },
+      qbo_vendor_id: parsed.qbo_vendor_id || null,
+      qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
     })
     .select(`
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
+      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
       commitment:commitments(id, title, total_cents)
     `)
@@ -124,7 +134,7 @@ export async function createProjectVendorBillAction(projectId: string, input: un
     entityId: data.id as string,
     payload: {
       project_id: projectId,
-      commitment_id: parsed.commitment_id,
+      commitment_id: parsed.commitment_id ?? null,
       total_cents: parsed.total_cents,
       bill_number: parsed.bill_number,
       internal_upload: true,
@@ -134,6 +144,26 @@ export async function createProjectVendorBillAction(projectId: string, input: un
   revalidatePayablesPages(projectId)
 
   return mapVendorBill(data)
+}
+
+export type PayableInvoiceExtractionResult =
+  | { ok: true; data: ExtractedPayableInvoice }
+  | { ok: false; error: string }
+
+export async function extractPayableInvoiceAction(_projectId: string, formData: FormData): Promise<PayableInvoiceExtractionResult> {
+  try {
+    await requireOrgContext()
+    const invoice = formData.get("invoice")
+    if (!(invoice instanceof File)) {
+      return { ok: false, error: "Choose an invoice to scan" }
+    }
+
+    const data = await extractPayableInvoiceFromFile(invoice)
+    return { ok: true, data }
+  } catch (error: any) {
+    console.warn("[PayableExtraction] Scan failed", error)
+    return { ok: false, error: error?.message ?? "Could not scan invoice" }
+  }
 }
 
 export async function listProjectCommitmentsForPayablesAction(projectId: string) {

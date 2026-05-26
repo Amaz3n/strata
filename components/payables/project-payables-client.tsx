@@ -34,6 +34,7 @@ import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import { PayablesExplorer } from "./payables-explorer"
 import { AddPayableSheet } from "./add-payable-sheet"
+import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
@@ -139,6 +140,7 @@ export function ProjectPayablesClient({
   const [isPending, startTransition] = useTransition()
 
   const [addPayableOpen, setAddPayableOpen] = useState(false)
+  const [syncSheetOpen, setSyncSheetOpen] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState<Record<string, string>>({})
   const [paymentRef, setPaymentRef] = useState<Record<string, string>>({})
   const [paymentMethod, setPaymentMethod] = useState<Record<string, string>>({})
@@ -340,11 +342,45 @@ export function ProjectPayablesClient({
           projectId={projectId}
           vendorBills={vendorBills}
           costCodes={costCodes}
+          qboVendors={qboVendors}
           complianceRules={complianceRules}
           complianceStatusByCompanyId={complianceStatusByCompanyId}
           toolbarLeading={toolbarLeading}
           fullBleed={fullBleed}
           onAddPayable={() => setAddPayableOpen(true)}
+          onOpenSyncSheet={() => setSyncSheetOpen(true)}
+          onSelectQboVendor={(bill, vendorId) => {
+            startTransition(async () => {
+              try {
+                await updateProjectVendorBillStatusAction(projectId, bill.id, {
+                  status: bill.status as any,
+                  qbo_vendor_id: vendorId || undefined,
+                  qbo_vendor_name: getVendorName(vendorId),
+                })
+                toast.success("QBO vendor updated")
+                router.refresh()
+              } catch (error) {
+                toast.error((error as Error).message)
+              }
+            })
+          }}
+          onSelectCostCode={(bill, costCodeId) => {
+            startTransition(async () => {
+              try {
+                await updateProjectVendorBillStatusAction(projectId, bill.id, {
+                  status: bill.status as any,
+                  cost_code_id: costCodeId,
+                  qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
+                  qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
+                })
+                setBillCostCode((prev) => ({ ...prev, [bill.id]: costCodeId ?? "" }))
+                toast.success("Cost code updated")
+                router.refresh()
+              } catch (error) {
+                toast.error((error as Error).message)
+              }
+            })
+          }}
           onViewDetails={(bill) => {
             setSelectedBill(bill)
             setBillDetailOpen(true)
@@ -383,6 +419,8 @@ export function ProjectPayablesClient({
         onOpenChange={setAddPayableOpen}
         onSuccess={() => router.refresh()}
       />
+
+      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} />
 
       {/* Unified Bill Details Sheet */}
       <Sheet 

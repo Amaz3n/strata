@@ -1,16 +1,17 @@
 "use server"
 
-import { createHmac, randomBytes } from "crypto"
+import { createHash, createHmac, randomBytes } from "crypto"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
 import { ENVELOPE_EVENT_TYPES, buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { generateExecutedPdf } from "@/lib/pdfs/esign"
+import { SignatureEmail } from "@/lib/emails/signature-email"
 import { recordESignEvent } from "@/lib/services/esign-events"
 import { recordEvent } from "@/lib/services/events"
 import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
-import { sendEmail } from "@/lib/services/mailer"
+import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
 import { approveChangeOrderFromEnvelopeExecution } from "@/lib/services/change-orders"
 import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
@@ -32,6 +33,10 @@ function requireDocumentSigningSecret() {
 function buildExecutedDocumentUrl(token: string) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
   return appUrl ? `${appUrl}/api/esign/executed/${token}` : `/api/esign/executed/${token}`
+}
+
+function sha256Hex(bytes: Uint8Array | Buffer) {
+  return createHash("sha256").update(bytes).digest("hex")
 }
 
 type SigningRequestRoutingRow = {
@@ -104,6 +109,9 @@ export async function submitDocumentSignatureAction(input: {
   if (!input.signerName?.trim()) {
     throw new Error("Signer name is required")
   }
+  if (!input.signerEmail?.trim()) {
+    throw new Error("Signer email is required")
+  }
   if (!input.consentText?.trim()) {
     throw new Error("Consent text is required")
   }
@@ -122,6 +130,7 @@ export async function submitDocumentSignatureAction(input: {
   }
 
   const now = new Date()
+  const submittedSignerEmail = input.signerEmail.trim()
   if (signingRequest.expires_at && new Date(signingRequest.expires_at) < now) {
     throw new Error("Signing link has expired")
   }
@@ -177,6 +186,12 @@ export async function submitDocumentSignatureAction(input: {
     throw new Error(`Document not found: ${documentError?.message ?? "missing"}`)
   }
 
+  const { data: org } = await supabase
+    .from("orgs")
+    .select("name, logo_url, slug")
+    .eq("id", signingRequest.org_id)
+    .maybeSingle()
+
   const { data: fields, error: fieldsError } = await supabase
     .from("document_fields")
     .select("id, page_index, field_type, required, signer_role, x, y, w, h")
@@ -203,7 +218,7 @@ export async function submitDocumentSignatureAction(input: {
 
   const { data: sourceFile, error: sourceError } = await supabase
     .from("files")
-    .select("storage_path, file_name, mime_type, size_bytes")
+    .select("id, storage_path, file_name, mime_type, size_bytes")
     .eq("id", document.source_file_id)
     .single()
 
@@ -217,11 +232,26 @@ export async function submitDocumentSignatureAction(input: {
     document_id: signingRequest.document_id,
     revision: signingRequest.revision,
     signer_name: input.signerName.trim(),
-    signer_email: input.signerEmail?.trim() ?? null,
+    signer_email: submittedSignerEmail,
     signer_ip: signerIp,
     user_agent: userAgent,
     consent_text: input.consentText,
     values: input.values ?? {},
+    audit_data: {
+      consent_version: "esign-consent-2026-05-24",
+      consent_presented_at: now.toISOString(),
+      signed_at: now.toISOString(),
+      signer_role: signerRole,
+      signer_email_on_request: signingRequest.sent_to_email ?? null,
+      submitted_signer_email: submittedSignerEmail,
+      ip_address: signerIp,
+      user_agent: userAgent,
+      token_hash_prefix: tokenHash.slice(0, 16),
+      document_id: signingRequest.document_id,
+      document_revision: signingRequest.revision,
+      envelope_id: envelopeId,
+      source_file_id: sourceFile.id,
+    },
   })
 
   if (insertError) {
@@ -252,6 +282,13 @@ export async function submitDocumentSignatureAction(input: {
       signing_request_id: signingRequest.id,
       sequence: sequence,
       signer_role: signerRole,
+      signer_name: input.signerName.trim(),
+      signer_email_on_request: signingRequest.sent_to_email ?? null,
+      submitted_signer_email: submittedSignerEmail,
+      signer_ip: signerIp,
+      user_agent: userAgent,
+      consent_text: input.consentText,
+      consent_version: "esign-consent-2026-05-24",
       signed_at: nowIso,
     },
   })
@@ -321,8 +358,9 @@ export async function submitDocumentSignatureAction(input: {
     const requestIds = (groupRequests ?? []).map((req) => req.id)
     const { data: signatures, error: signaturesError } = await supabase
       .from("document_signatures")
-      .select("values, signing_request_id")
+      .select("values, signing_request_id, signer_name, signer_email, signer_ip, user_agent, consent_text, created_at")
       .in("signing_request_id", requestIds)
+      .order("created_at", { ascending: true })
 
     if (signaturesError) {
       throw new Error(`Failed to load signatures: ${signaturesError.message}`)
@@ -337,6 +375,25 @@ export async function submitDocumentSignatureAction(input: {
       orgId: document.org_id,
       path: sourceFile.storage_path,
     })
+    const sourceSha256 = sha256Hex(sourceBytes)
+    const signerAuditTrail = (signatures ?? []).flatMap((signature: any, index: number) => [
+      { label: `Signer ${index + 1} name`, value: signature.signer_name },
+      { label: `Signer ${index + 1} email`, value: signature.signer_email },
+      { label: `Signer ${index + 1} signed at`, value: signature.created_at },
+      { label: `Signer ${index + 1} IP`, value: signature.signer_ip },
+      { label: `Signer ${index + 1} user agent`, value: signature.user_agent },
+      { label: `Signer ${index + 1} consent`, value: signature.consent_text },
+    ])
+    const auditTrail = [
+      { label: "Document ID", value: document.id },
+      { label: "Envelope ID", value: envelopeId },
+      { label: "Document revision", value: String(signingRequest.revision) },
+      { label: "Source file ID", value: sourceFile.id },
+      { label: "Source SHA-256", value: sourceSha256 },
+      { label: "Executed at", value: nowIso },
+      { label: "Consent version", value: "esign-consent-2026-05-24" },
+      ...signerAuditTrail,
+    ]
 
     const executedBytes = await generateExecutedPdf({
       pdfBytes: sourceBytes,
@@ -350,7 +407,9 @@ export async function submitDocumentSignatureAction(input: {
         h: field.h,
       })),
       values: mergedValues,
+      auditTrail,
     })
+    const executedSha256 = sha256Hex(executedBytes)
 
     const timestamp = Date.now()
     const safeTitle = document.title.replace(/[^a-zA-Z0-9.-]/g, "_").slice(0, 80)
@@ -392,6 +451,13 @@ export async function submitDocumentSignatureAction(input: {
         uploaded_by: uploaderId,
         share_with_clients: false,
         share_with_subs: false,
+        metadata: {
+          source_file_id: sourceFile.id,
+          source_sha256: sourceSha256,
+          executed_sha256: executedSha256,
+          audit_certificate: "appended_to_executed_pdf",
+          consent_version: "esign-consent-2026-05-24",
+        },
       })
       .select("id")
       .single()
@@ -450,6 +516,10 @@ export async function submitDocumentSignatureAction(input: {
       payload: {
         executed_file_id: executedFile.id,
         executed_at: nowIso,
+        source_file_id: sourceFile.id,
+        source_sha256: sourceSha256,
+        executed_sha256: executedSha256,
+        audit_certificate: "appended_to_executed_pdf",
       },
     })
 
@@ -466,7 +536,7 @@ export async function submitDocumentSignatureAction(input: {
         envelopeId,
         executedFileId: executedFile.id,
         signerName: input.signerName.trim(),
-        signerEmail: input.signerEmail?.trim() || null,
+        signerEmail: submittedSignerEmail,
         signerIp,
       })
     }
@@ -484,7 +554,7 @@ export async function submitDocumentSignatureAction(input: {
         documentId: document.id,
         executedFileId: executedFile.id,
         signerName: input.signerName.trim(),
-        signerEmail: input.signerEmail?.trim() || null,
+        signerEmail: submittedSignerEmail,
         signerIp,
       })
     }
@@ -502,7 +572,7 @@ export async function submitDocumentSignatureAction(input: {
         documentId: document.id,
         executedFileId: executedFile.id,
         signerName: input.signerName.trim(),
-        signerEmail: input.signerEmail?.trim() || null,
+        signerEmail: submittedSignerEmail,
         signerIp,
       })
     }
@@ -539,16 +609,27 @@ export async function submitDocumentSignatureAction(input: {
     const attachmentContent = Buffer.from(executedBytes).toString("base64")
     await Promise.all(
       fallbackRecipients.map(async (recipient) => {
-        const greeting = recipient.name ? `Hi ${recipient.name},` : "Hello,"
+        const html = await renderEmailTemplate(
+          SignatureEmail({
+            documentTitle: document.title,
+            signingLink: executedUrl,
+            recipientName: recipient.name,
+            orgName: org?.name ?? null,
+            orgLogoUrl: org?.logo_url ?? null,
+            eventLabel: "Document Executed",
+            headline: "Document fully executed",
+            bodyText: `${document.title} has been fully executed.`,
+            detailLabel: "Executed Copy",
+            detailText: "Open the executed PDF to review the completed document. A copy is also attached to this email.",
+            buttonText: "Open Executed PDF",
+            previewText: `Document executed: ${document.title}`,
+          }),
+        )
         await sendEmail({
           to: [recipient.email],
           subject: `Document executed: ${document.title}`,
-          html: `
-            <p>${greeting}</p>
-            <p>${document.title} has been fully executed.</p>
-            <p><a href="${executedUrl}">Open executed PDF</a></p>
-            <p>The executed PDF is also attached to this email.</p>
-          `,
+          html,
+          from: getOrgSenderEmail(org?.slug, org?.name),
           attachments: [
             {
               filename: executedName,
@@ -580,17 +661,26 @@ export async function submitDocumentSignatureAction(input: {
           orgId: signingRequest.org_id,
           requestId: request.id,
         })
+        const html = await renderEmailTemplate(
+          SignatureEmail({
+            documentTitle: document.title,
+            signingLink: url,
+            orgName: org?.name ?? null,
+            orgLogoUrl: org?.logo_url ?? null,
+            eventLabel: "Signature Request",
+            headline: "Document ready for signature",
+            bodyText: "The document is now ready for your signature.",
+            detailLabel: "Signature",
+            detailText: "Open the document to review all pages, complete required fields, and sign electronically.",
+            buttonText: "Review and Sign",
+          }),
+        )
 
         await sendEmail({
           to: [request.sent_to_email as string],
           subject: `Signature requested: ${document.title}`,
-          html: `
-            <p>Hello,</p>
-            <p>The document is now ready for your signature.</p>
-            <p><a href="${url}">Review and sign document</a></p>
-            <p>If the button does not work, copy this link:</p>
-            <p>${url}</p>
-          `,
+          html,
+          from: getOrgSenderEmail(org?.slug, org?.name),
         })
       }),
     )
