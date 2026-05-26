@@ -194,14 +194,9 @@ export function LoginForm({
         </p>
       </div>
 
-      <div className="relative overflow-hidden">
+      <div>
         {/* Email step */}
-        <div
-          className={cn(
-            "transition-all duration-300 ease-out",
-            step !== "email" && "-translate-x-full opacity-0 absolute inset-0 pointer-events-none",
-          )}
-        >
+        <div className={cn(step !== "email" && "hidden")}>
           <form
             onSubmit={(event) => {
               event.preventDefault()
@@ -257,12 +252,7 @@ export function LoginForm({
         </div>
 
         {/* Password step */}
-        <div
-          className={cn(
-            "transition-all duration-300 ease-out",
-            step !== "password" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
-          )}
-        >
+        <div className={cn(step !== "password" && "hidden")}>
           <form action={formAction} className="grid gap-4">
             <input type="hidden" name="email" value={email} />
 
@@ -320,12 +310,7 @@ export function LoginForm({
         </div>
 
         {/* First-time setup step */}
-        <div
-          className={cn(
-            "transition-all duration-300 ease-out",
-            step !== "setup" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
-          )}
-        >
+        <div className={cn(step !== "setup" && "hidden")}>
           <div className="grid gap-4">
             <div className="flex items-center gap-2 border border-border bg-muted/40 px-3 py-2 text-sm">
               <Mail className="size-4 text-muted-foreground" />
@@ -381,12 +366,7 @@ export function LoginForm({
         </div>
 
         {/* MFA step */}
-        <div
-          className={cn(
-            "transition-all duration-300 ease-out",
-            step !== "mfa" && "translate-x-full opacity-0 absolute inset-0 pointer-events-none",
-          )}
-        >
+        <div className={cn(step !== "mfa" && "hidden")}>
           <div className="mx-auto grid w-full max-w-[15rem] justify-items-center gap-6">
             <div className="grid size-12 place-items-center bg-primary/10 text-primary">
               <ShieldCheck className="size-6" />
