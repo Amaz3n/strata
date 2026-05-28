@@ -7,7 +7,6 @@ import {
   Play,
   CheckCircle2,
   AlertTriangle,
-  Camera,
   MoreHorizontal,
 } from "lucide-react"
 
@@ -24,20 +23,9 @@ export function MobileQuickActions({
   onViewDetails,
   className,
 }: MobileQuickActionsProps) {
-  if (!selectedItem) {
-    return (
-      <div
-        className={cn(
-          "fixed bottom-0 left-0 right-0 border-t bg-background/95 backdrop-blur-sm px-4 py-3 safe-area-pb",
-          className
-        )}
-      >
-        <div className="flex items-center justify-center text-sm text-muted-foreground">
-          Tap an item to see actions
-        </div>
-      </div>
-    )
-  }
+  // Nothing selected: render nothing. A persistent bar here just shows a stray
+  // top border peeking out behind the floating bottom nav.
+  if (!selectedItem) return null
 
   const isCompleted = selectedItem.status === "completed"
   const isInProgress = selectedItem.status === "in_progress"

@@ -129,6 +129,19 @@ export function FileViewer({
     }
   }, [open, currentFileIsPdf])
 
+  // Hide the mobile bottom nav (and any other immersive-aware chrome) while open
+  useEffect(() => {
+    if (typeof window === "undefined" || !open) return
+    window.dispatchEvent(
+      new CustomEvent("arc-immersive-view", { detail: { active: true } }),
+    )
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent("arc-immersive-view", { detail: { active: false } }),
+      )
+    }
+  }, [open])
+
   // Reset state when file changes
   useEffect(() => {
     setZoom(1)
@@ -394,7 +407,7 @@ export function FileViewer({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex bg-black/95"
+      className="fixed inset-0 z-50 flex bg-neutral-900"
       onClick={handleBackdropClick}
     >
       {/* Main viewer column */}
@@ -403,197 +416,221 @@ export function FileViewer({
         className="relative flex-1 flex flex-col min-w-0"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* TOP BAR */}
-        <div className="absolute top-0 inset-x-0 z-30 flex items-center gap-1 px-2 sm:px-3 py-2 sm:py-3 bg-gradient-to-b from-black/90 via-black/60 to-transparent pointer-events-none">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="pointer-events-auto h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0"
-            onClick={() => onOpenChange(false)}
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </Button>
-
-          <div className="pointer-events-auto flex-1 min-w-0 text-white px-1 sm:px-2">
-            <p className="text-sm font-medium truncate">{currentFile.file_name}</p>
-            <p className="text-[11px] text-white/60 truncate">
-              {formatFileSize(currentFile.size_bytes)}
-              {imageDimensions && (
-                <span> · {imageDimensions.width} × {imageDimensions.height}</span>
-              )}
-              {hasMultiple && (
-                <span> · {clampedIndex + 1} of {files.length}</span>
-              )}
-              {isPdf && pdfPageCount > 0 && (
-                <span> · Page {activePdfPageClamped} of {pdfPageCount}</span>
-              )}
-            </p>
-          </div>
-
-          {/* Desktop inline zoom controls */}
-          {isImage && (
-            <div className="pointer-events-auto hidden md:flex items-center gap-0.5 mr-1 bg-white/5 rounded-full px-1">
+        {/* TOP-LEFT: identity + navigation */}
+        <div className="absolute left-3 sm:left-4 top-[calc(0.75rem+env(safe-area-inset-top))] z-30 flex max-w-[calc(100%-9.5rem)] items-center gap-1 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md sm:max-w-[460px]">
+          {hasMultiple && (
+            <>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 rounded-full text-white/90 hover:text-white hover:bg-white/10"
+                className="hidden h-9 w-9 sm:inline-flex"
+                onClick={handlePrev}
+                disabled={!canPrev}
+                aria-label="Previous"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="hidden w-10 text-center font-mono text-xs tabular-nums text-muted-foreground sm:inline">
+                {clampedIndex + 1}/{files.length}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="hidden h-9 w-9 sm:inline-flex"
+                onClick={handleNext}
+                disabled={!canNext}
+                aria-label="Next"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <div className="mx-1 hidden h-6 w-px bg-border sm:block" />
+            </>
+          )}
+          <div className="flex h-9 min-w-0 items-center gap-2 px-1">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted text-muted-foreground">
+              {isImage && currentFile.thumbnail_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={currentFile.thumbnail_url} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <FileText className="h-3.5 w-3.5" />
+              )}
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold leading-tight">{currentFile.file_name}</p>
+              <p className="truncate text-[11px] leading-tight text-muted-foreground">
+                {formatFileSize(currentFile.size_bytes)}
+                {imageDimensions && (
+                  <span> · {imageDimensions.width} × {imageDimensions.height}</span>
+                )}
+                {hasMultiple && <span> · {clampedIndex + 1} of {files.length}</span>}
+                {isPdf && pdfPageCount > 0 && (
+                  <span> · Page {activePdfPageClamped} of {pdfPageCount}</span>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* TOP-RIGHT: view + actions */}
+        <div className="absolute right-3 sm:right-4 top-[calc(0.75rem+env(safe-area-inset-top))] z-30 flex items-center gap-2">
+          {/* Mobile: compact pill */}
+          <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md md:hidden">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="More options">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                {isImage && (
+                  <>
+                    <DropdownMenuItem onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}>
+                      <ZoomIn className="mr-2 h-4 w-4" />
+                      Zoom in
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}>
+                      <ZoomOut className="mr-2 h-4 w-4" />
+                      Zoom out
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => { setZoom(1); setRotation(0) }}>
+                      Reset ({Math.round(zoom * 100)}%)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setRotation((r) => (r + 90) % 360)}>
+                      <RotateCw className="mr-2 h-4 w-4" />
+                      Rotate
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                <DropdownMenuItem onClick={toggleFullscreen}>
+                  {isFullscreen ? (
+                    <><Minimize2 className="mr-2 h-4 w-4" /> Exit fullscreen</>
+                  ) : (
+                    <><Maximize2 className="mr-2 h-4 w-4" /> Fullscreen</>
+                  )}
+                </DropdownMenuItem>
+                {hasVersionsPanel && (
+                  <DropdownMenuItem onClick={() => setShowVersions((prev) => !prev)}>
+                    <History className="mr-2 h-4 w-4" />
+                    {showVersions ? "Hide versions" : "Version history"}
+                  </DropdownMenuItem>
+                )}
+                {onDownload && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => onDownload(currentFile)}>
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9"
+              onClick={() => onOpenChange(false)}
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Desktop: zoom pill (images) */}
+          {isImage && (
+            <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md md:flex">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
                 onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}
-                aria-label="Zoom out"
+                title="Zoom out"
               >
                 <ZoomOut className="h-4 w-4" />
               </Button>
               <button
                 onClick={() => { setZoom(1); setRotation(0) }}
-                className="text-xs text-white/70 hover:text-white tabular-nums w-12 text-center"
-                aria-label="Reset zoom"
+                className="w-11 text-center font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                title="Reset zoom"
               >
                 {Math.round(zoom * 100)}%
               </button>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 rounded-full text-white/90 hover:text-white hover:bg-white/10"
+                className="h-9 w-9"
                 onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}
-                aria-label="Zoom in"
+                title="Zoom in"
               >
                 <ZoomIn className="h-4 w-4" />
               </Button>
             </div>
           )}
 
-          {/* Primary action — download */}
-          {onDownload && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="pointer-events-auto h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0"
-              onClick={() => onDownload(currentFile)}
-              aria-label="Download"
-            >
-              <Download className="h-4 w-4" />
-            </Button>
-          )}
-
-          {/* Versions quick toggle (desktop) */}
-          {hasVersionsPanel && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "pointer-events-auto hidden md:inline-flex h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0",
-                showVersions && "bg-white/15 text-white"
-              )}
-              onClick={() => setShowVersions((prev) => !prev)}
-              aria-label="Version history"
-            >
-              <History className="h-4 w-4" />
-            </Button>
-          )}
-
-          {/* Overflow menu — mobile zoom/rotate, fullscreen, versions */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          {/* Desktop: actions pill */}
+          <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md md:flex">
+            {isImage && (
               <Button
                 variant="ghost"
                 size="icon"
-                className="pointer-events-auto h-10 w-10 rounded-full text-white/90 hover:text-white hover:bg-white/10 flex-shrink-0"
-                aria-label="More options"
+                className="h-9 w-9"
+                onClick={() => setRotation((r) => (r + 90) % 360)}
+                title="Rotate"
               >
-                <MoreHorizontal className="h-4 w-4" />
+                <RotateCw className="h-4 w-4" />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
-              {isImage && (
-                <div className="md:hidden">
-                  <DropdownMenuItem onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}>
-                    <ZoomIn className="mr-2 h-4 w-4" />
-                    Zoom in
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}>
-                    <ZoomOut className="mr-2 h-4 w-4" />
-                    Zoom out
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setZoom(1); setRotation(0) }}>
-                    Reset ({Math.round(zoom * 100)}%)
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </div>
-              )}
-              {isImage && (
-                <DropdownMenuItem onClick={() => setRotation((r) => (r + 90) % 360)}>
-                  <RotateCw className="mr-2 h-4 w-4" />
-                  Rotate
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onClick={toggleFullscreen}>
-                {isFullscreen ? (
-                  <><Minimize2 className="mr-2 h-4 w-4" /> Exit fullscreen</>
-                ) : (
-                  <><Maximize2 className="mr-2 h-4 w-4" /> Fullscreen</>
-                )}
-              </DropdownMenuItem>
-              {hasVersionsPanel && (
-                <DropdownMenuItem
-                  className="md:hidden"
-                  onClick={() => setShowVersions((prev) => !prev)}
-                >
-                  <History className="mr-2 h-4 w-4" />
-                  {showVersions ? "Hide versions" : "Version history"}
-                </DropdownMenuItem>
-              )}
-              {onDownload && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => onDownload(currentFile)}>
-                    <Download className="mr-2 h-4 w-4" />
-                    Download
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+            )}
+            {hasVersionsPanel && (
+              <Button
+                variant={showVersions ? "secondary" : "ghost"}
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => setShowVersions((prev) => !prev)}
+                title="Version history"
+              >
+                <History className="h-4 w-4" />
+              </Button>
+            )}
+            {onDownload && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => onDownload(currentFile)}
+                title="Download"
+              >
+                <Download className="h-4 w-4" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            >
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+            <div className="mx-1 h-6 w-px bg-border" />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9"
+              onClick={() => onOpenChange(false)}
+              title="Close (Esc)"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
-
-        {/* NAV ARROWS */}
-        {hasMultiple && (
-          <>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-20 h-10 w-10 sm:h-12 sm:w-12 rounded-full bg-black/40 backdrop-blur-sm text-white/90 hover:text-white hover:bg-black/60 transition-opacity",
-                !canPrev && "opacity-0 pointer-events-none"
-              )}
-              onClick={handlePrev}
-              disabled={!canPrev}
-              aria-label="Previous"
-            >
-              <ChevronLeft className="h-5 w-5 sm:h-6 sm:w-6" />
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 h-10 w-10 sm:h-12 sm:w-12 rounded-full bg-black/40 backdrop-blur-sm text-white/90 hover:text-white hover:bg-black/60 transition-opacity",
-                !canNext && "opacity-0 pointer-events-none"
-              )}
-              onClick={handleNext}
-              disabled={!canNext}
-              aria-label="Next"
-            >
-              <ChevronRight className="h-5 w-5 sm:h-6 sm:w-6" />
-            </Button>
-          </>
-        )}
 
         {/* CONTENT */}
         <div
           className={cn(
             "flex-1 flex items-center justify-center overflow-hidden relative",
-            "pt-14 sm:pt-16",
-            hasBottomStrip ? "pb-28 sm:pb-32" : "pb-4"
+            "pt-[calc(4.5rem+env(safe-area-inset-top))]",
+            hasBottomStrip ? "pb-28 sm:pb-32" : "pb-[max(env(safe-area-inset-bottom),1rem)]"
           )}
         >
           {isLoading && (
@@ -677,16 +714,17 @@ export function FileViewer({
           )}
 
           {!isImage && !isPdf && (
-            <div className="flex flex-col items-center justify-center gap-4 text-white/80 px-6 text-center">
-              <FileText className="h-16 w-16" />
+            <div className="mx-4 flex max-w-sm flex-col items-center justify-center gap-4 rounded-2xl border bg-background/95 px-8 py-10 text-center shadow-xl backdrop-blur-md">
+              <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+                <FileText className="h-8 w-8" />
+              </span>
               <div>
-                <p className="font-medium">{currentFile.file_name}</p>
-                <p className="text-sm opacity-60 mt-1">
+                <p className="font-semibold">{currentFile.file_name}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
                   Preview not available for this file type
                 </p>
                 {onDownload && (
                   <Button
-                    variant="secondary"
                     className="mt-4"
                     onClick={() => onDownload(currentFile)}
                   >
@@ -701,7 +739,8 @@ export function FileViewer({
 
         {/* BOTTOM STRIP */}
         {hasBottomStrip && (
-          <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/90 via-black/70 to-transparent pt-6 pb-3 px-3">
+          <div className="absolute inset-x-0 bottom-[max(env(safe-area-inset-bottom),0.75rem)] z-20 flex justify-center px-3">
+            <div className="max-w-full overflow-hidden rounded-xl border bg-background/95 p-1.5 shadow-lg backdrop-blur-md">
             {showPdfThumbnails && currentPdfUrl && PdfDocument && PdfPage ? (
               <PdfDocument
                 key={`${currentFile.id}-thumbs`}
@@ -710,7 +749,7 @@ export function FileViewer({
                 noData={null}
                 error={null}
               >
-                <div className="flex items-center gap-2 overflow-x-auto pb-1 px-1">
+                <div className="flex items-center gap-2 overflow-x-auto p-1">
                   {Array.from({ length: pdfPageCount }).map((_, pageIndex) => {
                     const pageNumber = pageIndex + 1
                     const active = pageNumber === activePdfPageClamped
@@ -722,8 +761,8 @@ export function FileViewer({
                         className={cn(
                           "group relative shrink-0 rounded-md overflow-hidden transition-all",
                           active
-                            ? "ring-2 ring-primary shadow-lg"
-                            : "opacity-60 hover:opacity-100 ring-1 ring-white/10"
+                            ? "ring-2 ring-primary shadow-md"
+                            : "opacity-70 hover:opacity-100 ring-1 ring-border"
                         )}
                       >
                         <div className="bg-white">
@@ -758,7 +797,7 @@ export function FileViewer({
                 </div>
               </PdfDocument>
             ) : hasMultiple ? (
-              <div className="flex items-center justify-center gap-1.5 overflow-x-auto px-1">
+              <div className="flex items-center gap-1.5 overflow-x-auto p-1">
                 {files.map((f, index) => {
                   const active = index === clampedIndex
                   return (
@@ -768,8 +807,8 @@ export function FileViewer({
                       className={cn(
                         "relative h-14 w-14 shrink-0 rounded-md overflow-hidden transition-all",
                         active
-                          ? "ring-2 ring-primary shadow-lg scale-105"
-                          : "opacity-60 hover:opacity-100 ring-1 ring-white/10"
+                          ? "ring-2 ring-primary shadow-md"
+                          : "opacity-70 hover:opacity-100 ring-1 ring-border"
                       )}
                       aria-label={f.file_name}
                     >
@@ -782,8 +821,8 @@ export function FileViewer({
                           unoptimized
                         />
                       ) : (
-                        <div className="flex items-center justify-center h-full w-full bg-zinc-800">
-                          <FileText className="h-5 w-5 text-white/60" />
+                        <div className="flex items-center justify-center h-full w-full bg-muted">
+                          <FileText className="h-5 w-5 text-muted-foreground" />
                         </div>
                       )}
                     </button>
@@ -791,6 +830,7 @@ export function FileViewer({
                 })}
               </div>
             ) : null}
+            </div>
           </div>
         )}
       </div>

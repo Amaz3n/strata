@@ -123,6 +123,11 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
 
   const isGantt = viewState.view === "gantt"
 
+  // Mobile is locked to the lookahead view, which carries its own compact
+  // header (date nav + add). Rendering this toolbar there just leaves an empty
+  // bar with a border, so skip it entirely on phones.
+  if (isMobile) return null
+
   return (
     <TooltipProvider delayDuration={200}>
       <div

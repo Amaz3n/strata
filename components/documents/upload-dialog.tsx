@@ -196,9 +196,7 @@ export function UploadDialog({
           formData.append("category", category)
         }
         formData.append("visibility", visibility)
-        if (targetFolder) {
-          formData.append("folderPath", targetFolder)
-        }
+        formData.append("folderPath", targetFolder)
         if (description.trim()) {
           formData.append("description", description.trim())
         }

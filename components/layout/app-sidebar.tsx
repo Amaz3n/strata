@@ -105,7 +105,6 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/decisions")) return "decisions"
   if (pathname.includes("/signatures")) return "signatures"
   if (pathname.includes("/documents")) return "documents"
-  if (pathname.includes("/proposals")) return "proposals"
   if (pathname.includes("/bids")) return "bids"
   if (pathname.includes("/change-orders")) return "change-orders"
   if (pathname.includes("/invoices")) return "invoices"
@@ -207,7 +206,7 @@ function buildProjectGroups(projectId: string, section: string): SidebarNavGroup
     { title: "Documents", url: url("/documents"), isActive: section === "documents", requiredAny: ["docs.read"] },
     { title: "Drawings", url: url("/drawings"), isActive: section === "drawings", requiredAny: ["drawing.read", "docs.read"] },
     { title: "Bids", url: url("/bids"), isActive: section === "bids", requiredAny: ["bid.read", "bid.write"] },
-    { title: "Proposals", url: url("/proposals"), isActive: section === "proposals", requiredAny: ["proposal.read", "proposal.write"] },
+    { title: "Signatures", url: url("/signatures"), isActive: section === "signatures", requiredAny: ["signature.read", "signature.send"] },
   ]
   const buildSubs: SidebarNavSubItem[] = [
     { title: "Schedule", url: url("/schedule"), isActive: section === "schedule", requiredAny: ["schedule.read"] },
@@ -225,7 +224,6 @@ function buildProjectGroups(projectId: string, section: string): SidebarNavGroup
     { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
     { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
     { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
-    { title: "Signatures", url: url("/signatures"), isActive: section === "signatures", requiredAny: ["signature.read", "signature.send"] },
   ]
   const closeSubs: SidebarNavSubItem[] = [
     { title: "Closeout", url: url("/closeout"), isActive: section === "closeout", requiredAny: ["closeout.read", "closeout.write"] },

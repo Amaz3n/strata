@@ -365,7 +365,7 @@ const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['status', 'number', 'total_cents'],
     descriptionFields: ['summary', 'terms'],
     searchableFields: ['title', 'number', 'summary', 'terms'],
-    hrefTemplate: '/proposals/{id}',
+    hrefTemplate: '/signatures',
     joins: ['LEFT JOIN projects p ON prop.project_id = p.id'],
   },
   rfi: {

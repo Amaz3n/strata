@@ -56,7 +56,7 @@ const DECISION_TYPE_LABELS: Record<DecisionType, string> = {
   rfi: "RFIs",
   submittal: "Submittals",
   vendor_bill: "Bills awaiting approval",
-  proposal: "Proposals",
+  proposal: "Proposal signatures",
   punch_item: "Punch items",
 }
 
@@ -65,7 +65,7 @@ const DECISION_TYPE_HREF: Record<DecisionType, string> = {
   rfi: "/rfis",
   submittal: "/submittals",
   vendor_bill: "/payments",
-  proposal: "/proposals",
+  proposal: "/signatures",
   punch_item: "/tasks",
 }
 

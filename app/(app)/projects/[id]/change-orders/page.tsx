@@ -4,7 +4,6 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
 import { listChangeOrdersAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrdersClient } from "@/components/change-orders/change-orders-client"
-import { listCostCodes } from "@/lib/services/cost-codes"
 import { Skeleton } from "@/components/ui/skeleton"
 
 interface ProjectChangeOrdersPageProps {
@@ -43,17 +42,13 @@ async function ProjectChangeOrdersData({ id }: { id: string }) {
     notFound()
   }
 
-  const [changeOrders, costCodes] = await Promise.all([
-    listChangeOrdersAction(id),
-    listCostCodes().catch(() => []),
-  ])
+  const changeOrders = await listChangeOrdersAction(id)
 
   return (
     <div className="space-y-6">
       <ChangeOrdersClient
         changeOrders={changeOrders}
         projects={[project]}
-        costCodes={costCodes}
         hideProjectFilter
       />
     </div>

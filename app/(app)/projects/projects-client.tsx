@@ -32,7 +32,7 @@ import { Plus, Search, MoreHorizontal, FolderOpen, X, SlidersHorizontal, Edit, T
 import { toast } from "sonner"
 import { useForm, type UseFormReturn } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import type { Project, ProjectStatus } from "@/lib/types"
+import type { Contact, Project, ProjectStatus } from "@/lib/types"
 import { createProjectAction, updateProjectAction, deleteProjectAction } from "./actions"
 import { projectInputSchema } from "@/lib/validation/projects"
 import type { ProjectInput } from "@/lib/validation/projects"
@@ -55,44 +55,78 @@ const statusColors: Record<ProjectStatus, string> = {
 }
 
 const statusLabels: Record<ProjectStatus, string> = {
-  planning: "Planning",
-  bidding: "Bidding",
+  planning: "Lead",
+  bidding: "Precon",
   active: "Active",
-  on_hold: "On Hold",
-  completed: "Completed",
-  cancelled: "Cancelled",
+  on_hold: "Paused",
+  completed: "Complete",
+  cancelled: "Canceled",
 }
 
 const statusOptions = [
-  { value: "planning", label: "Planning" },
-  { value: "bidding", label: "Bidding" },
+  { value: "planning", label: "Lead" },
+  { value: "bidding", label: "Precon" },
   { value: "active", label: "Active" },
-  { value: "on_hold", label: "On Hold" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
+  { value: "on_hold", label: "Paused" },
+  { value: "completed", label: "Complete" },
+  { value: "cancelled", label: "Canceled" },
 ]
 
 const filterStatusOptions: { value: ProjectStatus | "all"; label: string }[] = [
-  { value: "all", label: "All statuses" },
+  { value: "all", label: "All stages" },
   { value: "active", label: "Active" },
-  { value: "planning", label: "Planning" },
-  { value: "bidding", label: "Bidding" },
-  { value: "on_hold", label: "On Hold" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
+  { value: "planning", label: "Lead" },
+  { value: "bidding", label: "Precon" },
+  { value: "on_hold", label: "Paused" },
+  { value: "completed", label: "Complete" },
+  { value: "cancelled", label: "Canceled" },
 ]
+
+const billingModeOptions = [
+  {
+    value: "fixed_price",
+    label: "Fixed price",
+    description: "Invoice against one agreed contract amount.",
+  },
+  {
+    value: "cost_plus_percent",
+    label: "Cost plus %",
+    description: "Bill actual costs with a percentage markup.",
+  },
+  {
+    value: "cost_plus_fixed_fee",
+    label: "Cost plus fixed fee",
+    description: "Bill actual costs with a fixed builder fee.",
+  },
+  {
+    value: "cost_plus_gmp",
+    label: "Cost plus GMP",
+    description: "Bill actual costs with a guaranteed maximum price.",
+  },
+  {
+    value: "time_and_materials",
+    label: "Time & materials",
+    description: "Bill labor and material costs as they are incurred.",
+  },
+] as const
 
 interface ProjectsClientProps {
   projects: Project[]
+  clientContacts: Contact[]
 }
 
 function projectToFormValues(project: Project): ProjectInput {
+  const contractValueCents =
+    project.billing_contract?.total_cents ??
+    (typeof project.total_value === "number" ? Math.round(project.total_value * 100) : undefined)
+
   return {
     name: project.name,
     status: project.status,
     start_date: project.start_date ?? "",
     end_date: project.end_date ?? "",
     address: project.address ?? "",
+    client_id: project.client_id ?? null,
     total_value: project.total_value ?? undefined,
     property_type: project.property_type ?? undefined,
     project_type: project.project_type ?? undefined,
@@ -106,11 +140,23 @@ function projectToFormValues(project: Project): ProjectInput {
     labor_burden_multiplier: project.billing_contract?.labor_burden_multiplier ?? 1,
     requires_client_cost_approval: project.billing_contract?.requires_client_cost_approval ?? false,
     open_book: project.billing_contract?.open_book ?? true,
-    total_contract_value_cents: project.billing_contract?.total_cents ?? undefined,
+    total_contract_value_cents: contractValueCents,
   }
 }
 
-export function ProjectsClient({ projects }: ProjectsClientProps) {
+function normalizeProjectInput(values: ProjectInput): ProjectInput {
+  const contractValue =
+    typeof values.total_contract_value_cents === "number" ? values.total_contract_value_cents / 100 : undefined
+
+  return {
+    ...values,
+    start_date: values.start_date || null,
+    end_date: values.end_date || null,
+    total_value: contractValue,
+  }
+}
+
+export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps) {
   const [projectsState, setProjectsState] = useState<Project[]>(projects)
 
   // Create sheet
@@ -141,6 +187,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
       start_date: "",
       end_date: "",
       address: "",
+      client_id: null,
       total_value: undefined,
       property_type: undefined,
       project_type: undefined,
@@ -166,6 +213,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
       start_date: "",
       end_date: "",
       address: "",
+      client_id: null,
       total_value: undefined,
       property_type: undefined,
       project_type: undefined,
@@ -218,7 +266,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
   async function handleCreate(values: ProjectInput) {
     setIsCreating(true)
     try {
-      const created = await createProjectAction(values)
+      const created = await createProjectAction(normalizeProjectInput(values))
       setProjectsState((prev) => [created, ...prev])
       createForm.reset()
       setCreateDateRange(undefined)
@@ -236,7 +284,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
     if (!editingProject) return
     setIsUpdating(true)
     try {
-      const updated = await updateProjectAction(editingProject.id, values)
+      const updated = await updateProjectAction(editingProject.id, normalizeProjectInput(values))
       setProjectsState((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
       toast.success("Project updated", { description: updated.name })
       setEditSheetOpen(false)
@@ -313,7 +361,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
-                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter by status</DropdownMenuLabel>
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter by stage</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {filterStatusOptions.map((opt) => (
                   <DropdownMenuCheckboxItem
@@ -395,9 +443,9 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
                   <TableRow>
                     <TableHead className="pl-6 w-[280px]">Project</TableHead>
                     <TableHead>Address</TableHead>
-                    <TableHead className="w-[120px]">Status</TableHead>
-                    <TableHead className="w-[220px]">Dates</TableHead>
-                    <TableHead className="text-right w-[120px]">Budget</TableHead>
+                    <TableHead className="w-[120px]">Stage</TableHead>
+                    <TableHead className="w-[220px]">Schedule</TableHead>
+                    <TableHead className="text-right w-[140px]">Contract</TableHead>
                     <TableHead className="w-[52px] pr-4" />
                   </TableRow>
                 </TableHeader>
@@ -422,16 +470,16 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm py-3">
                         {project.start_date && project.end_date
-                          ? `${new Date(project.start_date).toLocaleDateString()} – ${new Date(project.end_date).toLocaleDateString()}`
+                          ? `${new Date(project.start_date).toLocaleDateString()} - ${new Date(project.end_date).toLocaleDateString()}`
                           : project.start_date
                             ? `Starts ${new Date(project.start_date).toLocaleDateString()}`
                             : project.end_date
                               ? `Ends ${new Date(project.end_date).toLocaleDateString()}`
-                              : "—"}
+                              : "No schedule"}
                       </TableCell>
                       <TableCell className="text-right text-sm py-3">
-                        {typeof (project.total_value ?? project.budget) === "number"
-                          ? `$${(project.total_value ?? project.budget)!.toLocaleString()}`
+                        {typeof (project.billing_contract?.total_cents ?? (typeof project.total_value === "number" ? project.total_value * 100 : undefined)) === "number"
+                          ? `$${((project.billing_contract?.total_cents ?? project.total_value! * 100) / 100).toLocaleString()}`
                           : "—"}
                       </TableCell>
                       <TableCell className="pr-4 py-3">
@@ -456,6 +504,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
         onDateRangeChange={setCreateDateRange}
         isSubmitting={isCreating}
         onSubmit={handleCreate}
+        clientContacts={clientContacts}
         onClose={() => {
           createForm.reset()
           setCreateDateRange(undefined)
@@ -473,6 +522,7 @@ export function ProjectsClient({ projects }: ProjectsClientProps) {
         onDateRangeChange={setEditDateRange}
         isSubmitting={isUpdating}
         onSubmit={handleUpdate}
+        clientContacts={clientContacts}
         onClose={() => {
           setEditSheetOpen(false)
           setEditingProject(null)
@@ -550,6 +600,7 @@ interface ProjectFormSheetProps {
   onDateRangeChange: (range: DateRange | undefined) => void
   isSubmitting: boolean
   onSubmit: (values: ProjectInput) => Promise<void>
+  clientContacts: Contact[]
   onClose: () => void
 }
 
@@ -562,6 +613,7 @@ function ProjectFormSheet({
   onDateRangeChange,
   isSubmitting,
   onSubmit,
+  clientContacts,
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
@@ -569,6 +621,8 @@ function ProjectFormSheet({
   const isCostBilling = billingMode !== "fixed_price"
   const isGmpBilling = billingMode === "cost_plus_gmp"
   const usesMarkup = billingMode === "cost_plus_percent" || billingMode === "cost_plus_gmp" || billingMode === "time_and_materials"
+  const contractValueLabel = isCostBilling ? "Contract value or cap" : "Contract value"
+  const selectedBillingMode = billingModeOptions.find((option) => option.value === billingMode) ?? billingModeOptions[0]
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -610,11 +664,11 @@ function ProjectFormSheet({
                 name="status"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Status</FormLabel>
+                    <FormLabel>Stage</FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select status" />
+                          <SelectValue placeholder="Select stage" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
@@ -634,13 +688,20 @@ function ProjectFormSheet({
                 name="start_date"
                 render={() => (
                   <FormItem>
-                    <FormLabel>Project dates</FormLabel>
+                    <FormLabel>Schedule</FormLabel>
                     <FormControl>
-                      <DateRangePicker
-                        dateRange={dateRange}
-                        onDateRangeChange={onDateRangeChange}
-                        placeholder="Select start and end dates"
-                      />
+                      <div className="flex gap-2">
+                        <DateRangePicker
+                          dateRange={dateRange}
+                          onDateRangeChange={onDateRangeChange}
+                          placeholder="Optional start and end dates"
+                        />
+                        {dateRange?.from || dateRange?.to ? (
+                          <Button type="button" variant="outline" size="sm" onClick={() => onDateRangeChange(undefined)}>
+                            Clear
+                          </Button>
+                        ) : null}
+                      </div>
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -665,30 +726,29 @@ function ProjectFormSheet({
               />
               <FormField
                 control={form.control}
-                name="total_value"
+                name="client_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Total Value</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="text"
-                        placeholder="$50,000"
-                        className="font-mono"
-                        {...field}
-                        value={field.value ? `$${field.value.toLocaleString()}` : ""}
-                        onChange={(e) => {
-                          const raw = e.target.value.replace(/[^\d.-]/g, "")
-                          const n = raw ? parseFloat(raw) : undefined
-                          field.onChange(n && !isNaN(n) ? n : undefined)
-                        }}
-                        onFocus={(e) => {
-                          e.target.value = field.value ? field.value.toString() : ""
-                        }}
-                        onBlur={(e) => {
-                          e.target.value = field.value ? `$${field.value.toLocaleString()}` : ""
-                        }}
-                      />
-                    </FormControl>
+                    <FormLabel>Primary client contact</FormLabel>
+                    <Select
+                      value={field.value ?? "none"}
+                      onValueChange={(value) => field.onChange(value === "none" ? null : value)}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select contact" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="none">Not set</SelectItem>
+                        {clientContacts.map((contact) => (
+                          <SelectItem key={contact.id} value={contact.id}>
+                            {contact.full_name}
+                            {contact.email ? ` - ${contact.email}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -756,9 +816,31 @@ function ProjectFormSheet({
               <Separator />
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-sm font-semibold">Billing setup</h3>
-                  <p className="text-xs text-muted-foreground">Choose how Arc should treat costs and invoices for this project.</p>
+                  <h3 className="text-sm font-semibold">Contract and billing</h3>
+                  <p className="text-xs text-muted-foreground">Set the project value once, then choose how costs should flow into billing.</p>
                 </div>
+                <FormField
+                  control={form.control}
+                  name="total_contract_value_cents"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{contractValueLabel}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="text"
+                          placeholder="$500,000"
+                          className="font-mono"
+                          value={typeof field.value === "number" ? `$${(field.value / 100).toLocaleString()}` : ""}
+                          onChange={(e) => {
+                            const raw = e.target.value.replace(/[^\d.]/g, "")
+                            field.onChange(raw ? Math.round(Number(raw) * 100) : undefined)
+                          }}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <FormField
                   control={form.control}
                   name="billing_model"
@@ -772,35 +854,14 @@ function ProjectFormSheet({
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="fixed_price">Fixed price</SelectItem>
-                          <SelectItem value="cost_plus_percent">Cost plus %</SelectItem>
-                          <SelectItem value="cost_plus_fixed_fee">Cost plus fixed fee</SelectItem>
-                          <SelectItem value="cost_plus_gmp">Cost plus GMP</SelectItem>
-                          <SelectItem value="time_and_materials">Time & materials</SelectItem>
+                          {billingModeOptions.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="total_contract_value_cents"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{isCostBilling ? "Contract cap / value" : "Contract value"}</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="text"
-                          placeholder="$500,000"
-                          className="font-mono"
-                          value={typeof field.value === "number" ? `$${(field.value / 100).toLocaleString()}` : ""}
-                          onChange={(e) => {
-                            const raw = e.target.value.replace(/[^\d.]/g, "")
-                            field.onChange(raw ? Math.round(Number(raw) * 100) : undefined)
-                          }}
-                        />
-                      </FormControl>
+                      <p className="text-xs text-muted-foreground">{selectedBillingMode.description}</p>
                       <FormMessage />
                     </FormItem>
                   )}

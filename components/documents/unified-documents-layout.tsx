@@ -42,10 +42,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { DocumentsProvider, useDocuments } from "./documents-context";
 import { DocumentsExplorer } from "./documents-explorer";
 import { DocumentsToolbar } from "./documents-toolbar";
 import { DocumentsContent } from "./documents-content";
+import { DocumentsMobileLayout } from "./documents-mobile-layout";
 import { formatFileSize } from "./documents-table";
 import { SheetsContent } from "./sheets-content";
 import { FilePropertiesPanel } from "./file-properties-panel";
@@ -57,6 +59,7 @@ import {
   getFileAction,
   getFileDownloadUrlAction,
   listFileVersionsAction,
+  uploadFileAction,
   uploadFileVersionAction,
   makeVersionCurrentAction,
   updateFileVersionAction,
@@ -216,6 +219,7 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
 function UnifiedDocumentsLayoutInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const isMobile = useIsMobile();
   const ENABLE_TILES_AUTH =
     process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true";
   const {
@@ -275,6 +279,7 @@ function UnifiedDocumentsLayoutInner() {
   const [isDownloadingSelected, setIsDownloadingSelected] = useState(false);
   const [draggedFileId, setDraggedFileId] = useState<string | null>(null);
   const [isDraggingDocumentFile, setIsDraggingDocumentFile] = useState(false);
+  const [isDirectUploading, setIsDirectUploading] = useState(false);
 
   const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false);
   const [newFolderPath, setNewFolderPath] = useState("");
@@ -438,18 +443,86 @@ function UnifiedDocumentsLayoutInner() {
     e.stopPropagation();
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(false);
-    dragCounterRef.current = 0;
+  const uploadDroppedFiles = useCallback(
+    async (droppedFiles: File[], targetPath: string | null) => {
+      if (droppedFiles.length === 0) return;
 
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    if (droppedFiles.length > 0) {
-      setUploadFiles(droppedFiles);
-      setUploadDialogOpen(true);
-    }
-  }, []);
+      const normalizedTarget = targetPath ? normalizeFolderPath(targetPath) : null;
+      setIsDirectUploading(true);
+
+      const uploadOne = async (file: File) => {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("projectId", projectId);
+        formData.append("folderPath", normalizedTarget ?? "");
+        await uploadFileAction(formData);
+      };
+
+      const toastId = toast.loading(
+        `Uploading ${droppedFiles.length} file${droppedFiles.length === 1 ? "" : "s"}...`,
+      );
+
+      try {
+        const results = await Promise.allSettled(droppedFiles.map(uploadOne));
+        const successCount = results.filter((result) => result.status === "fulfilled").length;
+        const failCount = results.length - successCount;
+
+        if (successCount > 0) {
+          await refreshFiles();
+          await refreshFolderPermissions();
+          dispatchNavRefresh();
+        }
+
+        if (failCount === 0) {
+          toast.success(
+            `${successCount} file${successCount === 1 ? "" : "s"} uploaded`,
+            { id: toastId },
+          );
+          return;
+        }
+
+        const firstFailure = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        const message =
+          firstFailure?.reason instanceof Error
+            ? firstFailure.reason.message
+            : "Some files failed to upload";
+
+        if (successCount > 0) {
+          toast.warning(
+            `${successCount} uploaded, ${failCount} failed. ${message}`,
+            { id: toastId },
+          );
+        } else {
+          toast.error(message, { id: toastId });
+        }
+      } finally {
+        setIsDirectUploading(false);
+      }
+    },
+    [projectId, refreshFiles, refreshFolderPermissions],
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDraggingOver(false);
+      dragCounterRef.current = 0;
+
+      const hasInternalFileDrag = e.dataTransfer.types.includes(
+        "application/x-arc-file-id",
+      );
+      if (hasInternalFileDrag) return;
+
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      if (droppedFiles.length > 0) {
+        void uploadDroppedFiles(droppedFiles, currentPath || null);
+      }
+    },
+    [currentPath, uploadDroppedFiles],
+  );
 
   const handleFileClick = useCallback(
     async (fileId: string) => {
@@ -893,13 +966,18 @@ function UnifiedDocumentsLayoutInner() {
   );
 
   const handleDropOnFolder = useCallback(
-    async (targetPath: string) => {
+    async (targetPath: string, droppedFiles?: File[]) => {
+      if (droppedFiles?.length) {
+        await uploadDroppedFiles(droppedFiles, targetPath);
+        return;
+      }
+
       const fileIds = resolveDraggedFileIds();
       await moveFilesToFolder(fileIds, targetPath, targetPath);
       setIsDraggingDocumentFile(false);
       setDraggedFileId(null);
     },
-    [resolveDraggedFileIds, moveFilesToFolder],
+    [resolveDraggedFileIds, moveFilesToFolder, uploadDroppedFiles],
   );
 
   const handleDropToRoot = useCallback(async () => {
@@ -1793,6 +1871,7 @@ function UnifiedDocumentsLayoutInner() {
   return (
     <div
       className="relative flex h-full flex-col overflow-hidden bg-background"
+      aria-busy={isDirectUploading}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -1800,6 +1879,35 @@ function UnifiedDocumentsLayoutInner() {
     >
       <FileDropOverlay isVisible={isDraggingOver} className="rounded-none" />
 
+      {isMobile ? (
+        <DocumentsMobileLayout
+          onFileClick={handleFileClick}
+          onDownloadFile={handleDownloadById}
+          onUploadClick={handleUploadClick}
+          onCreateFolderClick={() => {
+            setNewFolderPath(currentPath || "");
+            setCreateFolderDialogOpen(true);
+          }}
+          onRenameFile={openRenameDialog}
+          onMoveFile={(fileId) => openMoveDialog(fileId)}
+          onDeleteFile={(fileId) => openDeleteDialog(fileId)}
+          onViewActivity={openTimeline}
+          onShareFile={openShareDialog}
+          onUploadNewVersion={openVersionUploadDialog}
+          onSendForSignature={handleSendForSignature}
+          onSendForApproval={handleSendForApproval}
+          onOpenProperties={setPropertiesFileId}
+          onSheetClick={handleSheetClick}
+          onUploadDrawingSetClick={handleOpenDrawingSetUpload}
+          propertiesFile={propertiesFile}
+          onCloseProperties={() => setPropertiesFileId(null)}
+          onDownloadFromProperties={handleDownloadFromProperties}
+          propertiesTimelineEvents={propertiesTimelineEvents}
+          propertiesTimelineLoading={propertiesTimelineLoading}
+          onRefreshTimeline={refreshPropertiesTimeline}
+        />
+      ) : (
+      <>
       <div className="relative z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm px-4 py-3">
         <DocumentsToolbar
           onUploadClick={handleUploadClick}
@@ -1887,6 +1995,8 @@ function UnifiedDocumentsLayoutInner() {
           </div>
         </aside>
       </div>
+      </>
+      )}
 
       <UploadDialog
         open={uploadDialogOpen}

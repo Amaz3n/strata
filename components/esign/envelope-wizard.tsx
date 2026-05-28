@@ -47,6 +47,7 @@ import { Switch } from "@/components/ui/switch"
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import {
+  ArrowRight,
   FileText,
   GripVertical,
   Mail,
@@ -114,6 +115,15 @@ export type EnvelopeWizardSourceEntity = {
   document_type: DocumentType
 }
 
+type EnvelopeWizardSourceOption = {
+  id: string
+  type: UnifiedSignableEntityType
+  project_id: string
+  project_name: string | null
+  title: string
+  document_type: DocumentType
+}
+
 type EnvelopeWizardSendResult = {
   documentId: string
   envelopeId: string | null
@@ -129,6 +139,28 @@ interface EnvelopeWizardProps {
   sheetDescription?: string
   sourceLabel?: string
   onEnvelopeSent?: (result: EnvelopeWizardSendResult) => void
+  sourceOptions?: EnvelopeWizardSourceOption[]
+  sourceOptionsLoading?: boolean
+  defaultProjectId?: string | null
+  defaultProjectName?: string | null
+  onSourceEntitySelect?: (sourceEntity: EnvelopeWizardSourceEntity) => void
+}
+
+function getSourceOptionTypeLabel(type: UnifiedSignableEntityType) {
+  switch (type) {
+    case "change_order":
+      return "Change Order"
+    case "proposal":
+      return "Proposal"
+    case "selection":
+      return "Selection"
+    case "subcontract":
+      return "Subcontract"
+    case "closeout":
+      return "Closeout"
+    default:
+      return "Other"
+  }
 }
 
 function createRecipient(role: RecipientRole = "signer"): EnvelopeRecipient {
@@ -202,6 +234,11 @@ export function EnvelopeWizard({
   sheetDescription = "Set up recipients and upload the PDF before placing fields.",
   sourceLabel = "Signable",
   onEnvelopeSent,
+  sourceOptions = [],
+  sourceOptionsLoading = false,
+  defaultProjectId = null,
+  defaultProjectName = null,
+  onSourceEntitySelect,
 }: EnvelopeWizardProps) {
   const [prepareStep, setPrepareStep] = useState<PrepareStep>("envelope")
   const [documentTitle, setDocumentTitle] = useState("")
@@ -518,6 +555,53 @@ export function EnvelopeWizard({
       }
     })()
   }, [open, resumeDocumentId, sourceEntityDocumentType, sourceEntityId, sourceEntityTitle, sourceEntityType])
+
+  useEffect(() => {
+    if (!open || resumeDocumentId || !sourceEntity?.standalone) return
+
+    const hydrationId = draftHydrationRef.current + 1
+    draftHydrationRef.current = hydrationId
+
+    setPrepareStep("envelope")
+    setDocumentTitle("")
+    setDocumentType(sourceEntity.document_type ?? "other")
+    setNextVersionNumber(null)
+    setLatestSourceDocumentType(null)
+    setSigningOrderEnabled(true)
+    setRecipients([createRecipient("signer")])
+    setUploadedPdf(null)
+    setUploadingPdf(false)
+    setUploadProgress(0)
+    setUploadDragActive(false)
+    setHydratingDraft(true)
+    setMovingToFields(false)
+    setPrewarmingFieldsStep(false)
+    setFieldsStepReady(false)
+    prepareKeyRef.current = null
+    preparePromiseRef.current = null
+    prewarmedPdfUrlRef.current = null
+    directUploadDisabledRef.current = false
+    setSendingEnvelope(false)
+    setRecipientSuggestions([])
+    setViewerFields([])
+    setViewerDocument(null)
+    setViewerFileUrl(null)
+
+    void (async () => {
+      try {
+        const suggestions = await listEnvelopeRecipientSuggestionsAction()
+        if (hydrationId !== draftHydrationRef.current) return
+        setRecipientSuggestions(suggestions ?? [])
+      } catch {
+        if (hydrationId !== draftHydrationRef.current) return
+        setRecipientSuggestions([])
+      } finally {
+        if (hydrationId === draftHydrationRef.current) {
+          setHydratingDraft(false)
+        }
+      }
+    })()
+  }, [open, resumeDocumentId, sourceEntity?.document_type, sourceEntity?.id, sourceEntity?.standalone])
 
   const handleRecipientDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
@@ -995,6 +1079,33 @@ export function EnvelopeWizard({
   }
 
   const canAdvanceToFields = !!uploadedPdf && !uploadingPdf && !hydratingDraft
+  const needsSourceSelection = open && !resumeDocumentId && !sourceEntity
+
+  const selectStandaloneSource = () => {
+    if (!defaultProjectId) {
+      toast.error("Project context is required before starting a signature packet.")
+      return
+    }
+
+    onSourceEntitySelect?.({
+      standalone: true,
+      type: "other",
+      id: crypto.randomUUID(),
+      project_id: defaultProjectId,
+      title: "New signature packet",
+      document_type: "other",
+    })
+  }
+
+  const selectLinkedSource = (option: EnvelopeWizardSourceOption) => {
+    onSourceEntitySelect?.({
+      type: option.type,
+      id: option.id,
+      project_id: option.project_id,
+      title: option.title,
+      document_type: option.document_type,
+    })
+  }
 
   return (
     <Sheet open={open} onOpenChange={closeWizard}>
@@ -1009,15 +1120,88 @@ export function EnvelopeWizard({
           maxWidth: prepareStep === "fields" ? "min(84rem, calc(100vw - 2rem))" : "42rem",
         }}
       >
-        <SheetHeader className="px-6 py-5 border-b bg-muted/30">
-          <SheetTitle className="flex items-center gap-2">
-            <FileText className="h-5 w-5" />
-            {prepareStep === "fields" ? viewerDocument?.title || "Document" : sheetTitle}
-          </SheetTitle>
-          {prepareStep === "envelope" && (
-            <SheetDescription>{sheetDescription}</SheetDescription>
-          )}
-        </SheetHeader>
+        {needsSourceSelection ? (
+          <>
+            <SheetHeader className="px-6 py-5 border-b bg-muted/30">
+              <SheetTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                New signature packet
+              </SheetTitle>
+              <SheetDescription>
+                Link this packet to an existing record, or send a standalone document.
+              </SheetDescription>
+            </SheetHeader>
+
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="space-y-5 px-6 py-4">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-lg border bg-background p-4 text-left transition-colors hover:bg-muted/50"
+                  onClick={selectStandaloneSource}
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium">Standalone document</p>
+                    <p className="text-xs text-muted-foreground">
+                      Use this for contracts, notices, or any document without a source record.
+                    </p>
+                  </div>
+                  <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </button>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Linked records</p>
+                    {defaultProjectName ? (
+                      <p className="text-xs text-muted-foreground">{defaultProjectName}</p>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-2">
+                    {sourceOptionsLoading ? (
+                      <div className="rounded-md border p-4 text-sm text-muted-foreground">Loading records...</div>
+                    ) : sourceOptions.length === 0 ? (
+                      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                        No open linked records found for this project.
+                      </div>
+                    ) : (
+                      sourceOptions.map((option) => (
+                        <button
+                          key={`${option.type}-${option.id}`}
+                          type="button"
+                          className="flex w-full items-center justify-between rounded-md border bg-background p-3 text-left transition-colors hover:bg-muted/50"
+                          onClick={() => selectLinkedSource(option)}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                {getSourceOptionTypeLabel(option.type)}
+                              </span>
+                              {option.project_name ? (
+                                <span className="truncate text-xs text-muted-foreground">{option.project_name}</span>
+                              ) : null}
+                            </div>
+                            <p className="mt-1 truncate text-sm font-medium">{option.title}</p>
+                          </div>
+                          <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </>
+        ) : (
+          <>
+            <SheetHeader className="px-6 py-5 border-b bg-muted/30">
+              <SheetTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                {prepareStep === "fields" ? viewerDocument?.title || "Document" : sheetTitle}
+              </SheetTitle>
+              {prepareStep === "envelope" && (
+                <SheetDescription>{sheetDescription}</SheetDescription>
+              )}
+            </SheetHeader>
 
         {prepareStep === "envelope" ? (
           <>
@@ -1228,6 +1412,8 @@ export function EnvelopeWizard({
               />
             ) : null}
           </div>
+        )}
+          </>
         )}
       </SheetContent>
     </Sheet>

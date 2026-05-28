@@ -73,5 +73,22 @@ export default async function InvoicePublicPage({ params }: Params) {
 
   const receipts = await listReceiptsForInvoice({ orgId: invoice.org_id, invoiceId: invoice.id })
 
-  return <InvoicePublicWithPay invoice={invoice} payment={paymentProps} receipts={receipts} />
+  // Load org branding + project name so the on-page preview matches the downloaded PDF.
+  const brandingClient = createServiceSupabaseClient()
+  const [orgResult, projectResult] = await Promise.all([
+    brandingClient.from("orgs").select("name, billing_email, address, logo_url").eq("id", invoice.org_id).maybeSingle(),
+    invoice.project_id
+      ? brandingClient.from("projects").select("name").eq("org_id", invoice.org_id).eq("id", invoice.project_id).maybeSingle()
+      : Promise.resolve({ data: null as { name?: string | null } | null }),
+  ])
+
+  const branding = {
+    name: orgResult.data?.name ?? null,
+    email: orgResult.data?.billing_email ?? null,
+    address: orgResult.data?.address ?? null,
+    logoUrl: orgResult.data?.logo_url ?? null,
+    projectName: projectResult.data?.name ?? null,
+  }
+
+  return <InvoicePublicWithPay invoice={invoice} payment={paymentProps} receipts={receipts} branding={branding} />
 }

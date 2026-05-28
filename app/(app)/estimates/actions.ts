@@ -70,6 +70,6 @@ export async function updateEstimateStatusAction(estimateId: string, status: "dr
 export async function convertEstimateToProposalAction(estimateId: string) {
   const result = await convertEstimateToProposal({ estimateId })
   revalidatePath("/estimates")
-  revalidatePath("/proposals")
+  revalidatePath("/signatures")
   return result
 }

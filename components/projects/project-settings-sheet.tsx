@@ -317,7 +317,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   </SelectContent>
                 </Select>
                 <p className="text-sm text-muted-foreground">
-                  Selecting a client links portal access and simplifies signatures.
+                  Used as the default client for portal invites and signatures. This does not grant portal access.
                 </p>
               </div>
 

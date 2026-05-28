@@ -525,7 +525,7 @@ const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   commitment: "/commitments/{id}",
   change_order: "/change-orders/{id}",
   contract: "/contracts/{id}",
-  proposal: "/proposals/{id}",
+  proposal: "/signatures",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
   drawing_set: "/drawings/sets/{id}",

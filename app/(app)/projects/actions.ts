@@ -5,10 +5,28 @@ import { revalidatePath } from "next/cache"
 import { createProject, listProjects, updateProject, archiveProject, deleteProject } from "@/lib/services/projects"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
+import type { Contact } from "@/lib/types"
 
 export async function listProjectsAction() {
   const context = await requireOrgContext()
   return listProjects(undefined, context)
+}
+
+export async function listProjectClientContactsAction(): Promise<Contact[]> {
+  const { supabase, orgId } = await requireOrgContext()
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id, org_id, full_name, email, phone, role, contact_type, primary_company_id, created_at, updated_at")
+    .eq("org_id", orgId)
+    .in("contact_type", ["client", "consultant", "vendor"])
+    .order("full_name", { ascending: true })
+
+  if (error) {
+    throw new Error(`Failed to list client contacts: ${error.message}`)
+  }
+
+  return (data ?? []) as Contact[]
 }
 
 export async function createProjectAction(input: unknown) {

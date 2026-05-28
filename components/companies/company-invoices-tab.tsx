@@ -157,7 +157,7 @@ export function CompanyInvoicesTab({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border overflow-hidden">
+      <div className="border overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow className="divide-x">

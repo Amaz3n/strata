@@ -751,7 +751,7 @@ export function ProjectSetupWizardSheet({
                               </Badge>
                             </div>
                             <div className="flex items-center justify-between rounded-lg border p-3">
-                              <span className="text-sm font-medium">Proposal</span>
+                              <span className="text-sm font-medium">Proposal document</span>
                               <Badge variant={hasProposal ? "secondary" : "outline"}>
                                 {hasProposal ? "Ready" : "Missing"}
                               </Badge>
@@ -770,7 +770,7 @@ export function ProjectSetupWizardSheet({
                               <Link href={`/estimates?project=${project.id}`}>Open estimates</Link>
                             </Button>
                             <Button asChild size="sm">
-                              <Link href={`/projects/${project.id}/proposals`}>Open proposals</Link>
+                              <Link href={`/projects/${project.id}/signatures`}>Open Signatures</Link>
                             </Button>
                             <Button asChild variant="outline" size="sm">
                               <Link href={`/projects/${project.id}/bids`}>Open bids</Link>
@@ -883,7 +883,7 @@ export function ProjectSetupWizardSheet({
                               </Button>
                             </div>
                             <Button asChild variant="outline" size="sm">
-                              <Link href={`/projects/${project.id}/proposals`}>Open proposals</Link>
+                              <Link href={`/projects/${project.id}/signatures`}>Open Signatures</Link>
                             </Button>
                           </div>
                         </CardContent>

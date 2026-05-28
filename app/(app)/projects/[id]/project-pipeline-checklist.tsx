@@ -63,25 +63,25 @@ export function ProjectPipelineChecklist({
     },
     {
       key: "proposal",
-      label: "Create proposal",
+      label: "Prepare proposal document",
       done: hasProposal,
       action: (
         <Button asChild variant="outline" size="sm">
-          <Link href={`/projects/${project.id}/proposals`}>
+          <Link href={`/projects/${project.id}/signatures`}>
             <FileText className="mr-2 h-4 w-4" />
-            Proposals
+            Signatures
           </Link>
         </Button>
       ),
     },
     {
       key: "proposal_sent",
-      label: "Send proposal link",
+      label: "Send for signature",
       done: hasSentProposal,
-      hint: "Copy link or mark sent",
+      hint: "Upload your proposal PDF and send it through Signatures",
       action: (
         <Button asChild variant="outline" size="sm">
-          <Link href={`/projects/${project.id}/proposals`}>
+          <Link href={`/projects/${project.id}/signatures`}>
             <ArrowRight className="mr-2 h-4 w-4" />
             Open
           </Link>

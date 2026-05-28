@@ -3,6 +3,8 @@
 import * as React from "react"
 import { usePathname } from "next/navigation"
 
+import Link from "next/link"
+
 import { CommandSearch } from "@/components/layout/command-search"
 import { GlobalTasksSheet } from "@/components/tasks/global-tasks-sheet"
 import { NotificationBell } from "@/components/notifications/notification-bell"
@@ -41,7 +43,6 @@ const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
   prospects: "Prospects",
   crm: "CRM",
   estimates: "Estimates",
-  proposals: "Proposals",
   schedule: "Schedule",
   tasks: "Tasks",
   documents: "Documents",
@@ -72,7 +73,7 @@ function labelFromPathname(pathname: string): string {
 
 export function AppHeader({ title, breadcrumbs, className, platformSessionControl }: AppHeaderProps) {
   const pathname = usePathname()
-  const { title: contextTitle, breadcrumbs: contextBreadcrumbs } = usePageTitle()
+  const { title: contextTitle, breadcrumbs: contextBreadcrumbs, projectContext } = usePageTitle()
   const effectiveTitle = title || contextTitle
   const effectiveBreadcrumbs = breadcrumbs || contextBreadcrumbs
   const fallbackLabel = labelFromPathname(pathname)
@@ -84,6 +85,14 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
 
   // Get current page title for mobile display
   const currentPage = breadcrumbItems.length > 0 ? breadcrumbItems[breadcrumbItems.length - 1] : null
+
+  // Eyebrow shows the project name when inside a project.
+  // Prefer the layout-provided projectContext; fall back to breadcrumb heuristic.
+  const projectEyebrow = projectContext
+    ? { label: projectContext.name, href: projectContext.href }
+    : breadcrumbItems.length > 1 && breadcrumbItems[0]?.href?.startsWith("/projects/")
+      ? breadcrumbItems[0]
+      : null
 
   if (pathname.startsWith("/settings")) return null
 
@@ -147,13 +156,22 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
       </div>
 
       {/* Mobile Header - Single Row */}
-      <div className="lg:hidden flex h-14 items-center px-4 gap-3">
-        <SidebarTrigger className="-ml-1 shrink-0" />
+      <div className="lg:hidden flex h-16 items-center px-4 gap-3">
+        {/* Sidebar trigger only on md+ (tablets); phones use the bottom bar */}
+        <SidebarTrigger className="-ml-1 shrink-0 hidden md:inline-flex" />
 
-        {/* Page title - takes remaining space */}
-        <div className="flex-1 min-w-0">
+        {/* Title block - eyebrow (project name) + page title */}
+        <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+          {projectEyebrow?.href && (
+            <Link
+              href={projectEyebrow.href}
+              className="block truncate text-xs font-semibold uppercase tracking-wider leading-none text-primary/85 transition-colors hover:text-primary"
+            >
+              {projectEyebrow.label}
+            </Link>
+          )}
           {currentPage && (
-            <h1 className="text-base font-semibold truncate">
+            <h1 className="text-xl font-semibold truncate leading-tight">
               {currentPage.label}
             </h1>
           )}
@@ -164,7 +182,6 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
           {platformSessionControl}
           <CommandSearch />
           <GlobalTasksSheet />
-          <NotificationBell />
         </div>
       </div>
     </header>

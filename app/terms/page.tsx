@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 }
 
 const companyName = "Arc Project Systems LLC"
-const effectiveDate = "May 8, 2026"
+const effectiveDate = "May 28, 2026"
 
 const sections = [
   {
@@ -26,14 +26,22 @@ const sections = [
     ],
   },
   {
-    title: "3. Accounts, Security, and Authorized Users",
+    title: "3. AI-Assisted Features",
+    body: [
+      "Arc may use artificial intelligence, machine learning, optical character recognition, large language models, or similar automated systems provided by us or third-party service providers to power certain features. For example, AI-assisted features may help parse uploaded receipts or invoices to prefill expense or payable fields, answer natural-language questions through search, summarize or locate project information, classify documents, extract key data from files, suggest actions, or otherwise assist with project, financial, document, and workflow tasks.",
+      "AI-assisted outputs may be incomplete, inaccurate, outdated, or based on the information available to the feature at the time. You are responsible for reviewing and verifying any AI-assisted output before relying on it, approving it, sending it, posting it to an accounting system, making a payment, submitting a record, or using it for legal, financial, tax, construction, compliance, or business decisions.",
+      "Arc does not guarantee the accuracy, completeness, suitability, or availability of AI-assisted features or outputs. AI-assisted features are provided as convenience tools and do not replace human review, professional judgment, or qualified legal, accounting, tax, engineering, architectural, construction, financial, payment, insurance, or compliance advice.",
+    ],
+  },
+  {
+    title: "4. Accounts, Security, and Authorized Users",
     body: [
       "You are responsible for maintaining the confidentiality of account credentials and for all activity under your account or organization. You must promptly notify us if you believe an account has been compromised or used without authorization.",
       "We are not responsible for losses, damages, unauthorized activity, misdirected payments, incorrect approvals, data exposure, or business interruption caused by weak credentials, compromised devices, phishing, unauthorized users, incorrect permissions, or your failure to manage account access.",
     ],
   },
   {
-    title: "4. Payments and Third-Party Services",
+    title: "5. Payments and Third-Party Services",
     body: [
       "Arc may integrate with third-party services, including Stripe for payment processing and billing-related functionality. Third-party services are provided by their respective providers under their own terms, policies, service levels, fees, compliance obligations, settlement timing, risk reviews, holds, reserves, disputes, refunds, chargebacks, and availability rules.",
       "When a customer uses Arc to invoice or accept payment from its own client, that customer is the merchant, seller, service provider, and party responsible for the invoice, payment amount, work performed, refund decisions, disputes, chargebacks, ACH returns, failed payments, taxes, and any related client relationship. Arc does not act as escrow, does not guarantee payment, and does not resolve payment or construction disputes between customers and their clients.",
@@ -41,49 +49,49 @@ const sections = [
     ],
   },
   {
-    title: "5. Electronic Signatures",
+    title: "6. Electronic Signatures",
     body: [
       "Arc may include electronic signature features for business and construction workflows. You are responsible for deciding whether a document is suitable for electronic signature, confirming signer identity and authority, placing fields correctly, maintaining appropriate records, and complying with any law, contract, notice, witness, notarization, filing, retention, or industry requirement that applies to the document.",
       "Arc is not a law firm and does not determine whether a document is enforceable or properly executed. Electronic signature features are subject to our Electronic Signature Terms at /esign-terms, which are incorporated into these Terms. Do not use Arc electronic signatures for documents that require wet ink, notarization, witnesses, court or government-specific procedures, or another special process unless you have confirmed that Arc's process is legally appropriate.",
     ],
   },
   {
-    title: "6. Customer Data and Backups",
+    title: "7. Customer Data and Backups",
     body: [
       "You retain ownership of the data you submit to Arc. You grant us the rights needed to host, process, transmit, display, secure, back up, and otherwise operate Arc for you and your authorized users.",
       "You are responsible for keeping independent copies and backups of important records. To the maximum extent permitted by law, we are not liable for lost, corrupted, delayed, unavailable, deleted, incomplete, or inaccurate data, including project records, financial records, drawings, invoices, contracts, signatures, compliance records, communications, or attachments.",
     ],
   },
   {
-    title: "7. Acceptable Use",
+    title: "8. Acceptable Use",
     body: [
       "You may not use Arc to violate law, infringe rights, distribute malware, attack or disrupt systems, misrepresent identity, process unauthorized payments, submit false or misleading information, evade sanctions or compliance obligations, scrape or reverse engineer the service, or interfere with another customer’s use of Arc.",
       "If you breach these Terms, misuse Arc, fail to pay amounts owed, create security or legal risk, or expose us or others to potential harm, we may suspend or terminate access, remove content, disable features, preserve evidence, or take other action we reasonably consider necessary.",
     ],
   },
   {
-    title: "8. No Professional Advice",
+    title: "9. No Professional Advice",
     body: [
       "Arc does not provide legal, accounting, tax, insurance, engineering, architectural, construction, financial, payment, or compliance advice. Information in Arc may be incomplete, delayed, inaccurate, or dependent on user-entered data or third-party systems.",
       "You should consult qualified professionals before making legal, financial, tax, construction, compliance, or payment decisions.",
     ],
   },
   {
-    title: "9. Service Availability and Changes",
+    title: "10. Service Availability and Changes",
     body: [
       "We may modify, suspend, discontinue, limit, or update Arc or any feature at any time. Arc may be unavailable because of maintenance, upgrades, bugs, security events, third-party outages, internet failures, payment processor issues, force majeure events, or circumstances outside our control.",
       "We do not guarantee that Arc will be uninterrupted, error-free, secure, timely, or available at any particular time.",
     ],
   },
   {
-    title: "10. Disclaimer of Warranties",
+    title: "11. Disclaimer of Warranties",
     body: [
       "Arc is provided on an “as is” and “as available” basis. To the maximum extent permitted by law, Arc Project Systems LLC disclaims all warranties, whether express, implied, statutory, or otherwise, including warranties of merchantability, fitness for a particular purpose, title, non-infringement, accuracy, availability, security, reliability, and uninterrupted operation.",
       "We do not warrant that Arc will meet your requirements, prevent losses, prevent breaches, detect all errors, produce accurate financial or project outputs, ensure payment, ensure compliance, or operate without interruption or defects.",
     ],
   },
   {
-    title: "11. Limitation of Liability",
+    title: "12. Limitation of Liability",
     body: [
       "To the maximum extent permitted by law, Arc Project Systems LLC and its owners, officers, employees, contractors, affiliates, suppliers, and licensors will not be liable for indirect, incidental, special, consequential, exemplary, punitive, or enhanced damages, including lost profits, lost revenue, lost savings, lost business, business interruption, loss of goodwill, loss of data, cost of replacement services, payment losses, construction losses, financing losses, project delays, or reputational harm, even if we were advised such damages were possible.",
       "To the maximum extent permitted by law, our total aggregate liability for all claims arising out of or related to Arc, these Terms, or any related service will not exceed the greater of: (a) the amount you paid to Arc Project Systems LLC for the service in the three months before the event giving rise to the claim, or (b) one hundred U.S. dollars.",
@@ -91,33 +99,33 @@ const sections = [
     ],
   },
   {
-    title: "12. Breach, Security Incidents, and Unauthorized Access",
+    title: "13. Breach, Security Incidents, and Unauthorized Access",
     body: [
       "You are responsible for your systems, users, credentials, permissions, integrations, and data handling practices. To the maximum extent permitted by law, we are not liable for losses arising from unauthorized access, credential compromise, phishing, malware, social engineering, user error, misconfigured permissions, compromised third-party services, or breaches caused by your acts, omissions, systems, users, contractors, or vendors.",
       "If a security incident occurs, your sole remedies are limited to those expressly required by applicable law or expressly stated in a separate written agreement signed by us.",
     ],
   },
   {
-    title: "13. Indemnification",
+    title: "14. Indemnification",
     body: [
       "You will defend, indemnify, and hold harmless Arc Project Systems LLC and its owners, officers, employees, contractors, affiliates, suppliers, and licensors from and against claims, damages, losses, liabilities, fines, penalties, costs, and expenses, including reasonable attorneys’ fees, arising from or related to your use of Arc, your data, your projects, your payments, your users, your breach of these Terms, your violation of law, or your dispute with any customer, subcontractor, vendor, owner, employee, consultant, payment processor, or third party.",
     ],
   },
   {
-    title: "14. Termination",
+    title: "15. Termination",
     body: [
       "You may stop using Arc at any time. We may suspend or terminate access to Arc if you breach these Terms, fail to pay, create risk for us or others, or if we discontinue the service.",
       "After termination, we may delete or retain data as permitted by law, our internal retention practices, and any applicable agreement. Sections intended to survive termination will survive, including payment obligations, disclaimers, limitations of liability, indemnification, ownership, and dispute terms.",
     ],
   },
   {
-    title: "15. Governing Law",
+    title: "16. Governing Law",
     body: [
       "These Terms are governed by the laws of the State of Florida, without regard to conflict of laws principles. Venue for disputes will be in the state or federal courts located in Florida, unless applicable law requires otherwise.",
     ],
   },
   {
-    title: "16. Contact",
+    title: "17. Contact",
     body: [
       "Questions about these Terms can be sent to support@arcnaples.com.",
     ],

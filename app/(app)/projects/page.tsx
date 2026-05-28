@@ -1,5 +1,5 @@
 import { Suspense } from "react"
-import { listProjectsAction } from "./actions"
+import { listProjectClientContactsAction, listProjectsAction } from "./actions"
 import { ProjectsClient } from "./projects-client"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -7,8 +7,12 @@ import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
 
 async function ProjectsData() {
-  const projects = await listProjectsAction()
-  return <ProjectsClient projects={projects} />
+  const [projects, clientContacts] = await Promise.all([
+    listProjectsAction(),
+    listProjectClientContactsAction(),
+  ])
+
+  return <ProjectsClient projects={projects} clientContacts={clientContacts} />
 }
 
 export default function ProjectsPage() {

@@ -433,9 +433,7 @@ export function DocumentsCenterClient({
               if (selectedCategory !== "all") {
                 formData.append("category", selectedCategory)
               }
-              if (uploadFolderPath) {
-                formData.append("folderPath", uploadFolderPath)
-              }
+              formData.append("folderPath", uploadFolderPath)
 
               await uploadFileAction(formData)
               uploaded = true

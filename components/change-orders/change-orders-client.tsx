@@ -5,11 +5,12 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { ChangeOrder, CostCode, Project } from "@/lib/types"
+import type { ChangeOrder, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
-import { createChangeOrderAction, publishChangeOrderAction } from "@/app/(app)/change-orders/actions"
+import { createChangeOrderAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
+import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,18 +18,35 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Plus, Share2, FolderOpen, MoreHorizontal } from "@/components/icons"
+import { Plus, FolderOpen, MoreHorizontal, PenLine } from "@/components/icons"
 
 type StatusKey = "draft" | "pending" | "sent" | "approved" | "requested_changes" | "cancelled"
 type StatusFilter = StatusKey | "all"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
-  pending: "Pending client",
+  pending: "Pending",
   sent: "Sent",
   approved: "Approved",
   requested_changes: "Needs changes",
   cancelled: "Cancelled",
+}
+
+function resolveESignStatus(status?: ChangeOrder["esign_status"]) {
+  switch (status) {
+    case "draft":
+      return { label: "Draft envelope", className: "bg-muted text-muted-foreground border-muted" }
+    case "sent":
+      return { label: "Out for signature", className: "bg-amber-500/15 text-amber-700 border-amber-500/30" }
+    case "signed":
+      return { label: "Executed", className: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30" }
+    case "voided":
+      return { label: "Voided", className: "bg-rose-500/15 text-rose-700 border-rose-500/30" }
+    case "expired":
+      return { label: "Expired", className: "bg-orange-500/15 text-orange-700 border-orange-500/30" }
+    default:
+      return { label: "Not sent", className: "bg-muted text-muted-foreground border-muted" }
+  }
 }
 
 const statusStyles: Record<StatusKey, string> = {
@@ -54,11 +72,10 @@ function resolveStatusKey(status?: string | null): StatusKey {
 interface ChangeOrdersClientProps {
   changeOrders: ChangeOrder[]
   projects: Project[]
-  costCodes?: CostCode[]
   hideProjectFilter?: boolean
 }
 
-export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProjectFilter }: ChangeOrdersClientProps) {
+export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }: ChangeOrdersClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>(() =>
@@ -69,6 +86,8 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
   const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
   const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(null)
+  const [signatureOpen, setSignatureOpen] = useState(false)
+  const [signatureSource, setSignatureSource] = useState<EnvelopeWizardSourceEntity | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const handleRowClick = (changeOrder: ChangeOrder) => {
@@ -79,6 +98,17 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
   const handleUpdate = (updated: ChangeOrder) => {
     setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
     setSelectedChangeOrder(updated)
+  }
+
+  const handleStartSignature = (changeOrder: ChangeOrder) => {
+    setSignatureSource({
+      type: "change_order",
+      id: changeOrder.id,
+      project_id: changeOrder.project_id,
+      title: changeOrder.title,
+      document_type: "change_order",
+    })
+    setSignatureOpen(true)
   }
 
   const projectLookup = useMemo(() => {
@@ -103,33 +133,18 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
     })
   }, [filterProjectId, items, projectLookup, searchTerm, statusFilter])
 
-  async function handleCreate(values: ChangeOrderInput, published: boolean) {
+  async function handleCreate(values: ChangeOrderInput) {
     startTransition(async () => {
       try {
         const created = await createChangeOrderAction(values)
         setItems((prev) => [created, ...prev])
         setSheetOpen(false)
-        toast.success(published ? "Worksheet published" : "Draft saved", {
-          description: published
-            ? "Client can review the worksheet. Prepare the execution document to collect approval."
-            : "You can publish the worksheet or prepare the execution document when ready.",
+        toast.success("Change order saved", {
+          description: "Send your company document for signature when ready.",
         })
       } catch (error: any) {
         console.error(error)
         toast.error("Could not save change order", { description: error?.message ?? "Please try again." })
-      }
-    })
-  }
-
-  async function handlePublish(changeOrderId: string) {
-    startTransition(async () => {
-      try {
-        const updated = await publishChangeOrderAction(changeOrderId)
-        setItems((prev) => prev.map((co) => (co.id === updated.id ? updated : co)))
-        toast.success("Published to client")
-      } catch (error: any) {
-        console.error(error)
-        toast.error("Failed to publish", { description: error?.message ?? "Please try again." })
       }
     })
   }
@@ -209,16 +224,14 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
                           <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[statusKey]}`}>
                             {statusLabels[statusKey]}
                           </Badge>
-                          {changeOrder.client_visible ? (
-                            <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal bg-primary/10 text-primary border-primary/20">
-                              <Share2 className="mr-1 h-3 w-3" />
-                              Client can view
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal text-muted-foreground">
-                              Internal
-                            </Badge>
-                          )}
+                          {(() => {
+                            const esign = resolveESignStatus(changeOrder.esign_status)
+                            return (
+                              <Badge variant="outline" className={`text-[10px] px-1 py-0 h-4 font-normal ${esign.className}`}>
+                                {esign.label}
+                              </Badge>
+                            )
+                          })()}
                         </div>
                         <p className="font-semibold mt-1 line-clamp-2">{changeOrder.title}</p>
                         <p className="text-xs text-muted-foreground mt-1">Project: {projectName}</p>
@@ -263,7 +276,7 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
                   <TableHead className="hidden xl:table-cell w-[112px] text-center">Impact</TableHead>
                   <TableHead className="hidden sm:table-cell w-[140px] text-right">Total</TableHead>
                   <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
-                  <TableHead className="hidden xl:table-cell w-[128px] text-center">Client</TableHead>
+                  <TableHead className="hidden xl:table-cell w-[150px] text-center">Signature</TableHead>
                   <TableHead className="w-[92px] pr-2" />
                 </TableRow>
               </TableHeader>
@@ -319,16 +332,14 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
                       </TableCell>
 
                       <TableCell className="hidden xl:table-cell text-center">
-                        {changeOrder.client_visible ? (
-                          <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal bg-primary/10 text-primary border-primary/20">
-                            <Share2 className="mr-1 h-3 w-3" />
-                            Client can view
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal text-muted-foreground">
-                            Internal
-                          </Badge>
-                        )}
+                        {(() => {
+                          const esign = resolveESignStatus(changeOrder.esign_status)
+                          return (
+                            <Badge variant="secondary" className={`text-[10px] px-1 py-0 h-4 font-normal border ${esign.className}`}>
+                              {esign.label}
+                            </Badge>
+                          )
+                        })()}
                       </TableCell>
 
                       <TableCell className="pr-2" onClick={(e) => e.stopPropagation()}>
@@ -342,13 +353,12 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
                               <DropdownMenuItem onClick={() => handleRowClick(changeOrder)}>
-                                Edit
+                                View details
                               </DropdownMenuItem>
-                              {!changeOrder.client_visible && (
-                                <DropdownMenuItem onClick={() => handlePublish(changeOrder.id)} disabled={isPending}>
-                                  Publish worksheet
-                                </DropdownMenuItem>
-                              )}
+                              <DropdownMenuItem onClick={() => handleStartSignature(changeOrder)}>
+                                <PenLine className="mr-2 h-4 w-4" />
+                                Send for signature
+                              </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
@@ -399,9 +409,7 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
       <ChangeOrderForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        projects={projects}
-        costCodes={costCodes}
-        defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
+        projectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id ?? ""}
         onSubmit={handleCreate}
         isSubmitting={isPending}
       />
@@ -412,6 +420,27 @@ export function ChangeOrdersClient({ changeOrders, projects, costCodes, hideProj
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
         onUpdate={handleUpdate}
+      />
+
+      <EnvelopeWizard
+        open={signatureOpen}
+        onOpenChange={(nextOpen) => {
+          setSignatureOpen(nextOpen)
+          if (!nextOpen) setSignatureSource(null)
+        }}
+        sourceEntity={signatureSource}
+        sourceLabel="Change order"
+        sheetTitle="Send change order for signature"
+        onEnvelopeSent={({ documentId }) => {
+          if (!signatureSource) return
+          setItems((prev) =>
+            prev.map((item) =>
+              item.id === signatureSource.id
+                ? { ...item, esign_status: "sent", esign_document_id: documentId }
+                : item,
+            ),
+          )
+        }}
       />
     </>
   )

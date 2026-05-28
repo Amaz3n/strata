@@ -158,7 +158,7 @@ export interface DocumentsFileTableProps {
   onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
   onUploadClick: () => void
-  onDropOnFolder: (path: string) => void
+  onDropOnFolder: (path: string, files?: File[]) => void
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
@@ -421,7 +421,7 @@ const FolderRow = memo(function FolderRow({
   isSelected: boolean
   onSelectionChange: (path: string, selected: boolean) => void
   onFolderClick: (path: string) => void
-  onDropOnFolder: (path: string) => void
+  onDropOnFolder: (path: string, files?: File[]) => void
 }) {
   return (
     <TableRow
@@ -432,7 +432,8 @@ const FolderRow = memo(function FolderRow({
       onDrop={(event) => {
         event.preventDefault()
         event.stopPropagation()
-        onDropOnFolder(item.path)
+        const droppedFiles = Array.from(event.dataTransfer.files)
+        onDropOnFolder(item.path, droppedFiles.length > 0 ? droppedFiles : undefined)
       }}
     >
       <TableCell className="w-11 pl-4 pr-2">

@@ -11,7 +11,6 @@ import type {
 } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -31,6 +30,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import {
   getCompanyComplianceStatusAction,
@@ -40,6 +47,7 @@ import {
 } from "@/app/(app)/companies/actions"
 import { useToast } from "@/hooks/use-toast"
 import { AlertCircle, CheckCircle2, Clock, FileText, Loader2, Settings, XCircle } from "@/components/icons"
+import { cn } from "@/lib/utils"
 
 function formatDate(value?: string | null) {
   if (!value) return "—"
@@ -53,45 +61,11 @@ function formatMoney(cents?: number | null) {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
-function StatusBadge({ status }: { status: ComplianceDocument["status"] }) {
-  switch (status) {
-    case "pending_review":
-      return (
-        <Badge variant="secondary" className="gap-1">
-          <Clock className="h-3 w-3" />
-          Pending Review
-        </Badge>
-      )
-    case "approved":
-      return (
-        <Badge variant="secondary" className="gap-1 bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
-          <CheckCircle2 className="h-3 w-3" />
-          Approved
-        </Badge>
-      )
-    case "rejected":
-      return (
-        <Badge variant="destructive" className="gap-1">
-          <XCircle className="h-3 w-3" />
-          Rejected
-        </Badge>
-      )
-    case "expired":
-      return (
-        <Badge variant="outline" className="gap-1 text-orange-600">
-          <AlertCircle className="h-3 w-3" />
-          Expired
-        </Badge>
-      )
-    default:
-      return <Badge variant="outline">{status}</Badge>
-  }
-}
-
 interface RequirementsEditorProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   companyId: string
+  companyName?: string
   documentTypes: ComplianceDocumentType[]
   currentRequirements: ComplianceRequirement[]
   onSaved: () => void
@@ -101,6 +75,7 @@ function RequirementsEditor({
   open,
   onOpenChange,
   companyId,
+  companyName,
   documentTypes,
   currentRequirements,
   onSaved,
@@ -169,114 +144,177 @@ function RequirementsEditor({
     })
   }
 
+  const selectedCount = documentTypes.filter((dt) => selected[dt.id]).length
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Compliance Requirements</DialogTitle>
-          <DialogDescription>
-            Select which documents this company must provide.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 max-h-[60vh] overflow-y-auto py-2">
-          {documentTypes.map((dt) => (
-              <div key={dt.id} className="space-y-2 rounded-lg border p-3">
-              <div className="flex items-center gap-3">
-                <Checkbox
-                  id={`req-${dt.id}`}
-                  checked={selected[dt.id] || false}
-                  onCheckedChange={(checked) =>
-                    setSelected((prev) => ({ ...prev, [dt.id]: !!checked }))
-                  }
-                />
-                <div className="flex-1">
-                  <Label htmlFor={`req-${dt.id}`} className="font-medium cursor-pointer">
-                    {dt.name}
-                  </Label>
-                  {dt.description && (
-                    <p className="text-xs text-muted-foreground">{dt.description}</p>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-xl">
+        <SheetHeader className="border-b">
+          <SheetTitle>Compliance requirements</SheetTitle>
+          <SheetDescription>
+            Choose the documents {companyName || "this company"} must provide
+            before working.
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="divide-y">
+            {documentTypes.map((dt) => {
+              const isSelected = selected[dt.id] || false
+              const isInsurance =
+                dt.code.includes("coi") ||
+                dt.code.includes("insurance") ||
+                dt.code.includes("umbrella")
+              return (
+                <div
+                  key={dt.id}
+                  className={cn(
+                    "px-4 py-3 transition-colors",
+                    isSelected && "bg-muted/30",
+                  )}
+                >
+                  <label className="flex cursor-pointer items-start gap-3">
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={(checked) =>
+                        setSelected((prev) => ({ ...prev, [dt.id]: !!checked }))
+                      }
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-foreground">
+                          {dt.name}
+                        </span>
+                        {dt.has_expiry && (
+                          <Badge variant="outline" className="text-[10px]">
+                            Expires
+                          </Badge>
+                        )}
+                      </div>
+                      {dt.description && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {dt.description}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+
+                  {isSelected && (
+                    <div className="ml-7 mt-3 space-y-3 border-l-2 border-border pl-4">
+                      {isInsurance && (
+                        <>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-muted-foreground">
+                              Minimum coverage
+                            </Label>
+                            <div className="relative w-44">
+                              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                                $
+                              </span>
+                              <Input
+                                type="number"
+                                inputMode="numeric"
+                                placeholder="1,000,000"
+                                className="h-9 pl-7"
+                                value={minCoverage[dt.id] || ""}
+                                onChange={(e) =>
+                                  setMinCoverage((prev) => ({
+                                    ...prev,
+                                    [dt.id]: e.target.value,
+                                  }))
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs text-muted-foreground">
+                              Required endorsements
+                            </Label>
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={requiresAdditionalInsured[dt.id] || false}
+                                onCheckedChange={(checked) =>
+                                  setRequiresAdditionalInsured((prev) => ({
+                                    ...prev,
+                                    [dt.id]: checked === true,
+                                  }))
+                                }
+                              />
+                              <span>Additional insured</span>
+                            </label>
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={
+                                  requiresPrimaryNonContributory[dt.id] || false
+                                }
+                                onCheckedChange={(checked) =>
+                                  setRequiresPrimaryNonContributory((prev) => ({
+                                    ...prev,
+                                    [dt.id]: checked === true,
+                                  }))
+                                }
+                              />
+                              <span>Primary &amp; non-contributory</span>
+                            </label>
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={
+                                  requiresWaiverOfSubrogation[dt.id] || false
+                                }
+                                onCheckedChange={(checked) =>
+                                  setRequiresWaiverOfSubrogation((prev) => ({
+                                    ...prev,
+                                    [dt.id]: checked === true,
+                                  }))
+                                }
+                              />
+                              <span>Waiver of subrogation</span>
+                            </label>
+                          </div>
+                        </>
+                      )}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">
+                          Notes
+                        </Label>
+                        <Textarea
+                          rows={2}
+                          placeholder="e.g. Must list us as additional insured"
+                          className="text-sm"
+                          value={notes[dt.id] || ""}
+                          onChange={(e) =>
+                            setNotes((prev) => ({
+                              ...prev,
+                              [dt.id]: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
-                {dt.has_expiry && (
-                  <Badge variant="outline" className="text-xs">
-                    Has expiry
-                  </Badge>
-                )}
-              </div>
-              {selected[dt.id] &&
-                (dt.code.includes("coi") || dt.code.includes("insurance") || dt.code.includes("umbrella")) && (
-                <div className="pl-7 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Label className="text-xs text-muted-foreground whitespace-nowrap">
-                      Min coverage $
-                    </Label>
-                    <Input
-                      type="number"
-                      placeholder="e.g. 1000000"
-                      className="h-8 w-32"
-                      value={minCoverage[dt.id] || ""}
-                      onChange={(e) =>
-                        setMinCoverage((prev) => ({ ...prev, [dt.id]: e.target.value }))
-                      }
-                    />
-                  </div>
-                  <div className="grid gap-2 text-sm">
-                    <label className="flex items-center gap-2">
-                      <Checkbox
-                        checked={requiresAdditionalInsured[dt.id] || false}
-                        onCheckedChange={(checked) =>
-                          setRequiresAdditionalInsured((prev) => ({ ...prev, [dt.id]: checked === true }))
-                        }
-                      />
-                      <span>Require additional insured endorsement</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <Checkbox
-                        checked={requiresPrimaryNonContributory[dt.id] || false}
-                        onCheckedChange={(checked) =>
-                          setRequiresPrimaryNonContributory((prev) => ({ ...prev, [dt.id]: checked === true }))
-                        }
-                      />
-                      <span>Require primary & non-contributory wording</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <Checkbox
-                        checked={requiresWaiverOfSubrogation[dt.id] || false}
-                        onCheckedChange={(checked) =>
-                          setRequiresWaiverOfSubrogation((prev) => ({ ...prev, [dt.id]: checked === true }))
-                        }
-                      />
-                      <span>Require waiver of subrogation</span>
-                    </label>
-                  </div>
-                </div>
-              )}
-              {selected[dt.id] && (
-                <div className="pl-7">
-                  <Input
-                    placeholder="Notes (e.g., Must list us as additional insured)"
-                    className="h-8 text-sm"
-                    value={notes[dt.id] || ""}
-                    onChange={(e) =>
-                      setNotes((prev) => ({ ...prev, [dt.id]: e.target.value }))
-                    }
-                  />
-                </div>
-              )}
-            </div>
-          ))}
+              )
+            })}
+          </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={isPending}>
-            {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Save Requirements
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+
+        <SheetFooter className="flex-row items-center justify-between border-t">
+          <span className="text-xs text-muted-foreground">
+            {selectedCount} selected
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSave} disabled={isPending}>
+              {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save
+            </Button>
+          </div>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   )
 }
 
@@ -420,6 +458,48 @@ function ReviewDialog({ open, onOpenChange, document, onReviewed }: ReviewDialog
   )
 }
 
+type ReqState = "ok" | "pending" | "expired" | "missing"
+
+function ReqStatePill({ state }: { state: ReqState }) {
+  const map: Record<ReqState, { label: string; icon: React.ReactNode; className: string }> = {
+    ok: {
+      label: "On file",
+      icon: <CheckCircle2 className="h-3 w-3" />,
+      className:
+        "border-emerald-600/30 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400",
+    },
+    pending: {
+      label: "Pending review",
+      icon: <Clock className="h-3 w-3" />,
+      className:
+        "border-amber-600/30 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400",
+    },
+    expired: {
+      label: "Expired",
+      icon: <AlertCircle className="h-3 w-3" />,
+      className:
+        "border-orange-600/30 bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400",
+    },
+    missing: {
+      label: "Missing",
+      icon: <XCircle className="h-3 w-3" />,
+      className: "border-border bg-muted text-muted-foreground",
+    },
+  }
+  const { label, icon, className } = map[state]
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 border px-2 py-0.5 text-xs font-medium",
+        className,
+      )}
+    >
+      {icon}
+      {label}
+    </span>
+  )
+}
+
 export function CompanyComplianceTab({ company }: { company: Company }) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -456,10 +536,6 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
     setReviewOpen(true)
   }
 
-  const pendingCount = status?.pending_review.length ?? 0
-  const missingCount = status?.missing.length ?? 0
-  const expiringCount = status?.expiring_soon.length ?? 0
-  const deficiencyCount = status?.deficiencies.length ?? 0
   const deficienciesByRequirementId = useMemo(() => {
     const map = new Map<string, string[]>()
     for (const deficiency of status?.deficiencies ?? []) {
@@ -469,6 +545,34 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
     }
     return map
   }, [status?.deficiencies])
+
+  const requirementRows = useMemo(() => {
+    if (!status) return []
+    const nowMs = Date.now()
+    return status.requirements.map((req) => {
+      const docs = status.documents.filter(
+        (d) => d.document_type_id === req.document_type_id,
+      )
+      const approved = docs.find(
+        (d) =>
+          d.status === "approved" &&
+          (!d.expiry_date || new Date(d.expiry_date).getTime() > nowMs),
+      )
+      const pending = docs.find((d) => d.status === "pending_review")
+      const expired = docs.find(
+        (d) =>
+          d.status === "expired" ||
+          (d.status === "approved" &&
+            d.expiry_date &&
+            new Date(d.expiry_date).getTime() <= nowMs),
+      )
+      let state: ReqState = "missing"
+      if (approved) state = "ok"
+      else if (pending) state = "pending"
+      else if (expired) state = "expired"
+      return { req, state, approved, pending, expired }
+    })
+  }, [status])
 
   if (isPending && !status) {
     return (
@@ -480,203 +584,98 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Status Summary */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Badge
-            variant={status?.is_compliant ? "secondary" : "destructive"}
-            className="text-sm px-3 py-1"
-          >
-            {status?.is_compliant ? "Compliant" : "Not Compliant"}
-          </Badge>
-          {pendingCount > 0 && (
-            <Badge variant="secondary" className="gap-1">
-              <Clock className="h-3 w-3" />
-              {pendingCount} pending review
-            </Badge>
-          )}
-          {missingCount > 0 && (
-            <Badge variant="outline" className="gap-1 text-orange-600">
-              <AlertCircle className="h-3 w-3" />
-              {missingCount} missing
-            </Badge>
-          )}
-          {expiringCount > 0 && (
-            <Badge variant="outline" className="gap-1 text-yellow-600">
-              <Clock className="h-3 w-3" />
-              {expiringCount} expiring soon
-            </Badge>
-          )}
-          {deficiencyCount > 0 && (
-            <Badge variant="outline" className="gap-1 text-orange-700">
-              <AlertCircle className="h-3 w-3" />
-              {deficiencyCount} requirement issue{deficiencyCount === 1 ? "" : "s"}
-            </Badge>
-          )}
+    <div className="flex flex-col">
+      {/* Header — title + configure */}
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">
+            Required documents
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            What this company must provide before working
+          </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setRequirementsOpen(true)}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setRequirementsOpen(true)}
+        >
           <Settings className="mr-2 h-4 w-4" />
-          Configure Requirements
+          Configure
         </Button>
       </div>
 
-      {/* Requirements */}
-      {(status?.requirements.length ?? 0) > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Required Documents</CardTitle>
-            <CardDescription>Documents this company must provide</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {status?.requirements.map((req) => {
-                const hasApproved = status.documents.some(
-                  (d) =>
-                    d.document_type_id === req.document_type_id &&
-                    d.status === "approved" &&
-                    (!d.expiry_date || new Date(d.expiry_date) > new Date())
-                )
-                const hasPending = status.documents.some(
-                  (d) =>
-                    d.document_type_id === req.document_type_id &&
-                    d.status === "pending_review"
-                )
-                return (
-                  <div
-                    key={req.id}
-                    className="flex items-center justify-between py-2 border-b last:border-0"
-                  >
-                    <div className="flex items-center gap-3">
-                      <FileText className="h-4 w-4 text-muted-foreground" />
-                      <div>
-                        <p className="font-medium text-sm">{req.document_type?.name}</p>
-                        {req.notes && (
-                          <p className="text-xs text-muted-foreground">{req.notes}</p>
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      {hasApproved ? (
-                        <Badge variant="secondary" className="gap-1 bg-green-100 text-green-800">
-                          <CheckCircle2 className="h-3 w-3" />
-                          On file
-                        </Badge>
-                      ) : hasPending ? (
-                        <Badge variant="secondary" className="gap-1">
-                          <Clock className="h-3 w-3" />
-                          Pending review
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="gap-1 text-orange-600">
-                          <AlertCircle className="h-3 w-3" />
-                          Missing
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-              {(status?.requirements ?? []).map((req) => {
-                const messages = deficienciesByRequirementId.get(req.id) ?? []
-                if (messages.length === 0) return null
-                return (
-                  <div key={`${req.id}-deficiency`} className="rounded-md border border-orange-200 bg-orange-50 p-2 text-xs text-orange-900">
-                    <p className="font-medium">{req.document_type?.name}: update required</p>
-                    {messages.map((message) => (
-                      <p key={`${req.id}-${message}`}>{message}</p>
-                    ))}
-                  </div>
-                )
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Pending Review */}
-      {pendingCount > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Pending Review</CardTitle>
-            <CardDescription>Documents awaiting your approval</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {status?.pending_review.map((doc) => (
-                <div
-                  key={doc.id}
-                  className="flex items-center justify-between py-2 border-b last:border-0"
-                >
-                  <div className="flex items-center gap-3">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="font-medium text-sm">{doc.document_type?.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        Uploaded {formatDate(doc.created_at)}
-                        {doc.submitted_via_portal && " via portal"}
+      {/* Requirements list */}
+      {requirementRows.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+          <p className="text-sm text-muted-foreground">
+            No requirements set for this company yet.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRequirementsOpen(true)}
+          >
+            <Settings className="mr-2 h-4 w-4" />
+            Configure requirements
+          </Button>
+        </div>
+      ) : (
+        <div className="divide-y">
+          {requirementRows.map(({ req, state, approved, pending }) => {
+            const messages = deficienciesByRequirementId.get(req.id) ?? []
+            const subParts: string[] = []
+            if (state === "ok" && approved?.expiry_date) {
+              subParts.push(`Expires ${formatDate(approved.expiry_date)}`)
+            }
+            if (req.notes) subParts.push(req.notes)
+            return (
+              <div key={req.id} className="px-4 py-4 sm:px-6">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {req.document_type?.name}
                       </p>
+                      {subParts.length > 0 ? (
+                        <p className="truncate text-xs text-muted-foreground">
+                          {subParts.join(" · ")}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
-                  <Button size="sm" onClick={() => openReview(doc)}>
-                    Review
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* All Documents */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">All Documents</CardTitle>
-          <CardDescription>Complete history of compliance documents</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {(status?.documents.length ?? 0) === 0 ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">
-              No documents uploaded yet
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {status?.documents.map((doc) => (
-                <div
-                  key={doc.id}
-                  className="flex items-center justify-between py-2 border-b last:border-0"
-                >
-                  <div className="flex items-center gap-3">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="font-medium text-sm">{doc.document_type?.name}</p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>Uploaded {formatDate(doc.created_at)}</span>
-                        {doc.expiry_date && <span>· Expires {formatDate(doc.expiry_date)}</span>}
-                        {doc.carrier_name && <span>· {doc.carrier_name}</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status={doc.status} />
-                    {doc.status === "pending_review" && (
-                      <Button size="sm" variant="outline" onClick={() => openReview(doc)}>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <ReqStatePill state={state} />
+                    {pending ? (
+                      <Button size="sm" onClick={() => openReview(pending)}>
                         Review
                       </Button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                {messages.length > 0 ? (
+                  <div className="ml-7 mt-2 flex items-start gap-2 border-l-2 border-orange-400 bg-orange-50 px-3 py-2 text-xs text-orange-800 dark:bg-orange-950/30 dark:text-orange-300">
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <div className="space-y-0.5">
+                      {messages.map((message) => (
+                        <p key={`${req.id}-${message}`}>{message}</p>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Dialogs */}
       <RequirementsEditor
         open={requirementsOpen}
         onOpenChange={setRequirementsOpen}
         companyId={company.id}
+        companyName={company.name}
         documentTypes={documentTypes}
         currentRequirements={status?.requirements ?? []}
         onSaved={loadData}

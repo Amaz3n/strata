@@ -104,7 +104,7 @@ export function EstimatesClient({
       const result = await convertEstimateToProposalAction(estimateId)
       const viewUrl = result.viewUrl
       await copyToClipboard(viewUrl)
-      toast.success("Proposal created", { description: "Link copied to clipboard." })
+      toast.success("Proposal worksheet created", { description: "Review link copied. Send the official PDF from Signatures." })
     } catch (error: any) {
       console.error(error)
       toast.error("Failed to convert", { description: error?.message ?? "Please try again." })

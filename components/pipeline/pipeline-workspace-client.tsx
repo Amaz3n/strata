@@ -8,7 +8,9 @@ import type { Opportunity } from "@/lib/services/opportunities"
 import type { LeadStatus } from "@/lib/validation/crm"
 import type { OpportunityStatus } from "@/lib/validation/opportunities"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { PipelineDashboard } from "@/components/pipeline/pipeline-dashboard"
+import { PipelineMobileWorkspace } from "@/components/pipeline/pipeline-mobile-workspace"
 import { ProspectsClient } from "@/components/prospects/prospects-client"
 import { OpportunitiesClient } from "@/components/opportunities/opportunities-client"
 
@@ -54,6 +56,24 @@ export function PipelineWorkspaceClient({
   canManageProjects = false,
 }: PipelineWorkspaceClientProps) {
   const router = useRouter()
+  const isMobile = useIsMobile()
+
+  if (isMobile) {
+    return (
+      <PipelineMobileWorkspace
+        opportunityCounts={opportunityCounts}
+        overdueFollowUps={overdueFollowUps}
+        upcomingFollowUps={upcomingFollowUps}
+        newInquiries={newInquiries}
+        recentActivity={recentActivity}
+        prospects={prospects}
+        opportunities={opportunities}
+        teamMembers={teamMembers}
+        canCreate={canCreate}
+        canManageProjects={canManageProjects}
+      />
+    )
+  }
 
   const handleViewChange = (next: string) => {
     const nextView = (next === "opportunities" || next === "prospects" ? next : "overview") as PipelineView

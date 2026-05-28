@@ -68,6 +68,9 @@ interface QuickLogEntryProps {
     },
   ) => Promise<void>
   trigger?: React.ReactNode
+  /** Controlled open state. When provided, the internal trigger is not rendered unless `trigger` is passed. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }
 
 type DateOption = "today" | "yesterday" | "custom"
@@ -114,13 +117,21 @@ export function QuickLogEntry({
   onCreateLog,
   onUploadFiles,
   trigger,
+  open: controlledOpen,
+  onOpenChange,
 }: QuickLogEntryProps) {
   const today = new Date()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // State
-  const [open, setOpen] = useState(false)
+  // State (supports both uncontrolled trigger usage and controlled open)
+  const [internalOpen, setInternalOpen] = useState(false)
+  const isControlled = controlledOpen !== undefined
+  const open = isControlled ? controlledOpen : internalOpen
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setInternalOpen(next)
+    onOpenChange?.(next)
+  }
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [summary, setSummary] = useState("")
   const [selectedWeather, setSelectedWeather] = useState<string>("")
@@ -395,14 +406,16 @@ export function QuickLogEntry({
 
   return (
     <Drawer open={open} onOpenChange={setOpen}>
-      <DrawerTrigger asChild>
-        {trigger || (
+      {trigger ? (
+        <DrawerTrigger asChild>{trigger}</DrawerTrigger>
+      ) : isControlled ? null : (
+        <DrawerTrigger asChild>
           <Button size="sm" className="gap-2">
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">New Entry</span>
           </Button>
-        )}
-      </DrawerTrigger>
+        </DrawerTrigger>
+      )}
       <DrawerContent className="mx-auto max-w-lg outline-none flex flex-col max-h-[90vh]">
         {!isOnline && (
           <div className="bg-yellow-500/10 border-b border-yellow-500/20 text-yellow-700 dark:text-yellow-400 px-4 py-2 text-xs font-medium flex items-center justify-center">

@@ -39,7 +39,7 @@ const HREF_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   commitment: "/commitments/{id}",
   change_order: "/change-orders/{id}",
   contract: "/contracts/{id}",
-  proposal: "/proposals/{id}",
+  proposal: "/signatures",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
 }

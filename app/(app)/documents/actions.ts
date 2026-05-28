@@ -486,6 +486,7 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
   const category = formData.get("category") as FileCategory | null
   const visibility = formData.get("visibility") as "public" | "private" | null
   const description = formData.get("description") as string | null
+  const hasExplicitFolderPath = formData.has("folderPath")
   const folderPath = formData.get("folderPath") as string | null
   const shareWithClientsRaw = formData.get("shareWithClients") as string | null
   const shareWithSubsRaw = formData.get("shareWithSubs") as string | null
@@ -528,9 +529,12 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
 
   // Infer category from mime type/filename if not provided
   const inferredCategory = category ?? inferCategory(file.name, file.type)
-  const resolvedFolderPath =
-    normalizeFolderPath(folderPath) ??
-    (projectId ? getDefaultFolderForCategory(inferredCategory) : undefined)
+  const explicitFolderPath = normalizeFolderPath(folderPath)
+  const resolvedFolderPath = hasExplicitFolderPath
+    ? explicitFolderPath === "/" ? undefined : explicitFolderPath
+    : projectId
+      ? getDefaultFolderForCategory(inferredCategory)
+      : undefined
 
   let resolvedShareWithClients = shareWithClientsRaw === "true"
   let resolvedShareWithSubs = shareWithSubsRaw === "true"

@@ -34,6 +34,16 @@ function billingModelForContractInput(input: Partial<ProjectInput>, existing?: a
   return "fixed_price"
 }
 
+function projectDateValue(input: Partial<ProjectInput>, key: "start_date" | "end_date", fallback?: string | null) {
+  if (!Object.prototype.hasOwnProperty.call(input, key)) return fallback ?? null
+  return input[key] || null
+}
+
+function projectNullableValue<T>(input: Partial<ProjectInput>, key: keyof ProjectInput, fallback: T | null | undefined) {
+  if (!Object.prototype.hasOwnProperty.call(input, key)) return fallback ?? null
+  return (input[key] ?? null) as T | null
+}
+
 function mapProject(row: any): Project {
   const location = (row.location ?? {}) as Record<string, unknown>
   const address = typeof location.address === "string" ? location.address : (location.formatted as string | undefined)
@@ -147,8 +157,8 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     org_id: resolvedOrgId,
     name: input.name,
     status: input.status ?? "active",
-    start_date: input.start_date,
-    end_date: input.end_date,
+    start_date: input.start_date || null,
+    end_date: input.end_date || null,
     location: input.location ?? (input.address ? { address: input.address } : null),
     client_id: input.client_id ?? null,
     property_type: input.property_type,
@@ -231,11 +241,11 @@ export async function updateProject({
   const updatePayload = {
     name: parsed.name ?? existing.data.name,
     status: parsed.status ?? existing.data.status,
-    start_date: parsed.start_date ?? existing.data.start_date,
-    end_date: parsed.end_date ?? existing.data.end_date,
+    start_date: projectDateValue(parsed, "start_date", existing.data.start_date),
+    end_date: projectDateValue(parsed, "end_date", existing.data.end_date),
     location:
       parsed.location ?? (parsed.address ? { address: parsed.address } : existing.data.location ?? null),
-    client_id: parsed.client_id ?? existing.data.client_id ?? null,
+    client_id: projectNullableValue<string>(parsed, "client_id", existing.data.client_id),
     property_type: parsed.property_type ?? existing.data.property_type,
     project_type: parsed.project_type ?? existing.data.project_type,
     description: parsed.description ?? existing.data.description,

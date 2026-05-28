@@ -76,12 +76,28 @@ function calculateTotals(lines: ChangeOrderLineInput[], taxRate = 0, markupPerce
 function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, actorId?: string | null) {
   const lines = changeOrder.lines ?? []
   if (lines.length === 0) {
-    throw new Error("Change order must include line items before approval")
+    return {
+      budget_revision_cents: changeOrder.total_cents ?? 0,
+      allowance_draw_cents: 0,
+      budget_distributions: [],
+      billing_status: "tracking_only",
+      posting_skipped_reason: "No cost-coded line items were provided.",
+      posted_at: new Date().toISOString(),
+      posted_by: actorId ?? null,
+    }
   }
 
   const uncodedLines = lines.filter((line) => !line.cost_code_id)
   if (uncodedLines.length > 0) {
-    throw new Error("Every change order line must be assigned to a cost code before approval")
+    return {
+      budget_revision_cents: changeOrder.total_cents ?? lines.reduce((sum, line) => sum + calculateLineBudgetRevisionCents(line), 0),
+      allowance_draw_cents: lines.reduce((sum, line) => sum + (line.allowance_cents ?? 0), 0),
+      budget_distributions: [],
+      billing_status: "tracking_only",
+      posting_skipped_reason: "Budget posting skipped because one or more lines are not assigned to a cost code.",
+      posted_at: new Date().toISOString(),
+      posted_by: actorId ?? null,
+    }
   }
 
   const budgetDistributions = lines.map((line, index) => {
@@ -106,6 +122,10 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
     posted_at: new Date().toISOString(),
     posted_by: actorId ?? null,
   }
+}
+
+function hasBudgetDistributions(financialImpact: ReturnType<typeof buildApprovedChangeOrderFinancialMetadata>) {
+  return financialImpact.budget_distributions.length > 0
 }
 
 async function postBudgetRevisionForChangeOrder({
@@ -210,6 +230,8 @@ function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
     days_impact: row.days_impact ?? undefined,
     client_visible: row.client_visible ?? undefined,
     requires_signature: row.requires_signature ?? undefined,
+    esign_status: (metadata.esign_status as ChangeOrder["esign_status"] | undefined) ?? undefined,
+    esign_document_id: (metadata.esign_document_id as string | undefined) ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
     metadata: metadata ?? undefined,
@@ -278,7 +300,63 @@ export async function listChangeOrders({
     throw new Error(`Failed to list change orders: ${error.message}`)
   }
 
-  return (data ?? []).map((row) => mapChangeOrderRow(row as ChangeOrderRow))
+  const rows = (data ?? []) as ChangeOrderRow[]
+  const changeOrders = rows.map((row) => mapChangeOrderRow(row))
+  const projectIds = Array.from(new Set(changeOrders.map((row) => row.project_id).filter(Boolean)))
+
+  if (projectIds.length === 0) {
+    return changeOrders
+  }
+
+  const { data: documents, error: documentsError } = await supabase
+    .from("documents")
+    .select("id, status, source_entity_id, metadata, created_at")
+    .eq("org_id", resolvedOrgId)
+    .eq("document_type", "change_order")
+    .in("project_id", projectIds)
+    .order("created_at", { ascending: false })
+
+  if (documentsError) {
+    throw new Error(`Failed to load change order signature status: ${documentsError.message}`)
+  }
+
+  const statusPriority: Record<string, number> = {
+    expired: 1,
+    voided: 2,
+    draft: 3,
+    sent: 4,
+    signed: 5,
+  }
+  const documentByChangeOrderId = new Map<string, { id: string; status: ChangeOrder["esign_status"]; created_at?: string | null }>()
+
+  for (const document of documents ?? []) {
+    const changeOrderId = (document.source_entity_id as string | null) ?? (document.metadata?.change_order_id as string | undefined)
+    if (!changeOrderId) continue
+
+    const status = (document.status ?? "draft") as ChangeOrder["esign_status"]
+    const current = documentByChangeOrderId.get(changeOrderId)
+    const nextPriority = statusPriority[status ?? ""] ?? 0
+    const currentPriority = statusPriority[current?.status ?? ""] ?? 0
+    const isNewer =
+      new Date(document.created_at ?? 0).getTime() > new Date(current?.created_at ?? 0).getTime()
+
+    if (!current || nextPriority > currentPriority || (nextPriority === currentPriority && isNewer)) {
+      documentByChangeOrderId.set(changeOrderId, {
+        id: document.id as string,
+        status,
+        created_at: document.created_at as string | null,
+      })
+    }
+  }
+
+  return changeOrders.map((changeOrder) => {
+    const linkedDocument = documentByChangeOrderId.get(changeOrder.id)
+    return {
+      ...changeOrder,
+      esign_status: linkedDocument?.status ?? "not_prepared",
+      esign_document_id: linkedDocument?.id ?? null,
+    }
+  })
 }
 
 export async function createChangeOrder({ input, orgId }: { input: ChangeOrderInput; orgId?: string }) {
@@ -546,7 +624,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     createdBy: null,
   })
 
-  if (needsApprovalTransition) {
+  if (needsApprovalTransition && hasBudgetDistributions(financialImpact)) {
     await postBudgetRevisionForChangeOrder({
       supabase,
       changeOrder: {
@@ -557,6 +635,12 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
       },
       actorId: null,
     })
+    await applyChangeOrderFinancialImpact({
+      supabase,
+      orgId: existing.org_id,
+      projectId: existing.project_id,
+    })
+  } else if (needsApprovalTransition) {
     await applyChangeOrderFinancialImpact({
       supabase,
       orgId: existing.org_id,
@@ -636,14 +720,16 @@ export async function approveChangeOrder({
     throw new Error(`Failed to approve change order: ${error?.message}`)
   }
 
-  await postBudgetRevisionForChangeOrder({
-    supabase,
-    changeOrder: {
-      ...mapChangeOrderRow(data as ChangeOrderRow),
-      metadata: data.metadata as any,
-    },
-    actorId: userId,
-  })
+  if (hasBudgetDistributions(financialImpact)) {
+    await postBudgetRevisionForChangeOrder({
+      supabase,
+      changeOrder: {
+        ...mapChangeOrderRow(data as ChangeOrderRow),
+        metadata: data.metadata as any,
+      },
+      actorId: userId,
+    })
+  }
 
   await applyChangeOrderFinancialImpact({
     supabase,

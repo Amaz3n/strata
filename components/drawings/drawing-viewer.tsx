@@ -41,6 +41,7 @@ import {
   PanelRight,
   PanelRightClose,
   Keyboard,
+  MoreVertical,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -96,7 +97,6 @@ import { ComparisonViewer } from "./comparison-viewer"
 import { DrawingPinLayer } from "./drawing-pin-layer"
 import { SheetThumbnailStrip } from "./sheet-thumbnail-strip"
 import { useTouchGestures } from "./use-touch-gestures"
-import { MobileDrawingToolbar } from "./mobile-drawing-toolbar"
 import { LongPressMenu } from "./long-press-menu"
 import { usePrefetchAdjacentSheets } from "./use-prefetch-sheets"
 import { useIsMobile } from "@/components/ui/use-mobile"
@@ -417,7 +417,6 @@ export function DrawingViewer({
   // Stage 2: Mobile/touch state
   const [longPressPosition, setLongPressPosition] = useState<{ x: number; y: number; clientX: number; clientY: number } | null>(null)
   const [showLongPressMenu, setShowLongPressMenu] = useState(false)
-  const [isMarkupMode, setIsMarkupMode] = useState(false)
 
   // Refs
   const containerRef = useRef<HTMLDivElement>(null)
@@ -478,6 +477,19 @@ export function DrawingViewer({
       console.error("[DrawingViewer] Failed to toggle OpenSeadragon nav:", e)
     }
   }, [activeTool, hasTiles, osdViewer])
+
+  // Hide the mobile bottom nav while the drawing viewer is open
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    window.dispatchEvent(
+      new CustomEvent("arc-immersive-view", { detail: { active: true } }),
+    )
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent("arc-immersive-view", { detail: { active: false } }),
+      )
+    }
+  }, [])
 
   const getNormalizedCoordsFromTiledClient = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -632,25 +644,6 @@ export function DrawingViewer({
     },
     [longPressPosition, onCreatePin]
   )
-
-  // Stage 2: Mobile toolbar handlers
-  const handleMobileDropPin = useCallback(() => {
-    setActiveTool("pin")
-    toast.info("Tap on the drawing to place a pin")
-  }, [])
-
-  const handleMobileMarkupToggle = useCallback(() => {
-    setIsMarkupMode((m) => !m)
-    if (!isMarkupMode) {
-      setActiveTool("freehand")
-    } else {
-      setActiveTool("pan")
-    }
-  }, [isMarkupMode])
-
-  const handleMobileCamera = useCallback(() => {
-    toast.info("Camera feature coming soon")
-  }, [])
 
   // Stage 2: Handle cluster click - zoom to location
   const handleClusterClick = useCallback(
@@ -1483,7 +1476,7 @@ export function DrawingViewer({
       {/* Top-left: sheet identity + navigation */}
       <div className={cn("absolute top-4 left-4 z-20", chromeClass)}>
         <div className="flex items-center gap-1 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1">
-          {sheets.length > 1 && onNavigateSheet && (
+          {sheets.length > 1 && onNavigateSheet && !isMobile && (
             <>
               <Button
                 variant="ghost"
@@ -1529,7 +1522,7 @@ export function DrawingViewer({
               </button>
             </PopoverTrigger>
             {sheets.length > 1 && onNavigateSheet && (
-              <PopoverContent align="start" className="w-[360px] p-0">
+              <PopoverContent align="start" className="w-[360px] max-md:w-[calc(100vw-2rem)] p-0">
                 <div className="p-2 border-b">
                   <Input
                     placeholder="Search sheets..."
@@ -1623,7 +1616,64 @@ export function DrawingViewer({
           chromeClass,
         )}
       >
-        <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1">
+        {/* Mobile: a single compact pill — overflow menu + close. */}
+        <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1 md:hidden">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onClick={() => setShowMarkups((v) => !v)}>
+                {showMarkups ? (
+                  <EyeOff className="mr-2 h-4 w-4" />
+                ) : (
+                  <Eye className="mr-2 h-4 w-4" />
+                )}
+                {showMarkups ? "Hide markups" : "Show markups"}
+              </DropdownMenuItem>
+              {pins.length > 0 && (
+                <DropdownMenuItem onClick={() => setPinsDrawerOpen(true)}>
+                  <Layers className="mr-2 h-4 w-4" />
+                  Linked items
+                  <Badge variant="secondary" className="ml-auto">
+                    {pins.length}
+                  </Badge>
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={() => setVersionsPanelOpen(true)}>
+                <GitCompare className="mr-2 h-4 w-4" />
+                Versions
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleResetView}>
+                <Maximize2 className="mr-2 h-4 w-4" />
+                Fit to screen
+              </DropdownMenuItem>
+              {fileUrl && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <a href={fileUrl} download target="_blank" rel="noreferrer">
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
+                    </a>
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1 md:flex">
           <Button
             variant="ghost"
             size="icon"
@@ -1656,7 +1706,7 @@ export function DrawingViewer({
           </Button>
         </div>
 
-        <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1">
+        <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1 md:flex">
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1779,6 +1829,7 @@ export function DrawingViewer({
         <div
           className={cn(
             "absolute top-[72px] right-4 w-80 z-20 rounded-xl border bg-background/95 backdrop-blur-md shadow-xl flex flex-col",
+            "max-md:inset-x-3 max-md:top-16 max-md:w-auto",
             uiHidden && "opacity-0 pointer-events-none",
           )}
         >
@@ -2111,6 +2162,7 @@ export function DrawingViewer({
         <div
           className={cn(
             "absolute top-20 right-4 bottom-24 w-72 z-20 rounded-xl border bg-background/95 backdrop-blur-md shadow-xl flex flex-col",
+            "max-md:inset-x-3 max-md:top-16 max-md:bottom-28 max-md:w-auto",
             uiHidden && "opacity-0 pointer-events-none",
           )}
         >
@@ -2173,16 +2225,39 @@ export function DrawingViewer({
         </div>
       )}
 
-      {/* Mobile toolbar */}
-      {isMobile && isTouch && !readOnly && !uiHidden && (
-        <MobileDrawingToolbar
-          onPrevious={hasPrevSheet ? goToPrevSheet : undefined}
-          onNext={hasNextSheet ? goToNextSheet : undefined}
-          onDropPin={handleMobileDropPin}
-          onMarkup={handleMobileMarkupToggle}
-          onCamera={handleMobileCamera}
-          isMarkupActive={isMarkupMode}
-        />
+      {/* Mobile: centered sheet-navigation pill. Long-press handles creation. */}
+      {sheets.length > 1 && onNavigateSheet && (
+        <div
+          className={cn(
+            "absolute inset-x-0 bottom-0 z-20 flex justify-center md:hidden",
+            "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+            chromeClass,
+          )}
+        >
+          <div className="flex items-center gap-1 rounded-full border bg-background/95 backdrop-blur-md shadow-lg p-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 rounded-full"
+              onClick={goToPrevSheet}
+              disabled={!hasPrevSheet}
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
+            <span className="min-w-14 text-center text-sm font-mono tabular-nums">
+              {currentSheetIndex + 1} / {sheets.length}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 rounded-full"
+              onClick={goToNextSheet}
+              disabled={!hasNextSheet}
+            >
+              <ChevronRight className="h-5 w-5" />
+            </Button>
+          </div>
+        </div>
       )}
 
       {/* Long press context menu */}

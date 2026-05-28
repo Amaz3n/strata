@@ -244,7 +244,7 @@ export function CompanyContractsTab({
         </Dialog>
       </div>
 
-      <div className="rounded-lg border overflow-hidden">
+      <div className="border overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow className="divide-x">

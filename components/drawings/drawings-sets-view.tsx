@@ -1224,56 +1224,87 @@ export function DrawingsSetsView({
       />
 
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
-        {!lockProject && (
-          <Select
-            value={selectedProjectId ?? "all"}
-            onValueChange={handleProjectChange}
-          >
-            <SelectTrigger className="h-9 w-[200px]">
-              <SelectValue placeholder="Select project" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All projects</SelectItem>
-              {projects.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+      <div className="border-b">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2 px-4 pb-0 sm:pb-3 sm:pt-3",
+            // No selector on mobile (locked project) → no empty top band above the search.
+            lockProject ? "pt-0" : "pt-3",
+          )}
+        >
+          {!lockProject && (
+            <Select
+              value={selectedProjectId ?? "all"}
+              onValueChange={handleProjectChange}
+            >
+              <SelectTrigger className="h-9 w-full sm:w-[200px]">
+                <SelectValue placeholder="Select project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
-        <div className="relative w-full max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          {/* Desktop search lives inline in the toolbar row. */}
+          <div className="relative hidden w-full sm:block sm:max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search sheets…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-9 pl-9 pr-9"
+              disabled={!activeSet}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label="Clear search"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Upload is desktop-only — mobile is a read/review surface. */}
+          <div className="ml-auto hidden items-center gap-2 sm:flex">
+            <Button
+              onClick={openFilePicker}
+              disabled={!selectedProjectId}
+              size="sm"
+              className="h-9"
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              Upload
+            </Button>
+          </div>
+        </div>
+
+        {/* Mobile search: full-bleed bar flush to the toolbar edges. */}
+        <div className="relative sm:hidden">
+          <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search sheets…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-9 pl-9 pr-9"
+            className="h-12 rounded-none border-0 bg-transparent pl-11 pr-11 shadow-none focus-visible:ring-0"
             disabled={!activeSet}
           />
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               aria-label="Clear search"
             >
               <X className="h-4 w-4" />
             </button>
           )}
-        </div>
-
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            onClick={openFilePicker}
-            disabled={!selectedProjectId}
-            size="sm"
-            className="h-9"
-          >
-            <Upload className="mr-2 h-4 w-4" />
-            Upload
-          </Button>
         </div>
       </div>
 
@@ -1373,11 +1404,11 @@ export function DrawingsSetsView({
             }
           />
         ) : (
-          <Table className="table-fixed min-w-[880px]">
+          <Table className="table-fixed sm:min-w-[880px]">
             <TableHeader>
               <TableRow className="bg-muted/40 hover:bg-muted/40">
                 <TableHead className="w-10 pl-4" />
-                <TableHead className="w-[44%] min-w-[300px] text-xs font-medium text-muted-foreground">
+                <TableHead className="w-full sm:w-[44%] sm:min-w-[300px] text-xs font-medium text-muted-foreground">
                   Drawing Register
                 </TableHead>
                 <TableHead className="hidden sm:table-cell w-[100px] text-center text-xs font-medium text-muted-foreground">
@@ -1962,6 +1993,10 @@ function DisciplineRows({
             </span>
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold">{label}</div>
+              {/* The Pages column is hidden on mobile — surface the count here instead. */}
+              <div className="text-xs text-muted-foreground sm:hidden">
+                {sheets.length} {sheets.length === 1 ? "sheet" : "sheets"}
+              </div>
             </div>
           </div>
         </TableCell>

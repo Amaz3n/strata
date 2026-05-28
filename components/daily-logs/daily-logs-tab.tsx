@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import {
   format,
   parseISO,
@@ -18,6 +18,7 @@ import type { DailyLogInput } from "@/lib/validation/daily-logs"
 import { cn } from "@/lib/utils"
 
 import { FileViewer } from "@/components/files/file-viewer"
+import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { QuickLogEntry } from "./quick-log-entry"
 import { ActivityCalendar } from "./activity-calendar"
 import { Button } from "@/components/ui/button"
@@ -695,6 +696,14 @@ export function DailyLogsTab({
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerFile, setViewerFile] = useState<EnhancedFileMetadata | null>(null)
 
+  // Mobile "New log" — surfaced as the square action button in the bottom nav
+  const [mobileLogOpen, setMobileLogOpen] = useState(false)
+  const { setAction } = useMobileAction()
+  useEffect(() => {
+    setAction({ label: "New log", onAction: () => setMobileLogOpen(true) })
+    return () => setAction(null)
+  }, [setAction])
+
   // Derive the single-day selection for the activity rail from logDateRange
   const selectedCalendarDate = useMemo(() => {
     if (!logDateRange?.from || !logDateRange?.to) return undefined
@@ -832,8 +841,9 @@ export function DailyLogsTab({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Mobile toolbar — single compact row */}
-      <div className="flex-shrink-0 flex sm:hidden items-center gap-2 pb-3 border-b mb-4">
+      {/* Mobile toolbar — pinned flush to header, full-bleed, slim padding.
+          `-top-6` lets sticky honor the `-mt-6` that absorbs AppPageContent's pt-6. */}
+      <div className="flex-shrink-0 flex sm:hidden items-center gap-2 sticky -top-6 z-30 -mt-6 -mx-4 px-3 py-2.5 mb-0 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/80 border-b">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
@@ -1017,27 +1027,18 @@ export function DailyLogsTab({
         </aside>
       </div>
 
-      {/* Mobile Floating Action Button */}
-      <div className="sm:hidden fixed bottom-6 right-4 z-20">
-        <QuickLogEntry
-          projectId={projectId}
-          projectAddress={projectAddress}
-          scheduleItems={scheduleItems}
-          tasks={tasks}
-          punchItems={punchItems}
-          onCreateLog={onCreateLog}
-          onUploadFiles={onUploadFiles}
-          trigger={
-            <Button
-              size="icon"
-              className="h-14 w-14 rounded-md shadow-lg shadow-primary/25"
-              aria-label="New daily log"
-            >
-              <Plus className="h-6 w-6" />
-            </Button>
-          }
-        />
-      </div>
+      {/* Mobile "New log" — opened from the bottom-nav action button */}
+      <QuickLogEntry
+        projectId={projectId}
+        projectAddress={projectAddress}
+        scheduleItems={scheduleItems}
+        tasks={tasks}
+        punchItems={punchItems}
+        onCreateLog={onCreateLog}
+        onUploadFiles={onUploadFiles}
+        open={mobileLogOpen}
+        onOpenChange={setMobileLogOpen}
+      />
 
       {/* Image Viewer */}
       <FileViewer

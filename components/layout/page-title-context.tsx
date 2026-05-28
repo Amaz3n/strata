@@ -4,13 +4,21 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { usePathname } from "next/navigation"
 import type { AppBreadcrumbItem } from "./app-header"
 
+export interface ProjectShellContext {
+  id: string
+  name: string
+  href: string
+}
+
 interface PageTitleContextType {
   title: string | undefined
   breadcrumbs: AppBreadcrumbItem[] | undefined
   fullBleed: boolean
+  projectContext: ProjectShellContext | null
   setTitle: (title: string) => void
   setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
   setFullBleed: (value: boolean) => void
+  setProjectContext: (ctx: ProjectShellContext | null) => void
 }
 
 const PageTitleContext = createContext<PageTitleContextType | undefined>(undefined)
@@ -33,6 +41,7 @@ export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: 
     initialBreadcrumbs ? { path: pathname, value: initialBreadcrumbs } : undefined,
   )
   const [fullBleed, setFullBleed] = useState<boolean>(false)
+  const [projectContext, setProjectContext] = useState<ProjectShellContext | null>(null)
 
   useEffect(() => {
     if (initialTitle) setScopedTitle({ path: pathname, value: initialTitle })
@@ -56,8 +65,17 @@ export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: 
   const breadcrumbs = scopedBreadcrumbs?.path === pathname ? scopedBreadcrumbs.value : undefined
 
   const value = useMemo(
-    () => ({ title, breadcrumbs, fullBleed, setTitle, setBreadcrumbs, setFullBleed }),
-    [title, breadcrumbs, fullBleed, setTitle, setBreadcrumbs],
+    () => ({
+      title,
+      breadcrumbs,
+      fullBleed,
+      projectContext,
+      setTitle,
+      setBreadcrumbs,
+      setFullBleed,
+      setProjectContext,
+    }),
+    [title, breadcrumbs, fullBleed, projectContext, setTitle, setBreadcrumbs],
   )
 
   return <PageTitleContext.Provider value={value}>{children}</PageTitleContext.Provider>

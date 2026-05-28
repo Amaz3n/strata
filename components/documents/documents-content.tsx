@@ -13,7 +13,7 @@ interface DocumentsContentProps {
   onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
   onUploadClick: () => void
-  onDropOnFolder: (path: string) => void
+  onDropOnFolder: (path: string, files?: File[]) => void
   selectedFileIds: Set<string>
   selectedFolderPaths: Set<string>
   onFileSelectionChange: (fileId: string, selected: boolean) => void

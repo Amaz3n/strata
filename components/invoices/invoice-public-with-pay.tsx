@@ -3,12 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js"
 import { loadStripe, type Appearance } from "@stripe/stripe-js"
-import { CheckCircle2, ChevronDown, Download, Link2, Loader2, Lock } from "lucide-react"
+import { Building2, CheckCircle2, CreditCard, Download, Link2, Loader2, Lock } from "lucide-react"
 
 import type { Invoice } from "@/lib/types"
-import type { Invoice as MiddayInvoice, LineItem, Template } from "@/packages/invoice/src/types"
 import type { Receipt } from "@/lib/types"
-import { HtmlTemplate } from "@/packages/invoice/src/templates/html"
+import {
+  ArcInvoiceDocument,
+  toArcInvoiceData,
+  toArcInvoiceLines,
+  type ArcInvoiceBranding,
+} from "@/components/invoices/arc-invoice-document"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -40,6 +44,7 @@ interface Props {
   invoice: Invoice
   payment?: PaymentProps | null
   receipts?: Receipt[] | null
+  branding?: ArcInvoiceBranding | null
 }
 
 function formatMoney(cents?: number | null, currency = "USD") {
@@ -281,52 +286,49 @@ function PaymentSection({
 
   function renderMethodButton(quote: PaymentFeeQuote) {
     const isSelected = selectedQuote?.method === quote.method
+    const disabled = !quote.enabled || isPaid || isCreatingIntent
+    const Icon = quote.method === "ach" ? Building2 : CreditCard
     return (
       <button
         type="button"
         key={quote.method}
-        disabled={!quote.enabled || isPaid || isCreatingIntent}
+        disabled={disabled}
         onClick={() => handleMethodSelect(quote)}
         className={[
-          "w-full border p-4 text-left transition-colors",
-          isSelected ? "border-primary bg-primary/5" : "bg-background hover:bg-muted/50",
-          !quote.enabled || isPaid ? "cursor-not-allowed opacity-60" : "",
+          "group w-full border p-4 text-left transition-all",
+          isSelected ? "border-primary bg-primary/[0.04] ring-1 ring-primary" : "bg-background hover:border-foreground/25 hover:bg-muted/40",
+          disabled ? "cursor-not-allowed opacity-60" : "",
         ].join(" ")}
       >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="font-medium">{quote.label}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{quote.disclosure}</p>
+        <div className="flex items-center gap-3">
+          <div
+            className={[
+              "flex size-10 shrink-0 items-center justify-center border transition-colors",
+              isSelected ? "border-primary bg-primary/10 text-primary" : "bg-muted/50 text-muted-foreground group-hover:text-foreground",
+            ].join(" ")}
+          >
+            <Icon className="size-5" />
           </div>
-          <div className="text-right">
-            <p className="text-xs text-muted-foreground">Total</p>
-            <p className="font-semibold">{formatMoney(quote.totalCents)}</p>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium leading-tight">{quote.label}</p>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">{quote.disclosure}</p>
           </div>
         </div>
-        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-          <span>Processing fee</span>
-          <span>{formatMoney(quote.feeCents)}</span>
+        <div className="mt-3 flex items-center justify-between border-t border-dashed pt-3 text-sm">
+          <span className="text-muted-foreground">
+            Total {quote.feeCents > 0 ? `incl. ${formatMoney(quote.feeCents)} fee` : "— no fee"}
+          </span>
+          <span className="font-semibold tabular-nums">{formatMoney(quote.totalCents)}</span>
         </div>
       </button>
     )
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="font-semibold">Pay invoice</h3>
-          <p className="text-sm text-muted-foreground">Choose how you want to pay</p>
-        </div>
-        <div className="text-right">
-          <p className="text-xs text-muted-foreground">Balance due</p>
-          <p className="text-xl font-semibold">{formatMoney(balanceCents)}</p>
-        </div>
-      </div>
+    <div className="space-y-5">
+      <h3 className="text-sm font-semibold">Payment method</h3>
 
-      <Separator />
-
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-2.5">
         {renderMethodButton(payment.feeQuotes.ach)}
         {renderMethodButton(payment.feeQuotes.card)}
       </div>
@@ -359,174 +361,13 @@ function PaymentSection({
   )
 }
 
-// Convert invoice to Midday format for the template
-const defaultTemplate: Template = {
-  title: "Invoice",
-  customerLabel: "Bill to",
-  fromLabel: "From",
-  invoiceNoLabel: "Invoice #",
-  issueDateLabel: "Issue date",
-  dueDateLabel: "Due date",
-  descriptionLabel: "Description",
-  priceLabel: "Price",
-  quantityLabel: "Qty",
-  totalLabel: "Total",
-  totalSummaryLabel: "Total",
-  vatLabel: "VAT",
-  subtotalLabel: "Subtotal",
-  taxLabel: "Tax",
-  discountLabel: "Discount",
-  timezone: "America/New_York",
-  paymentLabel: "Payment details",
-  noteLabel: "Notes",
-  logoUrl: null,
-  currency: "USD",
-  paymentDetails: null,
-  fromDetails: null,
-  noteDetails: null,
-  dateFormat: "MM/dd/yyyy",
-  includeVat: false,
-  includeTax: true,
-  includeDiscount: false,
-  includeDecimals: true,
-  includeUnits: true,
-  includeQr: false,
-  taxRate: 0,
-  vatRate: 0,
-  size: "letter",
-  deliveryType: "create",
-  locale: "en-US",
-}
-
-function mapStatus(status?: string | null): MiddayInvoice["status"] {
-  switch (status) {
-    case "paid":
-      return "paid"
-    case "partial":
-      return "unpaid"
-    case "overdue":
-      return "overdue"
-    case "void":
-      return "canceled"
-    case "sent":
-      return "unpaid"
-    default:
-      return "draft"
-  }
-}
-
-function mapLineItems(invoice: Invoice): LineItem[] {
-  const source =
-    invoice.lines && invoice.lines.length > 0 ? invoice.lines : ((invoice.metadata as any)?.lines ?? [])
-
-  return (source ?? []).map((line: any) => {
-    // Handle both unit_cost_cents (from mapping) and unit_price_cents (raw from DB)
-    const priceCents = line.unit_cost_cents ?? line.unit_price_cents ?? null
-    const price = typeof priceCents === "number" ? priceCents / 100 : Number(line.unit_cost ?? line.price ?? 0)
-
-    return {
-      name: line.description ?? line.name ?? "Item",
-      quantity: Number(line.quantity ?? 0),
-      unit: line.unit ?? undefined,
-      price,
-      productId: line.productId ?? undefined,
-    }
-  })
-}
-
-// Helper to convert plain text to EditorDoc format for the invoice template
-function textToEditorDoc(text: string | null | undefined): import("@/packages/invoice/src/types").EditorDoc | null {
-  if (!text) return null
-  const lines = text.split("\n").filter(Boolean)
-  if (lines.length === 0) return null
-
-  return {
-    type: "doc",
-    content: lines.map(line => ({
-      type: "paragraph",
-      content: [{ type: "text", text: line }]
-    }))
-  }
-}
-
-function toMiddayInvoice(invoice: Invoice): MiddayInvoice {
-  const lineItems = mapLineItems(invoice)
-  const totalCents = invoice.total_cents ?? invoice.totals?.total_cents ?? 0
-  const amount = totalCents ? totalCents / 100 : null
-  const metadata = invoice.metadata as any
-
-  // Build customer details from metadata
-  const customerName = metadata?.customer_name ?? null
-  const customerEmail = metadata?.customer_email ?? null
-  const customerDetailsText = [customerName, customerEmail].filter(Boolean).join("\n")
-
-  // Build from details from org info if available
-  const orgName = metadata?.org_name ?? null
-  const orgEmail = metadata?.org_email ?? null
-  const orgPhone = metadata?.org_phone ?? null
-  const orgAddress = metadata?.org_address ?? null
-  const fromDetailsText = [orgName, orgAddress, orgPhone, orgEmail].filter(Boolean).join("\n")
-
-  // Payment details from metadata
-  const paymentDetailsText = metadata?.payment_details ?? null
-
-  const template: Template = {
-    ...defaultTemplate,
-    taxRate: (invoice.totals?.tax_rate ?? metadata?.tax_rate ?? 0) || 0,
-    includeTax: true,
-    includeVat: false,
-    currency: "USD",
-  }
-
-  return {
-    id: invoice.id,
-    token: invoice.token ?? "",
-    invoiceNumber: invoice.invoice_number,
-    issueDate: invoice.issue_date ?? null,
-    dueDate: invoice.due_date ?? null,
-    createdAt: invoice.created_at ?? new Date().toISOString(),
-    updatedAt: invoice.updated_at ?? null,
-    amount,
-    currency: "USD",
-    lineItems,
-    paymentDetails: textToEditorDoc(paymentDetailsText),
-    customerDetails: textToEditorDoc(customerDetailsText),
-    fromDetails: textToEditorDoc(fromDetailsText),
-    noteDetails: textToEditorDoc(invoice.notes),
-    reminderSentAt: null,
-    note: invoice.notes ?? null,
-    internalNote: null,
-    paidAt: invoice.status === "paid" ? invoice.updated_at ?? invoice.created_at ?? null : null,
-    vat: null,
-    tax: null,
-    filePath: null,
-    status: mapStatus(invoice.status),
-    viewedAt: invoice.viewed_at ?? null,
-    sentAt: invoice.sent_at ?? null,
-    template,
-    customerName: customerName ?? "Customer",
-    sentTo: null,
-    discount: null,
-    topBlock: null,
-    bottomBlock: null,
-    customer: {
-      name: customerName,
-      website: null,
-      email: customerEmail,
-    },
-    customerId: null,
-    team: {
-      name: orgName,
-    },
-  }
-}
-
-export function InvoicePublicWithPay({ invoice, payment, receipts }: Props) {
+export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: Props) {
   const [copied, setCopied] = useState(false)
   const [containerWidth, setContainerWidth] = useState(0)
-  const paymentRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const mapped = useMemo(() => toMiddayInvoice(invoice), [invoice])
+  const arcData = useMemo(() => toArcInvoiceData(invoice, branding), [invoice, branding])
+  const arcLines = useMemo(() => toArcInvoiceLines(invoice), [invoice])
+  const customerName = invoice.customer_name ?? (invoice.metadata as any)?.customer_name ?? "Customer"
   const invoiceToken = payment?.token ?? invoice.token ?? null
   const receiptList = receipts ?? []
   const fallbackShareUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"}/i/${invoice.token}`
@@ -539,6 +380,8 @@ export function InvoicePublicWithPay({ invoice, payment, receipts }: Props) {
   // Fixed dimensions for invoice - letter size
   const invoiceWidth = 750
   const invoiceHeight = 1056
+  // Wide enough for the invoice (750) + gap + a roomy sticky pay panel beside it.
+  const containerMaxWidth = 1340
 
   // Measure container and calculate scale for mobile
   useEffect(() => {
@@ -576,146 +419,133 @@ export function InvoicePublicWithPay({ invoice, payment, receipts }: Props) {
   }
 
   const handleDownload = () => {
-    if (typeof window !== "undefined") {
-      window.print()
+    if (typeof window !== "undefined" && invoiceToken) {
+      // Download the canonical Arc PDF (same template as the composer export / emailed copy).
+      window.location.href = `/i/${invoiceToken}/pdf`
     }
   }
 
-  const scrollToPayment = () => {
-    paymentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-  }
+  const dueLabel = arcData.dueDate
+    ? new Date(arcData.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : null
 
   return (
-    <div className="invoice-grid-bg min-h-screen pb-24">
-      {/* Sticky Pay Now Banner (only if not paid) */}
-      {!isPaid && payment && (
-        <div className="sticky top-0 z-40 border-b bg-primary text-primary-foreground print:hidden">
-          <div className="mx-auto px-4 py-3 sm:px-6 lg:px-8" style={{ maxWidth: invoiceWidth + 48 }}>
-            <button
-              onClick={scrollToPayment}
-              className="w-full flex items-center justify-between gap-4 text-left"
+    <div className="invoice-grid-bg min-h-screen pb-16">
+      {/* Slim neutral bar — branding lives in the document below */}
+      <div className="border-b bg-background/80 backdrop-blur-sm print:hidden">
+        <div className="mx-auto flex items-center justify-between gap-3 px-3 py-2.5 sm:px-5 lg:px-6" style={{ maxWidth: containerMaxWidth }}>
+          <div className="flex items-center gap-2.5 text-sm">
+            <span className="font-medium">Invoice {arcData.invoiceNumber}</span>
+            <Badge
+              variant={isPaid ? "default" : "secondary"}
+              className={`capitalize ${isPaid ? "bg-green-600 hover:bg-green-600" : ""}`}
             >
-              <div>
-                <p className="font-semibold">Pay this invoice</p>
-                <p className="text-sm opacity-90">
-                  {formatMoney(balanceCents)} due
-                </p>
-              </div>
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <span>Pay now</span>
-                <ChevronDown className="size-4" />
-              </div>
-            </button>
+              {isPaid ? "Paid" : invoice.status}
+            </Badge>
           </div>
+          <span className="text-xs text-muted-foreground">
+            Powered by <span className="font-medium text-foreground/80">Arc</span>
+          </span>
         </div>
-      )}
+      </div>
 
-      <div className="mx-auto px-4 py-8 sm:px-6 lg:px-8" style={{ maxWidth: invoiceWidth + 48 }}>
-        {/* Header */}
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Invoice
-              </p>
-              <h1 className="text-lg font-semibold">
-                {mapped.invoiceNumber}
-                <span className="ml-2 text-muted-foreground font-normal">
-                  {mapped.customerName}
-                </span>
-              </h1>
+      <div className="mx-auto px-3 py-6 sm:px-5 sm:py-8 lg:px-6" style={{ maxWidth: containerMaxWidth }}>
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-7">
+          {/* Invoice document — scales to fit its column */}
+          <div ref={containerRef} className="order-2 w-full lg:order-1 lg:w-[750px] lg:flex-none">
+            <div className="overflow-hidden" style={{ height: scale < 1 ? scaledHeight : invoiceHeight }}>
+              <div
+                className="border shadow-lg origin-top-left"
+                style={{
+                  width: invoiceWidth,
+                  height: invoiceHeight,
+                  transform: scale < 1 ? `scale(${scale})` : undefined,
+                }}
+              >
+                <ArcInvoiceDocument data={arcData} lines={arcLines} width={invoiceWidth} height={invoiceHeight} />
+              </div>
             </div>
           </div>
-          <Badge
-            variant={isPaid ? "default" : "secondary"}
-            className={`capitalize ${isPaid ? "bg-green-600 hover:bg-green-600" : ""}`}
-          >
-            {isPaid ? "Paid" : mapped.status}
-          </Badge>
-        </div>
 
-        {/* Invoice Document - scales to fit on mobile */}
-        <div ref={containerRef} className="w-full">
-          <div
-            className="overflow-hidden"
-            style={{ height: scale < 1 ? scaledHeight : invoiceHeight }}
-          >
-            <div
-              className="shadow-lg origin-top-left"
-              style={{
-                width: invoiceWidth,
-                height: invoiceHeight,
-                transform: scale < 1 ? `scale(${scale})` : undefined,
-              }}
-            >
-              <HtmlTemplate data={mapped} width={invoiceWidth} height={invoiceHeight} />
-            </div>
-          </div>
-        </div>
-
-        {/* Receipt Download (if paid) */}
-        {isPaid && receiptList.length > 0 && (
-          <div className="mt-6 border bg-green-50 dark:bg-green-950/20 p-6">
-            <div className="flex items-start gap-4">
-              <div className="flex size-10 items-center justify-center bg-green-100 dark:bg-green-900/40">
-                <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-green-900 dark:text-green-100">
-                  Payment received
-                </h3>
-                <p className="mt-1 text-sm text-green-700 dark:text-green-300">
-                  Thank you for your payment. Download your receipt below.
-                </p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {receiptList.map((receipt) => (
-                    <Button key={receipt.id} variant="outline" size="sm" asChild>
-                      <a
-                        href={`/i/${invoiceToken}/receipt/${receipt.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <Download className="size-4" />
-                        Download receipt
-                      </a>
-                    </Button>
-                  ))}
+          {/* Payment panel — sticky on desktop, on top on mobile */}
+          <aside className="order-1 w-full lg:order-2 lg:flex-1 lg:max-w-[480px] lg:sticky lg:top-6 print:hidden">
+            <div className="border bg-card shadow-lg">
+              {/* Amount header */}
+              <div className="border-b bg-muted/30 p-6">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {isPaid ? "Amount paid" : "Balance due"}
+                  </p>
+                  {!isPaid && dueLabel ? (
+                    <p className="text-xs text-muted-foreground">
+                      Due <span className="font-medium text-foreground/80">{dueLabel}</span>
+                    </p>
+                  ) : null}
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Payment Section (if not paid) */}
-        {!isPaid && (
-          <div ref={paymentRef} className="mt-8 scroll-mt-20 border bg-card p-6 sm:p-8">
-            {payment ? (
-              <PaymentSection invoice={invoice} payment={payment} />
-            ) : (
-              <div className="text-center py-8">
-                <Lock className="mx-auto size-8 text-muted-foreground" />
-                <h3 className="mt-4 font-semibold">Online payments unavailable</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Please contact the sender for payment instructions.
+                <p className="mt-1.5 text-[2rem] font-semibold leading-none tracking-tight tabular-nums">
+                  {formatMoney(isPaid ? totalCents : balanceCents)}
+                </p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Invoice {arcData.invoiceNumber} · {customerName}
                 </p>
               </div>
-            )}
-          </div>
-        )}
 
-        {/* Bottom Toolbar */}
-        <div className="fixed inset-x-0 bottom-6 flex justify-center pointer-events-none print:hidden">
-          <div className="pointer-events-auto flex items-center gap-1 border bg-background/95 backdrop-blur-sm px-2 py-1.5 shadow-lg">
-            <Button variant="ghost" size="sm" onClick={handleDownload}>
-              <Download className="size-4" />
-              Download
-            </Button>
-            <Separator orientation="vertical" className="h-5" />
-            <Button variant="ghost" size="sm" onClick={handleCopyLink}>
-              <Link2 className="size-4" />
-              {copied ? "Copied!" : "Copy link"}
-            </Button>
-          </div>
+              {/* State-specific body */}
+              <div className="p-6">
+                {isPaid ? (
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex size-9 shrink-0 items-center justify-center bg-green-100 dark:bg-green-900/40">
+                        <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold">Payment received</h3>
+                        <p className="mt-0.5 text-sm text-muted-foreground">Thank you for your payment.</p>
+                      </div>
+                    </div>
+                    {receiptList.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        {receiptList.map((receipt) => (
+                          <Button key={receipt.id} variant="outline" size="sm" className="w-full justify-start" asChild>
+                            <a href={`/i/${invoiceToken}/receipt/${receipt.id}`} target="_blank" rel="noreferrer">
+                              <Download className="size-4" />
+                              Download receipt
+                            </a>
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : payment ? (
+                  <PaymentSection invoice={invoice} payment={payment} />
+                ) : (
+                  <div className="py-6 text-center">
+                    <Lock className="mx-auto size-7 text-muted-foreground" />
+                    <h3 className="mt-3 font-semibold">Online payments unavailable</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">Please contact the sender for payment instructions.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-1 border-t p-2.5">
+                <Button variant="ghost" size="sm" className="flex-1" onClick={handleDownload}>
+                  <Download className="size-4" />
+                  Download PDF
+                </Button>
+                <Separator orientation="vertical" className="h-5" />
+                <Button variant="ghost" size="sm" className="flex-1" onClick={handleCopyLink}>
+                  <Link2 className="size-4" />
+                  {copied ? "Copied!" : "Copy link"}
+                </Button>
+              </div>
+            </div>
+
+            <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+              <Lock className="size-3" />
+              Secured by Stripe
+            </p>
+          </aside>
         </div>
       </div>
 

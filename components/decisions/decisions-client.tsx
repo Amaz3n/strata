@@ -35,6 +35,23 @@ const statusStyles: Record<string, string> = {
   revised: "bg-muted text-muted-foreground border-muted",
 }
 
+const statusDot: Record<string, string> = {
+  requested: "bg-zinc-400",
+  pending: "bg-amber-500",
+  approved: "bg-emerald-500",
+  revised: "bg-muted-foreground/40",
+}
+
+const filterOrder = ["all", "requested", "pending", "approved", "revised"] as const
+
+const shortStatusLabel: Record<string, string> = {
+  all: "All",
+  requested: "Requested",
+  pending: "Pending",
+  approved: "Approved",
+  revised: "Revised",
+}
+
 type DecisionFormState = {
   title: string
   description: string
@@ -236,6 +253,47 @@ export function DecisionsClient({
       </Sheet>
 
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
+        {isMobile ? (
+          <div className="sticky top-0 z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm">
+            <div className="flex items-center gap-2 px-3 pt-3">
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search decisions..."
+                className="h-10 text-sm"
+                inputMode="search"
+              />
+              <Button
+                size="icon"
+                className="h-10 w-10 shrink-0"
+                onClick={openCreate}
+                aria-label="New decision"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="-mx-px flex gap-1.5 overflow-x-auto px-3 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {filterOrder.map((key) => {
+                const active = statusFilter === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setStatusFilter(key)}
+                    className={cn(
+                      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                      active
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-background text-muted-foreground active:bg-muted",
+                    )}
+                  >
+                    {shortStatusLabel[key]}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
         <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
             <Input
@@ -267,66 +325,82 @@ export function DecisionsClient({
             </Button>
           </div>
         </div>
+        )}
 
         {isMobile ? (
-          <div className="min-h-0 flex-1 overflow-auto p-4">
-            <div className="space-y-3">
-              {filtered.map((decision) => (
-                <button
-                  key={decision.id}
-                  type="button"
-                  onClick={() => openEdit(decision)}
-                  className="block w-full text-left rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[decision.status] ?? ""}`}>
-                          {statusLabels[decision.status] ?? decision.status}
-                        </Badge>
-                      </div>
-                      <p className="font-semibold mt-1 line-clamp-2">{decision.title}</p>
-                      {decision.due_date && (
-                        <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          Due {format(new Date(decision.due_date), "MMM d")}
-                        </p>
-                      )}
-                    </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                          <MoreHorizontal className="h-4 w-4" />
-                          <span className="sr-only">Actions</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => openEdit(decision)}>
-                          Edit
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </button>
-              ))}
-              {filtered.length === 0 && (
-                <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                      <FileText className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <p className="font-medium">No decisions yet</p>
-                      <p className="text-sm">Create your first decision to get started.</p>
-                    </div>
-                    <Button onClick={openCreate}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Create decision
-                    </Button>
-                  </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+                  <FileText className="h-6 w-6 text-muted-foreground" />
                 </div>
-              )}
-            </div>
+                <div>
+                  <p className="font-medium">No decisions yet</p>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    Create your first decision to get started.
+                  </p>
+                </div>
+                <Button onClick={openCreate} className="mt-1">
+                  <Plus className="mr-2 h-4 w-4" />
+                  New decision
+                </Button>
+              </div>
+            ) : (
+              <ul className="divide-y">
+                {filtered.map((decision) => {
+                  const dueDate = decision.due_date ? new Date(decision.due_date) : null
+                  const isOverdue = Boolean(
+                    dueDate &&
+                      decision.status !== "approved" &&
+                      dueDate.getTime() < Date.now(),
+                  )
+                  const subtitleParts = [
+                    statusLabels[decision.status] ?? decision.status,
+                    decision.description?.trim() || null,
+                  ].filter(Boolean) as string[]
+
+                  return (
+                    <li key={decision.id} className="flex items-stretch">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(decision)}
+                        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
+                      >
+                        <span
+                          aria-hidden
+                          className={cn(
+                            "h-2 w-2 shrink-0 rounded-full",
+                            statusDot[decision.status] ?? "bg-muted-foreground/40",
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
+                              {decision.title}
+                            </p>
+                            {dueDate ? (
+                              <span
+                                className={cn(
+                                  "shrink-0 text-[10px]",
+                                  isOverdue
+                                    ? "font-medium text-rose-600 dark:text-rose-400"
+                                    : "text-muted-foreground",
+                                )}
+                              >
+                                {format(dueDate, "MMM d")}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                            {subtitleParts.join(" · ")}
+                          </p>
+                        </div>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto">

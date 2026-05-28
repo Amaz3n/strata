@@ -652,6 +652,8 @@ export interface ChangeOrder {
   days_impact?: number | null
   client_visible?: boolean | null
   requires_signature?: boolean | null
+  esign_status?: "not_prepared" | "draft" | "sent" | "signed" | "voided" | "expired" | null
+  esign_document_id?: string | null
   created_at?: string
   updated_at?: string
   metadata?: Record<string, any>

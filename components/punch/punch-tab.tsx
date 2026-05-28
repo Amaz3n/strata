@@ -42,6 +42,29 @@ const statusStyles: Record<PunchStatus, string> = {
   closed: "bg-success/15 text-success border-success/30",
 }
 
+const statusDot: Record<PunchStatus, string> = {
+  open: "bg-muted-foreground/40",
+  in_progress: "bg-blue-500",
+  ready_for_review: "bg-amber-500",
+  closed: "bg-emerald-500",
+}
+
+const mobileFilterOrder: Array<"all" | PunchStatus> = [
+  "all",
+  "open",
+  "in_progress",
+  "ready_for_review",
+  "closed",
+]
+
+const shortStatusLabel: Record<string, string> = {
+  all: "All",
+  open: "Open",
+  in_progress: "In progress",
+  ready_for_review: "Ready",
+  closed: "Closed",
+}
+
 export function PunchTab({
   projectId,
   initialItems,
@@ -104,6 +127,47 @@ export function PunchTab({
   return (
     <>
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
+        {isMobile ? (
+          <div className="sticky top-0 z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm">
+            <div className="flex items-center gap-2 px-3 pt-3">
+              <Input
+                placeholder="Search punch items..."
+                className="h-10 text-sm"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                inputMode="search"
+              />
+              <Button
+                size="icon"
+                className="h-10 w-10 shrink-0"
+                onClick={openNew}
+                aria-label="New punch item"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="-mx-px flex gap-1.5 overflow-x-auto px-3 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {mobileFilterOrder.map((key) => {
+                const active = statusFilter === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setStatusFilter(key)}
+                    className={cn(
+                      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                      active
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-background text-muted-foreground active:bg-muted",
+                    )}
+                  >
+                    {shortStatusLabel[key]}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
         <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
             <Input
@@ -135,67 +199,88 @@ export function PunchTab({
             </Button>
           </div>
         </div>
+        )}
 
         {isMobile ? (
-          <div className="min-h-0 flex-1 overflow-auto p-4">
-            <div className="space-y-3">
-              {filtered.map((item) => {
-                const status = (item.status as PunchStatus) || "open"
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => openEdit(item)}
-                    className="block w-full text-left rounded-lg border bg-card p-4 transition-colors hover:bg-muted/50 active:bg-muted"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[status]}`}>
-                            {statusLabels[status]}
-                          </Badge>
-                          {item.verification_required && (
-                            <Badge
-                              variant="outline"
-                              className={`text-[10px] ${item.verified_at ? "bg-success/10 text-success border-success/30" : "bg-warning/10 text-warning border-warning/30"}`}
-                            >
-                              {item.verified_at ? "Verified" : "Needs verify"}
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="font-semibold mt-1 line-clamp-2">{item.title}</p>
-                        {item.location && (
-                          <p className="text-xs text-muted-foreground mt-1">Location: {item.location}</p>
-                        )}
-                        {item.due_date && (
-                          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                            <CalendarDays className="h-3 w-3" />
-                            Due {format(new Date(item.due_date), "MMM d")}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-              {filtered.length === 0 && (
-                <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                      <CheckSquare className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <p className="font-medium">No punch items yet</p>
-                      <p className="text-sm">Create your first punch item to get started.</p>
-                    </div>
-                    <Button onClick={openNew}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Create punch item
-                    </Button>
-                  </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+                  <CheckSquare className="h-6 w-6 text-muted-foreground" />
                 </div>
-              )}
-            </div>
+                <div>
+                  <p className="font-medium">No punch items yet</p>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    Create your first punch item to get started.
+                  </p>
+                </div>
+                <Button onClick={openNew} className="mt-1">
+                  <Plus className="mr-2 h-4 w-4" />
+                  New punch item
+                </Button>
+              </div>
+            ) : (
+              <ul className="divide-y">
+                {filtered.map((item) => {
+                  const status = (item.status as PunchStatus) || "open"
+                  const dueDate = item.due_date ? new Date(item.due_date) : null
+                  const isOverdue = Boolean(
+                    dueDate && status !== "closed" && dueDate.getTime() < Date.now(),
+                  )
+                  const needsVerify =
+                    item.verification_required && !item.verified_at && status === "ready_for_review"
+                  const subtitleParts = [
+                    statusLabels[status],
+                    item.location || null,
+                    assigneeName(item.assigned_to),
+                  ].filter(Boolean) as string[]
+
+                  return (
+                    <li key={item.id} className="flex items-stretch">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(item)}
+                        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
+                      >
+                        <span
+                          aria-hidden
+                          className={cn(
+                            "h-2 w-2 shrink-0 rounded-full",
+                            statusDot[status] ?? "bg-muted-foreground/40",
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
+                              {item.title}
+                            </p>
+                            {needsVerify ? (
+                              <span className="shrink-0 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                Verify
+                              </span>
+                            ) : dueDate ? (
+                              <span
+                                className={cn(
+                                  "shrink-0 text-[10px]",
+                                  isOverdue
+                                    ? "font-medium text-rose-600 dark:text-rose-400"
+                                    : "text-muted-foreground",
+                                )}
+                              >
+                                {format(dueDate, "MMM d")}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                            {subtitleParts.join(" · ")}
+                          </p>
+                        </div>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto">

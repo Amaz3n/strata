@@ -4,7 +4,9 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import type { User } from "@/lib/types"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { AppHeader } from "@/components/layout/app-header"
+import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav"
 import { PageTitleProvider } from "@/components/layout/page-title-context"
+import { MobileActionProvider } from "@/components/layout/mobile-action-context"
 import { AppPageContent } from "@/components/layout/app-page-content"
 import { PlatformSessionControl } from "@/components/layout/platform-session-control"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
@@ -48,12 +50,20 @@ export default async function AppLayout({
           canAccessPlatform={platformAccess.canAccessPlatform}
           permissions={permissionResult.permissions}
         />
-        <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
-          <PageTitleProvider>
-            <AppHeader platformSessionControl={<PlatformSessionControl />} />
-            <AppPageContent>{children}</AppPageContent>
-          </PageTitleProvider>
-        </SidebarInset>
+        <MobileActionProvider>
+          <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
+            <PageTitleProvider>
+              <AppHeader platformSessionControl={<PlatformSessionControl />} />
+              <AppPageContent>{children}</AppPageContent>
+            </PageTitleProvider>
+          </SidebarInset>
+          <MobileBottomNav
+            user={currentUser}
+            pipelineBadgeCount={pipelineBadgeCount}
+            canAccessPlatform={platformAccess.canAccessPlatform}
+            permissions={permissionResult.permissions}
+          />
+        </MobileActionProvider>
       </OptimisticPathProvider>
     </SidebarProvider>
   )

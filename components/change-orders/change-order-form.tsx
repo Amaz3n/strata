@@ -1,642 +1,194 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
-import { useFieldArray, useForm } from "react-hook-form"
-import { zodResolver } from "@hookform/resolvers/zod"
+import { useMemo, useState } from "react"
+import type { FormEvent } from "react"
 
-import { changeOrderInputSchema, type ChangeOrderInput } from "@/lib/validation/change-orders"
-import type { CostCode, Project } from "@/lib/types"
+import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Switch } from "@/components/ui/switch"
-import { Separator } from "@/components/ui/separator"
-import {
-  Form,
-  FormControl,
-  FormDescription,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2, DollarSign, Sparkles } from "@/components/icons"
-
-type ChangeOrderFormValues = ChangeOrderInput
+import { DollarSign, Sparkles } from "@/components/icons"
 
 interface ChangeOrderFormProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  projects: Project[]
-  costCodes?: CostCode[]
-  defaultProjectId?: string
-  onSubmit: (values: ChangeOrderFormValues, publish: boolean) => Promise<void>
+  projectId: string
+  onSubmit: (values: ChangeOrderInput, publish: boolean) => Promise<void>
   isSubmitting?: boolean
 }
 
-interface PlainNumberInputProps {
-  value?: number
-  onValueChange: (value: number | undefined) => void
-  onBlur?: () => void
-  placeholder?: string
-  min?: number
+function parseAmountToCents(value: string) {
+  const normalized = value.replace(/,/g, "").trim()
+  if (!normalized) return 0
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return Math.round(parsed * 100)
 }
 
-const defaultLine = {
-  cost_code_id: undefined,
-  description: "",
-  quantity: 1,
-  unit: "item",
-  unit_cost: 0,
-  allowance: 0,
-  taxable: true,
-}
-
-function formatMoney(value: number) {
-  if (Number.isNaN(value)) return "$0.00"
-  return value.toLocaleString("en-US", { style: "currency", currency: "USD" })
-}
-
-function PlainNumberInput({
-  value,
-  onValueChange,
-  onBlur,
-  placeholder,
-  min = 0,
-}: PlainNumberInputProps) {
-  const [textValue, setTextValue] = useState(value == null ? "" : String(value))
-  const [isEditing, setIsEditing] = useState(false)
-
-  useEffect(() => {
-    if (!isEditing) {
-      setTextValue(value == null ? "" : String(value))
-    }
-  }, [isEditing, value])
-
-  return (
-    <Input
-      type="text"
-      inputMode="decimal"
-      value={textValue}
-      className="text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-      placeholder={placeholder}
-      onFocus={() => {
-        setIsEditing(true)
-        if ((value ?? 0) === 0) {
-          setTextValue("")
-        }
-      }}
-      onChange={(e) => {
-        const nextValue = e.target.value.replace(",", ".")
-        if (!/^\d*\.?\d{0,2}$/.test(nextValue)) return
-
-        setTextValue(nextValue)
-        if (nextValue === "") {
-          onValueChange(undefined)
-          return
-        }
-        if (nextValue.endsWith(".")) return
-
-        const parsedValue = Number(nextValue)
-        if (Number.isFinite(parsedValue)) {
-          onValueChange(Math.max(min, parsedValue))
-        }
-      }}
-      onBlur={() => {
-        setIsEditing(false)
-        const rawValue = textValue.trim()
-        if (rawValue === "" || rawValue === ".") {
-          setTextValue("0")
-          onValueChange(0)
-          onBlur?.()
-          return
-        }
-
-        const parsedValue = Number(rawValue)
-        if (!Number.isFinite(parsedValue)) {
-          setTextValue("0")
-          onValueChange(0)
-          onBlur?.()
-          return
-        }
-
-        const normalizedValue = Math.max(min, parsedValue)
-        const normalizedText = Number.isInteger(normalizedValue)
-          ? String(normalizedValue)
-          : String(Number(normalizedValue.toFixed(2)))
-
-        setTextValue(normalizedText)
-        onValueChange(normalizedValue)
-        onBlur?.()
-      }}
-    />
-  )
-}
-
-function calculatePreviewTotals(values: ChangeOrderFormValues) {
-  const subtotal = values.lines.reduce((sum, line) => {
-    const quantity = Number(line.quantity ?? 0)
-    const unitCost = Number(line.unit_cost ?? 0)
-    const allowance = Number(line.allowance ?? 0)
-    return sum + quantity * unitCost + allowance
-  }, 0)
-
-  const allowanceTotal = values.lines.reduce((sum, line) => sum + Number(line.allowance ?? 0), 0)
-  const taxableBase = values.lines.reduce((sum, line) => {
-    const quantity = Number(line.quantity ?? 0)
-    const unitCost = Number(line.unit_cost ?? 0)
-    const allowance = Number(line.allowance ?? 0)
-    const lineTotal = quantity * unitCost + allowance
-    return line.taxable === false ? sum : sum + lineTotal
-  }, 0)
-
-  const tax = taxableBase * ((values.tax_rate ?? 0) / 100)
-  const markup = subtotal * ((values.markup_percent ?? 0) / 100)
-  const total = subtotal + tax + markup
-
-  return { subtotal, allowanceTotal, tax, markup, total }
+function formatMoneyFromCents(cents: number) {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
 export function ChangeOrderForm({
   open,
   onOpenChange,
-  projects,
-  costCodes = [],
-  defaultProjectId,
+  projectId,
   onSubmit,
   isSubmitting,
 }: ChangeOrderFormProps) {
-  const [submitMode, setSubmitMode] = useState<"draft" | "publish">("draft")
-  const [summaryManuallyEdited, setSummaryManuallyEdited] = useState(false)
+  const [title, setTitle] = useState("")
+  const [amount, setAmount] = useState("")
+  const [daysImpact, setDaysImpact] = useState("")
+  const [notes, setNotes] = useState("")
 
-  const form = useForm<ChangeOrderFormValues>({
-    resolver: zodResolver(changeOrderInputSchema),
-    defaultValues: {
-      project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      title: "",
-      summary: "",
-      description: "",
-      days_impact: undefined,
+  const amountCents = useMemo(() => parseAmountToCents(amount), [amount])
+  const canSubmit = Boolean(projectId && title.trim() && amountCents >= 0)
+
+  const reset = () => {
+    setTitle("")
+    setAmount("")
+    setDaysImpact("")
+    setNotes("")
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!canSubmit) return
+
+    const cleanTitle = title.trim()
+    const cleanNotes = notes.trim()
+    const impact = daysImpact.trim() === "" ? null : Math.max(0, Number(daysImpact) || 0)
+    const amountDollars = amountCents / 100
+
+    const payload: ChangeOrderInput = {
+      project_id: projectId,
+      title: cleanTitle,
+      summary: cleanNotes || cleanTitle,
+      description: undefined,
+      days_impact: impact,
       requires_signature: true,
       tax_rate: 0,
       markup_percent: 0,
       status: "draft",
       client_visible: false,
-      lines: [defaultLine],
-    },
-  })
-
-  const lineArray = useFieldArray({
-    control: form.control,
-    name: "lines",
-  })
-
-  const watchedValues = form.watch()
-  const previewTotals = useMemo(() => calculatePreviewTotals(watchedValues), [watchedValues])
-  const titleValue = form.watch("title")
-
-  // Auto-populate summary from title, but stop if user manually edited summary
-  useEffect(() => {
-    if (!summaryManuallyEdited && titleValue) {
-      form.setValue("summary", titleValue, { shouldValidate: false, shouldDirty: false })
+      lines: [
+        {
+          description: cleanTitle,
+          quantity: 1,
+          unit: "change",
+          unit_cost: amountDollars,
+          allowance: 0,
+          taxable: false,
+        },
+      ],
     }
-  }, [titleValue, summaryManuallyEdited, form])
 
-  const handleSubmit = form.handleSubmit(async (values) => {
-    const normalized: ChangeOrderFormValues = {
-      ...values,
-      status: submitMode === "publish" ? "pending" : "draft",
-      client_visible: submitMode === "publish",
-      days_impact: values.days_impact ?? null,
-      lines: values.lines.map((line) => ({
-        ...line,
-        cost_code_id: line.cost_code_id === "none" ? undefined : line.cost_code_id,
-      })),
-    }
-    await onSubmit(normalized, submitMode === "publish")
-    setSummaryManuallyEdited(false)
-    form.reset({
-      project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      title: "",
-      summary: "",
-      description: "",
-      days_impact: undefined,
-      requires_signature: true,
-      tax_rate: 0,
-      markup_percent: 0,
-      status: "draft",
-      client_visible: false,
-      lines: [defaultLine],
-    })
-  })
+    await onSubmit(payload, false)
+    reset()
+  }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) reset()
+        onOpenChange(nextOpen)
+      }}
+    >
       <SheetContent
         side="right"
         mobileFullscreen
-        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
+        className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
         style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
       >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
-            New Change Order
+            New change order
           </SheetTitle>
           <SheetDescription className="text-sm text-muted-foreground">
-            Capture the structured worksheet Arc uses for budget, schedule, and reporting. Use your company document for execution.
+            Track the change order here. Send your company PDF for execution from Signatures.
           </SheetDescription>
         </SheetHeader>
 
-        <Form {...form}>
-          <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="px-6 py-4 space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="title"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Title</FormLabel>
-                      <FormControl>
-                        <Input placeholder="e.g., Add recessed lighting in living room" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="summary"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Client-facing summary</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="Brief summary the client will see"
-                          {...field}
-                          onChange={(e) => {
-                            setSummaryManuallyEdited(true)
-                            field.onChange(e)
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="space-y-5 px-6 py-4">
+              <div className="space-y-2">
+                <Label>Title</Label>
+                <Input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="e.g., Add recessed lighting"
                 />
               </div>
 
-              <FormField
-                control={form.control}
-                name="description"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Scope & notes</FormLabel>
-                    <FormControl>
-                      <Textarea placeholder="Detailed scope, assumptions, exclusions" rows={4} {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <div className="grid gap-4 md:grid-cols-3">
-                <FormField
-                  control={form.control}
-                  name="days_impact"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Schedule impact (days)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={field.value ?? ""}
-                          onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-                          placeholder="0"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="tax_rate"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Tax rate (%)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          step={0.01}
-                          min={0}
-                          max={20}
-                          value={field.value ?? 0}
-                          onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="markup_percent"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Markup (%)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          step={0.1}
-                          min={0}
-                          max={100}
-                          value={field.value ?? 0}
-                          onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="font-semibold text-sm">Line items</h4>
-                    <p className="text-xs text-muted-foreground">
-                      Include allowances and mark items taxable as needed.
-                    </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Amount</Label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={amount}
+                      onChange={(event) => {
+                        const nextValue = event.target.value.replace(",", ".")
+                        if (!/^\d*\.?\d{0,2}$/.test(nextValue)) return
+                        setAmount(nextValue)
+                      }}
+                      inputMode="decimal"
+                      className="pl-9"
+                      placeholder="0.00"
+                    />
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => lineArray.append({ ...defaultLine })}
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Add line
-                  </Button>
                 </div>
 
-                <div className="space-y-3">
-                  {lineArray.fields.map((field, index) => (
-                    <div key={field.id} className="rounded-lg border p-4 space-y-3 bg-muted/30">
-                      <div className="flex items-center gap-2">
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.description`}
-                          render={({ field }) => (
-                            <FormItem className="flex-1 space-y-0">
-                              <FormControl>
-                                <Input placeholder="Work description" {...field} className="w-full" />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-10 w-10 shrink-0"
-                          onClick={() => lineArray.remove(index)}
-                          disabled={lineArray.fields.length === 1}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3">
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.cost_code_id`}
-                          render={({ field }) => (
-                            <FormItem className="space-y-2 min-w-0">
-                              <FormLabel className="text-xs font-medium text-muted-foreground">Cost code</FormLabel>
-                              <Select
-                                value={field.value ?? "none"}
-                                onValueChange={(value) => field.onChange(value === "none" ? undefined : value)}
-                              >
-                                <FormControl>
-                                  <SelectTrigger className="w-full min-w-0 max-w-full [&_[data-slot=select-value]]:block [&_[data-slot=select-value]]:truncate">
-                                    <SelectValue placeholder="No cost code" />
-                                  </SelectTrigger>
-                                </FormControl>
-                                <SelectContent>
-                                  <SelectItem value="none">No cost code</SelectItem>
-                                  {costCodes.map((code) => (
-                                    <SelectItem key={code.id} value={code.id}>
-                                      <span className="block truncate">{code.code} · {code.name}</span>
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.quantity`}
-                          render={({ field }) => (
-                            <FormItem className="space-y-2 min-w-0">
-                              <FormLabel className="text-xs font-medium text-muted-foreground">Qty</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  step={0.01}
-                                  min={0}
-                                  value={field.value}
-                                  onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                                  placeholder="1"
-                                />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.unit_cost`}
-                          render={({ field }) => (
-                            <FormItem className="space-y-2 min-w-0">
-                              <FormLabel className="text-xs font-medium text-muted-foreground">Unit cost</FormLabel>
-                              <FormControl>
-                                <PlainNumberInput
-                                  value={field.value}
-                                  onValueChange={field.onChange}
-                                  onBlur={field.onBlur}
-                                  placeholder="0.00"
-                                />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.allowance`}
-                          render={({ field }) => (
-                            <FormItem className="space-y-2 min-w-0">
-                              <FormLabel className="text-xs font-medium text-muted-foreground">Allowance</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  step={0.01}
-                                  min={0}
-                                  value={field.value}
-                                  onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                                  placeholder="0.00"
-                                />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between gap-3">
-                        <FormField
-                          control={form.control}
-                          name={`lines.${index}.taxable`}
-                          render={({ field }) => (
-                            <FormItem className="flex flex-row items-center space-x-2 space-y-0">
-                              <FormControl>
-                                <Checkbox
-                                  checked={field.value}
-                                  onCheckedChange={field.onChange}
-                                />
-                              </FormControl>
-                              <FormLabel className="text-xs font-medium cursor-pointer">
-                                Taxable
-                              </FormLabel>
-                            </FormItem>
-                          )}
-                        />
-                        <Badge variant="secondary" className="text-xs">
-                          Total: {formatMoney(
-                            (form.watch(`lines.${index}.quantity`) || 0) *
-                              (form.watch(`lines.${index}.unit_cost`) || 0) +
-                              (form.watch(`lines.${index}.allowance`) || 0),
-                          )}
-                        </Badge>
-                      </div>
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  <Label>Schedule impact</Label>
+                  <Input
+                    value={daysImpact}
+                    onChange={(event) => {
+                      if (!/^\d*$/.test(event.target.value)) return
+                      setDaysImpact(event.target.value)
+                    }}
+                    inputMode="numeric"
+                    placeholder="Days"
+                  />
                 </div>
               </div>
 
-              <Separator />
-
-              <div className="rounded-xl border bg-gradient-to-b from-muted/30 to-muted/10 p-5 space-y-4">
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <DollarSign className="h-4 w-4" />
-                    </div>
-                    <h4 className="font-semibold text-sm">Worksheet totals</h4>
-                  </div>
-                  <Badge variant="secondary" className="font-mono text-[10px] tracking-wider uppercase">
-                    Calculated
-                  </Badge>
-                </div>
-                
-                <div className="space-y-2.5 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Subtotal</span>
-                    <span className="font-medium font-mono">{formatMoney(previewTotals.subtotal)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Allowances</span>
-                    <span className="font-medium font-mono text-muted-foreground">{formatMoney(previewTotals.allowanceTotal)}</span>
-                  </div>
-                  
-                  {previewTotals.markup > 0 && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Markup ({form.watch("markup_percent") || 0}%)</span>
-                      <span className="font-medium font-mono text-muted-foreground">{formatMoney(previewTotals.markup)}</span>
-                    </div>
-                  )}
-                  
-                  {previewTotals.tax > 0 && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Tax ({form.watch("tax_rate") || 0}%)</span>
-                      <span className="font-medium font-mono text-muted-foreground">{formatMoney(previewTotals.tax)}</span>
-                    </div>
-                  )}
-
-                  <div className="pt-3 mt-1 border-t flex items-center justify-between">
-                    <span className="font-medium">Total</span>
-                    <span className="text-xl font-bold font-mono tracking-tight text-primary">
-                      {formatMoney(previewTotals.total)}
-                    </span>
-                  </div>
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Tracked amount</span>
+                  <span className="font-semibold">{formatMoneyFromCents(amountCents)}</span>
                 </div>
               </div>
 
-              <FormField
-                control={form.control}
-                name="requires_signature"
-                render={({ field }) => (
-                  <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
-                    <div className="space-y-0.5">
-                      <FormLabel>Require signature</FormLabel>
-                      <FormDescription>Client must sign the change order when approving.</FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch checked={field.value} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
+              <div className="space-y-2">
+                <Label>Notes</Label>
+                <Textarea
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  rows={5}
+                  placeholder="Internal notes, reason for the change, or context for your team."
+                />
               </div>
-            </ScrollArea>
+            </div>
+          </ScrollArea>
 
-            <SheetFooter className="flex-shrink-0 border-t bg-muted/30 px-6 py-4">
-              <div className="flex gap-2 w-full">
-                <Button
-                  type="submit"
-                  variant="secondary"
-                  className="flex-1"
-                  disabled={isSubmitting}
-                  onClick={() => setSubmitMode("draft")}
-                >
-                  Save as draft
-                </Button>
-                <Button
-                  type="submit"
-                  className="flex-1"
-                  disabled={isSubmitting}
-                  onClick={() => setSubmitMode("publish")}
-                >
-                  Publish worksheet
-                </Button>
-              </div>
-            </SheetFooter>
-          </form>
-        </Form>
+          <SheetFooter className="flex-shrink-0 border-t bg-muted/30 px-6 py-4">
+            <div className="flex w-full gap-2">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-1" disabled={isSubmitting || !canSubmit}>
+                {isSubmitting ? "Saving..." : "Save change order"}
+              </Button>
+            </div>
+          </SheetFooter>
+        </form>
       </SheetContent>
     </Sheet>
   )

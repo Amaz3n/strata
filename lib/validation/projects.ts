@@ -3,8 +3,8 @@ import { z } from "zod"
 export const projectInputSchema = z.object({
   name: z.string().min(1, "Project name is required"),
   status: z.enum(["planning", "bidding", "active", "on_hold", "completed", "cancelled"]).optional(),
-  start_date: z.string().optional(),
-  end_date: z.string().optional(),
+  start_date: z.string().nullable().optional(),
+  end_date: z.string().nullable().optional(),
   address: z.string().optional(),
   location: z.record(z.unknown()).optional(),
   client_id: z.string().uuid().optional().nullable(),

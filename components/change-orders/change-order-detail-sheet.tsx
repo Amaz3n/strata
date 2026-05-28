@@ -29,17 +29,21 @@ import {
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
-  pending: "Pending Approval",
+  pending: "Pending",
+  sent: "Sent",
   approved: "Approved",
-  rejected: "Rejected",
+  requested_changes: "Needs changes",
+  cancelled: "Cancelled",
   void: "Void",
 }
 
 const statusStyles: Record<string, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
   pending: "bg-warning/20 text-warning border-warning/40",
+  sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   approved: "bg-success/20 text-success border-success/30",
-  rejected: "bg-destructive/15 text-destructive border-destructive/30",
+  requested_changes: "bg-amber-100 text-amber-800 border-amber-200",
+  cancelled: "bg-destructive/15 text-destructive border-destructive/30",
   void: "bg-muted text-muted-foreground border-muted",
 }
 
@@ -204,10 +208,9 @@ export function ChangeOrderDetailSheet({
         <ScrollArea className="flex-1 min-h-0">
           <div className="px-6 py-4 space-y-6">
 
-          {/* Summary */}
           {changeOrder.summary && (
             <div className="space-y-2">
-              <h4 className="text-sm font-medium">Summary</h4>
+              <h4 className="text-sm font-medium">Notes</h4>
               <div className="rounded-lg border bg-muted/30 p-4">
                 <p className="text-sm whitespace-pre-wrap">{changeOrder.summary}</p>
               </div>
@@ -411,7 +414,7 @@ export function ChangeOrderDetailSheet({
                 className={canApprove ? "flex-1" : "w-1/2"}
                 disabled={!changeOrder.project_id}
               >
-                Prepare execution document
+                Send for signature
               </Button>
               {canApprove && (
                 <Button onClick={handleApprove} disabled={approving} variant="outline" className="flex-1">
@@ -441,7 +444,10 @@ export function ChangeOrderDetailSheet({
           document_type: "change_order",
         }}
         sourceLabel="Change order"
-        sheetTitle="Prepare change order execution document"
+        sheetTitle="Send change order for signature"
+        onEnvelopeSent={({ documentId }) => {
+          onUpdate?.({ ...changeOrder, esign_status: "sent", esign_document_id: documentId })
+        }}
       />
     </>
   )

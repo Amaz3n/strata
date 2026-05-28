@@ -176,39 +176,48 @@ export function MobileLookaheadView({ className, onAddItem }: MobileLookaheadVie
       onTouchEnd={handleTouchEnd}
     >
       {/* Compact Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/30">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={goToPreviousWeek}
-          className="h-9 w-9"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </Button>
-        <button
-          onClick={goToToday}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background border"
-        >
-          <Calendar className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">
-            {format(startDate, "MMM d")} – {format(endDate, "d")}
-          </span>
-        </button>
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b bg-muted/30">
+        {/* Date navigation cluster: prev / date / next */}
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={goToPreviousWeek}
+            className="h-9 w-9"
+            aria-label="Previous week"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
+          <button
+            onClick={goToToday}
+            className="flex h-9 items-center gap-2 rounded-lg border bg-background px-3"
+          >
+            <Calendar className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium tabular-nums">
+              {format(startDate, "MMM d")} – {format(endDate, "d")}
+            </span>
+          </button>
           <Button
             variant="ghost"
             size="icon"
             onClick={goToNextWeek}
             className="h-9 w-9"
+            aria-label="Next week"
           >
             <ChevronRight className="h-5 w-5" />
           </Button>
-          {onAddItem && (
-            <Button onClick={onAddItem} size="icon" variant="default" className="h-9 w-9">
-              <Plus className="h-4 w-4" />
-            </Button>
-          )}
         </div>
+        {onAddItem && (
+          <Button
+            onClick={onAddItem}
+            size="icon"
+            variant="default"
+            className="h-9 w-9"
+            aria-label="Add item"
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       {/* Day Selector */}
