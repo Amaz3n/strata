@@ -2,7 +2,7 @@ import { randomUUID } from "crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { decryptToken, detectInvoiceNumberPattern, encryptToken, refreshAccessToken, revokeQBOToken } from "@/lib/integrations/accounting/qbo-auth"
+import { decryptToken, detectInvoiceNumberPattern, encryptToken, getQBOClientId, refreshAccessToken, revokeQBOToken } from "@/lib/integrations/accounting/qbo-auth"
 import { recordEvent } from "@/lib/services/events"
 import { logQBO } from "@/lib/services/qbo-logger"
 import { hasExplicitQboSandboxSetting, isQboSandbox, qboApiBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo-config"
@@ -22,6 +22,7 @@ type QBOConnectionTokenRow = {
   refresh_token_expires_at?: string | null
   refresh_failure_count?: number | null
   status?: QBOConnectionStatus
+  client_id?: string | null
 }
 
 export interface QBOConnectionSettings {
@@ -77,6 +78,23 @@ async function refreshConnectionTokens(
   connection: QBOConnectionTokenRow,
   options: { force: boolean; orgIdForLogs?: string | null; source: "auto" | "manual" | "keepalive" },
 ): Promise<{ token: string; realmId: string } | null> {
+  const configuredClientId = getQBOClientId()
+
+  // Only the OAuth app (client_id) that minted the tokens can refresh them.
+  // If this runtime is configured with a different client_id (e.g. a dev box
+  // pointed at the prod DB, or a credential rotation), do NOT call Intuit and do
+  // NOT touch status — a mismatched environment must never expire a live
+  // connection. Legacy rows with a null client_id are allowed through and get
+  // stamped on the next successful refresh below.
+  if (connection.client_id && configuredClientId && connection.client_id !== configuredClientId) {
+    logQBO("warn", "token_refresh_skipped_client_mismatch", {
+      orgId: options.orgIdForLogs ?? connection.org_id,
+      connectionId: connection.id,
+      source: options.source,
+    })
+    return null
+  }
+
   const expiresAtMs = connection.token_expires_at ? new Date(connection.token_expires_at).getTime() : 0
   const shouldRefresh = options.force || !expiresAtMs || expiresAtMs - Date.now() < ACCESS_TOKEN_REFRESH_WINDOW_MS
 
@@ -102,6 +120,8 @@ async function refreshConnectionTokens(
         refresh_failure_count: 0,
         status: "active",
         last_error: null,
+        // Stamp/backfill the owning client_id now that this app successfully refreshed.
+        ...(configuredClientId ? { client_id: configuredClientId } : {}),
       })
       .eq("id", connection.id)
       .eq("status", "active")
@@ -193,7 +213,7 @@ export async function getQBOAccessToken(
 
   const { data: connection, error } = await supabase
     .from("qbo_connections")
-    .select("id, org_id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count")
+    .select("id, org_id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
     .eq("org_id", orgId)
     .eq("status", "active")
     .single()
@@ -285,7 +305,7 @@ export async function refreshQBOTokenNow(orgId?: string) {
 
   const { data: connection, error } = await supabase
     .from("qbo_connections")
-    .select("id, org_id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count")
+    .select("id, org_id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
     .eq("org_id", resolvedOrgId)
     .eq("status", "active")
     .maybeSingle()
@@ -406,6 +426,7 @@ export async function upsertQBOConnection(input: {
     .insert({
       org_id: input.orgId,
       realm_id: input.realmId,
+      client_id: getQBOClientId(),
       access_token: encryptToken(input.accessToken),
       refresh_token: encryptToken(input.refreshToken),
       token_expires_at: new Date(Date.now() + input.expiresInSeconds * 1000).toISOString(),
@@ -454,7 +475,7 @@ export async function refreshQBOConnectionsDueForKeepalive(limit = 10) {
 
   const { data: candidates, error } = await supabase
     .from("qbo_connections")
-    .select("id, org_id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count")
+    .select("id, org_id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
     .eq("status", "active")
     .order("updated_at", { ascending: true })
     .limit(Math.max(limit * 5, 25))

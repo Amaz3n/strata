@@ -23,6 +23,17 @@ function requireEnv(value: string | undefined, name: string) {
   return value
 }
 
+/**
+ * The QBO OAuth client_id (app) the current runtime is configured with.
+ * Read at call time so it reflects the actual process env. Used to ensure a
+ * connection is only ever refreshed by the same app that minted its tokens —
+ * refreshing with a different client_id (e.g. dev keys against a prod token)
+ * is rejected by Intuit and would otherwise expire the connection.
+ */
+export function getQBOClientId(): string | null {
+  return process.env.QBO_CLIENT_ID ?? null
+}
+
 function getEncryptionKey(): Buffer {
   const raw = requireEnv(process.env.TOKEN_ENCRYPTION_KEY, "TOKEN_ENCRYPTION_KEY")
   if (raw.length === 32) return Buffer.from(raw)
