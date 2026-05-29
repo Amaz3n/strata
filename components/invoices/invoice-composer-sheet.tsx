@@ -2,15 +2,17 @@
 
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
-import { CalendarIcon, Check, ChevronDown, Download, Plus, Send, UserRound, X } from "lucide-react"
+import { CalendarIcon, Check, ChevronDown, Download, Plus, Search, Send, UserRound, X } from "lucide-react"
 import { NumberFlowLite, partitionParts } from "number-flow"
 
 import type { ChangeOrder, Contact, CostCode, Invoice, Project } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
   createQBOIncomeAccountAction,
+  createQboCustomerAction,
   generateInvoicePdfAction,
   getInvoiceComposerContextAction,
+  searchQboCustomersAction,
 } from "@/app/(app)/invoices/actions"
 import { generateInvoiceFromCostsAction } from "@/app/(app)/projects/[id]/financials/actions"
 
@@ -451,7 +453,6 @@ export function InvoiceComposerSheet({
   const [changeOrderOptions, setChangeOrderOptions] = useState<ChangeOrder[]>([])
   const [qboConnected, setQboConnected] = useState(false)
   const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
-  const [qboCustomers, setQboCustomers] = useState<QBOCustomerOption[]>([])
   const [qboDiagnostics, setQboDiagnostics] = useState<QboDiagnostics | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
   const [approvedCostsLoading, setApprovedCostsLoading] = useState(false)
@@ -465,9 +466,23 @@ export function InvoiceComposerSheet({
     (invoice?.metadata?.customer_id as string | undefined) ??
       (invoice?.metadata?.qbo_customer_id ? `qbo:${invoice.metadata.qbo_customer_id}` : "none"),
   )
-  const [linkedQboCustomerId, setLinkedQboCustomerId] = useState<string | null>(
-    (invoice?.metadata?.qbo_customer_id as string | null | undefined) ?? null,
+  // The QBO customer this invoice bills to (source of truth when QBO is connected). Held as an object
+  // because it may not be in the current live-search slice — initialized from saved invoice metadata.
+  const [selectedQboCustomer, setSelectedQboCustomer] = useState<QBOCustomerOption | null>(
+    invoice?.metadata?.qbo_customer_id
+      ? {
+          id: String(invoice.metadata.qbo_customer_id),
+          name: String(invoice.metadata.qbo_customer_name ?? invoice.customer_name ?? ""),
+          email: invoice.metadata.customer_email ? String(invoice.metadata.customer_email) : null,
+        }
+      : null,
   )
+  // Live QBO customer typeahead state.
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false)
+  const [customerQuery, setCustomerQuery] = useState("")
+  const [customerResults, setCustomerResults] = useState<QBOCustomerOption[]>([])
+  const [customerSearchLoading, setCustomerSearchLoading] = useState(false)
+  const [creatingQboCustomer, setCreatingQboCustomer] = useState(false)
   const [customerDetails, setCustomerDetails] = useState(
     buildPartyDetailsBlock({
       name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
@@ -509,12 +524,6 @@ export function InvoiceComposerSheet({
   )
 
   const selectedContact = useMemo(() => contactsSorted.find((contact) => contact.id === customerId), [contactsSorted, customerId])
-  const selectedQboCustomer = useMemo(() => {
-    if (linkedQboCustomerId) {
-      return qboCustomers.find((customer) => customer.id === linkedQboCustomerId)
-    }
-    return customerId.startsWith("qbo:") ? qboCustomers.find((customer) => `qbo:${customer.id}` === customerId) : undefined
-  }, [customerId, linkedQboCustomerId, qboCustomers])
   const selectedProjectName = useMemo(
     () => projects.find((project) => project.id === projectId)?.name ?? "Project",
     [projectId, projects],
@@ -525,37 +534,11 @@ export function InvoiceComposerSheet({
       (qboIncomeAccounts.length === 0 || qboDiagnostics?.accountLoadWarning || qboDiagnostics?.connectionLastError),
   )
   const showQboAccountColumn = qboConnected || contextLoading
-  const customerOptions = useMemo(() => {
-    const matchedQboIds = new Set<string>()
-    const matchQboCustomer = (contact: Contact) => {
-      const contactEmail = contact.email?.trim().toLowerCase()
-      const contactName = contact.full_name.trim().toLowerCase()
-      return qboCustomers.find((customer) => {
-        const qboEmail = customer.email?.trim().toLowerCase()
-        if (qboEmail && contactEmail && qboEmail === contactEmail) return true
-        return customer.name.trim().toLowerCase() === contactName
-      })
-    }
-
-    const arcOptions = financialContacts.map((contact) => {
-      const qboMatch = matchQboCustomer(contact)
-      if (qboMatch) matchedQboIds.add(qboMatch.id)
-      return {
-        value: contact.id,
-        label: contact.full_name,
-        detail: qboMatch ? "Arc + QuickBooks" : "Arc",
-      }
-    })
-    const qboOnlyOptions = qboCustomers
-      .filter((customer) => !matchedQboIds.has(customer.id))
-      .map((customer) => ({
-        value: `qbo:${customer.id}`,
-        label: customer.name,
-        detail: customer.email ? `QuickBooks · ${customer.email}` : "QuickBooks",
-      }))
-
-    return [...arcOptions, ...qboOnlyOptions]
-  }, [financialContacts, qboCustomers])
+  // Fallback picker (QBO not connected): Arc contacts only — no QBO merge / fuzzy reconciliation.
+  const arcCustomerOptions = useMemo(
+    () => financialContacts.map((contact) => ({ value: contact.id, label: contact.full_name, detail: contact.email ?? "Arc contact" })),
+    [financialContacts],
+  )
 
   const lineTotals = useMemo(() => {
     const subtotal = lines.reduce((sum, line) => {
@@ -617,7 +600,7 @@ export function InvoiceComposerSheet({
     setIssueDate(format(new Date(), "yyyy-MM-dd"))
     setDueDate(format(addDays(new Date(), composerSettings.defaultPaymentTermsDays), "yyyy-MM-dd"))
     setCustomerId("none")
-    setLinkedQboCustomerId(null)
+    setSelectedQboCustomer(null)
     setCustomerDetails("")
     setFromDetails(
       buildPartyDetailsBlock({
@@ -781,7 +764,15 @@ export function InvoiceComposerSheet({
       (invoice?.metadata?.customer_id as string | undefined) ??
         (invoice?.metadata?.qbo_customer_id ? `qbo:${invoice.metadata.qbo_customer_id}` : "none"),
     )
-    setLinkedQboCustomerId((invoice?.metadata?.qbo_customer_id as string | null | undefined) ?? null)
+    setSelectedQboCustomer(
+      invoice?.metadata?.qbo_customer_id
+        ? {
+            id: String(invoice.metadata.qbo_customer_id),
+            name: String(invoice.metadata.qbo_customer_name ?? invoice.customer_name ?? ""),
+            email: invoice.metadata.customer_email ? String(invoice.metadata.customer_email) : null,
+          }
+        : null,
+    )
     setCustomerDetails(
       buildPartyDetailsBlock({
         name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
@@ -803,11 +794,11 @@ export function InvoiceComposerSheet({
   }, [open, mode, invoice, defaultProjectId, projects, loadInvoiceNumber, resetForCreate, builderInfo?.address, builderInfo?.email, builderInfo?.name])
 
   useEffect(() => {
-    if (customerDetails.trim().length === 0 && customerId !== "none") {
-      setCustomerId("none")
-      setLinkedQboCustomerId(null)
+    if (customerDetails.trim().length === 0) {
+      if (customerId !== "none") setCustomerId("none")
+      if (selectedQboCustomer) setSelectedQboCustomer(null)
     }
-  }, [customerDetails, customerId])
+  }, [customerDetails, customerId, selectedQboCustomer])
 
   useEffect(() => {
     if (!open || mode !== "create") return
@@ -828,7 +819,6 @@ export function InvoiceComposerSheet({
         setChangeOrderOptions(result.changeOrders ?? [])
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
-        setQboCustomers(result.qboCustomers ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
         const defaults = {
           defaultPaymentTermsDays: Number(result.settings?.defaultPaymentTermsDays ?? 15),
@@ -849,7 +839,6 @@ export function InvoiceComposerSheet({
         setChangeOrderOptions([])
         setQboConnected(false)
         setQboIncomeAccounts([])
-        setQboCustomers([])
         setQboDiagnostics(null)
         setComposerSettings({ defaultPaymentTermsDays: 15, defaultInvoiceNote: "" })
         toast.error("Unable to load billing sources", { description: error?.message ?? "Try again." })
@@ -862,6 +851,31 @@ export function InvoiceComposerSheet({
       cancelled = true
     }
   }, [open, projectId, issueDate, mode, notes])
+
+  // Live QBO customer search: debounce keystrokes and query QBO directly so we never hold a second
+  // customer base in Arc. Only runs while the picker is open and QBO is connected.
+  useEffect(() => {
+    if (!qboConnected || !customerPickerOpen) return
+    let cancelled = false
+    setCustomerSearchLoading(true)
+    const handle = setTimeout(() => {
+      searchQboCustomersAction(customerQuery)
+        .then((result) => {
+          if (cancelled) return
+          setCustomerResults(result.customers ?? [])
+        })
+        .catch(() => {
+          if (!cancelled) setCustomerResults([])
+        })
+        .finally(() => {
+          if (!cancelled) setCustomerSearchLoading(false)
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [qboConnected, customerPickerOpen, customerQuery])
 
   useEffect(() => {
     if (!open) {
@@ -901,17 +915,12 @@ export function InvoiceComposerSheet({
     setLines((prev) => prev.filter((line) => line.id !== lineId))
   }
 
+  // Fallback only (QBO disconnected): bill an Arc contact.
   const selectContact = (contactId: string) => {
     setCustomerId(contactId)
+    setSelectedQboCustomer(null)
     const contact = financialContacts.find((item) => item.id === contactId)
     if (contact) {
-      const matchedQboCustomer = qboCustomers.find((customer) => {
-        const qboEmail = customer.email?.trim().toLowerCase()
-        const contactEmail = contact.email?.trim().toLowerCase()
-        if (qboEmail && contactEmail && qboEmail === contactEmail) return true
-        return customer.name.trim().toLowerCase() === contact.full_name.trim().toLowerCase()
-      })
-      setLinkedQboCustomerId(matchedQboCustomer?.id ?? null)
       setCustomerDetails(
         buildPartyDetailsBlock({
           name: contact.full_name,
@@ -922,11 +931,10 @@ export function InvoiceComposerSheet({
     }
   }
 
-  const selectQboCustomer = (qboCustomerId: string) => {
-    const customer = qboCustomers.find((item) => item.id === qboCustomerId)
-    if (!customer) return
-    setCustomerId(`qbo:${customer.id}`)
-    setLinkedQboCustomerId(customer.id)
+  const selectQboCustomer = (customer: QBOCustomerOption) => {
+    setCustomerId("none")
+    setSelectedQboCustomer(customer)
+    setCustomerPickerOpen(false)
     setCustomerDetails(
       buildPartyDetailsBlock({
         name: customer.name,
@@ -934,6 +942,23 @@ export function InvoiceComposerSheet({
         address: formatAddressBlock(customer.billingAddress ?? ""),
       }),
     )
+  }
+
+  // Create the customer directly in QuickBooks (the source of truth), then bill against it.
+  const handleCreateQboCustomer = async () => {
+    const name = customerQuery.trim()
+    if (!name || creatingQboCustomer) return
+    setCreatingQboCustomer(true)
+    try {
+      const created = await createQboCustomerAction({ name })
+      selectQboCustomer(created)
+      setCustomerQuery("")
+      toast.success(`Created "${created.name}" in QuickBooks`)
+    } catch (error: any) {
+      toast.error("Couldn't create customer in QuickBooks", { description: error?.message ?? "Try again." })
+    } finally {
+      setCreatingQboCustomer(false)
+    }
   }
 
   const handleCreateQboIncomeAccount = useCallback(
@@ -1155,7 +1180,10 @@ export function InvoiceComposerSheet({
     .filter(Boolean)
     .join(" ")
   // Show the customer picker only while Bill To is empty and there's actually something to pick.
-  const showCustomerPicker = showCustomerSelector && (customerOptions.length > 0 || contextLoading)
+  // When QBO is connected, the picker is a live QBO typeahead; otherwise it's the Arc-contact fallback.
+  const showQboCustomerPicker = showCustomerSelector && qboConnected
+  const showArcCustomerPicker = showCustomerSelector && !qboConnected && (arcCustomerOptions.length > 0 || contextLoading)
+  const showCustomerPicker = showQboCustomerPicker || showArcCustomerPicker
   const headerLabel = "text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70"
   // Borderless control that fills its cell vertically and reveals its outline on hover/focus.
   const ghostTrigger =
@@ -1296,7 +1324,7 @@ export function InvoiceComposerSheet({
                       onClick={() => {
                         setCustomerDetails("")
                         setCustomerId("none")
-                        setLinkedQboCustomerId(null)
+                        setSelectedQboCustomer(null)
                       }}
                       className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                     >
@@ -1306,18 +1334,74 @@ export function InvoiceComposerSheet({
                 )}
               </div>
 
-              {showCustomerPicker && (
+              {showQboCustomerPicker && (
+                <Popover open={customerPickerOpen} onOpenChange={setCustomerPickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-2 h-9 w-full justify-start rounded-none border-input bg-transparent text-sm font-normal text-muted-foreground shadow-none transition-colors hover:bg-muted/40"
+                    >
+                      <Search className="mr-2 h-3.5 w-3.5 shrink-0 opacity-60" />
+                      Search QuickBooks customers…
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[300px] p-0" align="start">
+                    <Command shouldFilter={false}>
+                      <CommandInput placeholder="Search QuickBooks customers…" value={customerQuery} onValueChange={setCustomerQuery} />
+                      <CommandList>
+                        {customerSearchLoading && (
+                          <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
+                            <Spinner className="h-3.5 w-3.5" /> Searching…
+                          </div>
+                        )}
+                        {!customerSearchLoading && customerResults.length === 0 && (
+                          <CommandEmpty>No QuickBooks customers found.</CommandEmpty>
+                        )}
+                        {customerResults.length > 0 && (
+                          <CommandGroup>
+                            {customerResults.map((customer) => (
+                              <CommandItem
+                                key={customer.id}
+                                value={customer.id}
+                                onSelect={() => selectQboCustomer(customer)}
+                              >
+                                <span className="flex min-w-0 flex-col">
+                                  <span className="truncate">{customer.name}</span>
+                                  {customer.email && <span className="text-xs text-muted-foreground">{customer.email}</span>}
+                                </span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        )}
+                        {customerQuery.trim().length > 0 && (
+                          <>
+                            <CommandSeparator />
+                            <CommandGroup>
+                              <CommandItem value={`__create_${customerQuery}`} onSelect={handleCreateQboCustomer} disabled={creatingQboCustomer}>
+                                {creatingQboCustomer ? (
+                                  <Spinner className="mr-2 h-3.5 w-3.5" />
+                                ) : (
+                                  <Plus className="mr-2 h-3.5 w-3.5" />
+                                )}
+                                Create &ldquo;{customerQuery.trim()}&rdquo; in QuickBooks
+                              </CommandItem>
+                            </CommandGroup>
+                          </>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              )}
+
+              {showArcCustomerPicker && (
                 <Select
                   value={customerId}
                   onValueChange={(value) => {
                     if (value === "none") {
                       setCustomerId("none")
-                      setLinkedQboCustomerId(null)
                       setCustomerDetails("")
-                      return
-                    }
-                    if (value.startsWith("qbo:")) {
-                      selectQboCustomer(value.slice(4))
                       return
                     }
                     selectContact(value)
@@ -1330,7 +1414,7 @@ export function InvoiceComposerSheet({
                     </span>
                   </SelectTrigger>
                   <SelectContent>
-                    {customerOptions.map((option) => (
+                    {arcCustomerOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
                         <span className="flex min-w-0 flex-col">
                           <span className="truncate">{option.label}</span>
@@ -1339,13 +1423,8 @@ export function InvoiceComposerSheet({
                       </SelectItem>
                     ))}
                     {contextLoading && (
-                      <SelectItem value="__loading_qbo_customers" disabled>
-                        Loading QuickBooks customers...
-                      </SelectItem>
-                    )}
-                    {!contextLoading && qboConnected && qboCustomers.length === 0 && (
-                      <SelectItem value="__no_qbo_customers" disabled>
-                        No QuickBooks customers found
+                      <SelectItem value="__loading_contacts" disabled>
+                        Loading customers...
                       </SelectItem>
                     )}
                   </SelectContent>

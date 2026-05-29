@@ -277,12 +277,33 @@ export class QBOClient {
     )
     return (result.QueryResponse.Customer ?? [])
       .filter((customer) => customer.Id && customer.DisplayName)
-      .map((customer) => ({
-        id: String(customer.Id),
-        name: String(customer.DisplayName),
-        email: customer.PrimaryEmailAddr?.Address ?? null,
-        billingAddress: formatQboAddress(customer.BillAddr),
-      }))
+      .map((customer) => mapCustomerOption(customer))
+  }
+
+  // Server-side typeahead. Empty/short queries return the leading slice of active customers so the
+  // picker has something to show on open; non-empty queries filter by DisplayName prefix in QBO.
+  async searchCustomers(term: string, limit = 25): Promise<QBOCustomerOption[]> {
+    const max = Math.min(Math.max(limit, 1), 100)
+    const trimmed = term.trim()
+    const where = trimmed
+      ? `WHERE Active = true AND DisplayName LIKE '${this.toQboStringLiteral(trimmed)}%'`
+      : `WHERE Active = true`
+    const query = `SELECT Id, DisplayName, PrimaryEmailAddr, BillAddr FROM Customer ${where} ORDERBY DisplayName MAXRESULTS ${max}`
+    const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
+      "GET",
+      `query?query=${encodeURIComponent(query)}`,
+    )
+    return (result.QueryResponse.Customer ?? [])
+      .filter((customer) => customer.Id && customer.DisplayName)
+      .map((customer) => mapCustomerOption(customer))
+  }
+
+  async createCustomerOption(input: { name: string; email?: string | null; address?: string | null }): Promise<QBOCustomerOption> {
+    const payload: Omit<QBOCustomer, "Id" | "SyncToken"> = { DisplayName: input.name.trim() }
+    const email = input.email?.trim()
+    if (email) payload.PrimaryEmailAddr = { Address: email }
+    const created = await this.createCustomer(payload)
+    return mapCustomerOption(created)
   }
 
   async findVendorByName(displayName: string): Promise<QBOVendor | null> {
@@ -788,6 +809,15 @@ export class QBOClient {
       content: params.content,
       note: params.note,
     })
+  }
+}
+
+function mapCustomerOption(customer: QBOCustomer): QBOCustomerOption {
+  return {
+    id: String(customer.Id),
+    name: String(customer.DisplayName),
+    email: customer.PrimaryEmailAddr?.Address ?? null,
+    billingAddress: formatQboAddress(customer.BillAddr),
   }
 }
 

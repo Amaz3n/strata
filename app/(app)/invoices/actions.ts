@@ -358,7 +358,6 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
     typeof (qboConnection?.settings as any)?.default_income_account_id === "string" ? (qboConnection?.settings as any).default_income_account_id : null
 
   let qboIncomeAccounts: Array<{ id: string; name: string; fullyQualifiedName?: string }> = []
-  let qboCustomers: Array<{ id: string; name: string; email?: string | null; billingAddress?: string | null }> = []
   let qboAccountLoadWarning: string | null = null
   if (qboConnected) {
     try {
@@ -367,7 +366,6 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
         qboConnected = false
       } else {
         qboIncomeAccounts = await qboClient.listIncomeAccounts()
-        qboCustomers = await qboClient.listCustomers().catch(() => [])
         if (qboIncomeAccounts.length === 0 && qboDefaultIncomeAccountId) {
           const fallbackAccount = await qboClient.getIncomeAccountById(qboDefaultIncomeAccountId).catch(() => null)
           if (fallbackAccount) {
@@ -398,7 +396,6 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
     changeOrders,
     qboConnected,
     qboIncomeAccounts,
-    qboCustomers,
     qboDefaultIncomeAccountId,
     qboDiagnostics: {
       connectionLastError: (qboConnection as any)?.last_error ?? null,
@@ -410,6 +407,37 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
       defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
     },
   }
+}
+
+/**
+ * Server-side typeahead for the invoice composer's "bill to" picker. When QBO is connected, QBO is
+ * the source of truth — we query it live by DisplayName prefix so there's no second customer base to
+ * keep in sync. Returns [] when QBO isn't connected (the composer falls back to Arc contacts / manual).
+ */
+export async function searchQboCustomersAction(term: string) {
+  const { orgId } = await requireOrgContext()
+  const qboClient = await QBOClient.forOrg(orgId).catch(() => null)
+  if (!qboClient) return { connected: false, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+  try {
+    const customers = await qboClient.searchCustomers(term)
+    return { connected: true, customers }
+  } catch (error) {
+    console.warn("QBO customer search failed", error)
+    return { connected: true, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+  }
+}
+
+/**
+ * Create a customer directly in QuickBooks from the composer, so new customers are born in the source
+ * of truth instead of an Arc-only base that drifts. Returns the new QBO customer to bill against.
+ */
+export async function createQboCustomerAction(input: { name: string; email?: string | null; address?: string | null }) {
+  const { orgId } = await requireOrgContext()
+  const name = input.name?.trim()
+  if (!name) throw new Error("Customer name is required")
+  const qboClient = await QBOClient.forOrg(orgId)
+  if (!qboClient) throw new Error("QuickBooks is not connected")
+  return qboClient.createCustomerOption({ name, email: input.email ?? null, address: input.address ?? null })
 }
 
 /**
