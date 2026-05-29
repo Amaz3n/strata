@@ -270,7 +270,10 @@ export class QBOClient {
   }
 
   async listCustomers(limit = 1000): Promise<QBOCustomerOption[]> {
-    const query = `SELECT Id, DisplayName, PrimaryEmailAddr, BillAddr FROM Customer WHERE Active = true ORDERBY DisplayName MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
+    // SELECT * (not an explicit column list): QBO's query parser rejects complex properties like
+    // BillAddr / PrimaryEmailAddr in a column list ("Property BillAddr not found"), so we fetch the
+    // full Customer object and let mapCustomerOption pull what it needs.
+    const query = `SELECT * FROM Customer WHERE Active = true ORDERBY DisplayName MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
     const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
       "GET",
       `query?query=${encodeURIComponent(query)}`,
@@ -289,7 +292,9 @@ export class QBOClient {
     const where = trimmed
       ? `WHERE Active = true AND DisplayName LIKE '%${this.toQboStringLiteral(trimmed)}%'`
       : `WHERE Active = true`
-    const query = `SELECT Id, DisplayName, PrimaryEmailAddr, BillAddr FROM Customer ${where} ORDERBY DisplayName MAXRESULTS ${max}`
+    // SELECT * — see listCustomers: an explicit column list with BillAddr / PrimaryEmailAddr is
+    // rejected by QBO ("Property BillAddr not found for Entity Customer").
+    const query = `SELECT * FROM Customer ${where} ORDERBY DisplayName MAXRESULTS ${max}`
     const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
       "GET",
       `query?query=${encodeURIComponent(query)}`,
