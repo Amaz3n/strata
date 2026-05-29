@@ -827,7 +827,8 @@ export function InvoiceComposerSheet({
         setComposerSettings(defaults)
         if (mode === "create") {
           setPaymentTermsDays(defaults.defaultPaymentTermsDays)
-          setDueDate(format(addDays(new Date(issueDate || new Date()), defaults.defaultPaymentTermsDays), "yyyy-MM-dd"))
+          const issueBase = issueDate ? parse(issueDate, "yyyy-MM-dd", new Date()) : new Date()
+          setDueDate(format(addDays(issueBase, defaults.defaultPaymentTermsDays), "yyyy-MM-dd"))
           if (!notes.trim()) {
             setNotes(defaults.defaultInvoiceNote)
           }

@@ -281,12 +281,13 @@ export class QBOClient {
   }
 
   // Server-side typeahead. Empty/short queries return the leading slice of active customers so the
-  // picker has something to show on open; non-empty queries filter by DisplayName prefix in QBO.
+  // picker has something to show on open; non-empty queries do a DisplayName "contains" match in QBO
+  // (wildcards on both sides) so searching by a last name or keyword mid-name still finds the customer.
   async searchCustomers(term: string, limit = 25): Promise<QBOCustomerOption[]> {
     const max = Math.min(Math.max(limit, 1), 100)
     const trimmed = term.trim()
     const where = trimmed
-      ? `WHERE Active = true AND DisplayName LIKE '${this.toQboStringLiteral(trimmed)}%'`
+      ? `WHERE Active = true AND DisplayName LIKE '%${this.toQboStringLiteral(trimmed)}%'`
       : `WHERE Active = true`
     const query = `SELECT Id, DisplayName, PrimaryEmailAddr, BillAddr FROM Customer ${where} ORDERBY DisplayName MAXRESULTS ${max}`
     const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
