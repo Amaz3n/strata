@@ -244,8 +244,29 @@ export async function createStripeBillingPortalSession(customerId: string, retur
   })
 }
 
+function getStripeWebhookSecrets() {
+  return [
+    process.env.STRIPE_WEBHOOK_SECRET,
+    process.env.STRIPE_CONNECT_WEBHOOK_SECRET,
+  ].filter((secret): secret is string => Boolean(secret?.trim()))
+}
+
 export function constructWebhookEvent(payload: string, signature: string) {
-  return getStripe().webhooks.constructEvent(payload, signature, process.env.STRIPE_WEBHOOK_SECRET!)
+  const secrets = getStripeWebhookSecrets()
+  if (secrets.length === 0) {
+    throw new Error("Stripe webhook secret is not configured")
+  }
+
+  let lastError: unknown
+  for (const secret of secrets) {
+    try {
+      return getStripe().webhooks.constructEvent(payload, signature, secret)
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError
 }
 
 export function mapStripeEventToDomain(event: Stripe.Event) {
