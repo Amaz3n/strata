@@ -85,6 +85,8 @@ export function PortalPublicClient({
       tabs={shellTabs}
       renderTab={renderTab}
       pinVerified={pinVerified}
+      token={token}
+      tokenType="portal"
       pinGate={
         <PortalPinGate
           token={token}

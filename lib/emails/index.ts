@@ -1,4 +1,6 @@
 export { BidInviteEmail, type BidInviteEmailProps } from "./bid-invite-email"
+export { BidAddendumEmail, type BidAddendumEmailProps } from "./bid-addendum-email"
+export { BidDateUpdateEmail, type BidDateUpdateEmailProps } from "./bid-date-update-email"
 export { InvoiceEmail, type InvoiceEmailProps } from "./invoice-email"
 export { SignatureEmail, type SignatureEmailProps } from "./signature-email"
 export { InvoiceReminderEmail, type InvoiceReminderEmailProps } from "./invoice-reminder-email"

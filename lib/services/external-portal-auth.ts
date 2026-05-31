@@ -227,7 +227,7 @@ async function resolveTokenContext(tokenType: ExternalTokenType, token: string):
       bid_invite:bid_invites!bid_access_tokens_org_invite_fk(
         invite_email,
         contact:contacts!bid_invites_org_contact_fk(full_name, email),
-        bid_package:bid_packages(title, project:projects(name))
+        bid_package:bid_packages!bid_invites_org_package_fk(title, project:projects(name))
       ),
       org:orgs(name)
     `,
@@ -626,7 +626,7 @@ export async function getExternalPortalWorkspaceContext({
               invite_email,
               company:companies!bid_invites_org_company_fk(id, name),
               contact:contacts!bid_invites_org_contact_fk(id, full_name, email),
-              bid_package:bid_packages(id, title, due_at, status, project:projects(id, name, status, address))
+              bid_package:bid_packages!bid_invites_org_package_fk(id, title, due_at, status, project:projects(id, name, status, address))
             )
           )
         `,

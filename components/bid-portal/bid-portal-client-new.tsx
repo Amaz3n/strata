@@ -106,6 +106,10 @@ export function BidPortalClientNew({ token, access, data, pinRequired = false, w
       tabs={tabs}
       renderTab={renderTab}
       pinVerified={pinVerified}
+      token={token}
+      tokenType="bid"
+      email={access.invite.invite_email ?? access.invite.contact?.email ?? access.invite.company?.email ?? ""}
+      suggestedFullName={access.invite.contact?.full_name ?? ""}
       pinGate={
         <BidPortalPinGate
           token={token}

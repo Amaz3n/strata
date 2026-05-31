@@ -2,7 +2,6 @@ import { createHmac, randomBytes } from "crypto"
 
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { NotificationService } from "@/lib/services/notifications"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
@@ -1662,9 +1661,10 @@ const DECISION_KIND: Record<EstimateDecision, string> = {
 
 /**
  * Notifies the builder (estimate creator, falling back to the prospect owner) when a
- * client requests changes or declines from the portal. Creates an in-app notification
- * and queues the matching email — mirroring the countersign nudge the builder gets when
- * a client approves. Best-effort: a notification failure never blocks the client decision.
+ * client requests changes or declines from the portal. Sends the email **synchronously**
+ * at submission time — mirroring the countersign nudge the builder gets on approval — so
+ * there is no outbox-queue delay; the in-app bell notification is recorded directly.
+ * Best-effort: a notification failure never blocks the client decision.
  */
 async function notifyBuilderOfClientResponse(input: {
   supabase: ServiceClient
@@ -1679,7 +1679,10 @@ async function notifyBuilderOfClientResponse(input: {
     (typeof estimate.created_by === "string" && estimate.created_by) ||
     (typeof estimate.prospect?.owner_user_id === "string" && estimate.prospect.owner_user_id) ||
     null
-  if (!builderUserId) return
+  if (!builderUserId) {
+    console.error("[estimate-portal] No builder to notify for estimate", estimate.id)
+    return
+  }
 
   const isChanges = decision === "changes_requested"
   const action = isChanges ? "requested changes to" : "declined"
@@ -1688,19 +1691,70 @@ async function notifyBuilderOfClientResponse(input: {
     ? `${clientName} ${action} "${estimate.title}":\n${note}`
     : `${clientName} ${action} "${estimate.title}".`
 
+  // In-app bell notification (recorded directly — the email is sent synchronously below
+  // rather than through the outbox, to avoid queue delay).
   try {
-    await new NotificationService().createAndQueue({
-      orgId,
-      userId: builderUserId,
-      type: isChanges ? "estimate_changes_requested" : "estimate_declined",
-      title,
-      message,
-      entityType: "estimate",
-      entityId: estimate.id,
-      metadata: { prospect_id: estimate.prospect_id ?? null, decision, client_name: clientName },
+    await supabase.from("notifications").insert({
+      org_id: orgId,
+      user_id: builderUserId,
+      notification_type: isChanges ? "estimate_changes_requested" : "estimate_declined",
+      payload: {
+        title,
+        message,
+        entity_type: "estimate",
+        entity_id: estimate.id,
+        prospect_id: estimate.prospect_id ?? null,
+        decision,
+        client_name: clientName,
+      },
     })
   } catch (error) {
-    console.error("[estimate-portal] Failed to notify builder of client response:", error)
+    console.error("[estimate-portal] Failed to record builder notification:", error)
+  }
+
+  // Synchronous email to the builder.
+  try {
+    const { data: builder } = await supabase
+      .from("app_users")
+      .select("email, full_name")
+      .eq("id", builderUserId)
+      .maybeSingle()
+
+    const builderEmail = builder?.email?.trim()
+    if (!builderEmail) {
+      console.error("[estimate-portal] Builder has no email; skipping change-request email for estimate", estimate.id)
+      return
+    }
+
+    const branding = await getOrgBranding(orgId, supabase)
+    const ctaLink = estimate.prospect_id ? `${appUrl()}/pipeline` : `${appUrl()}/estimates`
+    const html = await renderEmailTemplate(
+      SignatureEmail({
+        documentTitle: estimate.title,
+        signingLink: ctaLink,
+        orgName: branding.name ?? null,
+        orgLogoUrl: branding.logoUrl ?? null,
+        recipientName: builder?.full_name ?? null,
+        projectName: estimate.prospect?.name ?? null,
+        eventLabel: "Estimate Update",
+        headline: isChanges ? "Client requested changes" : "Client declined estimate",
+        bodyText: `${clientName} reviewed "${estimate.title}" and ${action} it.`,
+        detailLabel: isChanges ? "Requested changes" : "Note",
+        detailText:
+          note ?? (isChanges ? "Open the estimate to review and send a revised version." : "No reason was provided."),
+        buttonText: isChanges ? "Review & revise" : "Open in Arc",
+        previewText: title,
+      }),
+    )
+
+    await sendEmail({
+      to: [builderEmail],
+      subject: title,
+      html,
+      from: getOrgSenderEmail(branding.slug, branding.name),
+    })
+  } catch (error) {
+    console.error("[estimate-portal] Failed to send builder change-request email:", error)
   }
 }
 

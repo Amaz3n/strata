@@ -1,6 +1,8 @@
 import { render } from "@react-email/components"
 import type { ReactElement } from "react"
 import { BidInviteEmail } from "@/lib/emails/bid-invite-email"
+import { BidAddendumEmail } from "@/lib/emails/bid-addendum-email"
+import { BidDateUpdateEmail } from "@/lib/emails/bid-date-update-email"
 import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
 import { ProjectPortalInviteEmail } from "@/lib/emails/project-portal-invite-email"
 import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
@@ -342,6 +344,7 @@ export async function sendBidInviteEmail(payload: BidInviteEmailPayload): Promis
         year: "numeric",
         hour: "numeric",
         minute: "2-digit",
+        timeZone: "America/New_York",
       })
     : undefined
 
@@ -393,6 +396,102 @@ export async function sendProjectPortalInviteEmail(payload: ProjectPortalInviteE
   return sendEmail({
     to: [payload.to],
     subject: `${payload.projectName} is ready in Arc`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface BidAddendumEmailPayload {
+  to: string
+  companyName?: string | null
+  contactName?: string | null
+  projectName?: string | null
+  bidPackageTitle: string
+  addendumNumber: number
+  addendumTitle?: string | null
+  addendumMessage?: string | null
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  bidLink: string
+  orgSlug?: string | null
+}
+
+export async function sendBidAddendumEmail(payload: BidAddendumEmailPayload): Promise<void> {
+  const html = await renderEmailTemplate(
+    BidAddendumEmail({
+      companyName: payload.companyName,
+      contactName: payload.contactName,
+      projectName: payload.projectName,
+      bidPackageTitle: payload.bidPackageTitle,
+      addendumNumber: payload.addendumNumber,
+      addendumTitle: payload.addendumTitle,
+      addendumMessage: payload.addendumMessage,
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
+      bidLink: payload.bidLink,
+    })
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: `Addendum #${payload.addendumNumber} Issued: ${payload.bidPackageTitle}`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface BidDateUpdateEmailPayload {
+  to: string
+  companyName?: string | null
+  contactName?: string | null
+  projectName?: string | null
+  bidPackageTitle: string
+  oldDueDate?: string | null
+  newDueDate: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  bidLink: string
+  orgSlug?: string | null
+}
+
+export async function sendBidDateUpdateEmail(payload: BidDateUpdateEmailPayload): Promise<void> {
+  const formattedOldDueDate = payload.oldDueDate
+    ? new Date(payload.oldDueDate).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: "America/New_York",
+      })
+    : undefined
+
+  const formattedNewDueDate = new Date(payload.newDueDate).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  })
+
+  const html = await renderEmailTemplate(
+    BidDateUpdateEmail({
+      companyName: payload.companyName,
+      contactName: payload.contactName,
+      projectName: payload.projectName,
+      bidPackageTitle: payload.bidPackageTitle,
+      oldDueDate: formattedOldDueDate,
+      newDueDate: formattedNewDueDate,
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
+      bidLink: payload.bidLink,
+    })
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: `Bid Deadline Update: ${payload.bidPackageTitle}`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })

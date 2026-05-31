@@ -13,7 +13,7 @@ import {
   type BidPackageStatus,
 } from "@/lib/validation/bids"
 import { runBidAwardConversion } from "@/lib/services/conversions"
-import { sendBidInviteEmail } from "@/lib/services/mailer"
+import { sendBidInviteEmail, sendBidAddendumEmail, sendBidDateUpdateEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export interface BidPackage {
@@ -502,7 +502,7 @@ export async function updateBidPackage({
 
   const { data: existing, error: existingError } = await supabase
     .from("bid_packages")
-    .select("id, org_id, project_id, prospect_id, status")
+    .select("id, org_id, project_id, prospect_id, status, due_at, title")
     .eq("org_id", resolvedOrgId)
     .eq("id", bidPackageId)
     .maybeSingle()
@@ -510,6 +510,8 @@ export async function updateBidPackage({
   if (existingError || !existing) {
     throw new Error("Bid package not found")
   }
+
+  const isDueDateUpdated = parsed.due_at !== undefined && parsed.due_at !== existing.due_at
 
   if (parsed.cost_code_id) {
     await ensureCostCodeInOrg(parsed.cost_code_id, resolvedOrgId, supabase)
@@ -554,6 +556,81 @@ export async function updateBidPackage({
     before: existing,
     after: data,
   })
+
+  // Check if due date was updated and notify active bidders
+  if (isDueDateUpdated) {
+    try {
+      let jobName: string | undefined
+
+      if (data.project_id) {
+        const { data: project } = await supabase
+          .from("projects")
+          .select("id, name")
+          .eq("org_id", resolvedOrgId)
+          .eq("id", data.project_id)
+          .maybeSingle()
+        jobName = project?.name
+      } else if (data.prospect_id) {
+        const { data: prospect } = await supabase
+          .from("prospects")
+          .select("id, name")
+          .eq("org_id", resolvedOrgId)
+          .eq("id", data.prospect_id)
+          .maybeSingle()
+        jobName = prospect?.name
+      }
+
+      // Fetch org details for email
+      const { data: org } = await supabase
+        .from("orgs")
+        .select("id, name, logo_url, slug")
+        .eq("id", resolvedOrgId)
+        .maybeSingle()
+
+      // Fetch active subcontractor invites to notify them
+      const { data: invites } = await supabase
+        .from("bid_invites")
+        .select(`
+          id, org_id, bid_package_id, company_id, contact_id, invite_email, status,
+          company:companies!bid_invites_org_company_fk(id, name, email),
+          contact:contacts!bid_invites_org_contact_fk(id, full_name, email)
+        `)
+        .eq("org_id", resolvedOrgId)
+        .eq("bid_package_id", bidPackageId)
+        .in("status", ["sent", "viewed", "submitted"])
+
+      if (invites && invites.length > 0) {
+        for (const inviteRow of invites) {
+          const invite = mapBidInvite(inviteRow)
+          const emailTo = invite.invite_email || invite.contact?.email || invite.company?.email
+          if (!emailTo) continue
+
+          try {
+            // Generate/retrieve bid link for this subcontractor
+            const { url: bidLink } = await generateBidInviteLink(invite.id, resolvedOrgId)
+
+            await sendBidDateUpdateEmail({
+              to: emailTo,
+              companyName: invite.company?.name,
+              contactName: invite.contact?.full_name,
+              projectName: jobName,
+              bidPackageTitle: data.title,
+              oldDueDate: existing.due_at,
+              newDueDate: data.due_at as string,
+              orgName: org?.name,
+              orgLogoUrl: org?.logo_url,
+              bidLink,
+              orgSlug: org?.slug,
+            })
+          } catch (emailError) {
+            console.error(`Failed to send bid due date update email to ${emailTo}:`, emailError)
+          }
+        }
+      }
+    } catch (emailBlockError) {
+      console.error("Failed to run bid due date update email notification flow:", emailBlockError)
+    }
+  }
 
   return mapBidPackage(data)
 }
@@ -891,7 +968,7 @@ export async function bulkCreateBidInvites({
   // Fetch org name for email
   const { data: org } = await supabase
     .from("orgs")
-    .select("id, name, logo_url")
+    .select("id, name, logo_url, slug")
     .eq("id", resolvedOrgId)
     .maybeSingle()
 
@@ -1002,7 +1079,7 @@ export async function bulkCreateBidInvites({
         org_id: resolvedOrgId,
         bid_invite_id: invite.id,
         token_hash: tokenHash,
-        require_account: true,
+        require_account: false,
         created_by: userId,
       })
       if (tokenError) {
@@ -1051,6 +1128,7 @@ export async function bulkCreateBidInvites({
               orgName: org?.name,
               orgLogoUrl: org?.logo_url,
               bidLink,
+              orgSlug: org?.slug,
             })
             emailsSent++
           } catch (emailError) {
@@ -1117,7 +1195,7 @@ export async function generateBidInviteLink(
       org_id: resolvedOrgId,
       bid_invite_id: inviteId,
       token_hash: tokenHash,
-      require_account: true,
+      require_account: false,
       created_by: userId,
     })
 
@@ -1231,6 +1309,89 @@ export async function createBidAddendum({
     entityId: data.id as string,
     after: data,
   })
+
+  // Fetch bid package details for email
+  try {
+    const { data: bidPackage } = await supabase
+      .from("bid_packages")
+      .select("id, project_id, prospect_id, title, trade")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", parsed.bid_package_id)
+      .maybeSingle()
+
+    if (bidPackage) {
+      let jobName: string | undefined
+
+      if (bidPackage.project_id) {
+        const { data: project } = await supabase
+          .from("projects")
+          .select("id, name")
+          .eq("org_id", resolvedOrgId)
+          .eq("id", bidPackage.project_id)
+          .maybeSingle()
+        jobName = project?.name
+      } else if (bidPackage.prospect_id) {
+        const { data: prospect } = await supabase
+          .from("prospects")
+          .select("id, name")
+          .eq("org_id", resolvedOrgId)
+          .eq("id", bidPackage.prospect_id)
+          .maybeSingle()
+        jobName = prospect?.name
+      }
+
+      // Fetch org details for email
+      const { data: org } = await supabase
+        .from("orgs")
+        .select("id, name, logo_url, slug")
+        .eq("id", resolvedOrgId)
+        .maybeSingle()
+
+      // Fetch active subcontractor invites on the bid package to notify them
+      const { data: invites } = await supabase
+        .from("bid_invites")
+        .select(`
+          id, org_id, bid_package_id, company_id, contact_id, invite_email, status,
+          company:companies!bid_invites_org_company_fk(id, name, email),
+          contact:contacts!bid_invites_org_contact_fk(id, full_name, email)
+        `)
+        .eq("org_id", resolvedOrgId)
+        .eq("bid_package_id", parsed.bid_package_id)
+        .in("status", ["sent", "viewed", "submitted"])
+
+      if (invites && invites.length > 0) {
+        for (const inviteRow of invites) {
+          const invite = mapBidInvite(inviteRow)
+          const emailTo = invite.invite_email || invite.contact?.email || invite.company?.email
+          if (!emailTo) continue
+
+          try {
+            // Generate/retrieve bid link for this subcontractor
+            const { url: bidLink } = await generateBidInviteLink(invite.id, resolvedOrgId)
+
+            await sendBidAddendumEmail({
+              to: emailTo,
+              companyName: invite.company?.name,
+              contactName: invite.contact?.full_name,
+              projectName: jobName,
+              bidPackageTitle: bidPackage.title,
+              addendumNumber: nextNumber,
+              addendumTitle: parsed.title,
+              addendumMessage: parsed.message,
+              orgName: org?.name,
+              orgLogoUrl: org?.logo_url,
+              bidLink,
+              orgSlug: org?.slug,
+            })
+          } catch (emailError) {
+            console.error(`Failed to send bid addendum email to ${emailTo}:`, emailError)
+          }
+        }
+      }
+    }
+  } catch (emailBlockError) {
+    console.error("Failed to run bid addendum email notification flow:", emailBlockError)
+  }
 
   return mapBidAddendum(data)
 }

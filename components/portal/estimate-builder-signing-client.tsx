@@ -209,7 +209,12 @@ export function EstimateBuilderSigningClient({
                     checked={consentAccepted}
                     onCheckedChange={(checked) => setConsentAccepted(checked === true)}
                   />
-                  <span>{ELECTRONIC_SIGNATURE_CONSENT_TEXT}</span>
+                  <span>
+                    {ELECTRONIC_SIGNATURE_CONSENT_TEXT}{" "}
+                    <a href="/esign-terms" target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
+                      Electronic signature terms
+                    </a>
+                  </span>
                 </label>
               </div>
 

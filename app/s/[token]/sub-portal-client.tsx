@@ -136,6 +136,8 @@ export function SubPortalClient({
       desktopTabs={desktopTabs}
       renderTab={renderTab}
       pinVerified={pinVerified}
+      token={token}
+      tokenType="portal"
       pinGate={
         <PortalPinGate
           token={token}

@@ -114,6 +114,16 @@ import {
 const statusOptions: BidPackageStatus[] = ["draft", "sent", "open", "closed", "awarded", "cancelled"]
 const NO_TRADE_VALUE = "__none__"
 
+function combineDateAndTime(date: Date, time: string): Date {
+  const [hoursRaw, minutesRaw] = time.split(":")
+  const hours = Number.parseInt(hoursRaw ?? "", 10)
+  const minutes = Number.parseInt(minutesRaw ?? "", 10)
+
+  const next = new Date(date)
+  next.setHours(Number.isFinite(hours) ? hours : 17, Number.isFinite(minutes) ? minutes : 0, 0, 0)
+  return next
+}
+
 function normalizeTrade(value?: string | null): string {
   return value?.trim().toLowerCase() ?? ""
 }
@@ -464,6 +474,14 @@ export function BidPackageDetailClientNew({
   const [dueAt, setDueAt] = useState<Date | undefined>(
     bidPackage.due_at ? new Date(bidPackage.due_at) : undefined
   )
+  const [dueTime, setDueTime] = useState<string>(() => {
+    if (!bidPackage.due_at) return "17:00"
+    const d = new Date(bidPackage.due_at)
+    const hours = String(d.getHours()).padStart(2, "0")
+    const minutes = String(d.getMinutes()).padStart(2, "0")
+    return `${hours}:${minutes}`
+  })
+  const [dueDatePickerOpen, setDueDatePickerOpen] = useState(false)
   const [status, setStatus] = useState<BidPackageStatus>(bidPackage.status)
   const [scope, setScope] = useState(bidPackage.scope ?? "")
   const [instructions, setInstructions] = useState(bidPackage.instructions ?? "")
@@ -910,7 +928,7 @@ export function BidPackageDetailClientNew({
           title: title.trim(),
           cost_code_id: costCodeId === "__none__" ? null : costCodeId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
-          due_at: dueAt ? dueAt.toISOString() : null,
+          due_at: dueAt ? combineDateAndTime(dueAt, dueTime).toISOString() : null,
           status,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
@@ -920,6 +938,14 @@ export function BidPackageDetailClientNew({
         setCostCodeId(updated.cost_code_id ?? "__none__")
         setTrade(updated.trade?.trim() || NO_TRADE_VALUE)
         setDueAt(updated.due_at ? new Date(updated.due_at) : undefined)
+        if (updated.due_at) {
+          const d = new Date(updated.due_at)
+          const hours = String(d.getHours()).padStart(2, "0")
+          const minutes = String(d.getMinutes()).padStart(2, "0")
+          setDueTime(`${hours}:${minutes}`)
+        } else {
+          setDueTime("17:00")
+        }
         setStatus(updated.status)
         setScope(updated.scope ?? "")
         setInstructions(updated.instructions ?? "")
@@ -1590,9 +1616,26 @@ export function BidPackageDetailClientNew({
                   </Select>
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="status">Status</Label>
+                  <Select value={status} onValueChange={(value) => setStatus(value as BidPackageStatus)}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {statusOptions.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {option[0].toUpperCase() + option.slice(1)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
                   <div className="space-y-2">
                     <Label htmlFor="due">Due date</Label>
-                    <Popover>
+                    <Popover open={dueDatePickerOpen} onOpenChange={setDueDatePickerOpen}>
                       <PopoverTrigger asChild>
                         <Button
                           id="due"
@@ -1610,28 +1653,25 @@ export function BidPackageDetailClientNew({
                         <Calendar
                           mode="single"
                           selected={dueAt}
-                          onSelect={setDueAt}
+                          onSelect={(date) => {
+                            setDueAt(date)
+                            setDueDatePickerOpen(false)
+                          }}
                           initialFocus
                         />
                       </PopoverContent>
                     </Popover>
                   </div>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="status">Status</Label>
-                <Select value={status} onValueChange={(value) => setStatus(value as BidPackageStatus)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {statusOptions.map((option) => (
-                      <SelectItem key={option} value={option}>
-                        {option[0].toUpperCase() + option.slice(1)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="space-y-2">
+                  <Label htmlFor="due-time">Due time</Label>
+                  <Input
+                    id="due-time"
+                    type="time"
+                    value={dueTime}
+                    onChange={(e) => setDueTime(e.target.value)}
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="scope">Scope of work</Label>

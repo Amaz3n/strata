@@ -194,7 +194,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                   {isExecuted ? "Executed" : isClientSigned ? "Signed" : "Approved"}
                 </p>
                 <p className="text-muted-foreground">
-                  Thanks{estimate.client_signed_at ? ` — ${formatTime(estimate.client_signed_at)}` : estimate.responded_at ? ` — ${formatTime(estimate.responded_at)}` : ""}. Your builder will follow up with next steps.
+                  {estimate.client_signed_at ? formatTime(estimate.client_signed_at) : estimate.responded_at ? formatTime(estimate.responded_at) : ""}
                 </p>
               </div>
             </div>
@@ -214,7 +214,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           ) : estimate.status === "changes_requested" ? (
             <div className="flex items-start gap-2.5 border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
               <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-              <p className="text-muted-foreground">Your change requests were sent. Your builder will send an updated version shortly.</p>
+              <p className="text-muted-foreground">Your change requests were sent to {estimate.org_name || "your builder"}.</p>
             </div>
           ) : null}
 
@@ -297,8 +297,10 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                         onCheckedChange={(checked) => setConsentAccepted(checked === true)}
                       />
                       <span>
-                        I agree that my typed signature is an electronic signature and that approving this estimate
-                        authorizes the builder to proceed with the signed offer.
+                        I agree to use electronic records and signatures for this estimate, I can access and retain the estimate electronically, and I intend my electronic signature to be legally binding.{" "}
+                        <a href="/esign-terms" target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
+                          Electronic signature terms
+                        </a>
                       </span>
                     </label>
                   </div>
