@@ -4,6 +4,7 @@ export type NotificationType =
   | "task_updated"
   | "task_completed"
   | "daily_log_created"
+  | "daily_log_mentioned"
   | "schedule_item_created"
   | "schedule_item_updated"
   | "schedule_risk"
@@ -65,6 +66,11 @@ export type NotificationType =
   | "recipient_signed"
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "daily_log_mentioned",
+    label: "Daily log mentions",
+    description: "Email me when someone tags me in a daily log or comment.",
+  },
   {
     key: "change_order_approved",
     label: "Change order approved",
@@ -136,4 +142,5 @@ export interface NotificationInput {
   entityType?: string
   entityId?: string
   eventId?: string
+  metadata?: Record<string, unknown>
 }

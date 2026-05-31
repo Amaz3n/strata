@@ -3,8 +3,10 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { listContacts } from "@/lib/services/contacts"
 import { EstimatesClient } from "@/components/estimates/estimates-client"
-import { listEstimatesAction, listEstimateTemplatesAction } from "./actions"
+import { listEstimatesAction } from "./actions"
 import { listCostCodes } from "@/lib/services/cost-codes"
+import { requireOrgContext } from "@/lib/services/context"
+import { getOrgBranding } from "@/lib/services/estimate-portal"
 
 export const dynamic = "force-dynamic"
 
@@ -13,11 +15,12 @@ interface EstimatesPageProps {
 }
 
 async function EstimatesData({ searchParams }: EstimatesPageProps) {
-  const [estimates, contacts, templates, costCodes, resolvedSearchParams] = await Promise.all([
+  const { orgId } = await requireOrgContext()
+  const [estimates, contacts, costCodes, branding, resolvedSearchParams] = await Promise.all([
     listEstimatesAction(),
     listContacts(),
-    listEstimateTemplatesAction(),
     listCostCodes().catch(() => []),
+    getOrgBranding(orgId),
     searchParams,
   ])
 
@@ -29,16 +32,23 @@ async function EstimatesData({ searchParams }: EstimatesPageProps) {
       : typeof resolvedSearchParams?.project_id === "string"
         ? resolvedSearchParams.project_id
         : undefined
+  const prospect =
+    typeof resolvedSearchParams?.prospect === "string"
+      ? resolvedSearchParams.prospect
+      : typeof resolvedSearchParams?.prospect_id === "string"
+        ? resolvedSearchParams.prospect_id
+        : undefined
 
   return (
     <div className="space-y-6">
       <EstimatesClient
         estimates={estimates}
         contacts={contacts}
-        templates={templates}
         costCodes={costCodes}
+        defaultTerms={branding.estimateTermsTemplate ?? ""}
         initialRecipientId={recipient}
         initialProjectId={project}
+        initialProspectId={prospect}
       />
     </div>
   )

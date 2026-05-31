@@ -41,6 +41,7 @@ export const dailyLogInputSchema = z.object({
     ])
     .optional(),
   entries: z.array(dailyLogEntrySchema).optional(),
+  mentioned_user_ids: z.array(z.string().uuid()).optional(),
 })
 
 export type DailyLogEntryInput = z.infer<typeof dailyLogEntrySchema>

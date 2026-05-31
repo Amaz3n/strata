@@ -33,6 +33,9 @@ export interface FileWithDetails {
   updated_at?: string
   thumbnail_url?: string
   download_url?: string
+  preview_status?: "pending" | "processing" | "ready" | "failed"
+  preview_thumbnail_path?: string
+  preview_generated_at?: string
   version_number?: number
   has_versions?: boolean
 }
@@ -163,16 +166,37 @@ export function isImageFile(mimeType?: string): boolean {
   return mimeType?.startsWith("image/") ?? false
 }
 
+export function isHeicFile(mimeType?: string, fileName?: string): boolean {
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+  const lowerName = fileName?.toLowerCase() ?? ""
+  return (
+    lowerMime === "image/heic" ||
+    lowerMime === "image/heif" ||
+    lowerName.endsWith(".heic") ||
+    lowerName.endsWith(".heif")
+  )
+}
+
+export function isBrowserRenderableImage(
+  mimeType?: string,
+  fileName?: string,
+  hasGeneratedPreview = false
+): boolean {
+  if (hasGeneratedPreview && isHeicFile(mimeType, fileName)) return true
+  return isImageFile(mimeType) && !isHeicFile(mimeType, fileName)
+}
+
 export function isPdfFile(mimeType?: string): boolean {
   return mimeType?.includes("pdf") ?? false
 }
 
-export function isPreviewable(mimeType?: string): boolean {
-  return isImageFile(mimeType) || isPdfFile(mimeType)
+export function isVideoFile(mimeType?: string): boolean {
+  return mimeType?.startsWith("video/") ?? false
 }
 
-
-
+export function isPreviewable(mimeType?: string): boolean {
+  return isBrowserRenderableImage(mimeType) || isPdfFile(mimeType) || isVideoFile(mimeType)
+}
 
 
 

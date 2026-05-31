@@ -2,8 +2,7 @@ import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { startEstimating } from "@/lib/services/opportunities"
-import { createProposal } from "@/lib/services/proposals"
+
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -18,6 +17,15 @@ const estimateLineSchema = z.object({
   sort_order: z.number().int().default(0),
   metadata: z.record(z.any()).optional(),
 })
+
+// Postgres text and jsonb columns cannot store NUL (U+0000) characters; pasted
+// content and some org templates can contain them, which surfaces as a
+// "unsupported Unicode escape sequence" insert error. Strip them defensively.
+function stripNul(value: string): string
+function stripNul(value: string | null | undefined): string | null | undefined
+function stripNul(value: string | null | undefined): string | null | undefined {
+  return typeof value === "string" ? value.split(String.fromCharCode(0)).join("") : value
+}
 
 function calculateTotals(
   lines: z.infer<typeof estimateLineSchema>[],
@@ -88,9 +96,9 @@ export async function createEstimateFromTemplate({
     estimate_id: estimate.id,
     cost_code_id: line.cost_code_id ?? null,
     item_type: line.item_type ?? "line",
-    description: line.description,
+    description: stripNul(line.description),
     quantity: line.quantity ?? 1,
-    unit: line.unit ?? null,
+    unit: stripNul(line.unit) ?? null,
     unit_cost_cents: line.unit_cost_cents ?? 0,
     markup_pct: line.markup_pct ?? 0,
     sort_order: line.sort_order ?? idx,
@@ -116,7 +124,10 @@ export async function createEstimateFromTemplate({
 
 export async function createEstimate({
   project_id,
+  prospect_id,
   recipient_contact_id,
+  recipient_name,
+  recipient_email,
   title,
   summary,
   terms,
@@ -127,7 +138,10 @@ export async function createEstimate({
   orgId,
 }: {
   project_id?: string | null
+  prospect_id?: string | null
   recipient_contact_id?: string | null
+  recipient_name?: string | null
+  recipient_email?: string | null
   title: string
   summary?: string
   terms?: string
@@ -147,8 +161,9 @@ export async function createEstimate({
     .insert({
       org_id: resolvedOrgId,
       project_id: project_id ?? null,
+      prospect_id: prospect_id ?? null,
       recipient_contact_id: recipient_contact_id ?? null,
-      title,
+      title: stripNul(title),
       status: "draft",
       version: 1,
       subtotal_cents: totals.subtotal,
@@ -158,8 +173,12 @@ export async function createEstimate({
       metadata: {
         tax_rate: tax_rate ?? 0,
         markup_percent: markup_percent ?? 0,
-        summary: summary ?? null,
-        terms: terms ?? null,
+        summary: stripNul(summary) ?? null,
+        terms: stripNul(terms) ?? null,
+        recipient:
+          recipient_name || recipient_email
+            ? { name: stripNul(recipient_name) ?? null, email: stripNul(recipient_email) ?? null }
+            : null,
       },
       created_by: userId,
     })
@@ -175,9 +194,9 @@ export async function createEstimate({
     estimate_id: estimate.id,
     cost_code_id: line.cost_code_id ?? null,
     item_type: line.item_type ?? "line",
-    description: line.description,
+    description: stripNul(line.description),
     quantity: line.quantity ?? 1,
-    unit: line.unit ?? null,
+    unit: stripNul(line.unit) ?? null,
     unit_cost_cents: line.unit_cost_cents ?? 0,
     markup_pct: line.markup_pct ?? 0,
     sort_order: line.sort_order ?? idx,
@@ -199,7 +218,15 @@ export async function createEstimate({
   })
 
   // CRM automation: If estimate has a recipient contact, update their lead status to "estimating"
-  if (recipient_contact_id) {
+  if (prospect_id) {
+    await updateProspectStatusOnEstimateCreationV2({
+      supabase,
+      orgId: resolvedOrgId,
+      prospectId: prospect_id,
+      estimateId: estimate.id,
+      estimateTitle: title,
+    })
+  } else if (recipient_contact_id) {
     await updateProspectStatusOnEstimateCreation({
       supabase,
       orgId: resolvedOrgId,
@@ -210,6 +237,53 @@ export async function createEstimate({
   }
 
   return { estimate, items: itemsPayload }
+}
+
+async function updateProspectStatusOnEstimateCreationV2({
+  supabase,
+  orgId,
+  prospectId,
+  estimateId,
+  estimateTitle,
+}: {
+  supabase: any
+  orgId: string
+  prospectId: string
+  estimateId: string
+  estimateTitle: string
+}) {
+  try {
+    const { data: prospect } = await supabase
+      .from("prospects")
+      .select("id, name, status")
+      .eq("org_id", orgId)
+      .eq("id", prospectId)
+      .maybeSingle()
+
+    if (!prospect || !["new", "contacted", "qualified"].includes(prospect.status)) return
+
+    await supabase
+      .from("prospects")
+      .update({ status: "pricing", updated_at: new Date().toISOString() })
+      .eq("org_id", orgId)
+      .eq("id", prospectId)
+
+    await recordEvent({
+      orgId,
+      eventType: "prospect_estimate_created",
+      entityType: "prospect",
+      entityId: prospectId,
+      payload: {
+        name: prospect.name,
+        estimate_id: estimateId,
+        estimate_title: estimateTitle,
+        old_status: prospect.status,
+        new_status: "pricing",
+      },
+    })
+  } catch (error) {
+    console.error("Failed to update prospect status on estimate creation:", error)
+  }
 }
 
 // Helper function to update prospect status when estimate is created
@@ -303,9 +377,9 @@ export async function updateEstimateLines({
     estimate_id: estimateId,
     cost_code_id: line.cost_code_id ?? null,
     item_type: line.item_type ?? "line",
-    description: line.description,
+    description: stripNul(line.description),
     quantity: line.quantity ?? 1,
-    unit: line.unit ?? null,
+    unit: stripNul(line.unit) ?? null,
     unit_cost_cents: line.unit_cost_cents ?? 0,
     markup_pct: line.markup_pct ?? 0,
     sort_order: line.sort_order ?? idx,
@@ -411,6 +485,7 @@ export async function duplicateEstimate({ estimateId, orgId }: { estimateId: str
     .insert({
       org_id: resolvedOrgId,
       project_id: existing.project_id,
+      prospect_id: existing.prospect_id ?? null,
       title: `${existing.title} (v${newVersion})`,
       status: "draft",
       version: newVersion,
@@ -461,84 +536,104 @@ export async function duplicateEstimate({ estimateId, orgId }: { estimateId: str
   return newEstimate
 }
 
-export async function convertEstimateToProposal({
-  estimateId,
-  recipient_contact_id,
-  title,
-  summary,
-  terms,
-  valid_until,
-  orgId,
-}: {
-  estimateId: string
-  recipient_contact_id?: string
-  title?: string
-  summary?: string
-  terms?: string
-  valid_until?: string
-  orgId?: string
-}) {
+/**
+ * Creates the next version of an estimate within the same version family.
+ * Used after a client requests changes: the builder revises and re-sends a fresh
+ * draft while the prior version is preserved (read-only) for history.
+ */
+export async function reviseEstimate({ estimateId, orgId }: { estimateId: string; orgId?: string }) {
   const supabase = createServiceSupabaseClient()
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase: scoped, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
-  const { data: estimate, error } = await supabase
+  const { data: existing, error: loadError } = await supabase
     .from("estimates")
-    .select("*, items:estimate_items(*), recipient:contacts(id, full_name, email)")
+    .select("*, items:estimate_items(*)")
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
     .single()
 
-  if (error || !estimate) {
+  if (loadError || !existing) {
     throw new Error("Estimate not found")
   }
 
-  const lines = (estimate as any).items?.map((item: any, idx: number) => ({
-    cost_code_id: item.cost_code_id ?? undefined,
-    line_type: item.item_type === "group" ? "section" : "item",
-    description: item.description,
-    quantity: item.quantity ?? 1,
-    unit: item.unit ?? undefined,
-    unit_cost_cents: item.unit_cost_cents ?? 0,
-    markup_percent: item.markup_pct ?? 0,
-    is_optional: false,
-    is_selected: true,
-    allowance_cents: undefined,
-    notes: (item.metadata as any)?.notes ?? undefined,
-    sort_order: item.sort_order ?? idx,
-  })) ?? []
+  const versionGroupId = (existing.version_group_id as string | null) ?? existing.id
+  const newVersion = (existing.version ?? 1) + 1
 
-  let projectId = (estimate.project_id as string | null) ?? null
-  let opportunityId = ((estimate as any).opportunity_id as string | null) ?? null
-
-  if (!projectId && opportunityId) {
-    const preconContext = await startEstimating({
-      opportunityId,
-      orgId: resolvedOrgId,
+  const { data: newEstimate, error: insertError } = await scoped
+    .from("estimates")
+    .insert({
+      org_id: resolvedOrgId,
+      project_id: existing.project_id,
+      prospect_id: existing.prospect_id ?? null,
+      opportunity_id: existing.opportunity_id,
+      recipient_contact_id: existing.recipient_contact_id,
+      title: existing.title,
+      status: "draft",
+      version: newVersion,
+      version_group_id: versionGroupId,
+      supersedes_estimate_id: existing.id,
+      is_current_version: true,
+      subtotal_cents: existing.subtotal_cents,
+      tax_cents: existing.tax_cents,
+      total_cents: existing.total_cents,
+      currency: existing.currency,
+      valid_until: existing.valid_until,
+      metadata: existing.metadata,
+      created_by: userId,
     })
-    projectId = preconContext.project_id
-    opportunityId = preconContext.opportunity_id
+    .select("*")
+    .single()
+
+  if (insertError || !newEstimate) {
+    throw new Error(`Failed to revise estimate: ${insertError?.message}`)
   }
 
-  if (!projectId) {
-    throw new Error("Estimate must be linked to an opportunity or preconstruction project before it can become a proposal")
+  const items = (existing as any).items ?? []
+  if (items.length > 0) {
+    const insertItems = items.map((item: any) => ({
+      org_id: resolvedOrgId,
+      estimate_id: newEstimate.id,
+      cost_code_id: item.cost_code_id ?? null,
+      item_type: item.item_type ?? "line",
+      description: item.description,
+      quantity: item.quantity,
+      unit: item.unit,
+      unit_cost_cents: item.unit_cost_cents,
+      markup_pct: item.markup_pct,
+      sort_order: item.sort_order,
+      metadata: item.metadata ?? {},
+    }))
+    const { error: itemError } = await scoped.from("estimate_items").insert(insertItems)
+    if (itemError) {
+      throw new Error(`Failed to copy estimate lines: ${itemError.message}`)
+    }
   }
 
-  return await createProposal(
-    {
-      project_id: projectId,
-      opportunity_id: opportunityId ?? undefined,
-      estimate_id: estimate.id,
-      recipient_contact_id: recipient_contact_id ?? estimate.recipient_contact_id ?? undefined,
-      title: title ?? estimate.title,
-      summary: summary ?? (estimate.metadata as any)?.summary,
-      terms: terms ?? (estimate.metadata as any)?.terms,
-      valid_until,
-      lines,
-      markup_percent: (estimate.metadata as any)?.markup_percent,
-      tax_rate: (estimate.metadata as any)?.tax_rate,
-    },
-    resolvedOrgId,
-  )
+  // Mark the prior version as superseded so the portal/list show the latest as current.
+  await scoped
+    .from("estimates")
+    .update({ is_current_version: false })
+    .eq("id", existing.id)
+    .eq("org_id", resolvedOrgId)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "estimate",
+    entityId: newEstimate.id,
+    after: { ...newEstimate, supersedes: existing.id },
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "estimate_revised",
+    entityType: "estimate",
+    entityId: newEstimate.id,
+    payload: { version: newVersion, supersedes_estimate_id: existing.id, title: newEstimate.title },
+  })
+
+  return newEstimate
 }
 
 

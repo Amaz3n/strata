@@ -3,11 +3,15 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { Readable } from "node:stream"
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
@@ -97,6 +101,17 @@ function joinPath(parts: string[]): string {
   const joined = cleaned.join("/")
   assertSafePath(joined)
   return joined
+}
+
+function buildContentDisposition(filename: string): string {
+  const asciiFallback = filename
+    .replace(/[\r\n"]/g, "_")
+    .replace(/[^\x20-\x7E]/g, "_")
+    .slice(0, 180) || "file"
+  const encoded = encodeURIComponent(filename)
+    .replace(/['()]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/\*/g, "%2A")
+  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`
 }
 
 export function buildOrgScopedPath(orgId: string, ...parts: string[]): string {
@@ -199,6 +214,132 @@ export async function createFilesUploadUrl(params: {
   return { storagePath, uploadUrl, provider }
 }
 
+export async function createFilesDownloadUrl(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  fileName?: string
+  expiresIn?: number
+}): Promise<{ storagePath: string; downloadUrl: string; provider: FilesStorageProvider }> {
+  const { supabase: _supabase, orgId } = params
+  const provider = getFilesStorageProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  if (provider !== "r2") {
+    throw new Error("R2 downloads are required. Set FILES_STORAGE=r2.")
+  }
+
+  const client = getR2Client()
+  const command = new GetObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(storagePath),
+    ResponseContentDisposition: params.fileName ? buildContentDisposition(params.fileName) : undefined,
+  })
+  const downloadUrl = await getSignedUrl(client, command, {
+    expiresIn: params.expiresIn ?? 600,
+  })
+
+  return { storagePath, downloadUrl, provider }
+}
+
+export async function createFilesMultipartUpload(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  contentType: string
+  cacheControl?: string
+}): Promise<{ storagePath: string; uploadId: string; provider: FilesStorageProvider }> {
+  const { supabase: _supabase, orgId, contentType } = params
+  const provider = getFilesStorageProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  const result = await client.send(
+    new CreateMultipartUploadCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      ContentType: contentType,
+      CacheControl: params.cacheControl ?? "private, max-age=3600",
+    })
+  )
+
+  if (!result.UploadId) {
+    throw new Error("R2 did not return a multipart upload id")
+  }
+
+  return { storagePath, uploadId: result.UploadId, provider }
+}
+
+export async function createFilesMultipartPartUrl(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  uploadId: string
+  partNumber: number
+  expiresIn?: number
+}): Promise<{ uploadUrl: string }> {
+  const { supabase: _supabase, orgId } = params
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+  const client = getR2Client()
+  const command = new UploadPartCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(storagePath),
+    UploadId: params.uploadId,
+    PartNumber: params.partNumber,
+  })
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: params.expiresIn ?? 900,
+  })
+  return { uploadUrl }
+}
+
+export async function completeFilesMultipartUpload(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  uploadId: string
+  parts: Array<{ partNumber: number; etag: string }>
+}): Promise<{ storagePath: string }> {
+  const { supabase: _supabase, orgId } = params
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+  const client = getR2Client()
+  await client.send(
+    new CompleteMultipartUploadCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      UploadId: params.uploadId,
+      MultipartUpload: {
+        Parts: params.parts
+          .slice()
+          .sort((a, b) => a.partNumber - b.partNumber)
+          .map((part) => ({
+            PartNumber: part.partNumber,
+            ETag: part.etag,
+          })),
+      },
+    })
+  )
+  return { storagePath }
+}
+
+export async function abortFilesMultipartUpload(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  uploadId: string
+}): Promise<void> {
+  const { supabase: _supabase, orgId } = params
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+  const client = getR2Client()
+  await client.send(
+    new AbortMultipartUploadCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      UploadId: params.uploadId,
+    })
+  )
+}
+
 export async function deleteFilesObjects(params: {
   supabase: SupabaseClient
   orgId: string
@@ -263,4 +404,51 @@ export async function downloadFilesObject(params: {
     throw new Error(`Failed to download ${key}: empty body`)
   }
   return streamToBuffer(result.Body)
+}
+
+export async function getFilesObjectStream(params: {
+  supabase: SupabaseClient
+  orgId: string
+  path: string
+  range?: string
+}): Promise<{
+  body: ReadableStream<Uint8Array> | Readable
+  contentLength?: number
+  contentRange?: string
+  contentType?: string
+  etag?: string
+  lastModified?: Date
+}> {
+  const { supabase: _supabase, orgId } = params
+  const key = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  const result = await client.send(
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(key),
+      Range: params.range,
+    })
+  )
+
+  if (!result.Body) {
+    throw new Error(`Failed to stream ${key}: empty body`)
+  }
+
+  const body = result.Body as any
+  const stream =
+    typeof body.transformToWebStream === "function"
+      ? body.transformToWebStream()
+      : body instanceof Readable
+        ? Readable.toWeb(body)
+        : body
+
+  return {
+    body: stream,
+    contentLength: result.ContentLength,
+    contentRange: result.ContentRange,
+    contentType: result.ContentType,
+    etag: result.ETag,
+    lastModified: result.LastModified,
+  }
 }

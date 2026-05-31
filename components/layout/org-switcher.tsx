@@ -113,6 +113,9 @@ export function OrgSwitcher({
     startTransition(async () => {
       await switchOrgAction(targetOrgId)
       setActiveOrgId(targetOrgId)
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("arc-org-change", { detail: targetOrgId }))
+      }
       router.refresh()
     })
   }

@@ -105,6 +105,7 @@ export function DocumentsMobileLayout({
   const {
     files,
     folders,
+    folderItemCounts,
     drawingSets,
     currentPath,
     setCurrentPath,
@@ -125,7 +126,10 @@ export function DocumentsMobileLayout({
   const [newOpen, setNewOpen] = useState(false)
   const [actionsFile, setActionsFile] = useState<FileWithUrls | null>(null)
 
-  const folderTree = useMemo(() => buildFolderTree(folders, files), [folders, files])
+  const folderTree = useMemo(
+    () => buildFolderTree(folders, files, folderItemCounts),
+    [folders, files, folderItemCounts]
+  )
 
   const currentFolders = useMemo(() => {
     const toItem = (node: { path: string; name: string; itemCount: number }) => ({

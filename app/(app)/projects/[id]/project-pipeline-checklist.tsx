@@ -25,7 +25,6 @@ export function ProjectPipelineChecklist({
   draws,
   scheduleItems,
   portalTokens,
-  onOpenSetupWizard,
   onOpenProjectSettings,
   onOpenShare,
 }: {
@@ -35,7 +34,6 @@ export function ProjectPipelineChecklist({
   draws: DrawSchedule[]
   scheduleItems: ScheduleItem[]
   portalTokens: PortalAccessToken[]
-  onOpenSetupWizard: () => void
   onOpenProjectSettings: () => void
   onOpenShare: () => void
 }) {
@@ -104,11 +102,13 @@ export function ProjectPipelineChecklist({
       key: "schedule",
       label: "Create schedule",
       done: hasSchedule,
-      hint: "Apply a template in the setup wizard",
+      hint: "Create schedule or apply template",
       action: (
-        <Button variant="outline" size="sm" onClick={onOpenSetupWizard}>
-          <ArrowRight className="mr-2 h-4 w-4" />
-          Setup
+        <Button asChild variant="outline" size="sm">
+          <Link href={`/projects/${project.id}/schedule`}>
+            <ArrowRight className="mr-2 h-4 w-4" />
+            Open
+          </Link>
         </Button>
       ),
     },
@@ -118,9 +118,11 @@ export function ProjectPipelineChecklist({
       done: hasDrawSchedule,
       hint: "Template-based (5-draw is common)",
       action: (
-        <Button variant="outline" size="sm" onClick={onOpenSetupWizard}>
-          <ArrowRight className="mr-2 h-4 w-4" />
-          Setup
+        <Button asChild variant="outline" size="sm">
+          <Link href={`/projects/${project.id}/financials`}>
+            <ArrowRight className="mr-2 h-4 w-4" />
+            Open
+          </Link>
         </Button>
       ),
     },
@@ -151,9 +153,6 @@ export function ProjectPipelineChecklist({
           <Badge variant="outline">
             {doneCount}/{items.length} complete
           </Badge>
-          <Button size="sm" onClick={onOpenSetupWizard}>
-            Continue setup
-          </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">

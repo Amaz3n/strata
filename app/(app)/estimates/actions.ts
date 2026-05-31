@@ -4,7 +4,15 @@ import { revalidatePath } from "next/cache"
 
 import type { Estimate } from "@/lib/types"
 import { requireOrgContext } from "@/lib/services/context"
-import { createEstimate, convertEstimateToProposal, duplicateEstimate, updateEstimateStatus } from "@/lib/services/estimates"
+import { createEstimate, duplicateEstimate, reviseEstimate, updateEstimateStatus } from "@/lib/services/estimates"
+import {
+  sendEstimate,
+  getEstimateShareLink,
+  getEstimateBuilderSigningLink,
+  addBuilderEstimateComment,
+  countersignEstimate,
+  listEstimateComments,
+} from "@/lib/services/estimate-portal"
 import { estimateInputSchema } from "@/lib/validation/estimates"
 
 export async function listEstimatesAction(): Promise<Array<Estimate & { recipient_name?: string | null }>> {
@@ -32,6 +40,7 @@ export async function createEstimateAction(input: unknown) {
   const { estimate } = await createEstimate({
     ...parsed,
     project_id: parsed.project_id ?? null,
+    prospect_id: parsed.prospect_id ?? null,
     recipient_contact_id: parsed.recipient_contact_id ?? null,
     lines: parsed.lines.map((line, index) => ({ ...line, sort_order: index, markup_pct: line.markup_pct ?? 0 })),
   })
@@ -67,9 +76,42 @@ export async function updateEstimateStatusAction(estimateId: string, status: "dr
   return estimate
 }
 
-export async function convertEstimateToProposalAction(estimateId: string) {
-  const result = await convertEstimateToProposal({ estimateId })
+
+export async function sendEstimateAction(estimateId: string, message?: string) {
+  const result = await sendEstimate({ estimateId, message })
   revalidatePath("/estimates")
-  revalidatePath("/signatures")
+  return result
+}
+
+export async function getEstimateShareLinkAction(estimateId: string) {
+  return getEstimateShareLink({ estimateId })
+}
+
+export async function getEstimateBuilderSigningLinkAction(estimateId: string) {
+  return getEstimateBuilderSigningLink({ estimateId })
+}
+
+export async function reviseEstimateAction(estimateId: string) {
+  const estimate = await reviseEstimate({ estimateId })
+  revalidatePath("/estimates")
+  return estimate
+}
+
+export async function listEstimateCommentsAction(estimateId: string) {
+  return listEstimateComments(estimateId)
+}
+
+export async function addEstimateCommentAction(estimateId: string, body: string) {
+  await addBuilderEstimateComment({ estimateId, body })
+  revalidatePath("/estimates")
+}
+
+export async function countersignEstimateAction(estimateId: string, signerName?: string) {
+  const result = await countersignEstimate({ estimateId, signerName })
+  revalidatePath("/estimates")
+  revalidatePath("/pipeline")
+  if (result.signatureDocumentId) {
+    revalidatePath("/signatures")
+  }
   return result
 }

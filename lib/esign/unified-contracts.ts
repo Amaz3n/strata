@@ -5,6 +5,7 @@ export const UNIFIED_ESIGN_FEATURE_FLAG_KEY = "unified_esign" as const
 export const UNIFIED_ESIGN_SIGNING_ROUTE_TEMPLATE = "/d/[token]" as const
 
 export const unifiedSignableEntityTypeSchema = z.enum([
+  "estimate",
   "proposal",
   "change_order",
   "lien_waiver",
@@ -108,9 +109,10 @@ export const ENVELOPE_EVENT_TYPES = {
 } as const
 
 export const completionEventByEntityType: Record<
-  Extract<UnifiedSignableEntityType, "proposal" | "change_order" | "lien_waiver" | "selection">,
+  Extract<UnifiedSignableEntityType, "estimate" | "proposal" | "change_order" | "lien_waiver" | "selection">,
   string
 > = {
+  estimate: "estimate.executed",
   proposal: "proposal.accepted_contract_created",
   change_order: "change_order.approved",
   lien_waiver: "lien_waiver.signed",

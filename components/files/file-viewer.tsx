@@ -26,7 +26,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { type FileWithDetails, isImageFile, isPdfFile, formatFileSize } from "./types"
+import {
+  type FileWithDetails,
+  isBrowserRenderableImage,
+  isHeicFile,
+  isImageFile,
+  isPdfFile,
+  isVideoFile,
+  formatFileSize,
+} from "./types"
 import { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
 
 interface FileViewerProps {
@@ -72,6 +80,7 @@ export function FileViewer({
   const [pdfPageCount, setPdfPageCount] = useState(0)
   const [activePdfPage, setActivePdfPage] = useState(1)
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false)
+  const [imageLoadFailed, setImageLoadFailed] = useState(false)
   const [pdfViewportWidth, setPdfViewportWidth] = useState(0)
   const [pdfComponents, setPdfComponents] = useState<{
     Document: any
@@ -102,7 +111,7 @@ export function FileViewer({
     : 0
   const currentFile = hasFileList ? files[clampedIndex] : file
   const currentFileIsPdf = currentFile ? isPdfFile(currentFile.mime_type) : false
-  const currentPdfUrl = currentFile ? `/api/files/${currentFile.id}/raw` : null
+  const currentPdfUrl = currentFile ? (currentFile.download_url ?? `/api/files/${currentFile.id}/raw`) : null
 
   useEffect(() => {
     if (!open || !currentFileIsPdf) return
@@ -153,7 +162,15 @@ export function FileViewer({
     setPdfPageCount(0)
     setActivePdfPage(1)
     setPdfLoadFailed(false)
-  }, [file?.id])
+    setImageLoadFailed(false)
+
+    if (hasFileList && file) {
+      const idx = files.findIndex((f) => f.id === file.id)
+      if (idx >= 0) {
+        setCurrentIndex(idx)
+      }
+    }
+  }, [file?.id, files, hasFileList])
 
   useEffect(() => {
     if (!open || !currentFileIsPdf) return
@@ -205,6 +222,7 @@ export function FileViewer({
       setPan({ x: 0, y: 0 })
       setSwipeX(0)
       setImageDimensions(null)
+      setImageLoadFailed(false)
     }
   }, [canPrev, parentControlsSelection, onFileChange, files, clampedIndex])
 
@@ -224,6 +242,7 @@ export function FileViewer({
       setPan({ x: 0, y: 0 })
       setSwipeX(0)
       setImageDimensions(null)
+      setImageLoadFailed(false)
     }
   }, [canNext, parentControlsSelection, onFileChange, files, clampedIndex])
 
@@ -243,12 +262,19 @@ export function FileViewer({
     setPan({ x: 0, y: 0 })
     setSwipeX(0)
     setImageDimensions(null)
+    setImageLoadFailed(false)
   }, [files, parentControlsSelection, onFileChange])
 
   // Handle image load to get dimensions
   const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget
     setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight })
+    setImageLoadFailed(false)
+    setIsLoading(false)
+  }, [])
+
+  const handleImageError = useCallback(() => {
+    setImageLoadFailed(true)
     setIsLoading(false)
   }, [])
 
@@ -391,8 +417,17 @@ export function FileViewer({
 
   if (!open || !currentFile) return null
 
-  const isImage = isImageFile(currentFile.mime_type)
+  const hasGeneratedImagePreview =
+    Boolean(currentFile.thumbnail_url) &&
+    currentFile.thumbnail_url !== currentFile.download_url
+  const isImage = isBrowserRenderableImage(
+    currentFile.mime_type,
+    currentFile.file_name,
+    hasGeneratedImagePreview
+  )
+  const isHeic = isHeicFile(currentFile.mime_type, currentFile.file_name)
   const isPdf = isPdfFile(currentFile.mime_type)
+  const isVideo = isVideoFile(currentFile.mime_type)
   const activePdfPageClamped = Math.min(Math.max(activePdfPage, 1), Math.max(pdfPageCount, 1))
   const pdfPageWidth = pdfViewportWidth > 0
     ? Math.max(280, Math.min(1200, pdfViewportWidth - 48))
@@ -639,7 +674,7 @@ export function FileViewer({
             </div>
           )}
 
-          {isImage && currentFile.download_url && (
+          {isImage && (currentFile.download_url || currentFile.thumbnail_url) && !imageLoadFailed && (
             <div
               className="absolute inset-0 flex items-center justify-center touch-none select-none"
               onTouchStart={handleTouchStart}
@@ -659,13 +694,14 @@ export function FileViewer({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={currentFile.download_url}
+                  src={isHeic && currentFile.thumbnail_url ? currentFile.thumbnail_url : currentFile.download_url}
                   alt={currentFile.file_name}
                   className={cn(
                     "max-w-full max-h-full w-auto h-auto object-contain pointer-events-none",
                     isLoading && "opacity-0"
                   )}
                   onLoad={handleImageLoad}
+                  onError={handleImageError}
                   draggable={false}
                 />
               </div>
@@ -713,7 +749,23 @@ export function FileViewer({
             </div>
           )}
 
-          {!isImage && !isPdf && (
+          {isVideo && currentFile.download_url && (
+            <div className="absolute inset-0 flex items-center justify-center px-3 sm:px-6">
+              <video
+                key={currentFile.id}
+                src={currentFile.download_url}
+                controls
+                playsInline
+                preload="metadata"
+                className={cn("max-h-full max-w-full rounded-md shadow-2xl", isLoading && "opacity-0")}
+                onLoadedMetadata={() => setIsLoading(false)}
+                onCanPlay={() => setIsLoading(false)}
+                onError={() => setIsLoading(false)}
+              />
+            </div>
+          )}
+
+          {((isImage && imageLoadFailed) || (!isImage && !isPdf && !isVideo)) && (
             <div className="mx-4 flex max-w-sm flex-col items-center justify-center gap-4 rounded-2xl border bg-background/95 px-8 py-10 text-center shadow-xl backdrop-blur-md">
               <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
                 <FileText className="h-8 w-8" />
@@ -721,7 +773,13 @@ export function FileViewer({
               <div>
                 <p className="font-semibold">{currentFile.file_name}</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Preview not available for this file type
+                  {isHeic
+                    ? imageLoadFailed
+                      ? "HEIC preview is not available yet. The original file is still downloadable."
+                      : currentFile.preview_status === "failed"
+                      ? "HEIC preview generation failed. The original file is still downloadable."
+                      : "HEIC preview is still processing. The original file is downloadable now."
+                    : "Preview not available for this file type"}
                 </p>
                 {onDownload && (
                   <Button

@@ -28,13 +28,17 @@ import {
 } from "@/components/ui/sheet"
 import { CalendarDays, Plus } from "@/components/icons"
 import { createBidPackageAction } from "@/app/(app)/projects/[id]/bids/actions"
+import { createProspectBidPackageAction } from "@/app/(app)/pipeline/prospects/[prospectId]/bids/actions"
 import { BidStatusBadge } from "@/components/bids/bid-status-badge"
 
 interface BidPackagesClientProps {
-  projectId: string
+  projectId?: string
+  prospectId?: string
   packages: BidPackage[]
   tradeOptions: string[]
   costCodes: CostCode[]
+  detailBasePath?: string
+  createDescription?: string
 }
 
 const NO_TRADE_VALUE = "__none__"
@@ -51,9 +55,12 @@ function combineDateAndTime(date: Date, time: string): Date {
 
 export function BidPackagesClient({
   projectId,
+  prospectId,
   packages,
   tradeOptions,
   costCodes,
+  detailBasePath,
+  createDescription,
 }: BidPackagesClientProps) {
   const [items, setItems] = useState(packages)
   const [search, setSearch] = useState("")
@@ -93,6 +100,9 @@ export function BidPackagesClient({
     }
     startCreating(async () => {
       try {
+        if (!projectId && !prospectId) {
+          throw new Error("Missing bid package context")
+        }
         const payload = {
           title: title.trim(),
           cost_code_id: costCodeId === "__none__" ? null : costCodeId,
@@ -101,7 +111,9 @@ export function BidPackagesClient({
           instructions: instructions.trim() || null,
           due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
         }
-        const created = await createBidPackageAction(projectId, payload)
+        const created = projectId
+          ? await createBidPackageAction(projectId, payload)
+          : await createProspectBidPackageAction(prospectId ?? "", payload)
         setItems((prev) => [created, ...prev])
         toast.success("Bid package created")
         resetForm()
@@ -129,7 +141,9 @@ export function BidPackagesClient({
         >
           <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
             <SheetTitle>New bid package</SheetTitle>
-            <SheetDescription>Create an invite-to-bid package for this project.</SheetDescription>
+            <SheetDescription>
+              {createDescription ?? "Create an invite-to-bid package for this project."}
+            </SheetDescription>
           </SheetHeader>
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
             <div className="space-y-2">
@@ -254,7 +268,10 @@ export function BidPackagesClient({
               filtered.map((pkg) => (
                 <TableRow key={pkg.id} className="divide-x hover:bg-muted/40">
                   <TableCell className="px-4 py-4">
-                    <Link href={`/projects/${projectId}/bids/${pkg.id}`} className="font-medium hover:underline">
+                    <Link
+                      href={`${detailBasePath ?? `/projects/${projectId}/bids`}/${pkg.id}`}
+                      className="font-medium hover:underline"
+                    >
                       {pkg.title}
                     </Link>
                   </TableCell>

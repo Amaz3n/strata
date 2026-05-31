@@ -54,12 +54,11 @@ import { FilePropertiesPanel } from "./file-properties-panel";
 import { UploadDialog } from "./upload-dialog";
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
 import type { UnifiedDocumentsLayoutProps } from "./types";
-import type { FileWithDetails } from "@/components/files/types";
+import { isBrowserRenderableImage, type FileWithDetails } from "@/components/files/types";
 import {
   getFileAction,
   getFileDownloadUrlAction,
   listFileVersionsAction,
-  uploadFileAction,
   uploadFileVersionAction,
   makeVersionCurrentAction,
   updateFileVersionAction,
@@ -102,6 +101,7 @@ import type {
   DrawingPin,
 } from "@/app/(app)/drawings/actions";
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client";
+import { uploadDocumentFileDirect } from "@/lib/services/files-client";
 import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings";
 
 function dispatchNavRefresh() {
@@ -207,6 +207,7 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
       initialHasMore={props.initialHasMore}
       initialCounts={props.initialCounts}
       initialFolders={props.initialFolders}
+      initialFolderCounts={props.initialFolderCounts}
       initialSets={props.initialSets}
       initialPath={props.initialPath}
       initialSetId={props.initialSetId}
@@ -449,18 +450,44 @@ function UnifiedDocumentsLayoutInner() {
 
       const normalizedTarget = targetPath ? normalizeFolderPath(targetPath) : null;
       setIsDirectUploading(true);
+      const startedAt = performance.now();
+      const loadedByFile = new Map<string, number>();
+      const stageByFile = new Map<string, string>();
+      const formatSpeed = (loaded: number) => {
+        const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.5);
+        const mbps = loaded / 1024 / 1024 / elapsedSeconds;
+        return `${mbps.toFixed(1)} MB/s`;
+      };
+      const formatProgress = () => {
+        const total = droppedFiles.reduce((sum, file) => sum + file.size, 0);
+        const loaded = droppedFiles.reduce(
+          (sum, file) => sum + (loadedByFile.get(file.name) ?? 0),
+          0,
+        );
+        const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+        const hasFinalizing = Array.from(stageByFile.values()).some((stage) => stage === "finalizing");
+        const verb = hasFinalizing ? "Finalizing" : "Uploading";
+        if (droppedFiles.length === 1) {
+          return `${verb} ${droppedFiles[0].name}... ${percent}% (${formatSpeed(loaded)})`;
+        }
+        return `${verb} ${droppedFiles.length} files... ${percent}% (${formatSpeed(loaded)})`;
+      };
+      const toastId = toast.loading(formatProgress());
 
       const uploadOne = async (file: File) => {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("projectId", projectId);
-        formData.append("folderPath", normalizedTarget ?? "");
-        await uploadFileAction(formData);
+        await uploadDocumentFileDirect(file, {
+          projectId,
+          folderPath: normalizedTarget ?? "",
+          onStage: (stage) => {
+            stageByFile.set(file.name, stage);
+            toast.loading(formatProgress(), { id: toastId });
+          },
+          onProgress: ({ loaded }) => {
+            loadedByFile.set(file.name, loaded);
+            toast.loading(formatProgress(), { id: toastId });
+          },
+        });
       };
-
-      const toastId = toast.loading(
-        `Uploading ${droppedFiles.length} file${droppedFiles.length === 1 ? "" : "s"}...`,
-      );
 
       try {
         const results = await Promise.allSettled(droppedFiles.map(uploadOne));
@@ -536,7 +563,7 @@ function UnifiedDocumentsLayoutInner() {
         download_url: initialDownloadUrl,
         thumbnail_url:
           file.thumbnail_url ??
-          (file.mime_type?.startsWith("image/")
+          (isBrowserRenderableImage(file.mime_type, file.file_name, Boolean(file.thumbnail_url))
             ? initialDownloadUrl
             : undefined),
       };
@@ -545,21 +572,18 @@ function UnifiedDocumentsLayoutInner() {
       setViewerOpen(true);
 
       try {
-        if (!initialDownloadUrl) {
-          const downloadUrl = await getFileDownloadUrlAction(fileId);
-          setViewerFile((prev) => {
-            if (!prev || prev.id !== fileId) return prev;
-            return {
-              ...prev,
-              download_url: downloadUrl,
-              thumbnail_url:
-                prev.thumbnail_url ??
-                (prev.mime_type?.startsWith("image/")
-                  ? downloadUrl
-                  : undefined),
-            };
-          });
-        }
+        const downloadUrl = await getFileDownloadUrlAction(fileId);
+        setViewerFile((prev) => {
+          if (!prev || prev.id !== fileId) return prev;
+          return {
+            ...prev,
+            download_url: downloadUrl,
+            thumbnail_url:
+              isBrowserRenderableImage(prev.mime_type, prev.file_name)
+                ? downloadUrl
+                : prev.thumbnail_url,
+          };
+        });
 
         const versions = await listFileVersionsAction(fileId);
         setVersionsByFile((prev) => ({
@@ -942,6 +966,9 @@ function UnifiedDocumentsLayoutInner() {
       const normalizedTarget = targetPath
         ? normalizeFolderPath(targetPath)
         : null;
+      const toastId = toast.loading(
+        `Moving ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to ${sourceLabel}...`,
+      );
 
       setIsMoving(true);
       try {
@@ -951,13 +978,14 @@ function UnifiedDocumentsLayoutInner() {
         await bulkMoveFilesAction(fileIds, normalizedTarget, true);
         toast.success(
           `Moved ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to ${sourceLabel}`,
+          { id: toastId },
         );
         setSelectedFileIds(new Set());
         await refreshFiles();
         dispatchNavRefresh();
       } catch (error) {
         console.error("Failed to move files:", error);
-        toast.error("Failed to move files");
+        toast.error("Failed to move files", { id: toastId });
       } finally {
         setIsMoving(false);
       }
@@ -1663,6 +1691,18 @@ function UnifiedDocumentsLayoutInner() {
       return;
     }
     lastNotifiedViewerFileIdRef.current = file.id;
+    getFileDownloadUrlAction(file.id).then((downloadUrl) => {
+      setViewerFile((prev) => {
+        if (!prev || prev.id !== file.id) return prev;
+        return {
+          ...prev,
+          download_url: downloadUrl,
+          thumbnail_url: isBrowserRenderableImage(prev.mime_type, prev.file_name) ? downloadUrl : prev.thumbnail_url,
+        };
+      });
+    }).catch((error) => {
+      console.error("Failed to refresh file download URL:", error);
+    });
     listFileVersionsAction(file.id).then((versions) => {
       setVersionsByFile((prev) => ({
         ...prev,

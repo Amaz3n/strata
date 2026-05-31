@@ -51,7 +51,7 @@ export default async function ProposalPage({ params }: Params) {
         *,
         lines:proposal_lines(*),
         project:projects(name, location),
-        org:orgs(name),
+        org:orgs(name, logo_url),
         recipient:contacts(full_name, email)
       `,
     )
@@ -131,6 +131,7 @@ export default async function ProposalPage({ params }: Params) {
   return (
     <ProposalViewClient
       proposal={proposal as any}
+      pdfUrl={`/proposal/${token}/pdf`}
       continueSigningUrl={canContinueSigning ? `/proposal/${token}/continue` : null}
     />
   )

@@ -32,13 +32,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentFileDirect } from "@/lib/services/files-client"
 import type { FileCategory } from "@/components/files/types"
 
 interface UploadQueueItem {
   id: string
   file: File
   status: "queued" | "uploading" | "success" | "error"
+  progress: number
+  loaded: number
+  startedAt?: number
+  stage?: "preparing" | "uploading" | "finalizing"
   error?: string
 }
 
@@ -66,6 +70,7 @@ const CATEGORY_OPTIONS: { value: FileCategory | "auto"; label: string }[] = [
 ]
 
 const ROOT_FOLDER_VALUE = "__docs-root__"
+const UPLOAD_CONCURRENCY = 3
 
 function normalizeFolderPath(value?: string | null): string {
   if (!value) return ""
@@ -116,6 +121,8 @@ export function UploadDialog({
       id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       file,
       status: "queued",
+      progress: 0,
+      loaded: 0,
     }))
     setQueue((prev) => [...prev, ...newItems])
   }, [])
@@ -181,7 +188,7 @@ export function UploadDialog({
     let successCount = 0
     let failCount = 0
 
-    for (const item of pendingItems) {
+    const uploadOne = async (item: UploadQueueItem) => {
       setQueue((prev) =>
         prev.map((q) =>
           q.id === item.id ? { ...q, status: "uploading" } : q
@@ -189,28 +196,36 @@ export function UploadDialog({
       )
 
       try {
-        const formData = new FormData()
-        formData.append("file", item.file)
-        formData.append("projectId", projectId)
-        if (category !== "auto") {
-          formData.append("category", category)
-        }
-        formData.append("visibility", visibility)
-        formData.append("folderPath", targetFolder)
-        if (description.trim()) {
-          formData.append("description", description.trim())
-        }
-        if (tags.trim()) {
-          formData.append("tags", tags)
-        }
-        formData.append("shareWithClients", String(shareWithClients))
-        formData.append("shareWithSubs", String(shareWithSubs))
-
-        await uploadFileAction(formData)
+        await uploadDocumentFileDirect(item.file, {
+          projectId,
+          category: category === "auto" ? undefined : category,
+          visibility,
+          folderPath: targetFolder,
+          description: description.trim() || undefined,
+          tags: tags.trim()
+            ? tags.split(",").map((tag) => tag.trim()).filter(Boolean)
+            : [],
+          shareWithClients,
+          shareWithSubs,
+          onStage: (stage) => {
+            setQueue((prev) =>
+              prev.map((q) =>
+                q.id === item.id ? { ...q, stage, startedAt: q.startedAt ?? performance.now() } : q
+              )
+            )
+          },
+          onProgress: ({ percent, loaded }) => {
+            setQueue((prev) =>
+              prev.map((q) =>
+                q.id === item.id ? { ...q, progress: percent, loaded } : q
+              )
+            )
+          },
+        })
 
         setQueue((prev) =>
           prev.map((q) =>
-            q.id === item.id ? { ...q, status: "success" } : q
+            q.id === item.id ? { ...q, status: "success", progress: 100, loaded: item.file.size } : q
           )
         )
         successCount++
@@ -225,6 +240,16 @@ export function UploadDialog({
         failCount++
       }
     }
+
+    const workers = Array.from(
+      { length: Math.min(UPLOAD_CONCURRENCY, pendingItems.length) },
+      async (_, workerIndex) => {
+        for (let index = workerIndex; index < pendingItems.length; index += UPLOAD_CONCURRENCY) {
+          await uploadOne(pendingItems[index])
+        }
+      }
+    )
+    await Promise.all(workers)
 
     setIsUploading(false)
 
@@ -328,12 +353,27 @@ export function UploadDialog({
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {(item.file.size / 1024 / 1024).toFixed(2)} MB
+                        {item.status === "uploading" && (
+                          <span className="ml-2 capitalize">
+                            {item.stage ?? "uploading"} {item.progress}%{item.loaded > 0 && item.startedAt
+                              ? ` (${(item.loaded / 1024 / 1024 / Math.max((performance.now() - item.startedAt) / 1000, 0.5)).toFixed(1)} MB/s)`
+                              : ""}
+                          </span>
+                        )}
                         {item.error && (
                           <span className="text-destructive ml-2">
                             {item.error}
                           </span>
                         )}
                       </p>
+                      {item.status === "uploading" && (
+                        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-full rounded-full bg-primary transition-[width]"
+                            style={{ width: `${Math.max(2, item.progress)}%` }}
+                          />
+                        </div>
+                      )}
                     </div>
 
                     {/* Remove button */}

@@ -55,8 +55,8 @@ const statusColors: Record<ProjectStatus, string> = {
 }
 
 const statusLabels: Record<ProjectStatus, string> = {
-  planning: "Lead",
-  bidding: "Precon",
+  planning: "Planning",
+  bidding: "Bidding",
   active: "Active",
   on_hold: "Paused",
   completed: "Complete",
@@ -64,8 +64,6 @@ const statusLabels: Record<ProjectStatus, string> = {
 }
 
 const statusOptions = [
-  { value: "planning", label: "Lead" },
-  { value: "bidding", label: "Precon" },
   { value: "active", label: "Active" },
   { value: "on_hold", label: "Paused" },
   { value: "completed", label: "Complete" },
@@ -73,10 +71,8 @@ const statusOptions = [
 ]
 
 const filterStatusOptions: { value: ProjectStatus | "all"; label: string }[] = [
-  { value: "all", label: "All stages" },
+  { value: "all", label: "All statuses" },
   { value: "active", label: "Active" },
-  { value: "planning", label: "Lead" },
-  { value: "bidding", label: "Precon" },
   { value: "on_hold", label: "Paused" },
   { value: "completed", label: "Complete" },
   { value: "cancelled", label: "Canceled" },
@@ -115,6 +111,10 @@ interface ProjectsClientProps {
   clientContacts: Contact[]
 }
 
+function toOperationalProjectStatus(status: ProjectStatus): ProjectStatus {
+  return status === "planning" || status === "bidding" ? "active" : status
+}
+
 function projectToFormValues(project: Project): ProjectInput {
   const contractValueCents =
     project.billing_contract?.total_cents ??
@@ -122,7 +122,7 @@ function projectToFormValues(project: Project): ProjectInput {
 
   return {
     name: project.name,
-    status: project.status,
+    status: toOperationalProjectStatus(project.status),
     start_date: project.start_date ?? "",
     end_date: project.end_date ?? "",
     address: project.address ?? "",
@@ -321,6 +321,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
     return matchesSearch && matchesStatus
   })
 
+  const clientById = new Map(clientContacts.map((contact) => [contact.id, contact]))
   const activeFilters = statusFilter !== "all" ? 1 : 0
 
   return (
@@ -361,7 +362,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
-                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter by stage</DropdownMenuLabel>
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter by status</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {filterStatusOptions.map((opt) => (
                   <DropdownMenuCheckboxItem
@@ -378,9 +379,6 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
           </div>
 
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {filteredProjects.length} project{filteredProjects.length !== 1 ? "s" : ""}
-            </span>
             <Button size="sm" className="h-8" onClick={() => setCreateSheetOpen(true)}>
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               New project
@@ -441,52 +439,60 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="pl-6 w-[280px]">Project</TableHead>
+                    <TableHead className="pl-6 w-[24%]">Project</TableHead>
+                    <TableHead className="w-[18%]">Client</TableHead>
                     <TableHead>Address</TableHead>
-                    <TableHead className="w-[120px]">Stage</TableHead>
-                    <TableHead className="w-[220px]">Schedule</TableHead>
-                    <TableHead className="text-right w-[140px]">Contract</TableHead>
+                    <TableHead className="w-[12%]">Status</TableHead>
+                    <TableHead className="w-[18%]">Schedule</TableHead>
+                    <TableHead className="text-right w-[12%]">Value</TableHead>
                     <TableHead className="w-[52px] pr-4" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredProjects.map((project) => (
-                    <TableRow key={project.id}>
-                      <TableCell className="pl-6 py-3">
-                        <Link
-                          href={`/projects/${project.id}`}
-                          className="font-medium hover:text-primary transition-colors"
-                        >
-                          {project.name}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm py-3">
-                        {project.address || "—"}
-                      </TableCell>
-                      <TableCell className="py-3">
-                        <Badge variant="outline" className={statusColors[project.status]}>
-                          {statusLabels[project.status]}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm py-3">
-                        {project.start_date && project.end_date
-                          ? `${new Date(project.start_date).toLocaleDateString()} - ${new Date(project.end_date).toLocaleDateString()}`
-                          : project.start_date
-                            ? `Starts ${new Date(project.start_date).toLocaleDateString()}`
-                            : project.end_date
-                              ? `Ends ${new Date(project.end_date).toLocaleDateString()}`
-                              : "No schedule"}
-                      </TableCell>
-                      <TableCell className="text-right text-sm py-3">
-                        {typeof (project.billing_contract?.total_cents ?? (typeof project.total_value === "number" ? project.total_value * 100 : undefined)) === "number"
-                          ? `$${((project.billing_contract?.total_cents ?? project.total_value! * 100) / 100).toLocaleString()}`
-                          : "—"}
-                      </TableCell>
-                      <TableCell className="pr-4 py-3">
-                        <ProjectRowMenu project={project} onEdit={openEditSheet} onDelete={openDeleteDialog} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {filteredProjects.map((project) => {
+                    const client = project.client_id ? clientById.get(project.client_id) : null
+
+                    return (
+                      <TableRow key={project.id}>
+                        <TableCell className="pl-6 py-3">
+                          <Link
+                            href={`/projects/${project.id}`}
+                            className="font-medium hover:text-primary transition-colors"
+                          >
+                            {project.name}
+                          </Link>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm py-3">
+                          {client?.full_name || "—"}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm py-3">
+                          {project.address || "—"}
+                        </TableCell>
+                        <TableCell className="py-3">
+                          <Badge variant="outline" className={statusColors[project.status]}>
+                            {statusLabels[project.status]}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm py-3">
+                          {project.start_date && project.end_date
+                            ? `${new Date(project.start_date).toLocaleDateString()} - ${new Date(project.end_date).toLocaleDateString()}`
+                            : project.start_date
+                              ? `Starts ${new Date(project.start_date).toLocaleDateString()}`
+                              : project.end_date
+                                ? `Ends ${new Date(project.end_date).toLocaleDateString()}`
+                                : "No schedule"}
+                        </TableCell>
+                        <TableCell className="text-right text-sm py-3">
+                          {typeof (project.billing_contract?.total_cents ?? (typeof project.total_value === "number" ? project.total_value * 100 : undefined)) === "number"
+                            ? `$${((project.billing_contract?.total_cents ?? project.total_value! * 100) / 100).toLocaleString()}`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="pr-4 py-3">
+                          <ProjectRowMenu project={project} onEdit={openEditSheet} onDelete={openDeleteDialog} />
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </div>
@@ -664,7 +670,7 @@ function ProjectFormSheet({
                 name="status"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Stage</FormLabel>
+                    <FormLabel>Status</FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="w-full">

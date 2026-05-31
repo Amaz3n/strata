@@ -33,9 +33,9 @@ import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
 import { requireOrgContext } from "@/lib/services/context"
 import { buildInternalFileUrl } from "@/lib/services/files"
+import { triggerFileIndexing } from "@/lib/services/files-indexing"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import {
-  buildFilesPublicUrl,
   deleteFilesObjects,
   ensureOrgScopedPath,
   uploadFilesObject,
@@ -51,7 +51,9 @@ import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/ser
 import { createInvoice } from "@/lib/services/invoices"
 import { AuthorizationError } from "@/lib/services/authorization"
 import { requireProjectPermission } from "@/lib/services/permissions"
-import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
+import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
+import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail, sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 import { z } from "zod"
 
 export interface ProjectStats {
@@ -146,6 +148,7 @@ function mapProject(row: any): Project {
   budget: row.budget ?? undefined,
   address,
   client_id: row.client_id ?? undefined,
+  prospect_id: row.prospect_id ?? null,
   property_type: row.property_type ?? undefined,
   project_type: row.project_type ?? undefined,
   description: row.description ?? undefined,
@@ -1507,19 +1510,36 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
 
   const logIds = (data ?? []).map((row) => row.id)
   const entriesByLogId: Record<string, DailyLog["entries"]> = {}
+  const mentionsByLogId: Record<string, NonNullable<DailyLog["mentions"]>> = {}
+  const mentionsByCommentId: Record<string, NonNullable<DailyLog["mentions"]>> = {}
+  const commentsByLogId: Record<string, NonNullable<DailyLog["comments"]>> = {}
 
   if (logIds.length > 0) {
-    const { data: entries, error: entriesError } = await supabase
-      .from("daily_log_entries")
-      .select("id, org_id, project_id, daily_log_id, entry_type, description, quantity, hours, progress, schedule_item_id, task_id, punch_item_id, cost_code_id, location, trade, labor_type, inspection_result, metadata, created_at")
-      .eq("org_id", orgId)
-      .in("daily_log_id", logIds)
-      .order("created_at", { ascending: true })
+    const [entriesResult, commentsResult, mentionsResult] = await Promise.all([
+      supabase
+        .from("daily_log_entries")
+        .select("id, org_id, project_id, daily_log_id, entry_type, description, quantity, hours, progress, schedule_item_id, task_id, punch_item_id, cost_code_id, location, trade, labor_type, inspection_result, metadata, created_at")
+        .eq("org_id", orgId)
+        .in("daily_log_id", logIds)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("daily_log_comments")
+        .select("id, org_id, project_id, daily_log_id, body, created_by, created_at, updated_at, author:app_users!daily_log_comments_created_by_fkey(id, full_name, email, avatar_url)")
+        .eq("org_id", orgId)
+        .in("daily_log_id", logIds)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("daily_log_mentions")
+        .select("id, org_id, project_id, daily_log_id, daily_log_comment_id, mentioned_user_id, mentioned_by, created_at, user:app_users!daily_log_mentions_mentioned_user_id_fkey(id, full_name, email, avatar_url)")
+        .eq("org_id", orgId)
+        .in("daily_log_id", logIds)
+        .order("created_at", { ascending: true }),
+    ])
 
-    if (entriesError) {
-      console.error("Failed to fetch daily log entries:", entriesError.message)
+    if (entriesResult.error) {
+      console.error("Failed to fetch daily log entries:", entriesResult.error.message)
     } else {
-      for (const entry of entries ?? []) {
+      for (const entry of entriesResult.data ?? []) {
         if (!entriesByLogId[entry.daily_log_id]) {
           entriesByLogId[entry.daily_log_id] = []
         }
@@ -1546,6 +1566,70 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
         })
       }
     }
+
+    if (mentionsResult.error) {
+      console.error("Failed to fetch daily log mentions:", mentionsResult.error.message)
+    } else {
+      for (const mention of mentionsResult.data ?? []) {
+        const user = mention.user as any
+        const mapped = {
+          id: mention.id,
+          org_id: mention.org_id,
+          project_id: mention.project_id,
+          daily_log_id: mention.daily_log_id,
+          daily_log_comment_id: mention.daily_log_comment_id ?? undefined,
+          mentioned_user_id: mention.mentioned_user_id,
+          mentioned_by: mention.mentioned_by ?? undefined,
+          created_at: mention.created_at,
+          user: user ? {
+            id: user.id,
+            full_name: user.full_name ?? undefined,
+            email: user.email ?? undefined,
+            avatar_url: user.avatar_url ?? undefined,
+          } : undefined,
+        }
+
+        if (mention.daily_log_comment_id) {
+          if (!mentionsByCommentId[mention.daily_log_comment_id]) {
+            mentionsByCommentId[mention.daily_log_comment_id] = []
+          }
+          mentionsByCommentId[mention.daily_log_comment_id]?.push(mapped)
+        } else {
+          if (!mentionsByLogId[mention.daily_log_id]) {
+            mentionsByLogId[mention.daily_log_id] = []
+          }
+          mentionsByLogId[mention.daily_log_id]?.push(mapped)
+        }
+      }
+    }
+
+    if (commentsResult.error) {
+      console.error("Failed to fetch daily log comments:", commentsResult.error.message)
+    } else {
+      for (const comment of commentsResult.data ?? []) {
+        const author = comment.author as any
+        if (!commentsByLogId[comment.daily_log_id]) {
+          commentsByLogId[comment.daily_log_id] = []
+        }
+        commentsByLogId[comment.daily_log_id]?.push({
+          id: comment.id,
+          org_id: comment.org_id,
+          project_id: comment.project_id,
+          daily_log_id: comment.daily_log_id,
+          body: comment.body,
+          created_by: comment.created_by ?? undefined,
+          created_at: comment.created_at,
+          updated_at: comment.updated_at,
+          author: author ? {
+            id: author.id,
+            full_name: author.full_name ?? undefined,
+            email: author.email ?? undefined,
+            avatar_url: author.avatar_url ?? undefined,
+          } : undefined,
+          mentions: mentionsByCommentId[comment.id] ?? [],
+        })
+      }
+    }
   }
 
   return (data ?? []).map(row => {
@@ -1565,6 +1649,8 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
       created_at: row.created_at,
       updated_at: row.updated_at,
       entries: entriesByLogId[row.id] ?? [],
+      mentions: mentionsByLogId[row.id] ?? [],
+      comments: commentsByLogId[row.id] ?? [],
     }
   })
 }
@@ -1581,6 +1667,26 @@ export interface EnhancedFileMetadata extends FileMetadata {
   description?: string
   version_number?: number
   has_versions?: boolean
+}
+
+function isHeicFile(mimeType?: string | null, fileName?: string | null, storagePath?: string | null): boolean {
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+  const lowerName = fileName?.toLowerCase() ?? ""
+  const lowerPath = storagePath?.toLowerCase() ?? ""
+  return (
+    lowerMime === "image/heic" ||
+    lowerMime === "image/heif" ||
+    lowerName.endsWith(".heic") ||
+    lowerName.endsWith(".heif") ||
+    lowerPath.endsWith(".heic") ||
+    lowerPath.endsWith(".heif")
+  )
+}
+
+function buildProjectFileThumbnailUrl(fileId: string, mimeType?: string | null, fileName?: string | null, storagePath?: string | null) {
+  if (isHeicFile(mimeType, fileName, storagePath)) return `/api/files/${fileId}/preview`
+  if (mimeType?.startsWith("image/")) return buildInternalFileUrl(fileId)
+  return undefined
 }
 
 export async function getProjectFilesAction(projectId: string): Promise<EnhancedFileMetadata[]> {
@@ -1607,7 +1713,7 @@ export async function getProjectFilesAction(projectId: string): Promise<Enhanced
   const filesWithUrls = await Promise.all(
     (data ?? []).map(async (row) => {
       const downloadUrl = buildInternalFileUrl(row.id)
-      const thumbnailUrl = row.mime_type?.startsWith("image/") ? downloadUrl : undefined
+      const thumbnailUrl = buildProjectFileThumbnailUrl(row.id, row.mime_type, row.file_name, row.storage_path)
 
       const uploader = row.app_users as { full_name?: string; avatar_url?: string } | null
 
@@ -2805,6 +2911,28 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
     })
   }
 
+  const mentionedUsers = await createDailyLogMentions({
+    supabase,
+    orgId,
+    projectId,
+    dailyLogId: data.id as string,
+    mentionedBy: userId,
+    mentionedUserIds: parsed.mentioned_user_ids ?? [],
+  })
+
+  if (mentionedUsers.length > 0) {
+    await sendDailyLogMentionNotifications({
+      supabase,
+      orgId,
+      projectId,
+      dailyLogId: data.id as string,
+      actorId: userId,
+      mentionedUsers,
+      source: "log",
+      excerpt: parsed.summary,
+    })
+  }
+
   await recordEvent({
     orgId,
     eventType: "daily_log_created",
@@ -2860,7 +2988,479 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
       metadata: entry.metadata,
       created_at: data.created_at,
     })),
+    mentions: mentionedUsers.map((user) => ({
+      id: `temp-mention-${user.id}`,
+      org_id: orgId,
+      project_id: projectId,
+      daily_log_id: data.id,
+      mentioned_user_id: user.id,
+      mentioned_by: userId,
+      created_at: data.created_at,
+      user,
+    })),
+    comments: [],
   }
+}
+
+const dailyLogCommentInputSchema = z.object({
+  body: z.string().trim().min(1, "Comment is required"),
+  mentioned_user_ids: z.array(z.string().uuid()).optional(),
+})
+
+const dailyLogUpdateInputSchema = z.object({
+  summary: z.string().optional(),
+  weather: z
+    .union([
+      z.string(),
+      z.object({
+        conditions: z.string().optional(),
+        temperature: z.string().optional(),
+        notes: z.string().optional(),
+      }),
+    ])
+    .optional(),
+  mentioned_user_ids: z.array(z.string().uuid()).optional(),
+})
+
+export async function updateProjectDailyLogAction(
+  projectId: string,
+  dailyLogId: string,
+  input: unknown,
+): Promise<Pick<DailyLog, "id" | "notes" | "weather" | "updated_at" | "mentions">> {
+  const parsed = dailyLogUpdateInputSchema.parse(input)
+  const { supabase, orgId, userId } = await requireOrgContext()
+
+  const { data: existing, error: existingError } = await supabase
+    .from("daily_logs")
+    .select("id, org_id, project_id, summary, weather")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", dailyLogId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Daily log not found")
+  }
+
+  const { data, error } = await supabase
+    .from("daily_logs")
+    .update({
+      summary: parsed.summary?.trim() || null,
+      weather: parsed.weather || null,
+    })
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", dailyLogId)
+    .select("id, summary, weather, updated_at")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update daily log: ${error?.message}`)
+  }
+
+  const { data: existingMentions } = await supabase
+    .from("daily_log_mentions")
+    .select("mentioned_user_id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("daily_log_id", dailyLogId)
+    .is("daily_log_comment_id", null)
+
+  const previousMentionIds = new Set((existingMentions ?? []).map((mention) => mention.mentioned_user_id as string))
+
+  const { error: deleteMentionsError } = await supabase
+    .from("daily_log_mentions")
+    .delete()
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("daily_log_id", dailyLogId)
+    .is("daily_log_comment_id", null)
+
+  if (deleteMentionsError) {
+    throw new Error(`Failed to update daily log mentions: ${deleteMentionsError.message}`)
+  }
+
+  const mentionedUsers = await createDailyLogMentions({
+    supabase,
+    orgId,
+    projectId,
+    dailyLogId,
+    mentionedBy: userId,
+    mentionedUserIds: parsed.mentioned_user_ids ?? [],
+  })
+
+  const newlyMentionedUsers = mentionedUsers.filter((user) => !previousMentionIds.has(user.id))
+  if (newlyMentionedUsers.length > 0) {
+    await sendDailyLogMentionNotifications({
+      supabase,
+      orgId,
+      projectId,
+      dailyLogId,
+      actorId: userId,
+      mentionedUsers: newlyMentionedUsers,
+      source: "log",
+      excerpt: parsed.summary,
+    })
+  }
+
+  await recordAudit({
+    orgId,
+    actorId: userId,
+    action: "update",
+    entityType: "daily_log",
+    entityId: dailyLogId,
+    before: existing,
+    after: data,
+  })
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+
+  const weather = data.weather ?? {}
+  const weatherText = typeof weather === "string"
+    ? weather
+    : [weather.conditions, weather.temperature, weather.notes].filter(Boolean).join(" • ")
+
+  return {
+    id: data.id,
+    notes: data.summary ?? undefined,
+    weather: weatherText || undefined,
+    updated_at: data.updated_at,
+    mentions: mentionedUsers.map((user) => ({
+      id: `temp-mention-${user.id}`,
+      org_id: orgId,
+      project_id: projectId,
+      daily_log_id: dailyLogId,
+      mentioned_user_id: user.id,
+      mentioned_by: userId,
+      created_at: data.updated_at,
+      user,
+    })),
+  }
+}
+
+export async function createDailyLogCommentAction(
+  projectId: string,
+  dailyLogId: string,
+  input: unknown,
+): Promise<NonNullable<DailyLog["comments"]>[number]> {
+  const parsed = dailyLogCommentInputSchema.parse(input)
+  const { supabase, orgId, userId } = await requireOrgContext()
+
+  const { data: log, error: logError } = await supabase
+    .from("daily_logs")
+    .select("id, org_id, project_id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", dailyLogId)
+    .maybeSingle()
+
+  if (logError || !log) {
+    throw new Error("Daily log not found")
+  }
+
+  const { data, error } = await supabase
+    .from("daily_log_comments")
+    .insert({
+      org_id: orgId,
+      project_id: projectId,
+      daily_log_id: dailyLogId,
+      body: parsed.body,
+      created_by: userId,
+    })
+    .select("id, org_id, project_id, daily_log_id, body, created_by, created_at, updated_at, author:app_users!daily_log_comments_created_by_fkey(id, full_name, email, avatar_url)")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to create daily log comment: ${error?.message}`)
+  }
+
+  const mentionedUsers = await createDailyLogMentions({
+    supabase,
+    orgId,
+    projectId,
+    dailyLogId,
+    dailyLogCommentId: data.id,
+    mentionedBy: userId,
+    mentionedUserIds: parsed.mentioned_user_ids ?? [],
+  })
+
+  if (mentionedUsers.length > 0) {
+    await sendDailyLogMentionNotifications({
+      supabase,
+      orgId,
+      projectId,
+      dailyLogId,
+      commentId: data.id,
+      actorId: userId,
+      mentionedUsers,
+      source: "comment",
+      excerpt: parsed.body,
+    })
+  }
+
+  await recordEvent({
+    orgId,
+    eventType: "daily_log_comment_created",
+    entityType: "daily_log_comment",
+    entityId: data.id as string,
+    payload: { project_id: projectId, daily_log_id: dailyLogId },
+  })
+
+  await recordAudit({
+    orgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "daily_log_comment",
+    entityId: data.id as string,
+    after: data,
+  })
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+
+  const author = data.author as any
+  return {
+    id: data.id,
+    org_id: data.org_id,
+    project_id: data.project_id,
+    daily_log_id: data.daily_log_id,
+    body: data.body,
+    created_by: data.created_by ?? undefined,
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+    author: author ? {
+      id: author.id,
+      full_name: author.full_name ?? undefined,
+      email: author.email ?? undefined,
+      avatar_url: author.avatar_url ?? undefined,
+    } : undefined,
+    mentions: mentionedUsers.map((user) => ({
+      id: `temp-comment-mention-${user.id}`,
+      org_id: orgId,
+      project_id: projectId,
+      daily_log_id: dailyLogId,
+      daily_log_comment_id: data.id,
+      mentioned_user_id: user.id,
+      mentioned_by: userId,
+      created_at: data.created_at,
+      user,
+    })),
+  }
+}
+
+type MentionUser = {
+  id: string
+  full_name?: string
+  email?: string
+  avatar_url?: string
+}
+
+async function createDailyLogMentions({
+  supabase,
+  orgId,
+  projectId,
+  dailyLogId,
+  dailyLogCommentId,
+  mentionedBy,
+  mentionedUserIds,
+}: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  projectId: string
+  dailyLogId: string
+  dailyLogCommentId?: string
+  mentionedBy: string
+  mentionedUserIds: string[]
+}): Promise<MentionUser[]> {
+  const uniqueIds = Array.from(new Set(mentionedUserIds)).filter((id) => id !== mentionedBy)
+  if (uniqueIds.length === 0) return []
+
+  const { data: members, error } = await supabase
+    .from("project_members")
+    .select("user_id, app_users!inner(id, full_name, email, avatar_url)")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("status", "active")
+    .in("user_id", uniqueIds)
+
+  if (error) {
+    throw new Error(`Failed to validate mentioned users: ${error.message}`)
+  }
+
+  const users = (members ?? []).map((member: any) => {
+    const user = member.app_users as any
+    return {
+      id: member.user_id as string,
+      full_name: user?.full_name ?? undefined,
+      email: user?.email ?? undefined,
+      avatar_url: user?.avatar_url ?? undefined,
+    }
+  })
+
+  if (users.length === 0) return []
+
+  const { error: insertError } = await supabase
+    .from("daily_log_mentions")
+    .insert(
+      users.map((user) => ({
+        org_id: orgId,
+        project_id: projectId,
+        daily_log_id: dailyLogId,
+        daily_log_comment_id: dailyLogCommentId ?? null,
+        mentioned_user_id: user.id,
+        mentioned_by: mentionedBy,
+      })),
+    )
+
+  if (insertError) {
+    throw new Error(`Failed to create daily log mentions: ${insertError.message}`)
+  }
+
+  return users
+}
+
+async function sendDailyLogMentionNotifications({
+  supabase,
+  orgId,
+  projectId,
+  dailyLogId,
+  commentId,
+  actorId,
+  mentionedUsers,
+  source,
+  excerpt,
+}: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  projectId: string
+  dailyLogId: string
+  commentId?: string
+  actorId: string
+  mentionedUsers: MentionUser[]
+  source: "log" | "comment"
+  excerpt?: string
+}) {
+  const [{ data: actor }, { data: project }] = await Promise.all([
+    supabase.from("app_users").select("full_name, email").eq("id", actorId).maybeSingle(),
+    supabase.from("projects").select("name, address").eq("id", projectId).maybeSingle(),
+  ])
+
+  const actorName = actor?.full_name || actor?.email || "A teammate"
+  const projectName = project?.name || project?.address || "a project"
+  const cleanExcerpt = excerpt?.trim()
+  const message = source === "comment"
+    ? `${actorName} mentioned you in a daily log comment on ${projectName}${cleanExcerpt ? `: ${cleanExcerpt}` : "."}`
+    : `${actorName} mentioned you in a daily log on ${projectName}${cleanExcerpt ? `: ${cleanExcerpt}` : "."}`
+  const title = "You were mentioned in a daily log"
+
+  await Promise.allSettled(
+    mentionedUsers.map(async (user) => {
+      const payload = {
+        user_id: user.id,
+        title,
+        message,
+        project_id: projectId,
+        daily_log_id: dailyLogId,
+        daily_log_comment_id: commentId,
+        mentioned_by: actorId,
+        source,
+      }
+
+      try {
+        const sent = await sendDailyLogMentionEmailNow({
+          supabase,
+          orgId,
+          userId: user.id,
+          title,
+          message,
+          projectId,
+          dailyLogId,
+        })
+
+        if (sent) return
+      } catch (error) {
+        console.error("Immediate daily log mention email failed; queueing retry", error)
+      }
+
+      await enqueueOutboxJob({
+        orgId,
+        jobType: "send_daily_log_mention_email",
+        payload,
+      })
+    }),
+  )
+}
+
+async function sendDailyLogMentionEmailNow({
+  supabase,
+  orgId,
+  userId,
+  title,
+  message,
+  projectId,
+  dailyLogId,
+}: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  userId: string
+  title: string
+  message: string
+  projectId: string
+  dailyLogId: string
+}) {
+  const { data: prefs } = await supabase
+    .from("user_notification_prefs")
+    .select("email_enabled, email_type_settings")
+    .eq("org_id", orgId)
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (prefs && prefs.email_enabled === false) return true
+  if (prefs && !isEmailNotificationTypeEnabled(prefs.email_type_settings, "daily_log_mentioned")) return true
+
+  const [{ data: recipient, error: recipientError }, { data: org }] = await Promise.all([
+    supabase
+      .from("app_users")
+      .select("email, full_name")
+      .eq("id", userId)
+      .maybeSingle(),
+    supabase
+      .from("orgs")
+      .select("name, logo_url, slug")
+      .eq("id", orgId)
+      .maybeSingle(),
+  ])
+
+  if (recipientError || !recipient?.email) {
+    throw new Error("Mentioned user email not found")
+  }
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
+  const buttonUrl = `${appUrl}/projects/${projectId}/daily-logs?logId=${dailyLogId}`
+  const html = renderStandardEmailLayout({
+    title,
+    messageHtml: `Hi ${escapeHtml(recipient.full_name || "there")},<br/><br/>${escapeHtml(message)}`,
+    buttonText: "View daily log",
+    buttonUrl,
+    orgName: org?.name,
+    orgLogoUrl: org?.logo_url,
+    appUrl,
+  })
+
+  return sendEmail({
+    to: [recipient.email],
+    subject: title,
+    html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
+  })
+}
+
+function escapeHtml(input: string) {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;")
 }
 
 async function updateLinkedItemsFromDailyLog({
@@ -3213,10 +3813,12 @@ export async function uploadProjectFileAction(
     after: data,
   })
 
+  void triggerFileIndexing(data.id as string, orgId)
+
   revalidatePath(`/projects/${projectId}`)
 
-  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
-  const thumbnailUrl = file.type.startsWith("image/") ? downloadUrl : undefined
+  const downloadUrl = buildInternalFileUrl(data.id as string)
+  const thumbnailUrl = buildProjectFileThumbnailUrl(data.id as string, file.type, file.name, storagePath)
 
   const uploader = data.app_users as { full_name?: string; avatar_url?: string } | null
 

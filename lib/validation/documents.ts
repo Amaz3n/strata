@@ -1,15 +1,16 @@
 import { z } from "zod"
 
-export const documentTypeSchema = z.enum(["proposal", "contract", "change_order", "other"])
+export const documentTypeSchema = z.enum(["estimate", "proposal", "contract", "change_order", "other"])
 export const documentStatusSchema = z.enum(["draft", "sent", "signed", "voided", "expired"])
 
 export const documentCreateInputSchema = z.object({
-  project_id: z.string().uuid(),
+  project_id: z.string().uuid().optional(),
+  prospect_id: z.string().uuid().optional(),
   document_type: documentTypeSchema,
   title: z.string().min(1, "Title is required"),
   source_file_id: z.string().uuid(),
   source_entity_type: z
-    .enum(["proposal", "change_order", "lien_waiver", "selection", "subcontract", "closeout", "other"])
+    .enum(["estimate", "proposal", "change_order", "lien_waiver", "selection", "subcontract", "closeout", "other"])
     .optional(),
   source_entity_id: z.string().uuid().optional(),
   metadata: z.record(z.any()).optional(),
@@ -69,7 +70,7 @@ export type DocumentSigningGroupInput = z.infer<typeof documentSigningGroupInput
 export const envelopeCreateInputSchema = z.object({
   document_id: z.string().uuid(),
   source_entity_type: z
-    .enum(["proposal", "change_order", "lien_waiver", "selection", "subcontract", "closeout", "other"])
+    .enum(["estimate", "proposal", "change_order", "lien_waiver", "selection", "subcontract", "closeout", "other"])
     .optional(),
   source_entity_id: z.string().uuid().optional(),
   document_revision: z.number().int().min(1).optional(),

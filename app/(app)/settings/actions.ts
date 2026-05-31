@@ -355,6 +355,10 @@ const organizationSettingsSchema = z.object({
   country: z.string().trim().max(80).optional().default(""),
   defaultPaymentTermsDays: z.number().min(0).max(365).default(15),
   defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
+  proposalTermsTemplate: z.string().trim().max(8000).optional().default(""),
+  estimateTermsTemplate: z.string().trim().max(8000).optional().default(""),
+  estimateBuilderSignerMode: z.enum(["estimate_creator", "prospect_owner", "specific_user"]).optional().default("estimate_creator"),
+  estimateBuilderSignerUserId: z.string().uuid().nullable().optional(),
   aiProvider: z.enum(AI_PROVIDER_VALUES).optional(),
   aiModel: z.string().trim().max(120).optional(),
   aiInheritDefaults: z.boolean().optional(),
@@ -519,6 +523,14 @@ export async function getOrganizationSettingsAction() {
     country: orgAddress.country,
     defaultPaymentTermsDays,
     defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
+    proposalTermsTemplate: String(settings.proposal_terms_template ?? ""),
+    estimateTermsTemplate: String(settings.estimate_terms_template ?? ""),
+    estimateBuilderSignerMode:
+      settings.estimate_builder_signer_mode === "prospect_owner" || settings.estimate_builder_signer_mode === "specific_user"
+        ? settings.estimate_builder_signer_mode
+        : "estimate_creator",
+    estimateBuilderSignerUserId:
+      typeof settings.estimate_builder_signer_user_id === "string" ? settings.estimate_builder_signer_user_id : "",
     aiProvider: aiConfig.provider,
     aiModel: aiConfig.model,
     aiConfigSource: aiConfig.source,
@@ -538,6 +550,10 @@ export async function updateOrganizationSettingsAction(input: {
   country?: string
   defaultPaymentTermsDays?: number
   defaultInvoiceNote?: string
+  proposalTermsTemplate?: string
+  estimateTermsTemplate?: string
+  estimateBuilderSignerMode?: "estimate_creator" | "prospect_owner" | "specific_user"
+  estimateBuilderSignerUserId?: string | null
   aiProvider?: string
   aiModel?: string
   aiInheritDefaults?: boolean
@@ -546,6 +562,9 @@ export async function updateOrganizationSettingsAction(input: {
   if (!parsed.success) {
     const firstError = parsed.error.errors.at(0)?.message ?? "Invalid organization details."
     return { error: firstError }
+  }
+  if (parsed.data.estimateBuilderSignerMode === "specific_user" && !parsed.data.estimateBuilderSignerUserId) {
+    return { error: "Choose the Arc user who should countersign client-signed estimates." }
   }
 
   const { orgId, user, supabase } = await requireOrgMembership()
@@ -579,6 +598,11 @@ export async function updateOrganizationSettingsAction(input: {
     invoice_default_payment_terms_days: parsed.data.defaultPaymentTermsDays,
     invoice_default_payment_details: parsed.data.defaultInvoiceNote || null,
     invoice_default_note: parsed.data.defaultInvoiceNote || null,
+    proposal_terms_template: parsed.data.proposalTermsTemplate || null,
+    estimate_terms_template: parsed.data.estimateTermsTemplate || null,
+    estimate_builder_signer_mode: parsed.data.estimateBuilderSignerMode,
+    estimate_builder_signer_user_id:
+      parsed.data.estimateBuilderSignerMode === "specific_user" ? parsed.data.estimateBuilderSignerUserId || null : null,
   }
 
   const shouldInheritAiDefaults = parsed.data.aiInheritDefaults === true

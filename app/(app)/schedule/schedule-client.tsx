@@ -79,7 +79,7 @@ function PortfolioStats({
 
   const stats = useMemo(() => {
     const activeProjects = projects.filter(
-      (p) => p.status === "active" || p.status === "planning"
+      (p) => p.status === "active" || p.status === "on_hold"
     )
 
     const atRiskItems = items.filter((item) => {

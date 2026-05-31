@@ -806,7 +806,7 @@ export async function listProjectsForDrawingsAction(): Promise<
     .from("projects")
     .select("id, name")
     .eq("org_id", orgId)
-    .in("status", ["planning", "bidding", "active", "on_hold"])
+    .in("status", ["active", "on_hold"])
     .order("name", { ascending: true })
 
   if (error) {

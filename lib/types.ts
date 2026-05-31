@@ -175,6 +175,7 @@ export interface Project {
   end_date?: string
   budget?: number
   client_id?: string
+  prospect_id?: string | null
   total_value?: number
   property_type?: ProjectPropertyType
   project_type?: ProjectWorkType
@@ -319,6 +320,43 @@ export interface DailyLog {
   created_at: string
   updated_at: string
   entries?: DailyLogEntry[]
+  mentions?: DailyLogMention[]
+  comments?: DailyLogComment[]
+}
+
+export interface DailyLogMention {
+  id: string
+  org_id: string
+  project_id: string
+  daily_log_id: string
+  daily_log_comment_id?: string
+  mentioned_user_id: string
+  mentioned_by?: string
+  created_at: string
+  user?: {
+    id: string
+    full_name?: string
+    email?: string
+    avatar_url?: string
+  }
+}
+
+export interface DailyLogComment {
+  id: string
+  org_id: string
+  project_id: string
+  daily_log_id: string
+  body: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+  author?: {
+    id: string
+    full_name?: string
+    email?: string
+    avatar_url?: string
+  }
+  mentions?: DailyLogMention[]
 }
 
 export interface DailyLogEntry {
@@ -829,6 +867,7 @@ export interface Estimate {
   id: string
   org_id: string
   project_id?: string | null
+  prospect_id?: string | null
   recipient_contact_id?: string | null
   title: string
   status: string
@@ -843,6 +882,22 @@ export interface Estimate {
   created_at?: string
   updated_at?: string
   items?: EstimateItem[]
+  approved_at?: string | null
+  sent_at?: string | null
+  responded_at?: string | null
+  decision_note?: string | null
+  client_decision_name?: string | null
+  client_decision_email?: string | null
+  version_group_id?: string | null
+  is_current_version?: boolean | null
+  supersedes_estimate_id?: string | null
+  client_signed_at?: string | null
+  builder_signed_at?: string | null
+  executed_at?: string | null
+  signature_document_id?: string | null
+  signature_envelope_id?: string | null
+  executed_file_id?: string | null
+  signature_data?: Record<string, any> | null
 }
 
 export interface EstimateTemplate {

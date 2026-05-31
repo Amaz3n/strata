@@ -31,7 +31,7 @@ import type { FileListFilters, FileUpdate, FileCategory } from "@/lib/validation
 import { requireOrgContext } from "@/lib/services/context"
 import { attachFile, detachFile, listAttachments, detachFileById, listFileLinkSummary } from "@/lib/services/file-links"
 import type { FileLinkWithFile, FileLinkSummary } from "@/lib/services/file-links"
-import { uploadFilesObject } from "@/lib/storage/files-storage"
+import { ensureOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
 import { buildInternalFileUrl } from "@/lib/services/files"
 import {
   listVersions,
@@ -47,6 +47,7 @@ import {
 import type { FileVersion } from "@/lib/services/file-versions"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
+import { triggerFileIndexing } from "@/lib/services/files-indexing"
 import { listFileAccessEvents, type FileAccessEvent } from "@/lib/services/file-access-events"
 import {
   createFileShareLink,
@@ -61,6 +62,21 @@ export type { FileRecord, FileWithUrls, FileListFilters, FileUpdate, FileCategor
 export type { FileAccessEvent }
 export type { FileShareLink, CreateFileShareLinkInput }
 export type { ProjectFolderPermissions, FileTimelineEvent, FolderChild } from "@/lib/services/files"
+
+export interface FinalizeUploadedFileInput {
+  projectId?: string
+  fileName: string
+  storagePath: string
+  fileSize: number
+  mimeType?: string
+  category?: FileCategory
+  visibility?: "public" | "private"
+  folderPath?: string | null
+  description?: string | null
+  tags?: string[]
+  shareWithClients?: boolean
+  shareWithSubs?: boolean
+}
 
 /**
  * List files with optional filters
@@ -584,6 +600,181 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
 
   return {
     ...record,
+    download_url: downloadUrl,
+    thumbnail_url: thumbnailUrl,
+  }
+}
+
+/**
+ * Create a file record after the browser has uploaded the object directly to R2.
+ */
+export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInput): Promise<FileWithUrls> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+
+  if (!input.fileName || !input.storagePath) {
+    throw new Error("Missing uploaded file metadata")
+  }
+
+  const projectId = input.projectId
+  if (projectId) {
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("id", projectId)
+      .maybeSingle()
+
+    if (projectError || !project) {
+      throw new Error("Invalid project scope for upload")
+    }
+  }
+
+  const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
+  const allowedPrefixes = projectId
+    ? [
+        `${orgId}/${projectId}/documents/uploads/`,
+        `${orgId}/${projectId}/drawings/uploads/`,
+        `${orgId}/${projectId}/drawings/sets/`,
+      ]
+    : [`${orgId}/general/documents/uploads/`]
+
+  if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
+    throw new Error("Invalid upload path for project scope")
+  }
+
+  const inferredCategory = input.category ?? inferCategory(input.fileName, input.mimeType)
+  const explicitFolderPath = normalizeFolderPath(input.folderPath)
+  const resolvedFolderPath =
+    input.folderPath !== undefined
+      ? explicitFolderPath === "/" ? undefined : explicitFolderPath
+      : projectId
+        ? getDefaultFolderForCategory(inferredCategory)
+        : undefined
+
+  let resolvedShareWithClients = input.shareWithClients ?? false
+  let resolvedShareWithSubs = input.shareWithSubs ?? false
+
+  if (
+    projectId &&
+    resolvedFolderPath &&
+    (input.shareWithClients === undefined || input.shareWithSubs === undefined)
+  ) {
+    const defaults = await getProjectFolderPermissions(projectId, resolvedFolderPath)
+    resolvedShareWithClients = input.shareWithClients ?? defaults.share_with_clients
+    resolvedShareWithSubs = input.shareWithSubs ?? defaults.share_with_subs
+  }
+
+  const mimeType = input.mimeType || "application/octet-stream"
+  const { data: insertedFile, error: fileError } = await supabase
+    .from("files")
+    .insert({
+      org_id: orgId,
+      project_id: projectId || undefined,
+      file_name: input.fileName,
+      storage_path: normalizedStoragePath,
+      mime_type: mimeType,
+      size_bytes: input.fileSize,
+      visibility: input.visibility === "private" ? "private" : "public",
+      category: inferredCategory,
+      folder_path: resolvedFolderPath,
+      description: input.description || undefined,
+      tags: input.tags ?? [],
+      source: "upload",
+      share_with_clients: resolvedShareWithClients,
+      share_with_subs: resolvedShareWithSubs,
+      uploaded_by: userId,
+    })
+    .select(`
+      id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
+      checksum, visibility, category, folder_path, description, tags, source,
+      share_with_clients, share_with_subs, metadata,
+      uploaded_by, archived_at, created_at, updated_at
+    `)
+    .single()
+
+  if (fileError || !insertedFile) {
+    throw new Error(`Failed to create file record: ${fileError?.message}`)
+  }
+
+  const { data: version, error: versionError } = await supabase
+    .from("doc_versions")
+    .insert({
+      org_id: orgId,
+      file_id: insertedFile.id,
+      version_number: 1,
+      storage_path: normalizedStoragePath,
+      file_name: input.fileName,
+      mime_type: mimeType,
+      size_bytes: input.fileSize,
+      created_by: userId,
+    })
+    .select("id")
+    .single()
+
+  if (versionError || !version) {
+    throw new Error(`Failed to create initial version: ${versionError?.message}`)
+  }
+
+  await supabase
+    .from("files")
+    .update({ current_version_id: version.id })
+    .eq("id", insertedFile.id)
+
+  void triggerFileIndexing(insertedFile.id as string, orgId)
+  void recordAudit({
+    orgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "file",
+    entityId: insertedFile.id as string,
+    after: insertedFile,
+  })
+  void recordEvent({
+    orgId,
+    actorId: userId,
+    eventType: "file_created",
+    entityType: "file",
+    entityId: insertedFile.id as string,
+    payload: {
+      file_name: input.fileName,
+      project_id: projectId,
+      category: inferredCategory,
+    },
+  })
+
+  const downloadUrl = buildInternalFileUrl(insertedFile.id as string)
+  const lowerMimeType = mimeType.toLowerCase()
+  const thumbnailUrl =
+    lowerMimeType === "image/heic" || lowerMimeType === "image/heif"
+      ? `/api/files/${insertedFile.id}/preview`
+      : mimeType.startsWith("image/")
+      ? downloadUrl
+      : undefined
+
+  return {
+    id: insertedFile.id as string,
+    org_id: insertedFile.org_id as string,
+    project_id: insertedFile.project_id ?? undefined,
+    file_name: insertedFile.file_name,
+    storage_path: insertedFile.storage_path,
+    mime_type: insertedFile.mime_type ?? undefined,
+    size_bytes: insertedFile.size_bytes ?? undefined,
+    checksum: insertedFile.checksum ?? undefined,
+    visibility: insertedFile.visibility,
+    category: insertedFile.category ?? undefined,
+    folder_path: insertedFile.folder_path ?? undefined,
+    description: insertedFile.description ?? undefined,
+    tags: insertedFile.tags ?? [],
+    source: insertedFile.source ?? undefined,
+    uploaded_by: insertedFile.uploaded_by ?? undefined,
+    share_with_clients: insertedFile.share_with_clients ?? false,
+    share_with_subs: insertedFile.share_with_subs ?? false,
+    metadata: insertedFile.metadata ?? {},
+    archived_at: insertedFile.archived_at ?? undefined,
+    created_at: insertedFile.created_at,
+    updated_at: insertedFile.updated_at,
+    version_number: 1,
+    is_current: true,
     download_url: downloadUrl,
     thumbnail_url: thumbnailUrl,
   }

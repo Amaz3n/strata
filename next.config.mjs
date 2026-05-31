@@ -15,8 +15,9 @@ const nextConfig = {
   // Server Actions configuration
   experimental: {
     devOverlay: false,
+    proxyClientMaxBodySize: '250mb',
     serverActions: {
-      bodySizeLimit: '10mb',
+      bodySizeLimit: '100mb',
     },
   },
   async redirects() {

@@ -14,7 +14,11 @@ export const estimateLineInputSchema = z.object({
 export const estimateInputSchema = z.object({
   title: z.string().min(1, "Title is required"),
   project_id: z.string().uuid().optional().nullable(),
+  prospect_id: z.string().uuid().optional().nullable(),
   recipient_contact_id: z.string().uuid().optional().nullable(),
+  // Ad-hoc recipient (prospect estimates have no directory contact); stored on the estimate.
+  recipient_name: z.string().trim().min(1).optional().nullable(),
+  recipient_email: z.string().trim().email().optional().nullable(),
   summary: z.string().optional(),
   terms: z.string().optional(),
   valid_until: z.string().optional(),

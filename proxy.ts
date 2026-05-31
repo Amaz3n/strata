@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
-const PUBLIC_ROUTES = ["/proposal", "/i/", "/p/", "/s/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
+const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
 const PUBLIC_API_ROUTES = [
   "/api/esign/executed/",
   "/api/jobs/process-outbox",

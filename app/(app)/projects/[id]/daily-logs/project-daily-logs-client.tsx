@@ -8,6 +8,8 @@ import type { DailyLog, ScheduleItem, Task } from "@/lib/types"
 import type { EnhancedFileMetadata, ProjectActivity, ProjectPunchItem, FileCategory } from "../actions"
 import {
   createProjectDailyLogAction,
+  createDailyLogCommentAction,
+  updateProjectDailyLogAction,
   uploadProjectFileAction,
   getFileDownloadUrlAction,
 } from "../actions"
@@ -21,6 +23,13 @@ interface ProjectDailyLogsClientProps {
   tasks: Task[]
   punchItems: ProjectPunchItem[]
   activity: ProjectActivity[]
+  mentionableUsers: Array<{
+    id: string
+    name: string
+    email?: string
+    avatar_url?: string
+    role?: string
+  }>
 }
 
 export function ProjectDailyLogsClient({
@@ -32,6 +41,7 @@ export function ProjectDailyLogsClient({
   tasks,
   punchItems,
   activity,
+  mentionableUsers,
 }: ProjectDailyLogsClientProps) {
   const [dailyLogs, setDailyLogs] = useState<DailyLog[]>(initialDailyLogs)
   const [files, setFiles] = useState<EnhancedFileMetadata[]>(initialFiles)
@@ -80,10 +90,35 @@ export function ProjectDailyLogsClient({
       tasks={tasks}
       punchItems={punchItems}
       activity={activity}
+      mentionableUsers={mentionableUsers}
       onCreateLog={async (values) => {
         const created = await createProjectDailyLogAction(projectId, values)
         setDailyLogs((prev) => [created, ...prev])
         return created
+      }}
+      onCreateComment={async (dailyLogId, values) => {
+        const created = await createDailyLogCommentAction(projectId, dailyLogId, values)
+        setDailyLogs((prev) => prev.map((log) => (
+          log.id === dailyLogId
+            ? { ...log, comments: [...(log.comments ?? []), created] }
+            : log
+        )))
+        return created
+      }}
+      onUpdateLog={async (dailyLogId, values) => {
+        const updated = await updateProjectDailyLogAction(projectId, dailyLogId, values)
+        setDailyLogs((prev) => prev.map((log) => (
+          log.id === dailyLogId
+            ? {
+                ...log,
+                notes: updated.notes,
+                weather: updated.weather,
+                updated_at: updated.updated_at,
+                mentions: updated.mentions,
+              }
+            : log
+        )))
+        return updated
       }}
       onUploadFiles={handleFileUpload}
       onDownloadFile={handleFileDownload}

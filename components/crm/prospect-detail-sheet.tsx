@@ -19,6 +19,7 @@ import { ChangeStatusDialog } from "./change-status-dialog"
 import { Mail, Phone, Clock, Calendar, Loader2, MapPin, User, Receipt } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 import { formatDistanceToNow, format, isPast, isToday } from "date-fns"
+import { formatPhone } from "@/lib/utils"
 
 interface ProspectDetailSheetProps {
   contactId?: string
@@ -167,7 +168,7 @@ export function ProspectDetailSheet({ contactId, open, onOpenChange, teamMembers
                       <div className="flex items-center gap-2 text-muted-foreground">
                         <Phone className="h-4 w-4" />
                         <a href={`tel:${prospect.phone}`} className="hover:underline">
-                          {prospect.phone}
+                          {formatPhone(prospect.phone)}
                         </a>
                       </div>
                     )}
@@ -181,7 +182,7 @@ export function ProspectDetailSheet({ contactId, open, onOpenChange, teamMembers
                     )}
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <User className="h-4 w-4" />
-                      <span>Owner: {ownerName}</span>
+                      <span>Lead owner: {ownerName}</span>
                     </div>
                     {prospect.crm_source && (
                       <div className="text-xs text-muted-foreground">

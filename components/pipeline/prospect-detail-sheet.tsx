@@ -1,85 +1,139 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useCallback, useEffect, useState, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { addDays, format, formatDistanceToNow } from "date-fns"
 
+import type { Prospect, ProspectActivity } from "@/lib/services/prospects"
+import type { Contact, CostCode, Estimate, TeamMember } from "@/lib/types"
+import type { EstimateInput } from "@/lib/validation/estimates"
+import {
+  getEstimateCreateDataAction,
+  getProspectAction,
+  listProspectActivityAction,
+  listProspectEstimatesAction,
+  setProspectFollowUpAction,
+} from "@/app/(app)/pipeline/actions"
+import {
+  createEstimateAction,
+  getEstimateBuilderSigningLinkAction,
+  getEstimateShareLinkAction,
+  sendEstimateAction,
+} from "@/app/(app)/estimates/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Textarea } from "@/components/ui/textarea"
-import type { TeamMember } from "@/lib/types"
-import type { Prospect, CrmActivity } from "@/lib/services/crm"
-import { getProspectAction, getProspectActivityAction, updateProspectAction } from "@/app/(app)/pipeline/actions"
-import { LeadStatusBadge, LeadPriorityBadge } from "./lead-status-badge"
-import { AddTouchDialog } from "./add-touch-dialog"
-import { FollowUpDialog } from "./follow-up-dialog"
-import { ChangeStatusDialog } from "./change-status-dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
-  Mail,
-  Phone,
-  Clock,
-  Loader2,
-  MapPin,
-  User,
-  Receipt,
-  Edit,
-  CheckCircle,
-  X,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar } from "@/components/ui/calendar"
+import {
+  Activity as ActivityIcon,
+  ArrowRight,
+  Bell,
+  Briefcase,
+  Building2,
+  Copy,
   ExternalLink,
-  MessageSquare,
-  Calendar,
-  Activity,
+  FileText,
+  Hammer,
+  Mail,
+  MapPin,
+  Phone,
+  Plus,
+  Receipt,
+  Send,
+  User,
+  X,
 } from "@/components/icons"
+import { cn, formatPhone } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
-import { formatDistanceToNow, format, isPast, isToday } from "date-fns"
-import { cn } from "@/lib/utils"
+import { ConvertProspectSheet } from "./convert-prospect-sheet"
+import { EstimateCreateSheet } from "@/components/estimates/estimate-create-sheet"
 
 interface ProspectDetailSheetProps {
+  prospectId?: string
   contactId?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   teamMembers: TeamMember[]
 }
 
-function formatFollowUp(dateStr: string | null | undefined): { text: string; isOverdue: boolean; isToday: boolean } {
-  if (!dateStr) return { text: "Not set", isOverdue: false, isToday: false }
-  const date = new Date(dateStr)
-  const overdue = isPast(date) && !isToday(date)
-  const today = isToday(date)
-  return {
-    text: today ? `Today at ${format(date, "h:mm a")}` : format(date, "MMM d, h:mm a"),
-    isOverdue: overdue,
-    isToday: today,
-  }
+const statusLabels: Record<string, string> = {
+  new: "New",
+  contacted: "Contacted",
+  qualified: "Qualified",
+  pricing: "Pricing",
+  estimate_sent: "Estimate sent",
+  changes_requested: "Changes requested",
+  client_approved: "Client approved",
+  executed: "Executed",
+  won: "Won",
+  lost: "Lost",
 }
 
-function formatBudgetRange(budget?: string): string {
+const estimateStatusLabels: Record<string, string> = {
+  draft: "Draft",
+  sent: "Sent",
+  approved: "Approved",
+  client_signed: "Client signed",
+  executed: "Executed",
+  converted_to_project: "Project created",
+  rejected: "Rejected",
+  changes_requested: "Changes requested",
+}
+
+const estimateStatusStyles: Record<string, string> = {
+  draft: "bg-muted text-muted-foreground border-muted",
+  sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
+  approved: "bg-success/15 text-success border-success/30",
+  client_signed: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30",
+  executed: "bg-success/20 text-success border-success/40",
+  converted_to_project: "bg-purple-500/15 text-purple-700 border-purple-500/30",
+  rejected: "bg-destructive/15 text-destructive border-destructive/30",
+  changes_requested: "bg-amber-500/15 text-amber-600 border-amber-500/30",
+}
+
+function resolveEstimateStatus(status?: string | null): string {
+  return status && estimateStatusLabels[status] ? status : "draft"
+}
+
+function formatBudgetRange(budget?: string | null): string {
   const map: Record<string, string> = {
     under_100k: "Under $100k",
-    "100k_250k": "$100k - $250k",
-    "250k_500k": "$250k - $500k",
-    "500k_1m": "$500k - $1M",
+    "100k_250k": "$100k – $250k",
+    "250k_500k": "$250k – $500k",
+    "500k_1m": "$500k – $1M",
     over_1m: "Over $1M",
     undecided: "Undecided",
   }
-  return map[budget ?? ""] ?? "Not specified"
+  return map[budget ?? ""] ?? "Not set"
 }
 
-function formatProjectType(type?: string): string {
+function formatProjectType(type?: string | null): string {
   const map: Record<string, string> = {
     new_construction: "New construction",
     remodel: "Remodel",
     addition: "Addition",
+    renovation: "Renovation",
+    repair: "Repair",
     other: "Other",
   }
-  return map[type ?? ""] ?? "Not specified"
+  return map[type ?? ""] ?? "Not set"
 }
 
-function formatTimeline(timeline?: string): string {
+function formatTimeline(timeline?: string | null): string {
   const map: Record<string, string> = {
     asap: "ASAP",
     "3_months": "Within 3 months",
@@ -87,417 +141,778 @@ function formatTimeline(timeline?: string): string {
     "1_year": "Within 1 year",
     flexible: "Flexible",
   }
-  return map[timeline ?? ""] ?? "Not specified"
+  return map[timeline ?? ""] ?? "Not set"
 }
 
-function getActivityIcon(eventType: string) {
-  if (eventType.includes("call")) return Phone
-  if (eventType.includes("email")) return Mail
-  if (eventType.includes("meeting") || eventType.includes("site_visit")) return Calendar
-  if (eventType.includes("status")) return Activity
-  return MessageSquare
-}
-
-interface EditableFieldProps {
-  value: string
-  onSave: (value: string) => Promise<void>
-  placeholder?: string
-  type?: "text" | "textarea"
-}
-
-function EditableField({ value, onSave, placeholder, type = "text" }: EditableFieldProps) {
-  const [isEditing, setIsEditing] = useState(false)
-  const [editValue, setEditValue] = useState(value)
-  const [isSaving, setIsSaving] = useState(false)
-
-  const handleSave = async () => {
-    if (editValue === value) {
-      setIsEditing(false)
-      return
-    }
-    setIsSaving(true)
-    try {
-      await onSave(editValue)
-      setIsEditing(false)
-    } finally {
-      setIsSaving(false)
-    }
+function formatActivityType(eventType: string): string {
+  const map: Record<string, string> = {
+    prospect_created: "Prospect created",
+    prospect_updated: "Prospect updated",
+    prospect_status_changed: "Stage changed",
+    prospect_deleted: "Prospect deleted",
+    prospect_contact_added: "Contact added",
+    prospect_contact_updated: "Contact updated",
   }
-
-  const handleCancel = () => {
-    setEditValue(value)
-    setIsEditing(false)
-  }
-
-  if (isEditing) {
-    return (
-      <div className="flex items-start gap-1">
-        {type === "textarea" ? (
-          <Textarea
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            placeholder={placeholder}
-            className="text-sm min-h-[60px]"
-            autoFocus
-          />
-        ) : (
-          <Input
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            placeholder={placeholder}
-            className="h-8 text-sm"
-            autoFocus
-          />
-        )}
-        <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={handleSave} disabled={isSaving}>
-          {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />}
-        </Button>
-        <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={handleCancel} disabled={isSaving}>
-          <X className="h-3 w-3" />
-        </Button>
-      </div>
-    )
-  }
-
-  return (
-    <button
-      className="group flex items-center gap-1 text-left hover:text-primary transition-colors"
-      onClick={() => setIsEditing(true)}
-    >
-      <span className={cn(!value && "text-muted-foreground italic")}>{value || placeholder || "Click to add"}</span>
-      <Edit className="h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity" />
-    </button>
-  )
+  return map[eventType] ?? eventType.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())
 }
 
-export function ProspectDetailSheet({ contactId, open, onOpenChange, teamMembers }: ProspectDetailSheetProps) {
-  const [prospect, setProspect] = useState<Prospect | null>(null)
-  const [activity, setActivity] = useState<CrmActivity[]>([])
-  const [isPending, startTransition] = useTransition()
+function formatCurrency(cents?: number | null): string {
+  return ((cents ?? 0) / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  })
+}
+
+function resolveRecipientId(prospect: Prospect, contacts: Contact[]): string | undefined {
+  const pc = prospect.primary_contact ?? prospect.contacts?.[0]
+  if (!pc) return undefined
+  if (pc.promoted_contact_id) return pc.promoted_contact_id
+  if (pc.contact_id) return pc.contact_id
+  if (pc.email) {
+    const email = pc.email.toLowerCase()
+    const match = contacts.find((c) => c.email?.toLowerCase() === email)
+    if (match) return match.id
+  }
+  return undefined
+}
+
+type EstimateRow = Estimate & { recipient_name?: string | null }
+
+interface NextStep {
+  tone: "info" | "warning" | "success" | "muted"
+  title: string
+  body: string
+}
+
+function deriveNextStep(prospect: Prospect, estimates: EstimateRow[]): NextStep {
+  if (prospect.project_id) {
+    return { tone: "success", title: "Project created", body: "This prospect has been converted. Open the project to keep working." }
+  }
+  switch (prospect.status) {
+    case "executed":
+      return { tone: "success", title: "Ready to convert", body: "The estimate is executed. Create the project to start the job." }
+    case "client_approved":
+      return { tone: "info", title: "Awaiting countersignature", body: "The client signed. Countersign the estimate to execute it." }
+    case "estimate_sent":
+      return { tone: "info", title: "Waiting on client", body: "The estimate is out for review. Follow up if it stalls." }
+    case "changes_requested":
+      return { tone: "warning", title: "Changes requested", body: "The client asked for changes. Revise the estimate and resend." }
+    case "lost":
+      return { tone: "muted", title: "Marked lost", body: prospect.lost_reason ? `Reason: ${prospect.lost_reason}` : "This prospect is no longer active." }
+    default:
+      if (estimates.length === 0) {
+        return { tone: "info", title: "Create an estimate", body: "Price the job and send an estimate to move this prospect forward." }
+      }
+      return { tone: "info", title: "Send the estimate", body: "A draft estimate exists. Send it to the client when it's ready." }
+  }
+}
+
+const nextStepTone: Record<NextStep["tone"], string> = {
+  info: "border-blue-500/30 bg-blue-500/5",
+  warning: "border-amber-500/30 bg-amber-500/5",
+  success: "border-success/30 bg-success/5",
+  muted: "border-border bg-muted/30",
+}
+
+export function ProspectDetailSheet({
+  prospectId,
+  contactId,
+  open,
+  onOpenChange,
+  teamMembers,
+}: ProspectDetailSheetProps) {
+  const router = useRouter()
   const { toast } = useToast()
+  const resolvedProspectId = prospectId ?? contactId
 
-  const [touchOpen, setTouchOpen] = useState(false)
-  const [followUpOpen, setFollowUpOpen] = useState(false)
-  const [statusOpen, setStatusOpen] = useState(false)
+  const [prospect, setProspect] = useState<Prospect | null>(null)
+  const [isPending, startTransition] = useTransition()
+  const [estimates, setEstimates] = useState<EstimateRow[]>([])
+  const [activity, setActivity] = useState<ProspectActivity[]>([])
+  const [tab, setTab] = useState<"overview" | "estimates" | "activity">("overview")
+
+  const [convertOpen, setConvertOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [loadingCreateData, setLoadingCreateData] = useState(false)
+  const [createData, setCreateData] = useState<{
+    contacts: Contact[]
+    costCodes: CostCode[]
+    defaultTerms: string
+  } | null>(null)
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [copyingId, setCopyingId] = useState<string | null>(null)
+  const [signingId, setSigningId] = useState<string | null>(null)
+
+  const refreshProspect = useCallback(async () => {
+    if (!resolvedProspectId) return
+    const [next, rows, events] = await Promise.all([
+      getProspectAction(resolvedProspectId),
+      listProspectEstimatesAction(resolvedProspectId),
+      listProspectActivityAction(resolvedProspectId),
+    ])
+    setProspect(next)
+    setEstimates(rows)
+    setActivity(events)
+  }, [resolvedProspectId])
 
   useEffect(() => {
-    if (!open || !contactId) return
+    if (!open || !resolvedProspectId) return
+    setTab("overview")
     startTransition(async () => {
       try {
-        const [prospectData, activityData] = await Promise.all([
-          getProspectAction(contactId),
-          getProspectActivityAction(contactId),
-        ])
-        setProspect(prospectData)
-        setActivity(activityData)
+        await refreshProspect()
       } catch (error) {
         toast({ title: "Unable to load prospect", description: (error as Error).message })
       }
     })
-  }, [contactId, open, toast])
+  }, [resolvedProspectId, open, refreshProspect, toast])
 
-  const ownerName = teamMembers.find((m) => m.user.id === prospect?.lead_owner_user_id)?.user.full_name ?? "Unassigned"
-  const followUp = formatFollowUp(prospect?.next_follow_up_at)
+  const primaryContact = prospect?.primary_contact ?? prospect?.contacts?.[0]
+  const ownerName =
+    teamMembers.find((m) => m.user.id === prospect?.owner_user_id)?.user.full_name ?? "Unassigned"
+  const nextStep = prospect ? deriveNextStep(prospect, estimates) : null
 
-  const handleUpdateField = async (field: string, value: string) => {
-    if (!prospect) return
+  async function ensureCreateData() {
+    if (createData) return createData
+    setLoadingCreateData(true)
     try {
-      await updateProspectAction(prospect.id, { [field]: value || undefined })
-      setProspect((prev) => prev ? { ...prev, [field]: value || undefined } : prev)
-      toast({ title: "Updated" })
+      const data = await getEstimateCreateDataAction()
+      setCreateData(data)
+      return data
+    } finally {
+      setLoadingCreateData(false)
+    }
+  }
+
+  async function handleNewEstimate() {
+    try {
+      await ensureCreateData()
+      setCreateOpen(true)
     } catch (error) {
-      toast({ title: "Failed to update", description: (error as Error).message })
+      toast({ title: "Couldn't open estimate form", description: (error as Error).message })
+    }
+  }
+
+  async function handleCreateEstimate(input: EstimateInput) {
+    if (!prospect) return
+    setCreating(true)
+    try {
+      const estimate = await createEstimateAction({ ...input, prospect_id: prospect.id })
+      const recipient = createData?.contacts.find((c) => c.id === estimate.recipient_contact_id)
+      setEstimates((prev) => [{ ...estimate, recipient_name: recipient?.full_name ?? null }, ...prev])
+      setCreateOpen(false)
+      toast({ title: "Estimate created", description: "Draft saved to this prospect." })
+      await refreshProspect()
+      router.refresh()
+    } catch (error) {
+      toast({ title: "Failed to create estimate", description: (error as Error).message })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function handleSend(estimateId: string) {
+    setSendingId(estimateId)
+    try {
+      const result = await sendEstimateAction(estimateId)
+      setEstimates((prev) => prev.map((e) => (e.id === estimateId ? { ...e, status: "sent" } : e)))
+      await copyToClipboard(result.url)
+      toast({
+        title: result.emailSent ? "Estimate sent" : "Estimate marked sent",
+        description: result.emailSent ? "Review link copied to clipboard." : "Email skipped — link copied.",
+      })
+      await refreshProspect()
+      router.refresh()
+    } catch (error) {
+      toast({ title: "Couldn't send estimate", description: (error as Error).message })
+    } finally {
+      setSendingId(null)
+    }
+  }
+
+  async function handleCopyLink(estimateId: string) {
+    setCopyingId(estimateId)
+    try {
+      const result = await getEstimateShareLinkAction(estimateId)
+      await copyToClipboard(result.url)
+      toast({ title: "Review link copied" })
+    } catch (error) {
+      toast({ title: "Couldn't create link", description: (error as Error).message })
+    } finally {
+      setCopyingId(null)
+    }
+  }
+
+  async function handleOpenBuilderSigning(estimateId: string) {
+    setSigningId(estimateId)
+    try {
+      const result = await getEstimateBuilderSigningLinkAction(estimateId)
+      if (!result.url) {
+        throw new Error("Signing link was not returned.")
+      }
+      const signingUrl = new URL(result.url, window.location.origin)
+      if (!signingUrl.pathname.startsWith("/d/")) {
+        throw new Error("Signing link did not point to a document signing request.")
+      }
+      window.location.assign(signingUrl.toString())
+      toast({ title: "Builder signing opened", description: result.signerEmail ? `Assigned to ${result.signerEmail}.` : undefined })
+    } catch (error) {
+      toast({ title: "Couldn't open signing request", description: (error as Error).message })
+    } finally {
+      setSigningId(null)
     }
   }
 
   return (
-    <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent
-          side="right"
-          mobileFullscreen
-          className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col fast-sheet-animation"
-          style={{
-            animationDuration: '150ms',
-            transitionDuration: '150ms'
-          } as React.CSSProperties}
-        >
-          <div className="flex-1 overflow-y-auto px-4">
-            <div className="pt-6 pb-4">
-              <SheetTitle className="text-lg font-semibold leading-none tracking-tight">Prospect details</SheetTitle>
-              <SheetDescription className="text-sm text-muted-foreground mt-2">
-                View and manage prospect information
-              </SheetDescription>
-            </div>
-
-            {!prospect || isPending ? (
-              <div className="space-y-4">
-                <Skeleton className="h-8 w-48" />
-                <Skeleton className="h-4 w-32" />
-                <div className="space-y-2">
-                  <Skeleton className="h-20 w-full" />
-                  <Skeleton className="h-20 w-full" />
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        mobileFullscreen
+        className="flex flex-col p-0 shadow-2xl fast-sheet-animation sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-lg"
+        style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
+      >
+        {!prospect || isPending ? (
+          <div className="space-y-4 p-6">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-32 w-full" />
+            <Skeleton className="h-32 w-full" />
+          </div>
+        ) : (
+          <>
+            <SheetHeader className="space-y-0 px-6 pb-0 pt-6 text-left">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Building2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <SheetTitle className="truncate text-lg leading-tight">{prospect.name}</SheetTitle>
+                  <SheetDescription className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    <span>Created on {format(new Date(prospect.created_at), "MM/dd/yy")}</span>
+                  </SheetDescription>
                 </div>
               </div>
-            ) : (
-              <div className="space-y-5">
-                  {/* Header */}
-                  <div>
-                    <h3 className="text-xl font-semibold">{prospect.full_name}</h3>
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      <LeadStatusBadge status={prospect.lead_status ?? "new"} />
-                      <LeadPriorityBadge priority={prospect.lead_priority ?? "normal"} />
-                      {prospect.has_estimate && (
-                        <Badge variant="outline" className="gap-1">
-                          <Receipt className="h-3 w-3" />
-                          {prospect.estimate_count} estimate{prospect.estimate_count !== 1 && "s"}
-                        </Badge>
-                      )}
+            </SheetHeader>
+
+            <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="flex flex-1 flex-col overflow-hidden">
+              <div className="border-b">
+                <TabsList className="h-12 w-full justify-start gap-6 rounded-none border-0 bg-transparent p-0 px-6">
+                  <TabsTrigger
+                    value="overview"
+                    className="h-12 rounded-none border-b-2 border-transparent px-0 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                  >
+                    Overview
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="estimates"
+                    className="h-12 gap-2 rounded-none border-b-2 border-transparent px-0 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                  >
+                    Estimates
+                    {estimates.length > 0 ? (
+                      <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">{estimates.length}</span>
+                    ) : null}
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="activity"
+                    className="h-12 rounded-none border-b-2 border-transparent px-0 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                  >
+                    Activity
+                  </TabsTrigger>
+                </TabsList>
+              </div>
+
+              <ScrollArea className="flex-1">
+                <TabsContent value="overview" className="m-0 space-y-5 px-6 py-5 focus-visible:outline-none">
+                  {nextStep ? (
+                    <div className={cn("rounded-lg border p-3", nextStepTone[nextStep.tone])}>
+                      <p className="text-sm font-medium">{nextStep.title}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{nextStep.body}</p>
                     </div>
+                  ) : null}
+
+                  {resolvedProspectId ? (
+                    <FollowUpControl
+                      prospectId={resolvedProspectId}
+                      value={prospect.next_follow_up_at ?? null}
+                      onChanged={refreshProspect}
+                    />
+                  ) : null}
+
+                  <Section title="Primary contact">
+                    <InfoRow icon={User} value={primaryContact?.full_name ?? "No contact added"} muted={!primaryContact?.full_name} />
+                    <InfoRow
+                      icon={Phone}
+                      value={
+                        primaryContact?.phone ? (
+                          <a href={`tel:${primaryContact.phone}`} className="text-primary hover:underline">
+                            {formatPhone(primaryContact.phone)}
+                          </a>
+                        ) : (
+                          "No phone"
+                        )
+                      }
+                      muted={!primaryContact?.phone}
+                    />
+                    <InfoRow
+                      icon={Mail}
+                      value={
+                        primaryContact?.email ? (
+                          <a href={`mailto:${primaryContact.email}`} className="text-primary hover:underline">
+                            {primaryContact.email}
+                          </a>
+                        ) : (
+                          "No email"
+                        )
+                      }
+                      muted={!primaryContact?.email}
+                    />
+                    <InfoRow icon={Briefcase} value={`Lead owner: ${ownerName}`} />
+                  </Section>
+
+                  <Section title="Project details">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                      <Field label="Type" value={formatProjectType(prospect.project_type)} />
+                      <Field label="Budget" value={formatBudgetRange(prospect.budget_range)} />
+                      <Field label="Timeline" value={formatTimeline(prospect.timeline_preference)} />
+                      <Field label="Stage" value={statusLabels[prospect.status] ?? prospect.status} />
+                    </div>
+                    {prospect.jobsite_location?.street || prospect.jobsite_location?.city ? (
+                      <div className="mt-3 flex items-start gap-2 border-t pt-3 text-sm text-muted-foreground">
+                        <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
+                        <div>
+                          {prospect.jobsite_location.street ? <div>{prospect.jobsite_location.street}</div> : null}
+                          {prospect.jobsite_location.city || prospect.jobsite_location.state ? (
+                            <div>
+                              {prospect.jobsite_location.city}
+                              {prospect.jobsite_location.city && prospect.jobsite_location.state ? ", " : ""}
+                              {prospect.jobsite_location.state}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    {prospect.notes ? (
+                      <div className="mt-3 border-t pt-3">
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Notes</p>
+                        <p className="mt-1 whitespace-pre-wrap text-sm">{prospect.notes}</p>
+                      </div>
+                    ) : null}
+                  </Section>
+
+                  <Section title="Workspaces">
+                    <Button variant="outline" asChild className="w-full justify-start">
+                      <Link href={`/pipeline/prospects/${prospect.id}/bids`}>
+                        <Hammer className="mr-2 h-4 w-4" />
+                        Bids
+                        <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                      </Link>
+                    </Button>
+                  </Section>
+                </TabsContent>
+
+                <TabsContent value="estimates" className="m-0 space-y-3 px-6 py-5 focus-visible:outline-none">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Estimates</p>
+                    <Button size="sm" onClick={handleNewEstimate} disabled={loadingCreateData}>
+                      <Plus className="mr-1.5 h-4 w-4" />
+                      {loadingCreateData ? "Loading…" : "New estimate"}
+                    </Button>
                   </div>
 
-                  {/* Quick actions */}
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => setTouchOpen(true)}>
-                      <MessageSquare className="h-4 w-4 mr-2" />
-                      Add activity
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => setFollowUpOpen(true)}>
-                      <Calendar className="h-4 w-4 mr-2" />
-                      Set follow-up
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => setStatusOpen(true)}>
-                      <Activity className="h-4 w-4 mr-2" />
-                      Change status
-                    </Button>
-                  </div>
+                  {estimates.length === 0 ? (
+                    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-10 text-center">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-muted">
+                        <Receipt className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">No estimates yet</p>
+                        <p className="text-xs text-muted-foreground">Create one to price the job and send it to the client.</p>
+                      </div>
+                      <Button size="sm" variant="outline" onClick={handleNewEstimate} disabled={loadingCreateData}>
+                        <Plus className="mr-1.5 h-4 w-4" />
+                        Create estimate
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {estimates.map((estimate) => {
+                        const statusKey = resolveEstimateStatus(estimate.status)
+                        const superseded = estimate.is_current_version === false
+                        return (
+                          <div key={estimate.id} className="rounded-lg border p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium">{estimate.title}</p>
+                                <p className="mt-0.5 text-xs text-muted-foreground">
+                                  {formatCurrency(estimate.total_cents)}
+                                  {estimate.version ? ` · v${estimate.version}` : ""}
+                                  {superseded ? " · superseded" : ""}
+                                </p>
+                              </div>
+                              <Badge variant="secondary" className={cn("shrink-0 border", estimateStatusStyles[statusKey])}>
+                                {estimateStatusLabels[statusKey]}
+                              </Badge>
+                            </div>
 
-                  {/* Follow-up banner */}
-                  {prospect.next_follow_up_at && (
-                    <div
-                      className={cn(
-                        "flex items-center gap-2 p-3 rounded-lg text-sm",
-                        followUp.isOverdue
-                          ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                          : followUp.isToday
-                          ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
-                          : "bg-muted text-muted-foreground"
-                      )}
-                    >
-                      <Clock className="h-4 w-4" />
-                      <span>
-                        Follow-up: <strong>{followUp.text}</strong>
-                        {followUp.isOverdue && " (overdue)"}
-                      </span>
+                            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                              {estimate.recipient_name ?? primaryContact?.full_name ? (
+                                <span>{estimate.recipient_name ?? primaryContact?.full_name}</span>
+                              ) : null}
+                              {estimate.sent_at ? <span>Sent {format(new Date(estimate.sent_at), "MMM d")}</span> : null}
+                              {estimate.client_signed_at ? (
+                                <span className="text-emerald-600">Signed {format(new Date(estimate.client_signed_at), "MMM d")}</span>
+                              ) : null}
+                              {estimate.valid_until ? <span>Valid to {format(new Date(estimate.valid_until), "MMM d")}</span> : null}
+                            </div>
+
+                            <div className="mt-2.5 flex items-center gap-1.5 border-t pt-2.5">
+                              {statusKey !== "executed" && statusKey !== "converted_to_project" ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-xs"
+                                  onClick={() => void handleSend(estimate.id)}
+                                  disabled={sendingId === estimate.id}
+                                >
+                                  <Send className="mr-1.5 h-3.5 w-3.5" />
+                                  {sendingId === estimate.id
+                                    ? "Sending…"
+                                    : estimate.sent_at
+                                      ? "Resend"
+                                      : "Send"}
+                                </Button>
+                              ) : null}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => void handleCopyLink(estimate.id)}
+                                disabled={copyingId === estimate.id}
+                              >
+                                <Copy className="mr-1.5 h-3.5 w-3.5" />
+                                Link
+                              </Button>
+                              <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-xs">
+                                <a href={`/estimates/${estimate.id}/export`} target="_blank" rel="noopener noreferrer">
+                                  <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                  PDF
+                                </a>
+                              </Button>
+                              {statusKey === "client_signed" ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-xs"
+                                  onClick={() => void handleOpenBuilderSigning(estimate.id)}
+                                  disabled={signingId === estimate.id}
+                                >
+                                  <ArrowRight className="mr-1.5 h-3.5 w-3.5" />
+                                  {signingId === estimate.id ? "Opening..." : "Sign"}
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
+                </TabsContent>
 
-                  {/* Contact info */}
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium">Contact info</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <Phone className="h-4 w-4 text-muted-foreground shrink-0" />
-                        {prospect.phone ? (
-                          <a href={`tel:${prospect.phone}`} className="hover:underline text-primary">
-                            {prospect.phone}
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground italic">No phone</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Mail className="h-4 w-4 text-muted-foreground shrink-0" />
-                        {prospect.email ? (
-                          <a href={`mailto:${prospect.email}`} className="hover:underline text-primary">
-                            {prospect.email}
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground italic">No email</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <User className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <span>Owner: {ownerName}</span>
-                      </div>
-                      {prospect.crm_source && (
-                        <div className="text-xs text-muted-foreground pt-1">
-                          Source: {prospect.crm_source}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Project details */}
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium">Project details</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-sm">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <span className="text-xs uppercase tracking-wide text-muted-foreground">Type</span>
-                          <p className="text-foreground">{formatProjectType(prospect.lead_project_type)}</p>
-                        </div>
-                        <div>
-                          <span className="text-xs uppercase tracking-wide text-muted-foreground">Budget</span>
-                          <p className="text-foreground">{formatBudgetRange(prospect.lead_budget_range)}</p>
-                        </div>
-                        <div>
-                          <span className="text-xs uppercase tracking-wide text-muted-foreground">Timeline</span>
-                          <p className="text-foreground">{formatTimeline(prospect.lead_timeline_preference)}</p>
-                        </div>
-                        {prospect.last_contacted_at && (
-                          <div>
-                            <span className="text-xs uppercase tracking-wide text-muted-foreground">Last contact</span>
-                            <p className="text-foreground">
-                              {formatDistanceToNow(new Date(prospect.last_contacted_at), { addSuffix: true })}
+                <TabsContent value="activity" className="m-0 px-6 py-5 focus-visible:outline-none">
+                  {activity.length === 0 ? (
+                    <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
+                      <ActivityIcon className="h-5 w-5" />
+                      No activity recorded yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-0">
+                      {activity.map((event, index) => (
+                        <div key={event.id} className="flex gap-3">
+                          <div className="flex flex-col items-center">
+                            <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary/70" />
+                            {index < activity.length - 1 ? <span className="w-px flex-1 bg-border" /> : null}
+                          </div>
+                          <div className="pb-5">
+                            <p className="text-sm font-medium">{formatActivityType(event.event_type)}</p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              {format(new Date(event.created_at), "MMM d, yyyy 'at' h:mm a")}
                             </p>
                           </div>
-                        )}
-                      </div>
-                      {prospect.jobsite_location && (
-                        <div className="flex items-start gap-2 pt-3 mt-3 border-t">
-                          <MapPin className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-                          <div className="text-muted-foreground">
-                            {prospect.jobsite_location.street && <div>{prospect.jobsite_location.street}</div>}
-                            {(prospect.jobsite_location.city || prospect.jobsite_location.state) && (
-                              <div>
-                                {prospect.jobsite_location.city}
-                                {prospect.jobsite_location.city && prospect.jobsite_location.state && ", "}
-                                {prospect.jobsite_location.state}
-                              </div>
-                            )}
-                          </div>
                         </div>
-                      )}
-                      {prospect.notes && (
-                        <div className="pt-3 mt-3 border-t">
-                          <span className="text-xs uppercase tracking-wide text-muted-foreground">Notes</span>
-                          <p className="text-foreground whitespace-pre-wrap mt-1">{prospect.notes}</p>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Related estimates */}
-                  {prospect.has_estimate && (
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center justify-between">
-                          <CardTitle className="text-sm font-medium">Related estimates</CardTitle>
-                          <Button variant="ghost" size="sm" asChild className="text-xs h-7">
-                            <Link href={`/estimates?recipient=${prospect.id}`}>
-                              View all
-                              <ExternalLink className="h-3 w-3 ml-1" />
-                            </Link>
-                          </Button>
-                        </div>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Receipt className="h-4 w-4" />
-                          <span>{prospect.estimate_count} estimate{prospect.estimate_count !== 1 && "s"} linked</span>
-                        </div>
-                      </CardContent>
-                    </Card>
+                      ))}
+                    </div>
                   )}
+                </TabsContent>
+              </ScrollArea>
+            </Tabs>
 
-                  {/* Activity timeline */}
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium">Activity</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-sm">
-                      {activity.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-6 text-center">
-                          <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mb-2">
-                            <MessageSquare className="h-5 w-5 text-muted-foreground" />
-                          </div>
-                          <p className="text-muted-foreground text-sm">No activity recorded yet</p>
-                          <Button variant="link" size="sm" className="mt-1" onClick={() => setTouchOpen(true)}>
-                            Add first activity
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {activity.map((item) => {
-                            const Icon = getActivityIcon(item.event_type)
-                            return (
-                              <div key={item.id} className="flex gap-3">
-                                <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center shrink-0 mt-0.5">
-                                  <Icon className="h-3 w-3 text-muted-foreground" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="font-medium truncate">{item.title}</span>
-                                    <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                      {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
-                                    </span>
-                                  </div>
-                                  {item.description && (
-                                    <p className="text-muted-foreground text-xs mt-0.5 line-clamp-2">{item.description}</p>
-                                  )}
-                                  <Badge variant="outline" className="mt-1 text-[10px] px-1.5 py-0">
-                                    {item.touch_type ?? item.event_type.replace(/crm_|_/g, " ").trim()}
-                                  </Badge>
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
-          </div>
-
-          {/* Footer actions */}
-          {prospect && (
-            <div className="flex-shrink-0 border-t bg-background p-4">
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">
-                  Close
-                </Button>
-                <Button variant="default" asChild className="flex-1">
-                  <Link href={`/estimates?recipient=${prospect.id}`}>
-                    <Receipt className="h-4 w-4 mr-2" />
-                    Create estimate
+            <SheetFooter className="flex-row gap-2 border-t bg-background p-4 sm:flex-row sm:justify-stretch sm:space-x-0">
+              <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">
+                Close
+              </Button>
+              {prospect.project_id ? (
+                <Button asChild className="flex-1">
+                  <Link href={`/projects/${prospect.project_id}`}>
+                    Go to project
+                    <ArrowRight className="ml-2 h-4 w-4" />
                   </Link>
                 </Button>
-              </div>
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
+              ) : prospect.status === "executed" ? (
+                <Button
+                  onClick={() => setConvertOpen(true)}
+                  className="flex-1 gap-2 bg-success font-semibold text-white hover:bg-success/90"
+                >
+                  <Hammer className="h-4 w-4" />
+                  Convert to project
+                </Button>
+              ) : (
+                <Button
+                  className="flex-1"
+                  disabled={loadingCreateData}
+                  onClick={() => {
+                    setTab("estimates")
+                    void handleNewEstimate()
+                  }}
+                >
+                  <Receipt className="mr-2 h-4 w-4" />
+                  {loadingCreateData ? "Loading…" : "New estimate"}
+                </Button>
+              )}
+            </SheetFooter>
+          </>
+        )}
+      </SheetContent>
 
-      {prospect && (
-        <>
-          <AddTouchDialog
-            open={touchOpen}
-            onOpenChange={setTouchOpen}
-            contactId={prospect.id}
-            contactName={prospect.full_name}
-          />
-          <FollowUpDialog
-            open={followUpOpen}
-            onOpenChange={setFollowUpOpen}
-            contactId={prospect.id}
-            contactName={prospect.full_name}
-            currentFollowUp={prospect.next_follow_up_at}
-          />
-          <ChangeStatusDialog
-            open={statusOpen}
-            onOpenChange={setStatusOpen}
-            contactId={prospect.id}
-            contactName={prospect.full_name}
-            currentStatus={prospect.lead_status ?? "new"}
-          />
-        </>
-      )}
-    </>
+      {prospect && createData ? (
+        <EstimateCreateSheet
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          contacts={createData.contacts}
+          costCodes={createData.costCodes}
+          defaultTerms={createData.defaultTerms}
+          defaultProspectId={prospect.id}
+          defaultRecipientId={resolveRecipientId(prospect, createData.contacts)}
+          prospectRecipient={
+            primaryContact
+              ? { name: primaryContact.full_name, email: primaryContact.email ?? null }
+              : undefined
+          }
+          prospectContacts={(prospect.contacts ?? []).map((c) => ({ name: c.full_name, email: c.email ?? null }))}
+          onCreate={handleCreateEstimate}
+          loading={creating}
+        />
+      ) : null}
+
+      {prospect ? (
+        <ConvertProspectSheet
+          prospect={prospect}
+          open={convertOpen}
+          onOpenChange={setConvertOpen}
+          onSuccess={() => {
+            onOpenChange(false)
+            router.refresh()
+          }}
+        />
+      ) : null}
+    </Sheet>
   )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h4>
+      <Separator />
+      <div className="space-y-2.5">{children}</div>
+    </div>
+  )
+}
+
+function combineDateTime(date: Date, time: string): Date {
+  const [h, m] = time.split(":").map((n) => Number(n))
+  const d = new Date(date)
+  d.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0)
+  return d
+}
+
+function FollowUpControl({
+  prospectId,
+  value,
+  onChanged,
+}: {
+  prospectId: string
+  value: string | null
+  onChanged: () => Promise<void>
+}) {
+  const { toast } = useToast()
+  const [open, setOpen] = useState(false)
+  const [isPending, startTransition] = useTransition()
+
+  const date = value ? new Date(value) : null
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const startOfTomorrow = addDays(startOfToday, 1)
+  const isOverdue = date ? date < now : false
+  const isDueToday = date ? date >= startOfToday && date < startOfTomorrow : false
+
+  // Draft date + time edited inside the popover, seeded from the current value when opened.
+  const [draftDate, setDraftDate] = useState<Date | undefined>(date ?? undefined)
+  const [draftTime, setDraftTime] = useState<string>(date ? format(date, "HH:mm") : "09:00")
+
+  const onOpenChange = (next: boolean) => {
+    if (next) {
+      setDraftDate(date ?? undefined)
+      setDraftTime(date ? format(date, "HH:mm") : "09:00")
+    }
+    setOpen(next)
+  }
+
+  const apply = (next: Date | null) => {
+    startTransition(async () => {
+      try {
+        await setProspectFollowUpAction(prospectId, next ? next.toISOString() : null)
+        await onChanged()
+        setOpen(false)
+        toast({ title: next ? "Follow-up scheduled" : "Follow-up cleared" })
+      } catch (error) {
+        toast({ title: "Failed to update follow-up", description: (error as Error).message })
+      }
+    })
+  }
+
+  const presets: Array<{ label: string; days: number }> = [
+    { label: "Tomorrow", days: 1 },
+    { label: "In 3 days", days: 3 },
+    { label: "Next week", days: 7 },
+  ]
+
+  const tone = isOverdue
+    ? "border-rose-500/40 bg-rose-500/5 text-rose-600 dark:text-rose-400"
+    : isDueToday
+      ? "border-amber-500/40 bg-amber-500/5 text-amber-600 dark:text-amber-400"
+      : "border-border bg-muted/30 text-foreground"
+
+  return (
+    <div className={cn("flex items-center gap-3 rounded-lg border p-3", date ? tone : "border-dashed bg-muted/20")}>
+      <Bell className={cn("h-4 w-4 shrink-0", !date && "text-muted-foreground")} />
+      <div className="min-w-0 flex-1">
+        {date ? (
+          <>
+            <p className="text-sm font-medium">Follow up {format(date, "MMM d, yyyy 'at' h:mm a")}</p>
+            <p className="text-xs text-muted-foreground">
+              {isOverdue ? "Overdue · " : ""}
+              {formatDistanceToNow(date, { addSuffix: true })}
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">No follow-up scheduled</p>
+        )}
+      </div>
+
+      <Popover open={open} onOpenChange={onOpenChange}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" disabled={isPending}>
+            {date ? "Change" : "Set follow-up"}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-72 p-0" align="end">
+          <div className="grid grid-cols-3 gap-1 border-b p-2">
+            {presets.map((preset) => (
+              <Button
+                key={preset.label}
+                variant="ghost"
+                size="sm"
+                className="px-1 text-xs"
+                disabled={isPending}
+                onClick={() => setDraftDate(addDays(startOfToday, preset.days))}
+              >
+                {preset.label}
+              </Button>
+            ))}
+          </div>
+          <Calendar mode="single" selected={draftDate} onSelect={setDraftDate} initialFocus className="w-full" />
+          <div className="flex items-center gap-2 border-t p-3">
+            <Input
+              id="follow-up-time"
+              type="time"
+              value={draftTime}
+              onChange={(event) => setDraftTime(event.target.value)}
+              className="h-9 flex-1"
+            />
+            <Button
+              disabled={isPending || !draftDate}
+              onClick={() => draftDate && apply(combineDateTime(draftDate, draftTime))}
+            >
+              Save
+            </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      {date ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          disabled={isPending}
+          onClick={() => apply(null)}
+          aria-label="Clear follow-up"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+function InfoRow({
+  icon: Icon,
+  value,
+  muted,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  value: React.ReactNode
+  muted?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-2.5 text-sm">
+      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <span className={cn(muted && "italic text-muted-foreground")}>{value}</span>
+    </div>
+  )
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-sm">{value}</p>
+    </div>
+  )
+}
+
+async function copyToClipboard(text: string) {
+  try {
+    if (navigator?.clipboard) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+  } catch {
+    // fall through to legacy path
+  }
+  const textArea = document.createElement("textarea")
+  textArea.value = text
+  textArea.style.position = "fixed"
+  textArea.style.left = "-9999px"
+  document.body.appendChild(textArea)
+  textArea.focus()
+  textArea.select()
+  try {
+    document.execCommand("copy")
+  } finally {
+    document.body.removeChild(textArea)
+  }
 }

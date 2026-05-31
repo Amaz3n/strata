@@ -56,7 +56,6 @@ import { ProjectSettingsSheet } from "@/components/projects/project-settings-she
 import { ProjectDirectory, DIRECTORY_ROLE_FILTERS } from "@/components/projects/project-directory"
 import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
 import { ProjectPipelineChecklist } from "./project-pipeline-checklist"
-import { ProjectSetupWizardSheet } from "./project-setup-wizard-sheet"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -210,7 +209,6 @@ export function ProjectDetailClient({
   const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>(initialScheduleItems)
   const [teamMembers, setTeamMembers] = useState<ProjectTeamMember[]>(team)
   const [sharingSheetOpen, setSharingSheetOpen] = useState(false)
-  const [setupWizardOpen, setSetupWizardOpen] = useState(false)
   const [portalTokensState, setPortalTokensState] = useState<PortalAccessToken[]>(portalTokens)
   const [externalAccounts, setExternalAccounts] = useState<ExternalPortalAccount[]>([])
   const [sharingLoading, setSharingLoading] = useState(false)
@@ -814,26 +812,6 @@ export function ProjectDetailClient({
         open={settingsSheetOpen}
         onOpenChange={setSettingsSheetOpen}
         onSave={handleSaveProject}
-      />
-      <ProjectSetupWizardSheet
-        open={setupWizardOpen}
-        onOpenChange={setSetupWizardOpen}
-        onOpenProjectSettings={() => {
-          setSetupWizardOpen(false)
-          setSettingsSheetOpen(true)
-        }}
-        onOpenTeamSheet={() => {
-          setSetupWizardOpen(false)
-          setManageTeamSheetOpen(true)
-        }}
-        project={project}
-        contacts={contacts}
-        team={teamMembers}
-        proposals={proposals}
-        contract={contract}
-        scheduleItemCount={scheduleItems.length}
-        drawsCount={draws.length}
-        portalTokens={portalTokensState}
       />
       <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
       {/* Header Section - Fixed */}
@@ -1657,7 +1635,6 @@ export function ProjectDetailClient({
             draws={draws}
             scheduleItems={scheduleItems}
             portalTokens={portalTokensState}
-            onOpenSetupWizard={() => setSetupWizardOpen(true)}
             onOpenProjectSettings={() => setSettingsSheetOpen(true)}
             onOpenShare={() => setSharingSheetOpen(true)}
           />

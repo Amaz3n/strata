@@ -2,125 +2,110 @@ import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { PipelineWorkspaceClient } from "@/components/pipeline/pipeline-workspace-client"
-import { listProspects, getRecentActivity } from "@/lib/services/crm"
-import { listOpportunities } from "@/lib/services/opportunities"
+import type { FunnelStage } from "@/components/pipeline/pipeline-funnel-bar"
+import type { AttentionCounts } from "@/components/pipeline/pipeline-attention-strip"
+import type { ProspectTableFilter } from "@/components/prospects/prospects-client"
+import { listProspects } from "@/lib/services/prospects"
 import { listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
-import { listContacts } from "@/lib/services/contacts"
-import { leadStatusEnum, type LeadStatus } from "@/lib/validation/crm"
-import { opportunityStatusEnum, type OpportunityStatus } from "@/lib/validation/opportunities"
+import { prospectStatusEnum, type ProspectStatus } from "@/lib/validation/prospects"
 
 export const dynamic = "force-dynamic"
 
-type PipelineView = "overview" | "opportunities" | "prospects"
-
 interface PipelinePageProps {
   searchParams: Promise<{
-    view?: string
     status?: string
   }>
 }
 
-function resolvePipelineView(view?: string): PipelineView {
-  if (view === "opportunities" || view === "prospects") return view
-  return "overview"
-}
-
-function resolveLeadStatus(status?: string): LeadStatus | undefined {
-  if (!status) return undefined
-  const parsed = leadStatusEnum.safeParse(status)
-  return parsed.success ? parsed.data : undefined
-}
-
-function resolveOpportunityStatus(status?: string): OpportunityStatus | undefined {
-  if (!status) return undefined
-  const parsed = opportunityStatusEnum.safeParse(status)
-  return parsed.success ? parsed.data : undefined
-}
+const FUNNEL_STAGES: ProspectStatus[] = ["new", "contacted", "qualified", "pricing", "estimate_sent"]
 
 const STALLED_AFTER_DAYS = 14
 const NEW_INQUIRY_WINDOW_DAYS = 14
-const ACTIVE_OPPORTUNITY_STATUSES = new Set<OpportunityStatus>([
+const ACTIVE_PROSPECT_STATUSES = new Set<ProspectStatus>([
   "new",
   "contacted",
   "qualified",
-  "estimating",
-  "proposed",
+  "pricing",
+  "estimate_sent",
+  "changes_requested",
+  "client_approved",
 ])
+
+function resolveInitialFilter(status?: string): ProspectTableFilter {
+  if (status === "stalled") return "stalled"
+  if (status === "followup_due") return "followup_due"
+  if (status === "all") return "all"
+  if (!status) return "active"
+  const parsed = prospectStatusEnum.safeParse(status)
+  return parsed.success ? parsed.data : "active"
+}
 
 async function PipelineData({ searchParams }: PipelinePageProps) {
   const resolvedSearchParams = await searchParams
-  const initialView = resolvePipelineView(resolvedSearchParams?.view)
-  const initialProspectStatus = resolveLeadStatus(resolvedSearchParams?.status)
-  const initialOpportunityStatus = resolveOpportunityStatus(resolvedSearchParams?.status)
+  const initialFilter = resolveInitialFilter(resolvedSearchParams?.status)
 
-  const [prospects, opportunities, teamMembers, permissionResult, recentActivity, clients] = await Promise.all([
+  const [prospects, teamMembers, permissionResult] = await Promise.all([
     listProspects(),
-    listOpportunities(),
     listTeamMembers(),
     getCurrentUserPermissions(),
-    getRecentActivity(undefined, 10),
-    listContacts(undefined, { contact_type: "client" }),
   ])
 
   const permissions = permissionResult?.permissions ?? []
   const canEdit = permissions.includes("org.member")
   const canCreate = permissions.includes("org.member")
-  const canManageProjects = permissions.includes("project.manage")
 
   const now = new Date()
-  const endOfTomorrow = new Date(now)
-  endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
-  endOfTomorrow.setHours(23, 59, 59, 999)
   const stalledCutoff = new Date(now.getTime() - STALLED_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString()
   const newInquiryCutoff = new Date(now.getTime() - NEW_INQUIRY_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
 
-  const overdueFollowUps = prospects
-    .filter((p) => p.next_follow_up_at && p.next_follow_up_at < now.toISOString())
-    .sort((a, b) => (a.next_follow_up_at ?? "").localeCompare(b.next_follow_up_at ?? ""))
-
-  const upcomingFollowUps = prospects
-    .filter((p) => {
-      if (!p.next_follow_up_at) return false
-      return p.next_follow_up_at >= now.toISOString() && p.next_follow_up_at <= endOfTomorrow.toISOString()
-    })
-    .sort((a, b) => (a.next_follow_up_at ?? "").localeCompare(b.next_follow_up_at ?? ""))
-
   const newInquiries = prospects
-    .filter((p) => (p.lead_status === "new" || !p.lead_status) && p.created_at >= newInquiryCutoff)
+    .filter((p) => p.status === "new" && p.created_at >= newInquiryCutoff)
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
 
-  const opportunityCounts: Record<OpportunityStatus, number> = {
-    new: 0, contacted: 0, qualified: 0, estimating: 0, proposed: 0, won: 0, lost: 0,
-  }
-  for (const opportunity of opportunities) {
-    opportunityCounts[opportunity.status] += 1
-  }
+  const stalledProspects = prospects
+    .filter((prospect) => ACTIVE_PROSPECT_STATUSES.has(prospect.status))
+    .filter((prospect) => (prospect.updated_at ?? prospect.created_at) < stalledCutoff)
+  const stalledIds = stalledProspects.map((p) => p.id)
 
-  const stalledOpportunities = opportunities
-    .filter((opportunity) => ACTIVE_OPPORTUNITY_STATUSES.has(opportunity.status))
-    .filter((opportunity) => (opportunity.updated_at ?? opportunity.created_at) < stalledCutoff)
-    .sort((a, b) => (a.updated_at ?? a.created_at).localeCompare(b.updated_at ?? b.created_at))
+  // Follow-ups due = active prospect with a scheduled follow-up at or before the end of today.
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString()
+  const followUpDueProspects = prospects
+    .filter((prospect) => ACTIVE_PROSPECT_STATUSES.has(prospect.status))
+    .filter((prospect) => prospect.next_follow_up_at && prospect.next_follow_up_at <= endOfToday)
+  const followUpDueIds = followUpDueProspects.map((p) => p.id)
+
+  const funnelStages: FunnelStage[] = FUNNEL_STAGES.map((key) => {
+    const stageProspects = prospects.filter((p) => p.status === key)
+    return {
+      key,
+      count: stageProspects.length,
+      valueCents: stageProspects.reduce((sum, p) => sum + (p.estimate_value_cents ?? 0), 0),
+    }
+  })
+
+  const countByStatus = (status: ProspectStatus) => prospects.filter((p) => p.status === status).length
+  const attentionCounts: AttentionCounts = {
+    followup_due: followUpDueProspects.length,
+    stalled: stalledProspects.length,
+    estimate_sent: countByStatus("estimate_sent"),
+    changes_requested: countByStatus("changes_requested"),
+    client_approved: countByStatus("client_approved"),
+    executed: countByStatus("executed"),
+  }
 
   return (
     <PipelineWorkspaceClient
-      initialView={initialView}
-      initialProspectStatus={initialProspectStatus}
-      initialOpportunityStatus={initialOpportunityStatus}
-      opportunityCounts={opportunityCounts}
-      overdueFollowUps={overdueFollowUps}
-      upcomingFollowUps={upcomingFollowUps}
+      initialFilter={initialFilter}
+      funnelStages={funnelStages}
+      attentionCounts={attentionCounts}
+      stalledIds={stalledIds}
+      followUpDueIds={followUpDueIds}
       newInquiries={newInquiries}
-      stalledOpportunities={stalledOpportunities}
-      stalledAfterDays={STALLED_AFTER_DAYS}
-      recentActivity={recentActivity}
       prospects={prospects}
-      opportunities={opportunities}
       teamMembers={teamMembers}
-      clients={clients}
       canCreate={canCreate}
       canEdit={canEdit}
-      canManageProjects={canManageProjects}
     />
   )
 }
@@ -128,16 +113,18 @@ async function PipelineData({ searchParams }: PipelinePageProps) {
 export default function PipelinePage(props: PipelinePageProps) {
   return (
     <PageLayout title="Pipeline">
-      <Suspense fallback={
-        <div className="p-6 space-y-4">
-          <Skeleton className="h-8 w-48 mb-6" />
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 w-full rounded-md" />
-            ))}
+      <Suspense
+        fallback={
+          <div className="space-y-4 p-6">
+            <Skeleton className="mb-6 h-8 w-48" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-16 w-full rounded-md" />
+              ))}
+            </div>
           </div>
-        </div>
-      }>
+        }
+      >
         <PipelineData searchParams={props.searchParams} />
       </Suspense>
     </PageLayout>

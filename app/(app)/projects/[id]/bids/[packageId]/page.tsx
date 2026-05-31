@@ -23,7 +23,11 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
     getBidPackageAction(packageId),
   ])
 
-  if (!project || !bidPackage || bidPackage.project_id !== project.id) {
+  const packageBelongsToProject =
+    bidPackage.project_id === project?.id ||
+    (!!project?.prospect_id && bidPackage.project_id == null && bidPackage.prospect_id === project.prospect_id)
+
+  if (!project || !bidPackage || !packageBelongsToProject) {
     notFound()
   }
 

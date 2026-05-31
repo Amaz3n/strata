@@ -47,6 +47,7 @@ export class NotificationService {
           entity_type: input.entityType,
           entity_id: input.entityId,
           event_id: input.eventId,
+          ...(input.metadata ?? {}),
         }
       })
       .select('id')

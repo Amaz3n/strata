@@ -60,6 +60,7 @@ export function DocumentsContent({
   const {
     files,
     folders,
+    folderItemCounts,
     drawingSets,
     currentPath,
     quickFilter,
@@ -70,7 +71,10 @@ export function DocumentsContent({
     loadMore,
   } = useDocuments()
 
-  const folderTree = useMemo(() => buildFolderTree(folders, files), [folders, files])
+  const folderTree = useMemo(
+    () => buildFolderTree(folders, files, folderItemCounts),
+    [folders, files, folderItemCounts]
+  )
 
   const currentFolders = useMemo(() => {
     if (!currentPath) {

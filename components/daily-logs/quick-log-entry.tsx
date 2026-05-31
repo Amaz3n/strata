@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils"
 
 import { useOfflineDailyLogs } from "@/lib/hooks/use-offline-daily-logs"
 import { getCoordinatesFromAddress, getCurrentWeather } from "@/lib/utils/weather"
+import { MentionTextarea, type MentionableUser } from "./mention-textarea"
 
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -57,6 +58,7 @@ interface QuickLogEntryProps {
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
+  mentionableUsers: MentionableUser[]
   onCreateLog: (values: DailyLogInput) => Promise<DailyLog>
   onUploadFiles: (
     files: File[],
@@ -108,12 +110,24 @@ function createDraftId() {
   return `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function canPreviewSelectedImage(file: File) {
+  const lowerName = file.name.toLowerCase()
+  const lowerType = file.type.toLowerCase()
+  return !(
+    lowerType === "image/heic" ||
+    lowerType === "image/heif" ||
+    lowerName.endsWith(".heic") ||
+    lowerName.endsWith(".heif")
+  )
+}
+
 export function QuickLogEntry({
   projectId,
   projectAddress,
   scheduleItems,
   tasks,
   punchItems,
+  mentionableUsers,
   onCreateLog,
   onUploadFiles,
   trigger,
@@ -122,7 +136,6 @@ export function QuickLogEntry({
 }: QuickLogEntryProps) {
   const today = new Date()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // State (supports both uncontrolled trigger usage and controlled open)
   const [internalOpen, setInternalOpen] = useState(false)
@@ -138,6 +151,7 @@ export function QuickLogEntry({
   const [selectedDate, setSelectedDate] = useState<DateOption>("today")
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([])
   const [showDatePicker, setShowDatePicker] = useState(false)
 
   // Offline sync hook
@@ -171,21 +185,6 @@ export function QuickLogEntry({
   const [taskUpdates, setTaskUpdates] = useState<TaskUpdateDraft[]>([])
   const [punchUpdates, setPunchUpdates] = useState<PunchUpdateDraft[]>([])
 
-  // Auto-resize textarea
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto"
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`
-    }
-  }, [summary])
-
-  // Focus textarea when drawer opens
-  useEffect(() => {
-    if (open && textareaRef.current) {
-      setTimeout(() => textareaRef.current?.focus(), 100)
-    }
-  }, [open])
-
   // Get actual date value
   function getDateValue(): string {
     if (selectedDate === "today") {
@@ -205,6 +204,7 @@ export function QuickLogEntry({
     setSelectedDate("today")
     setCustomDate(undefined)
     setSelectedFiles([])
+    setMentionedUserIds([])
     setShowDetailedEntries(false)
     setWorkItems([])
     setInspectionItems([])
@@ -280,6 +280,7 @@ export function QuickLogEntry({
             summary: summary.trim(),
             weather: selectedWeather || undefined,
             entries,
+            mentioned_user_ids: mentionedUserIds,
           },
           selectedFiles,
           { category: "photos" }
@@ -298,6 +299,7 @@ export function QuickLogEntry({
           summary: summary.trim(),
           weather: selectedWeather || undefined,
           entries,
+          mentioned_user_ids: mentionedUserIds,
         })
       }
 
@@ -534,13 +536,15 @@ export function QuickLogEntry({
 
           {/* Main text input */}
           <div className="relative bg-muted/30 rounded-lg border focus-within:border-muted-foreground/40 transition-colors mb-3">
-            <textarea
-              ref={textareaRef}
+            <MentionTextarea
               value={summary}
-              onChange={(e) => setSummary(e.target.value)}
+              onChange={setSummary}
+              mentionableUsers={mentionableUsers}
+              mentionedUserIds={mentionedUserIds}
+              onMentionedUserIdsChange={setMentionedUserIds}
               placeholder="What happened on site today?"
-              className="w-full bg-transparent resize-none px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none min-h-[80px]"
               rows={1}
+              className="min-h-[80px]"
             />
           </div>
 
@@ -553,11 +557,18 @@ export function QuickLogEntry({
                     key={index}
                     className="relative flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted"
                   >
-                    <img
-                      src={URL.createObjectURL(file)}
-                      alt={`Preview ${index + 1}`}
-                      className="w-full h-full object-cover"
-                    />
+                    {canPreviewSelectedImage(file) ? (
+                      <img
+                        src={URL.createObjectURL(file)}
+                        alt={`Preview ${index + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-1 text-center text-[10px] text-muted-foreground">
+                        <Camera className="h-4 w-4" />
+                        HEIC
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={() => removeFile(index)}
@@ -857,7 +868,7 @@ export function QuickLogEntry({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/*,.heic,.heif"
                 multiple
                 className="hidden"
                 onChange={handleFileChange}

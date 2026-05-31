@@ -4,64 +4,94 @@ import { useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { Contact, CostCode, Estimate, EstimateTemplate } from "@/lib/types"
+import type { Contact, CostCode, Estimate } from "@/lib/types"
 import type { EstimateInput } from "@/lib/validation/estimates"
-import { createEstimateAction, convertEstimateToProposalAction, duplicateEstimateAction, updateEstimateStatusAction } from "@/app/(app)/estimates/actions"
+import {
+  createEstimateAction,
+  duplicateEstimateAction,
+  updateEstimateStatusAction,
+  sendEstimateAction,
+  getEstimateBuilderSigningLinkAction,
+  getEstimateShareLinkAction,
+  reviseEstimateAction,
+} from "@/app/(app)/estimates/actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, MoreHorizontal, Copy, FileText } from "@/components/icons"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Plus, MoreHorizontal, Copy, FileText, Send, CheckCircle2 } from "@/components/icons"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { EstimateCreateSheet } from "@/components/estimates/estimate-create-sheet"
+import { EstimateActivitySheet } from "@/components/estimates/estimate-activity-sheet"
 
-type StatusKey = "draft" | "sent" | "approved" | "rejected"
+type StatusKey =
+  | "draft"
+  | "sent"
+  | "approved"
+  | "client_signed"
+  | "executed"
+  | "converted_to_project"
+  | "rejected"
+  | "changes_requested"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
   sent: "Sent",
-  approved: "Approved",
+  approved: "Approved (manual)",
+  client_signed: "Client signed",
+  executed: "Executed",
+  converted_to_project: "Project created",
   rejected: "Rejected",
+  changes_requested: "Changes requested",
 }
 
 const statusStyles: Record<StatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
   sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   approved: "bg-success/15 text-success border-success/30",
+  client_signed: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30",
+  executed: "bg-success/20 text-success border-success/40",
+  converted_to_project: "bg-purple-500/15 text-purple-700 border-purple-500/30",
   rejected: "bg-destructive/15 text-destructive border-destructive/30",
+  changes_requested: "bg-amber-500/15 text-amber-600 border-amber-500/30",
 }
 
 interface EstimatesClientProps {
   estimates: Array<Estimate & { recipient_name?: string | null }>
   contacts: Contact[]
-  templates: EstimateTemplate[]
   costCodes: CostCode[]
+  defaultTerms?: string
   initialRecipientId?: string
   initialProjectId?: string
+  initialProspectId?: string
 }
 
 export function EstimatesClient({
   estimates,
   contacts,
-  templates,
   costCodes,
+  defaultTerms,
   initialRecipientId,
   initialProjectId,
+  initialProspectId,
 }: EstimatesClientProps) {
   const [items, setItems] = useState(estimates)
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, startCreating] = useTransition()
-  const [convertingId, setConvertingId] = useState<string | null>(null)
+  const [countersigningId, setCountersigningId] = useState<string | null>(null)
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null)
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [revisingId, setRevisingId] = useState<string | null>(null)
+  const [activityEstimate, setActivityEstimate] = useState<(Estimate & { recipient_name?: string | null }) | null>(null)
 
   useEffect(() => {
-    if (initialRecipientId || initialProjectId) {
+    if (initialRecipientId || initialProjectId || initialProspectId) {
       setCreateOpen(true)
     }
-  }, [initialRecipientId, initialProjectId])
+  }, [initialRecipientId, initialProjectId, initialProspectId])
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
@@ -75,7 +105,16 @@ export function EstimatesClient({
   }, [items, search, statusFilter])
 
   function resolveStatus(status?: string | null): StatusKey {
-    if (status === "sent" || status === "approved" || status === "rejected") return status
+    if (
+      status === "sent" ||
+      status === "approved" ||
+      status === "client_signed" ||
+      status === "executed" ||
+      status === "converted_to_project" ||
+      status === "rejected" ||
+      status === "changes_requested"
+    )
+      return status
     return "draft"
   }
 
@@ -94,22 +133,72 @@ export function EstimatesClient({
     })
   }
 
-  async function handleConvert(estimateId: string, recipientId?: string | null) {
-    if (!recipientId) {
-      toast.error("Add a client contact before converting")
-      return
-    }
-    setConvertingId(estimateId)
+  async function handleCountersign(estimate: Estimate & { recipient_name?: string | null }) {
+    setCountersigningId(estimate.id)
     try {
-      const result = await convertEstimateToProposalAction(estimateId)
-      const viewUrl = result.viewUrl
-      await copyToClipboard(viewUrl)
-      toast.success("Proposal worksheet created", { description: "Review link copied. Send the official PDF from Signatures." })
+      const result = await getEstimateBuilderSigningLinkAction(estimate.id)
+      if (!result.url) {
+        throw new Error("Signing link was not returned.")
+      }
+      const signingUrl = new URL(result.url, window.location.origin)
+      if (!signingUrl.pathname.startsWith("/d/")) {
+        throw new Error("Signing link did not point to a document signing request.")
+      }
+      window.location.assign(signingUrl.toString())
+      toast.success("Builder signing opened", {
+        description: result.signerEmail ? `Signing request assigned to ${result.signerEmail}.` : "Complete the signature to execute the estimate.",
+      })
     } catch (error: any) {
       console.error(error)
-      toast.error("Failed to convert", { description: error?.message ?? "Please try again." })
+      toast.error("Couldn't open builder signing", { description: error?.message ?? "Please try again." })
     } finally {
-      setConvertingId(null)
+      setCountersigningId(null)
+    }
+  }
+
+  async function handleSend(estimateId: string) {
+    setSendingId(estimateId)
+    try {
+      const result = await sendEstimateAction(estimateId)
+      setItems((prev) => prev.map((item) => (item.id === estimateId ? { ...item, status: "sent" } : item)))
+      await copyToClipboard(result.url)
+      toast.success(result.emailSent ? "Estimate sent to client" : "Estimate marked sent", {
+        description: result.emailSent ? "Review link copied to clipboard." : "Email skipped — review link copied.",
+      })
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Couldn't send estimate", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSendingId(null)
+    }
+  }
+
+  async function handleCopyLink(estimateId: string) {
+    try {
+      const result = await getEstimateShareLinkAction(estimateId)
+      await copyToClipboard(result.url)
+      toast.success("Review link copied")
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Couldn't create link", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  async function handleRevise(estimateId: string) {
+    setRevisingId(estimateId)
+    try {
+      const revised = await reviseEstimateAction(estimateId)
+      const recipient = contacts.find((contact) => contact.id === revised.recipient_contact_id)
+      setItems((prev) => [
+        { ...revised, recipient_name: recipient?.full_name ?? null },
+        ...prev.map((item) => (item.id === estimateId ? { ...item, is_current_version: false } : item)),
+      ])
+      toast.success("New version created", { description: "Edit the draft, then send it to your client." })
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Couldn't revise", { description: error?.message ?? "Please try again." })
+    } finally {
+      setRevisingId(null)
     }
   }
 
@@ -127,7 +216,7 @@ export function EstimatesClient({
     }
   }
 
-  async function handleStatus(estimateId: string, status: StatusKey) {
+  async function handleStatus(estimateId: string, status: "draft" | "sent" | "approved" | "rejected") {
     try {
       const updated = await updateEstimateStatusAction(estimateId, status)
       setItems((prev) => prev.map((item) => (item.id === estimateId ? { ...item, status: updated.status } : item)))
@@ -144,12 +233,21 @@ export function EstimatesClient({
         open={createOpen}
         onOpenChange={setCreateOpen}
         contacts={contacts}
-        templates={templates}
         costCodes={costCodes}
+        defaultTerms={defaultTerms}
         defaultRecipientId={initialRecipientId}
         defaultProjectId={initialProjectId}
+        defaultProspectId={initialProspectId}
         onCreate={handleCreate}
         loading={creating}
+      />
+
+      <EstimateActivitySheet
+        estimate={activityEstimate}
+        open={!!activityEstimate}
+        onOpenChange={(open) => {
+          if (!open) setActivityEstimate(null)
+        }}
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -166,7 +264,7 @@ export function EstimatesClient({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
-              {(["draft", "sent", "approved", "rejected"] as StatusKey[]).map((status) => (
+              {(["draft", "sent", "changes_requested", "client_signed", "executed", "approved", "rejected"] as StatusKey[]).map((status) => (
                 <SelectItem key={status} value={status}>
                   {statusLabels[status]}
                 </SelectItem>
@@ -199,7 +297,16 @@ export function EstimatesClient({
               return (
                 <TableRow key={estimate.id} className="divide-x">
                   <TableCell className="px-4 py-4">
-                    <div className="font-semibold">{estimate.title}</div>
+                    <button
+                      type="button"
+                      className="text-left font-semibold hover:underline"
+                      onClick={() => setActivityEstimate(estimate)}
+                    >
+                      {estimate.title}
+                    </button>
+                    {estimate.is_current_version === false ? (
+                      <div className="text-xs text-muted-foreground">superseded · v{estimate.version}</div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="px-4 py-4 text-muted-foreground">{estimate.recipient_name ?? "—"}</TableCell>
                   <TableCell className="px-4 py-4 text-center">
@@ -227,18 +334,15 @@ export function EstimatesClient({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem
-                            onClick={() => void handleConvert(estimate.id, estimate.recipient_contact_id)}
-                            disabled={convertingId === estimate.id}
+                            onClick={() => void handleSend(estimate.id)}
+                            disabled={sendingId === estimate.id}
                           >
-                            <Copy className="mr-2 h-4 w-4" />
-                            {convertingId === estimate.id ? "Converting..." : "Convert to proposal"}
+                            <Send className="mr-2 h-4 w-4" />
+                            {sendingId === estimate.id ? "Sending..." : "Send to client"}
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => void handleDuplicate(estimate.id)}
-                            disabled={duplicatingId === estimate.id}
-                          >
-                            <FileText className="mr-2 h-4 w-4" />
-                            {duplicatingId === estimate.id ? "Duplicating..." : "Duplicate version"}
+                          <DropdownMenuItem onClick={() => void handleCopyLink(estimate.id)}>
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy review link
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => window.open(`/estimates/${estimate.id}/export`, "_blank")}
@@ -246,9 +350,29 @@ export function EstimatesClient({
                             <FileText className="mr-2 h-4 w-4" />
                             Export PDF
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => void handleStatus(estimate.id, "sent")}>
-                            Mark sent
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => void handleCountersign(estimate)}
+                            disabled={countersigningId === estimate.id || statusKey !== "client_signed"}
+                          >
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            {countersigningId === estimate.id ? "Opening..." : "Open builder signing"}
                           </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => void handleRevise(estimate.id)}
+                            disabled={revisingId === estimate.id}
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            {revisingId === estimate.id ? "Creating..." : "Revise (new version)"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => void handleDuplicate(estimate.id)}
+                            disabled={duplicatingId === estimate.id}
+                          >
+                            <FileText className="mr-2 h-4 w-4" />
+                            {duplicatingId === estimate.id ? "Duplicating..." : "Duplicate"}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem onClick={() => void handleStatus(estimate.id, "approved")}>
                             Mark approved
                           </DropdownMenuItem>

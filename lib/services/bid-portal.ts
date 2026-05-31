@@ -29,7 +29,8 @@ const BID_PORTAL_PIN_SELECT = `
 
 export interface BidPortalPackage {
   id: string
-  project_id: string
+  project_id?: string | null
+  prospect_id?: string | null
   title: string
   trade?: string | null
   scope?: string | null
@@ -322,7 +323,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
 
   const { data: bidPackage } = await supabase
     .from("bid_packages")
-    .select("id, project_id, title, trade, scope, instructions, due_at, status")
+    .select("id, project_id, prospect_id, title, trade, scope, instructions, due_at, status")
     .eq("id", inviteRow.bid_package_id)
     .maybeSingle()
 
@@ -334,22 +335,42 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     return null
   }
 
-  const projectResult = await supabase
-    .from("projects")
-    .select("id, org_id, name, status")
-    .eq("id", bidPackage.project_id)
-    .maybeSingle()
+  let job: { id: string; org_id: string; name: string; status: string } | null = null
 
-  if (!projectResult.data) {
-    console.warn("Bid portal token missing project", {
+  if (bidPackage.project_id) {
+    const projectResult = await supabase
+      .from("projects")
+      .select("id, org_id, name, status")
+      .eq("id", bidPackage.project_id)
+      .maybeSingle()
+    job = projectResult.data
+  } else if (bidPackage.prospect_id) {
+    const prospectResult = await supabase
+      .from("prospects")
+      .select("id, org_id, name, status")
+      .eq("id", bidPackage.prospect_id)
+      .maybeSingle()
+    job = prospectResult.data
+      ? {
+          id: prospectResult.data.id,
+          org_id: prospectResult.data.org_id,
+          name: prospectResult.data.name,
+          status: "planning",
+        }
+      : null
+  }
+
+  if (!job) {
+    console.warn("Bid portal token missing job context", {
       tokenPrefix: token.slice(0, 6),
       projectId: bidPackage.project_id,
+      prospectId: bidPackage.prospect_id,
       orgId: tokenRow.org_id,
     })
     return null
   }
 
-  const resolvedOrgId = projectResult.data.org_id ?? tokenRow.org_id
+  const resolvedOrgId = job.org_id ?? tokenRow.org_id
   const { data: orgResult, error: orgError } = await supabase
     .from("orgs")
     .select("id, name, logo_url")
@@ -360,7 +381,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     console.warn("Bid portal token missing org", {
       tokenPrefix: token.slice(0, 6),
       tokenOrgId: tokenRow.org_id,
-      projectOrgId: projectResult.data.org_id,
+      projectOrgId: job.org_id,
       orgError: orgError?.message,
     })
     return null
@@ -390,7 +411,8 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     },
     bidPackage: {
       id: bidPackage.id,
-      project_id: bidPackage.project_id,
+      project_id: bidPackage.project_id ?? null,
+      prospect_id: bidPackage.prospect_id ?? null,
       title: bidPackage.title,
       trade: bidPackage.trade ?? null,
       scope: bidPackage.scope ?? null,
@@ -399,9 +421,9 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       status: bidPackage.status,
     },
     project: {
-      id: projectResult.data.id,
-      name: projectResult.data.name,
-      status: projectResult.data.status,
+      id: job.id,
+      name: job.name,
+      status: job.status,
     },
     org: {
       id: orgResult.id,
@@ -527,14 +549,14 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
       .eq("org_id", access.org_id)
       .eq("bid_invite_id", access.bid_invite_id)
       .order("version", { ascending: false }),
-    assignedCompanyId
+    assignedCompanyId && access.bidPackage.project_id
       ? supabase
           .from("rfis")
           .select(
             "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, submitted_at, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
           )
           .eq("org_id", access.org_id)
-          .eq("project_id", access.project.id)
+          .eq("project_id", access.bidPackage.project_id)
           .eq("assigned_company_id", assignedCompanyId)
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),

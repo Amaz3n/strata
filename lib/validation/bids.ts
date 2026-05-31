@@ -9,16 +9,21 @@ export type BidInviteStatus = z.infer<typeof bidInviteStatusEnum>
 export const bidSubmissionStatusEnum = z.enum(["draft", "submitted", "revised", "withdrawn"])
 export type BidSubmissionStatus = z.infer<typeof bidSubmissionStatusEnum>
 
-export const createBidPackageInputSchema = z.object({
-  project_id: z.string().uuid(),
-  title: z.string().min(1, "Title is required"),
-  cost_code_id: z.string().uuid().optional().nullable(),
-  trade: z.string().optional().nullable(),
-  scope: z.string().optional().nullable(),
-  instructions: z.string().optional().nullable(),
-  due_at: z.string().datetime().optional().nullable(),
-  status: bidPackageStatusEnum.optional(),
-})
+export const createBidPackageInputSchema = z
+  .object({
+    project_id: z.string().uuid().optional().nullable(),
+    prospect_id: z.string().uuid().optional().nullable(),
+    title: z.string().min(1, "Title is required"),
+    cost_code_id: z.string().uuid().optional().nullable(),
+    trade: z.string().optional().nullable(),
+    scope: z.string().optional().nullable(),
+    instructions: z.string().optional().nullable(),
+    due_at: z.string().datetime().optional().nullable(),
+    status: bidPackageStatusEnum.optional(),
+  })
+  .refine((data) => data.project_id || data.prospect_id, {
+    message: "A bid package must belong to a project or prospect",
+  })
 
 export const updateBidPackageInputSchema = z.object({
   title: z.string().min(1).optional(),

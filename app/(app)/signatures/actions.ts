@@ -47,6 +47,7 @@ type SigningRequestRoutingRow = {
 }
 
 const SOURCE_ENTITY_TYPES: UnifiedSignableEntityType[] = [
+  "estimate",
   "proposal",
   "change_order",
   "lien_waiver",
@@ -57,6 +58,7 @@ const SOURCE_ENTITY_TYPES: UnifiedSignableEntityType[] = [
 ]
 
 const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string> = {
+  estimate: "estimate_id",
   proposal: "proposal_id",
   change_order: "change_order_id",
   lien_waiver: "lien_waiver_id",
@@ -101,6 +103,7 @@ function getSourceEntityMetadataIdKey(sourceEntityType: UnifiedSignableEntityTyp
 }
 
 function getSourceEntityCompletionEvent(sourceEntityType: UnifiedSignableEntityType) {
+  if (sourceEntityType === "estimate") return completionEventByEntityType.estimate
   if (sourceEntityType === "proposal") return completionEventByEntityType.proposal
   if (sourceEntityType === "change_order") return completionEventByEntityType.change_order
   if (sourceEntityType === "lien_waiver") return completionEventByEntityType.lien_waiver
@@ -204,7 +207,7 @@ export async function listDocumentsAction(projectId?: string) {
 
 export async function createDocumentAction(input: {
   project_id: string
-  document_type: "proposal" | "contract" | "change_order" | "other"
+  document_type: "estimate" | "proposal" | "contract" | "change_order" | "other"
   title: string
   source_file_id: string
   source_entity_type?: UnifiedSignableEntityType
@@ -216,7 +219,7 @@ export async function createDocumentAction(input: {
 
 export async function createVersionedSourceDocumentDraftAction(input: {
   project_id: string
-  document_type: "proposal" | "contract" | "change_order" | "other"
+  document_type: "estimate" | "proposal" | "contract" | "change_order" | "other"
   title: string
   source_file_id: string
   source_entity_type: UnifiedSignableEntityType

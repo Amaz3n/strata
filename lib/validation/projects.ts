@@ -25,6 +25,7 @@ export const projectInputSchema = z.object({
   labor_burden_multiplier: z.number().min(1).optional().nullable(),
   requires_client_cost_approval: z.boolean().optional(),
   open_book: z.boolean().optional(),
+  prospect_id: z.string().uuid().optional().nullable(),
 })
 
 export const projectUpdateSchema = projectInputSchema.partial()

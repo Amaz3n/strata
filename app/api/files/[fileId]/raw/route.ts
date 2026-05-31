@@ -1,48 +1,37 @@
 import { NextResponse } from "next/server"
 
-import { requireAuth } from "@/lib/auth/context"
-import { isPlatformAdminId } from "@/lib/auth/platform"
+import { requireOrgMembership } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { downloadFilesObject } from "@/lib/storage/files-storage"
+import { getFilesObjectStream } from "@/lib/storage/files-storage"
 
 function buildInlineDisposition(filename?: string | null) {
-  const safe = (filename ?? "file").replace(/[\r\n"]/g, "_")
-  return `inline; filename="${safe}"`
+  const raw = filename ?? "file"
+  const asciiFallback = raw
+    .replace(/[\r\n"]/g, "_")
+    .replace(/[^\x20-\x7E]/g, "_")
+    .slice(0, 180) || "file"
+  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodeRFC5987Value(raw)}`
 }
 
-function parseByteRange(rangeHeader: string | null, size: number): { start: number; end: number } | null {
-  if (!rangeHeader) return null
-  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim())
-  if (!match) return null
+function encodeRFC5987Value(value: string) {
+  return encodeURIComponent(value)
+    .replace(/['()]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/\*/g, "%2A")
+}
 
-  const startRaw = match[1]
-  const endRaw = match[2]
-
-  // "bytes=-500" (last 500 bytes)
-  if (!startRaw && endRaw) {
-    const suffixLength = Number(endRaw)
-    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null
-    const start = Math.max(size - suffixLength, 0)
-    return { start, end: size - 1 }
-  }
-
-  const start = Number(startRaw)
-  const end = endRaw ? Number(endRaw) : size - 1
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
-  if (start < 0 || end < 0 || start > end) return null
-  if (start >= size) return null
-  return { start, end: Math.min(end, size - 1) }
+function isSafeByteRange(rangeHeader: string | null): rangeHeader is string {
+  if (!rangeHeader) return false
+  return /^bytes=(\d*)-(\d*)$/i.test(rangeHeader.trim())
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
     const { fileId } = await params
-    const { user } = await requireAuth()
     const svc = createServiceSupabaseClient()
 
     const { data: file, error } = await svc
       .from("files")
-      .select("id, org_id, storage_path, file_name, mime_type")
+      .select("id, org_id, storage_path, file_name, mime_type, size_bytes, updated_at")
       .eq("id", fileId)
       .maybeSingle()
 
@@ -50,48 +39,51 @@ export async function GET(req: Request, { params }: { params: Promise<{ fileId: 
       return NextResponse.json({ error: "Not found" }, { status: 404 })
     }
 
-    const isPlatformAdmin = isPlatformAdminId(user.id, user.email ?? undefined)
-    if (!isPlatformAdmin) {
-      const { data: membership, error: membershipError } = await svc
-        .from("memberships")
-        .select("id")
-        .eq("org_id", file.org_id)
-        .eq("user_id", user.id)
-        .eq("status", "active")
-        .maybeSingle()
-
-      if (membershipError || !membership) {
-        return NextResponse.json({ error: "Forbidden" }, { status: 403 })
-      }
+    try {
+      await requireOrgMembership(file.org_id)
+    } catch {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
-    const bytes = await downloadFilesObject({
-      supabase: svc,
-      orgId: file.org_id,
-      path: file.storage_path,
-    })
-    const payload = new Uint8Array(bytes)
+    const rangeHeader = req.headers.get("range")
+    const range = isSafeByteRange(rangeHeader) ? rangeHeader.trim() : undefined
+    let object: Awaited<ReturnType<typeof getFilesObjectStream>>
+    try {
+      object = await getFilesObjectStream({
+        supabase: svc,
+        orgId: file.org_id,
+        path: file.storage_path,
+        range,
+      })
+    } catch (error: any) {
+      if (error?.Code === "NoSuchKey" || error?.name === "NoSuchKey") {
+        return NextResponse.json({ error: "File object not found" }, { status: 404 })
+      }
+      throw error
+    }
 
-    const total = payload.length
-    const range = parseByteRange(req.headers.get("range"), total)
     const contentType = file.mime_type ?? "application/octet-stream"
 
     const headers = new Headers()
-    headers.set("Content-Type", contentType)
+    headers.set("Content-Type", object.contentType ?? contentType)
     headers.set("Content-Disposition", buildInlineDisposition(file.file_name))
     headers.set("Accept-Ranges", "bytes")
     headers.set("X-Content-Type-Options", "nosniff")
-    headers.set("Cache-Control", "private, max-age=60")
+    headers.set("Cache-Control", "private, max-age=300")
+    if (object.etag) headers.set("ETag", object.etag)
+    if (object.lastModified) headers.set("Last-Modified", object.lastModified.toUTCString())
 
-    if (range) {
-      const chunk = payload.subarray(range.start, range.end + 1)
-      headers.set("Content-Range", `bytes ${range.start}-${range.end}/${total}`)
-      headers.set("Content-Length", String(chunk.length))
-      return new Response(chunk, { status: 206, headers })
+    if (object.contentRange) {
+      headers.set("Content-Range", object.contentRange)
+    }
+    if (object.contentLength !== undefined) {
+      headers.set("Content-Length", String(object.contentLength))
     }
 
-    headers.set("Content-Length", String(total))
-    return new Response(payload, { status: 200, headers })
+    return new Response(object.body as BodyInit, {
+      status: range ? 206 : 200,
+      headers,
+    })
   } catch (error) {
     console.error("[api/files/[fileId]/raw] Failed:", error)
     return NextResponse.json({ error: "Unable to serve file" }, { status: 500 })

@@ -1,137 +1,89 @@
 "use client"
 
-import { useRouter } from "next/navigation"
+import { useMemo, useState } from "react"
 
-import type { Contact, TeamMember } from "@/lib/types"
-import type { Prospect, CrmActivity } from "@/lib/services/crm"
-import type { Opportunity } from "@/lib/services/opportunities"
-import type { LeadStatus } from "@/lib/validation/crm"
-import type { OpportunityStatus } from "@/lib/validation/opportunities"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import type { TeamMember } from "@/lib/types"
+import type { Prospect } from "@/lib/services/prospects"
+import type { ProspectStatus } from "@/lib/validation/prospects"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { PipelineDashboard } from "@/components/pipeline/pipeline-dashboard"
+import { AddProspectDialog } from "@/components/pipeline/add-prospect-dialog"
+import { PipelineFunnelBar, type FunnelStage } from "@/components/pipeline/pipeline-funnel-bar"
+import type { AttentionCounts } from "@/components/pipeline/pipeline-attention-strip"
 import { PipelineMobileWorkspace } from "@/components/pipeline/pipeline-mobile-workspace"
-import { ProspectsClient } from "@/components/prospects/prospects-client"
-import { OpportunitiesClient } from "@/components/opportunities/opportunities-client"
-
-type PipelineView = "overview" | "opportunities" | "prospects"
+import { ProspectsClient, type ProspectTableFilter } from "@/components/prospects/prospects-client"
 
 interface PipelineWorkspaceClientProps {
-  initialView: PipelineView
-  initialProspectStatus?: LeadStatus
-  initialOpportunityStatus?: OpportunityStatus
-  opportunityCounts: Record<OpportunityStatus, number>
-  overdueFollowUps: Prospect[]
-  upcomingFollowUps: Prospect[]
+  initialFilter: ProspectTableFilter
+  funnelStages: FunnelStage[]
+  attentionCounts: AttentionCounts
+  stalledIds: string[]
+  followUpDueIds: string[]
   newInquiries: Prospect[]
-  stalledOpportunities: Opportunity[]
-  stalledAfterDays: number
-  recentActivity: CrmActivity[]
   prospects: Prospect[]
-  opportunities: Opportunity[]
   teamMembers: TeamMember[]
-  clients: Contact[]
   canCreate?: boolean
   canEdit?: boolean
-  canManageProjects?: boolean
 }
 
 export function PipelineWorkspaceClient({
-  initialView,
-  initialProspectStatus,
-  initialOpportunityStatus,
-  opportunityCounts,
-  overdueFollowUps,
-  upcomingFollowUps,
+  initialFilter,
+  funnelStages,
+  attentionCounts,
+  stalledIds,
+  followUpDueIds,
   newInquiries,
-  stalledOpportunities,
-  stalledAfterDays,
-  recentActivity,
   prospects,
-  opportunities,
   teamMembers,
-  clients,
   canCreate = false,
   canEdit = false,
-  canManageProjects = false,
 }: PipelineWorkspaceClientProps) {
-  const router = useRouter()
   const isMobile = useIsMobile()
+  const [activeFilter, setActiveFilter] = useState<ProspectTableFilter>(initialFilter)
+  const [addOpen, setAddOpen] = useState(false)
+
+  const stalledSet = useMemo(() => new Set(stalledIds), [stalledIds])
+  const followUpDueSet = useMemo(() => new Set(followUpDueIds), [followUpDueIds])
 
   if (isMobile) {
     return (
       <PipelineMobileWorkspace
-        opportunityCounts={opportunityCounts}
-        overdueFollowUps={overdueFollowUps}
-        upcomingFollowUps={upcomingFollowUps}
+        funnelStages={funnelStages}
+        attentionCounts={attentionCounts}
         newInquiries={newInquiries}
-        recentActivity={recentActivity}
         prospects={prospects}
-        opportunities={opportunities}
         teamMembers={teamMembers}
         canCreate={canCreate}
-        canManageProjects={canManageProjects}
       />
     )
   }
 
-  const handleViewChange = (next: string) => {
-    const nextView = (next === "opportunities" || next === "prospects" ? next : "overview") as PipelineView
-    const params = new URLSearchParams()
-    if (nextView !== "overview") params.set("view", nextView)
-    const qs = params.toString()
-    router.replace(qs ? `/pipeline?${qs}` : "/pipeline", { scroll: false })
+  // Selecting the already-active stage/bucket toggles the filter back to the default active view.
+  const toggleFilter = (next: ProspectTableFilter) => {
+    setActiveFilter((current) => (current === next ? "active" : next))
   }
 
-  const renderTabSwitcher = () => (
-    <TabsList>
-      <TabsTrigger value="overview">Overview</TabsTrigger>
-      <TabsTrigger value="opportunities">Opportunities</TabsTrigger>
-      <TabsTrigger value="prospects">Prospects</TabsTrigger>
-    </TabsList>
-  )
+  const isDefault = activeFilter === "active" || activeFilter === "all"
+  const funnelActive = !isDefault && activeFilter !== "stalled" ? (activeFilter as ProspectStatus) : null
 
   return (
-    <Tabs value={initialView} onValueChange={handleViewChange} className="space-y-6">
-      <TabsContent value="overview" className="space-y-6">
-        <PipelineDashboard
-          headerLeft={renderTabSwitcher()}
-          opportunityCounts={opportunityCounts}
-          overdueFollowUps={overdueFollowUps}
-          upcomingFollowUps={upcomingFollowUps}
-          newInquiries={newInquiries}
-          stalledOpportunities={stalledOpportunities}
-          stalledAfterDays={stalledAfterDays}
-          recentActivity={recentActivity}
-          teamMembers={teamMembers}
-          canCreate={canCreate}
-          canEdit={canEdit}
-        />
-      </TabsContent>
+    <div className="space-y-5">
+      <PipelineFunnelBar stages={funnelStages} activeStatus={funnelActive} onSelect={(status) => toggleFilter(status)} />
 
-      <TabsContent value="opportunities">
-        <OpportunitiesClient
-          headerLeft={renderTabSwitcher()}
-          opportunities={opportunities}
-          teamMembers={teamMembers}
-          clients={clients}
-          initialStatusFilter={initialOpportunityStatus}
-          canCreate={canCreate}
-          canEdit={canEdit}
-          canManageProjects={canManageProjects}
-        />
-      </TabsContent>
+      <ProspectsClient
+        prospects={prospects}
+        teamMembers={teamMembers}
+        canCreate={canCreate}
+        canEdit={canEdit}
+        attentionCounts={attentionCounts}
+        activeFilter={activeFilter}
+        onSelectFilter={setActiveFilter}
+        onClearFilter={() => setActiveFilter("active")}
+        stalledIds={stalledSet}
+        followUpDueIds={followUpDueSet}
+        onAddProspect={canCreate ? () => setAddOpen(true) : undefined}
+      />
 
-      <TabsContent value="prospects">
-        <ProspectsClient
-          headerLeft={renderTabSwitcher()}
-          prospects={prospects}
-          teamMembers={teamMembers}
-          canCreate={canCreate}
-          canEdit={canEdit}
-          initialStatusFilter={initialProspectStatus}
-        />
-      </TabsContent>
-    </Tabs>
+      <AddProspectDialog open={addOpen} onOpenChange={setAddOpen} teamMembers={teamMembers} />
+    </div>
   )
 }

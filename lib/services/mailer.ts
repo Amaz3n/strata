@@ -79,7 +79,7 @@ export function renderStandardEmailLayout(args: {
       <tr>
         <td style="text-align: center; padding: 36px 40px 22px 40px; border-bottom: 1px solid #ebebeb;">
           ${args.orgLogoUrl ? `
-            <img src="${args.orgLogoUrl}" alt="${escapeHtml(orgName)}" width="56" height="56" style="border: 1px solid #d6d6d6; background-color: #ffffff; display: block; margin: 0 auto; padding: 6px;" />
+            <img src="${args.orgLogoUrl}" alt="${escapeHtml(orgName)}" width="56" height="56" style="border: 1px solid #d6d6d6; background-color: #ffffff; display: block; margin: 0 auto; padding: 6px; width: 56px; height: 56px; object-fit: contain;" />
           ` : `
             <div style="margin: 0 auto 12px auto; width: 56px; height: 56px; line-height: 56px; text-align: center; border: 1px solid #d6d6d6; background-color: #ffffff; color: #111111; font-weight: 700; font-size: 18px;">
               ${escapeHtml(orgName.slice(0, 1).toUpperCase())}

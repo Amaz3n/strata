@@ -258,6 +258,10 @@ type OrganizationSettingsData = {
   country: string
   defaultPaymentTermsDays: number
   defaultInvoiceNote: string
+  proposalTermsTemplate: string
+  estimateTermsTemplate: string
+  estimateBuilderSignerMode: "estimate_creator" | "prospect_owner" | "specific_user"
+  estimateBuilderSignerUserId: string
   aiProvider: AiProvider
   aiModel: string
   aiConfigSource: AiConfigSource
@@ -365,6 +369,10 @@ export function SettingsWindow({
     country: "",
     defaultPaymentTermsDays: 15,
     defaultInvoiceNote: "",
+    proposalTermsTemplate: "",
+    estimateTermsTemplate: "",
+    estimateBuilderSignerMode: "estimate_creator" as "estimate_creator" | "prospect_owner" | "specific_user",
+    estimateBuilderSignerUserId: "",
     aiProvider: "openai" as AiProvider,
     aiModel: AI_PROVIDER_DEFAULT_MODELS.openai,
   })
@@ -400,6 +408,10 @@ export function SettingsWindow({
       country: data.country ?? "",
       defaultPaymentTermsDays: data.defaultPaymentTermsDays ?? 15,
       defaultInvoiceNote: data.defaultInvoiceNote ?? "",
+      proposalTermsTemplate: data.proposalTermsTemplate ?? "",
+      estimateTermsTemplate: data.estimateTermsTemplate ?? "",
+      estimateBuilderSignerMode: data.estimateBuilderSignerMode ?? "estimate_creator",
+      estimateBuilderSignerUserId: data.estimateBuilderSignerUserId ?? "",
       aiProvider: data.aiProvider ?? "openai",
       aiModel: data.aiModel ?? AI_PROVIDER_DEFAULT_MODELS[data.aiProvider ?? "openai"],
     })
@@ -627,7 +639,7 @@ export function SettingsWindow({
       window.history.replaceState(null, "", `/settings?${nextParams.toString()}`)
       window.dispatchEvent(new CustomEvent("arc-settings-tab-change", { detail: nextTab }))
     }
-    if (nextTab === "team") {
+    if (nextTab === "team" || nextTab === "organization") {
       loadTeam()
     }
     if (nextTab === "cost-codes") {
@@ -641,7 +653,7 @@ export function SettingsWindow({
       const nextTab = (event as CustomEvent<string>).detail
       if (!sections.some((section) => section.value === nextTab)) return
       setTab(nextTab)
-      if (nextTab === "team") {
+      if (nextTab === "team" || nextTab === "organization") {
         loadTeam()
       }
       if (nextTab === "cost-codes") {
@@ -656,6 +668,11 @@ export function SettingsWindow({
     if (currentMemberRole || loadingTeam) return
     loadTeam()
   }, [currentMemberRole, loadingTeam, loadTeam])
+
+  useEffect(() => {
+    if (tab !== "organization") return
+    loadTeam()
+  }, [tab, loadTeam])
 
   useEffect(() => {
     if (tab !== "cost-codes") return
@@ -735,7 +752,7 @@ export function SettingsWindow({
     }
   }
 
-  const handleOrganizationFieldChange = (field: "name" | "billingEmail" | "addressLine1" | "addressLine2" | "city" | "state" | "postalCode" | "country" | "defaultPaymentTermsDays" | "defaultInvoiceNote", value: string | number) => {
+  const handleOrganizationFieldChange = (field: "name" | "billingEmail" | "addressLine1" | "addressLine2" | "city" | "state" | "postalCode" | "country" | "defaultPaymentTermsDays" | "defaultInvoiceNote" | "proposalTermsTemplate" | "estimateTermsTemplate" | "estimateBuilderSignerMode" | "estimateBuilderSignerUserId", value: string | number) => {
     setOrganizationForm((prev) => ({ ...prev, [field]: value }))
     setOrganizationNotice(null)
     setOrganizationError(null)
@@ -802,6 +819,10 @@ export function SettingsWindow({
         country: organizationForm.country,
         defaultPaymentTermsDays: Number(organizationForm.defaultPaymentTermsDays ?? 15),
         defaultInvoiceNote: organizationForm.defaultInvoiceNote,
+        proposalTermsTemplate: organizationForm.proposalTermsTemplate,
+        estimateTermsTemplate: organizationForm.estimateTermsTemplate,
+        estimateBuilderSignerMode: organizationForm.estimateBuilderSignerMode,
+        estimateBuilderSignerUserId: organizationForm.estimateBuilderSignerUserId || null,
         aiProvider: useInheritedAiDefaults ? undefined : organizationForm.aiProvider,
         aiModel: useInheritedAiDefaults ? undefined : organizationForm.aiModel,
         aiInheritDefaults: useInheritedAiDefaults,
@@ -1237,6 +1258,81 @@ export function SettingsWindow({
                             Company name
                           </Label>
                           <Input id="company" value={organizationForm.name} onChange={(event) => handleOrganizationFieldChange("name", event.target.value)} placeholder="Company name" className="h-11" disabled={!organizationSettings?.canManageOrganization} />
+                        </div>
+                      </div>
+
+                      <div className="space-y-5 border-t border-border/70 pt-6">
+                        <div>
+                          <p className="text-sm font-semibold">Estimate &amp; proposal templates</p>
+                          <p className="text-xs text-muted-foreground">Default terms applied to client-facing estimates and proposals. Per-document terms always take precedence.</p>
+                        </div>
+                        <div className="space-y-3">
+                          <Label htmlFor="estimate-terms-template" className="text-sm font-medium">
+                            Default estimate terms
+                          </Label>
+                          <p className="-mt-1 text-xs text-muted-foreground">Shown on the estimate PDF when no per-estimate terms are entered.</p>
+                          <Textarea id="estimate-terms-template" value={organizationForm.estimateTermsTemplate} onChange={(event) => handleOrganizationFieldChange("estimateTermsTemplate", event.target.value)} placeholder={"Estimate valid for 30 days. Pricing subject to final measurements and selections."} className="min-h-[96px]" disabled={!organizationSettings?.canManageOrganization} />
+                        </div>
+                        <div className="space-y-3">
+                          <Label htmlFor="proposal-terms-template" className="text-sm font-medium">
+                            Default proposal terms
+                          </Label>
+                          <p className="-mt-1 text-xs text-muted-foreground">Templated terms &amp; conditions added to the proposal PDF above the signature block.</p>
+                          <Textarea id="proposal-terms-template" value={organizationForm.proposalTermsTemplate} onChange={(event) => handleOrganizationFieldChange("proposalTermsTemplate", event.target.value)} placeholder={"Payment schedule, scope of work, warranty, and change-order terms…"} className="min-h-[120px]" disabled={!organizationSettings?.canManageOrganization} />
+                        </div>
+                      </div>
+
+                      <div className="space-y-5 border-t border-border/70 pt-6">
+                        <div>
+                          <p className="text-sm font-semibold">Estimate execution</p>
+                          <p className="text-xs text-muted-foreground">Choose which Arc user receives the builder countersignature request after a client signs an estimate.</p>
+                        </div>
+                        <div className="grid gap-4 lg:grid-cols-2">
+                          <div className="space-y-3">
+                            <Label htmlFor="estimate-builder-signer-mode" className="text-sm font-medium">
+                              Builder signer routing
+                            </Label>
+                            <Select
+                              value={organizationForm.estimateBuilderSignerMode}
+                              onValueChange={(value) => handleOrganizationFieldChange("estimateBuilderSignerMode", value)}
+                              disabled={!organizationSettings?.canManageOrganization}
+                            >
+                              <SelectTrigger id="estimate-builder-signer-mode" className="h-10">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="estimate_creator">Estimate creator</SelectItem>
+                                <SelectItem value="prospect_owner">Prospect owner</SelectItem>
+                                <SelectItem value="specific_user">Specific Arc user</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {organizationForm.estimateBuilderSignerMode === "specific_user" ? (
+                            <div className="space-y-3">
+                              <Label htmlFor="estimate-builder-signer-user" className="text-sm font-medium">
+                                Builder signer
+                              </Label>
+                              <Select
+                                value={organizationForm.estimateBuilderSignerUserId || "__none"}
+                                onValueChange={(value) => handleOrganizationFieldChange("estimateBuilderSignerUserId", value === "__none" ? "" : value)}
+                                disabled={!organizationSettings?.canManageOrganization || loadingTeam}
+                              >
+                                <SelectTrigger id="estimate-builder-signer-user" className="h-10">
+                                  <SelectValue placeholder={loadingTeam ? "Loading team..." : "Select a user"} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__none">Select a user</SelectItem>
+                                  {teamMembers
+                                    .filter((member) => member.status !== "suspended" && member.user?.id && member.user?.email)
+                                    .map((member) => (
+                                      <SelectItem key={member.user.id} value={member.user.id}>
+                                        {member.user.full_name || member.user.email}
+                                      </SelectItem>
+                                    ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
 

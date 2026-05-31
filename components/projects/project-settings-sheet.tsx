@@ -22,8 +22,6 @@ import { Switch } from "@/components/ui/switch"
 import { resolveProjectBillingModel, type ProjectBillingModel } from "@/lib/financials/billing-model"
 
 const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
-  { label: "Planning", value: "planning" },
-  { label: "Bidding", value: "bidding" },
   { label: "Active", value: "active" },
   { label: "On hold", value: "on_hold" },
   { label: "Completed", value: "completed" },
@@ -42,6 +40,10 @@ const PROJECT_TYPES: { label: string; value: NonNullable<Project["project_type"]
   { label: "Renovation", value: "renovation" },
   { label: "Repair", value: "repair" },
 ]
+
+function toOperationalProjectStatus(status: Project["status"]): Project["status"] {
+  return status === "planning" || status === "bidding" ? "active" : status
+}
 
 interface ProjectSettingsSheetProps {
   project: Project
@@ -62,7 +64,9 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   }, [project])
 
   const [name, setName] = useState(project.name ?? "")
-  const [status, setStatus] = useState<Project["status"] | undefined>(project.status ?? "active")
+  const [status, setStatus] = useState<Project["status"] | undefined>(
+    project.status ? toOperationalProjectStatus(project.status) : "active"
+  )
   const [description, setDescription] = useState(project.description ?? "")
   const [address, setAddress] = useState(initialLocation)
   const [startDate, setStartDate] = useState<Date | undefined>(

@@ -33,6 +33,7 @@ interface DocumentsProviderProps {
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]
+  initialFolderCounts?: Record<string, number>
   initialFolderPermissions?: ProjectFolderPermissions[]
   initialSets: DrawingSet[]
   initialPath?: string
@@ -73,6 +74,7 @@ export function DocumentsProvider({
   initialFiles,
   initialCounts,
   initialFolders,
+  initialFolderCounts = {},
   initialFolderPermissions = [],
   initialSets,
   initialPath = "",
@@ -94,6 +96,7 @@ export function DocumentsProvider({
   const [files, setFiles] = useState<FileWithUrls[]>(initialFiles)
   const [drawingSets, setDrawingSets] = useState<DrawingSet[]>(initialSets)
   const [folders, setFolders] = useState<string[]>(initialFolders)
+  const [folderItemCounts, setFolderItemCounts] = useState<Record<string, number>>(initialFolderCounts)
   const [folderPermissions, setFolderPermissions] = useState<ProjectFolderPermissions[]>(initialFolderPermissions)
   const [counts, setCounts] = useState<Record<string, number>>(initialCounts)
   const [sheetsBySetId, setSheetsBySetId] = useState<Record<string, DrawingSheet[]>>({})
@@ -311,6 +314,13 @@ export function DocumentsProvider({
     loadingFolderPathsRef.current.add(cacheKey)
     try {
       const childFolders = await listChildFoldersAction(project.id, normalizedPath || undefined)
+      setFolderItemCounts((prev) => {
+        const next = { ...prev }
+        for (const folder of childFolders) {
+          next[folder.path] = folder.itemCount
+        }
+        return next
+      })
       setFolders((prev) => {
         const next = new Set(prev)
         if (normalizedPath) {
@@ -367,6 +377,13 @@ export function DocumentsProvider({
       setCounts(countsData)
       setFolderPermissions(permsData)
       if (shouldLoadFolders) {
+        setFolderItemCounts((prev) => {
+          const next = { ...prev }
+          for (const folder of childFolders) {
+            next[folder.path] = folder.itemCount
+          }
+          return next
+        })
         setFolders((prev) => {
           const next = new Set(prev)
           if (currentPath) {
@@ -571,6 +588,7 @@ export function DocumentsProvider({
       files,
       drawingSets,
       folders,
+      folderItemCounts,
       folderPermissions,
       counts,
       totalCount,
@@ -613,6 +631,7 @@ export function DocumentsProvider({
       files,
       drawingSets,
       folders,
+      folderItemCounts,
       folderPermissions,
       counts,
       totalCount,
@@ -665,7 +684,8 @@ export function DocumentsProvider({
 // Helper function to build folder tree
 export function buildFolderTree(
   folders: string[],
-  files: FileWithUrls[]
+  files: FileWithUrls[],
+  folderItemCounts: Record<string, number> = {}
 ): FolderNode[] {
   const root: FolderNode[] = []
   const pathMap = new Map<string, FolderNode>()
@@ -712,7 +732,7 @@ export function buildFolderTree(
         node = {
           name: part,
           path: currentPath,
-          itemCount: fileCountByFolder.get(currentPath) ?? 0,
+          itemCount: folderItemCounts[currentPath] ?? fileCountByFolder.get(currentPath) ?? 0,
           children: [],
         }
         pathMap.set(currentPath, node)

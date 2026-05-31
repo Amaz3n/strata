@@ -18,7 +18,7 @@ export interface AiToolExecutionResult {
 }
 
 const OPEN_INVOICE_STATUSES = ["sent", "partial", "overdue", "saved", "draft"] as const
-const ACTIVE_PROJECT_STATUSES = ["active", "planning", "on_hold", "bidding"] as const
+const ACTIVE_PROJECT_STATUSES = ["active", "on_hold"] as const
 
 const ENTITY_HINTS: Array<{ type: SearchEntityType; pattern: RegExp }> = [
   { type: "invoice", pattern: /\binvoices?\b/i },

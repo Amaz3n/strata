@@ -16,6 +16,7 @@ import {
   uploadTilesObject,
 } from "@/lib/storage/drawings-tiles-storage"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
+import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
 // These are complete implementations that PDF.js needs for proper rendering
@@ -457,7 +458,7 @@ export async function POST(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "refresh_drawing_sheets_list"])
+    .in("job_type", ["deliver_notification", "send_daily_log_mention_email", "refresh_drawing_sheets_list", "index_file", "generate_file_preview"])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -482,8 +483,14 @@ export async function POST(request: NextRequest) {
     try {
       if (job.job_type === "deliver_notification") {
         await deliverNotificationJob(supabase, job)
+      } else if (job.job_type === "send_daily_log_mention_email") {
+        await sendDailyLogMentionEmailJob(supabase, job)
       } else if (job.job_type === "refresh_drawing_sheets_list") {
         await refreshDrawingSheetsListJob(supabase)
+      } else if (job.job_type === "index_file") {
+        await indexFileJob(supabase, job)
+      } else if (job.job_type === "generate_file_preview") {
+        await generateFilePreviewJob(supabase, job)
       } else if (job.job_type === "generate_drawing_tiles" || job.job_type === "process_drawing_set") {
         // Skip drawing jobs - these are now handled by the Cloud Run worker
         console.log(`Skipping ${job.job_type} job ${job.id} - handled by Cloud Run worker`)
@@ -638,6 +645,325 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
     html,
     from: getOrgSenderEmail(org?.slug, org?.name),
   })
+}
+
+async function sendDailyLogMentionEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const payload = job.payload ?? {}
+  const userId = typeof payload.user_id === "string" ? payload.user_id : null
+  const projectId = typeof payload.project_id === "string" ? payload.project_id : null
+  const dailyLogId = typeof payload.daily_log_id === "string" ? payload.daily_log_id : null
+  const title = typeof payload.title === "string" ? payload.title : "You were mentioned in a daily log"
+  const message = typeof payload.message === "string" ? payload.message : "A teammate mentioned you in a daily log."
+
+  if (!userId || !projectId || !dailyLogId) {
+    throw new Error("Missing daily log mention email payload")
+  }
+
+  const { data: prefs } = await supabase
+    .from("user_notification_prefs")
+    .select("email_enabled, email_type_settings")
+    .eq("org_id", job.org_id)
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (prefs && prefs.email_enabled === false) {
+    return
+  }
+  if (prefs && !isEmailNotificationTypeEnabled(prefs.email_type_settings, "daily_log_mentioned")) {
+    return
+  }
+
+  const { data: user, error: userError } = await supabase
+    .from("app_users")
+    .select("email, full_name")
+    .eq("id", userId)
+    .maybeSingle()
+
+  if (userError || !user?.email) {
+    throw new Error("User email not found")
+  }
+
+  const { data: org } = await supabase
+    .from("orgs")
+    .select("name, logo_url, slug")
+    .eq("id", job.org_id)
+    .maybeSingle()
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
+  const buttonUrl = `${appUrl}/projects/${projectId}/daily-logs?logId=${dailyLogId}`
+  const html = renderStandardEmailLayout({
+    title,
+    messageHtml: `Hi ${escapeHtml(user.full_name || "there")},<br/><br/>${escapeHtml(message)}`,
+    buttonText: "View daily log",
+    buttonUrl,
+    orgName: org?.name,
+    orgLogoUrl: org?.logo_url,
+    appUrl,
+  })
+
+  await sendEmail({
+    to: [user.email],
+    subject: title,
+    html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
+  })
+}
+
+async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const payload = job.payload ?? {}
+  const fileId = typeof payload.fileId === "string" ? payload.fileId : null
+  if (!fileId) {
+    throw new Error("Missing fileId")
+  }
+
+  // Placeholder for text/OCR extraction. Keep the job type successful so queued
+  // indexing work does not become permanent outbox noise while previews ship.
+  console.log(`[index_file] queued for future extraction: ${fileId}`)
+}
+
+async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const payload = job.payload ?? {}
+  const fileId = typeof payload.fileId === "string" ? payload.fileId : null
+  if (!fileId) {
+    throw new Error("Missing fileId")
+  }
+
+  const { data: file, error } = await supabase
+    .from("files")
+    .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata")
+    .eq("id", fileId)
+    .maybeSingle()
+
+  if (error || !file) {
+    throw new Error(`File not found (${error?.message ?? "unknown error"})`)
+  }
+
+  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as any : {}
+  await supabase
+    .from("files")
+    .update({
+      metadata: {
+        ...metadata,
+        preview: {
+          ...(metadata.preview ?? {}),
+          status: "processing",
+          started_at: new Date().toISOString(),
+        },
+      },
+    })
+    .eq("id", file.id)
+
+  try {
+    const mimeType = file.mime_type ?? "application/octet-stream"
+    const sourceBytes = await downloadFilesObject({
+      supabase,
+      orgId: file.org_id,
+      path: file.storage_path,
+    })
+
+    const lowerFileName = String(file.file_name ?? "").toLowerCase()
+    const lowerStoragePath = String(file.storage_path ?? "").toLowerCase()
+    const isHeic =
+      mimeType.toLowerCase() === "image/heic" ||
+      mimeType.toLowerCase() === "image/heif" ||
+      lowerFileName.endsWith(".heic") ||
+      lowerFileName.endsWith(".heif") ||
+      lowerStoragePath.endsWith(".heic") ||
+      lowerStoragePath.endsWith(".heif")
+    const preview =
+      mimeType.startsWith("image/") || isHeic
+        ? isHeic
+          ? await generateHeicJpegPreview(sourceBytes)
+          : await generateImageThumbnail(sourceBytes)
+        : mimeType === "application/pdf"
+          ? await generatePdfThumbnail(sourceBytes, file.file_name)
+          : null
+
+    if (!preview) {
+      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+        status: "skipped",
+        reason: "unsupported_type",
+        mime_type: mimeType,
+      })
+      return
+    }
+
+    const safeBaseName = file.file_name.replace(/[^a-zA-Z0-9.-]/g, "_")
+    const extension = preview.contentType === "image/jpeg" ? "jpg" : "webp"
+    const thumbnailPath = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}/${Date.now()}_${safeBaseName}.${extension}`
+    await uploadFilesObject({
+      supabase,
+      orgId: file.org_id,
+      path: thumbnailPath,
+      bytes: preview.bytes,
+      contentType: preview.contentType,
+      cacheControl: "private, max-age=86400",
+    })
+
+    await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      status: "ready",
+      thumbnail_path: thumbnailPath,
+      width: preview.width,
+      height: preview.height,
+      content_type: preview.contentType,
+      generated_at: new Date().toISOString(),
+    })
+  } catch (error: any) {
+    await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      status: "failed",
+      error: String(error?.message ?? error).slice(0, 500),
+      failed_at: new Date().toISOString(),
+    })
+    throw error
+  }
+}
+
+async function updateFilePreviewMetadata(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  fileId: string,
+  existingMetadata: Record<string, any>,
+  preview: Record<string, any>
+) {
+  const { error } = await supabase
+    .from("files")
+    .update({
+      metadata: {
+        ...existingMetadata,
+        preview,
+      },
+    })
+    .eq("id", fileId)
+
+  if (error) {
+    throw new Error(`Failed to update preview metadata: ${error.message}`)
+  }
+}
+
+async function generateImageThumbnail(
+  sourceBytes: Buffer
+): Promise<{ bytes: Uint8Array; width: number; height: number; contentType: string }> {
+  const sharp = (await import("sharp")).default
+  const result = await sharp(sourceBytes, { limitInputPixels: false })
+    .rotate()
+    .resize(640, 640, { fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 78 })
+    .toBuffer({ resolveWithObject: true })
+
+  return {
+    bytes: new Uint8Array(result.data),
+    width: result.info.width,
+    height: result.info.height,
+    contentType: "image/webp",
+  }
+}
+
+async function generateHeicJpegPreview(
+  sourceBytes: Buffer
+): Promise<{ bytes: Uint8Array; width: number; height: number; contentType: string }> {
+  const convertModule = await import("heic-convert")
+  const convert = (convertModule as any).default ?? convertModule
+  const jpegBytes = await convert({
+    buffer: sourceBytes,
+    format: "JPEG",
+    quality: 0.92,
+  })
+
+  const sharp = (await import("sharp")).default
+  const result = await sharp(Buffer.from(jpegBytes), { limitInputPixels: false })
+    .rotate()
+    .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 86, mozjpeg: true })
+    .toBuffer({ resolveWithObject: true })
+
+  return {
+    bytes: new Uint8Array(result.data),
+    width: result.info.width,
+    height: result.info.height,
+    contentType: "image/jpeg",
+  }
+}
+
+async function generatePdfThumbnail(
+  sourceBytes: Buffer,
+  fileName: string
+): Promise<{ bytes: Uint8Array; width: number; height: number; contentType: string }> {
+  try {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs")
+    const { createCanvas } = await import("@napi-rs/canvas")
+    const loadingTask = (pdfjs as any).getDocument({
+      data: new Uint8Array(sourceBytes),
+      disableWorker: true,
+      useSystemFonts: true,
+      isEvalSupported: false,
+    })
+    const pdf = await loadingTask.promise
+    const page = await pdf.getPage(1)
+    const viewport = page.getViewport({ scale: 1 })
+    const scale = Math.min(900 / viewport.width, 900 / viewport.height, 2)
+    const scaledViewport = page.getViewport({ scale })
+    const canvas = createCanvas(Math.ceil(scaledViewport.width), Math.ceil(scaledViewport.height))
+    const context = canvas.getContext("2d")
+
+    await page.render({
+      canvasContext: context,
+      viewport: scaledViewport,
+    }).promise
+
+    const png = canvas.toBuffer("image/png")
+    const sharp = (await import("sharp")).default
+    const result = await sharp(png)
+      .resize(640, 640, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 78 })
+      .toBuffer({ resolveWithObject: true })
+
+    await pdf.destroy?.()
+    return {
+      bytes: new Uint8Array(result.data),
+      width: result.info.width,
+      height: result.info.height,
+      contentType: "image/webp",
+    }
+  } catch (error) {
+    console.warn("[file-preview] PDF render failed, using placeholder:", error)
+    return createPdfPlaceholderThumbnail(fileName)
+  }
+}
+
+async function createPdfPlaceholderThumbnail(
+  fileName: string
+): Promise<{ bytes: Uint8Array; width: number; height: number; contentType: string }> {
+  const { createCanvas } = await import("@napi-rs/canvas")
+  const sharp = (await import("sharp")).default
+  const width = 640
+  const height = 480
+  const canvas = createCanvas(width, height)
+  const ctx = canvas.getContext("2d")
+  ctx.fillStyle = "#f8fafc"
+  ctx.fillRect(0, 0, width, height)
+  ctx.strokeStyle = "#cbd5e1"
+  ctx.lineWidth = 2
+  ctx.strokeRect(80, 48, 480, 384)
+  ctx.fillStyle = "#e2e8f0"
+  ctx.fillRect(120, 110, 400, 18)
+  ctx.fillRect(120, 150, 320, 14)
+  ctx.fillRect(120, 184, 360, 14)
+  ctx.fillRect(120, 218, 280, 14)
+  ctx.fillStyle = "#0f172a"
+  ctx.font = "bold 34px Arial"
+  ctx.fillText("PDF", 120, 320)
+  ctx.font = "20px Arial"
+  ctx.fillStyle = "#475569"
+  ctx.fillText(fileName.slice(0, 42), 120, 360)
+
+  const result = await sharp(canvas.toBuffer("image/png"))
+    .webp({ quality: 78 })
+    .toBuffer({ resolveWithObject: true })
+  return {
+    bytes: new Uint8Array(result.data),
+    width: result.info.width,
+    height: result.info.height,
+    contentType: "image/webp",
+  }
 }
 
 async function processDrawingSetJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -1166,6 +1492,7 @@ function buildNotificationHref(payload: any): string | null {
   const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
   const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
   const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
+  const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
 
   if (!projectId) return null
 
@@ -1187,7 +1514,7 @@ function buildNotificationHref(payload: any): string | null {
     case "task":
       return `/projects/${projectId}/tasks`
     case "daily_log":
-      return `/projects/${projectId}/daily-logs`
+      return logId ? `/projects/${projectId}/daily-logs?logId=${logId}` : `/projects/${projectId}/daily-logs`
     default:
       return `/projects/${projectId}`
   }

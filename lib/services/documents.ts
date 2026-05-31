@@ -21,11 +21,12 @@ function requireDocumentSigningSecret() {
 
 export async function createDocument(
   input: {
-    project_id: string
-    document_type: "proposal" | "contract" | "change_order" | "other"
+    project_id?: string | null
+    prospect_id?: string | null
+    document_type: "estimate" | "proposal" | "contract" | "change_order" | "other"
     title: string
     source_file_id: string
-    source_entity_type?: "proposal" | "change_order" | "lien_waiver" | "selection" | "subcontract" | "closeout" | "other"
+    source_entity_type?: "estimate" | "proposal" | "change_order" | "lien_waiver" | "selection" | "subcontract" | "closeout" | "other"
     source_entity_id?: string
     metadata?: Record<string, any>
   },
@@ -39,7 +40,8 @@ export async function createDocument(
     .from("documents")
     .insert({
       org_id: resolvedOrgId,
-      project_id: parsed.project_id,
+      project_id: parsed.project_id ?? null,
+      prospect_id: parsed.prospect_id ?? null,
       document_type: parsed.document_type,
       title: parsed.title,
       status: "draft",

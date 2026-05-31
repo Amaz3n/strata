@@ -38,6 +38,7 @@ export interface DocumentsContextValue {
   files: FileWithUrls[]
   drawingSets: DrawingSet[]
   folders: string[]
+  folderItemCounts: Record<string, number>
   folderPermissions: ProjectFolderPermissions[]
   counts: Record<string, number>
   totalCount: number
@@ -94,6 +95,7 @@ export interface UnifiedDocumentsLayoutProps {
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]
+  initialFolderCounts?: Record<string, number>
   initialFolderPermissions?: ProjectFolderPermissions[]
   initialSets: DrawingSet[]
   initialPath?: string

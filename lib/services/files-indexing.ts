@@ -1,5 +1,5 @@
-import { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext } from "@/lib/services/context"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
 
 /**
  * Trigger file indexing (OCR and text extraction)
@@ -13,7 +13,7 @@ export async function triggerFileIndexing(
   // 1. Get file metadata to check if indexable
   const { data: file, error: fetchError } = await supabase
     .from("files")
-    .select("mime_type, storage_path")
+    .select("file_name, mime_type, storage_path")
     .eq("id", fileId)
     .single()
 
@@ -26,29 +26,56 @@ export async function triggerFileIndexing(
     "application/pdf",
     "image/jpeg",
     "image/png",
+    "image/heic",
+    "image/heif",
     "image/tiff",
     "text/plain",
     "text/csv",
   ]
+  const previewableMimeTypes = [
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/heic",
+    "image/heif",
+    "image/tiff",
+  ]
 
-  const isIndexable = indexableMimeTypes.some(mime => file.mime_type.startsWith(mime))
+  const mimeType = file.mime_type ?? "application/octet-stream"
+  const lowerFileName = file.file_name?.toLowerCase() ?? ""
+  const lowerStoragePath = file.storage_path?.toLowerCase() ?? ""
+  const hasHeicExtension =
+    lowerFileName.endsWith(".heic") ||
+    lowerFileName.endsWith(".heif") ||
+    lowerStoragePath.endsWith(".heic") ||
+    lowerStoragePath.endsWith(".heif")
+  const isIndexable = indexableMimeTypes.some(mime => mimeType.startsWith(mime))
+  const isPreviewable = hasHeicExtension || previewableMimeTypes.some(mime => mimeType.startsWith(mime))
 
   if (!isIndexable) {
-    console.log(`[indexing] Skipping non-indexable file type: ${file.mime_type}`)
+    console.log(`[indexing] Skipping non-indexable file type: ${mimeType}`)
+  } else {
+    await enqueueOutboxJob({
+      orgId: resolvedOrgId,
+      jobType: "index_file",
+      payload: { fileId },
+      runAt: new Date().toISOString(),
+      dedupeByPayloadKeys: ["fileId"],
+    })
+  }
+
+  if (!isPreviewable) {
+    console.log(`[preview] Skipping non-previewable file type: ${mimeType}`)
     return
   }
 
-  // 2. Queue indexing job in outbox
-  const { error: outboxError } = await supabase.from("outbox").insert({
-    org_id: resolvedOrgId,
-    job_type: "index_file",
+  await enqueueOutboxJob({
+    orgId: resolvedOrgId,
+    jobType: "generate_file_preview",
     payload: { fileId },
-    run_at: new Date().toISOString(),
+    runAt: new Date().toISOString(),
+    dedupeByPayloadKeys: ["fileId"],
   })
-
-  if (outboxError) {
-    console.error(`[indexing] Failed to queue indexing job for ${fileId}:`, outboxError.message)
-  } else {
-    console.log(`[indexing] Queued indexing job for ${fileId}`)
-  }
 }

@@ -7,7 +7,6 @@ import Link from "next/link"
 
 import { CommandSearch } from "@/components/layout/command-search"
 import { GlobalTasksSheet } from "@/components/tasks/global-tasks-sheet"
-import { NotificationBell } from "@/components/notifications/notification-bell"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import {
@@ -151,7 +150,6 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
         <div className="flex items-center gap-2 px-4 flex-1 justify-end">
           {platformSessionControl}
           <GlobalTasksSheet />
-          <NotificationBell />
         </div>
       </div>
 

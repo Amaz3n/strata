@@ -89,6 +89,9 @@ async function ProjectFilesData({
           initialHasMore={filesResult.hasMore}
           initialCounts={counts}
           initialFolders={folders.map((folder) => folder.path)}
+          initialFolderCounts={Object.fromEntries(
+            folders.map((folder) => [folder.path, folder.itemCount])
+          )}
           initialSets={[]}
           initialPath={query.path}
         />

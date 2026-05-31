@@ -178,6 +178,7 @@ function getNotificationHref(payload: any): string | null {
   const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
   const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
   const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
+  const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
 
   if (!projectId) return null
 
@@ -199,7 +200,7 @@ function getNotificationHref(payload: any): string | null {
     case "task":
       return `/projects/${projectId}?tab=tasks`
     case "daily_log":
-      return `/projects/${projectId}?tab=daily-logs`
+      return logId ? `/projects/${projectId}/daily-logs?logId=${logId}` : `/projects/${projectId}/daily-logs`
     default:
       return `/projects/${projectId}`
   }

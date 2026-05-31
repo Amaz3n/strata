@@ -2,7 +2,7 @@ import type { FileCategory, FileSource } from "@/lib/validation/files"
 import type { FileInput, FileUpdate, FileListFilters } from "@/lib/validation/files"
 import { fileInputSchema, fileUpdateSchema, fileListFiltersSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
-import { deleteFilesObjects } from "@/lib/storage/files-storage"
+import { createFilesDownloadUrl, deleteFilesObjects } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { triggerFileIndexing } from "./files-indexing"
@@ -33,6 +33,10 @@ export interface FileRecord {
   status?: string
   due_at?: string
   archived_at?: string
+  metadata?: Record<string, any>
+  preview_status?: "pending" | "processing" | "ready" | "failed"
+  preview_thumbnail_path?: string
+  preview_generated_at?: string
   created_at: string
   updated_at: string
 }
@@ -40,6 +44,35 @@ export interface FileRecord {
 export interface FileWithUrls extends FileRecord {
   download_url?: string
   thumbnail_url?: string
+}
+
+function getPreviewMetadata(row: any): Record<string, any> {
+  const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {}
+  const preview = metadata.preview && typeof metadata.preview === "object" ? metadata.preview : {}
+  return preview
+}
+
+function canUseOriginalAsImagePreview(mimeType?: string | null): boolean {
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+  return lowerMime.startsWith("image/") && lowerMime !== "image/heic" && lowerMime !== "image/heif"
+}
+
+function needsGeneratedImagePreview(
+  mimeType?: string | null,
+  fileName?: string | null,
+  storagePath?: string | null
+): boolean {
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+  const lowerName = fileName?.toLowerCase() ?? ""
+  const lowerPath = storagePath?.toLowerCase() ?? ""
+  return (
+    lowerMime === "image/heic" ||
+    lowerMime === "image/heif" ||
+    lowerName.endsWith(".heic") ||
+    lowerName.endsWith(".heif") ||
+    lowerPath.endsWith(".heic") ||
+    lowerPath.endsWith(".heif")
+  )
 }
 
 export interface ProjectFolderPermissions {
@@ -52,6 +85,7 @@ export interface ProjectFolderPermissions {
 export interface FolderChild {
   name: string
   path: string
+  itemCount: number
 }
 
 export interface FileTimelineEvent {
@@ -210,6 +244,10 @@ function mapFile(row: any): FileRecord {
     status: row.status ?? undefined,
     due_at: row.due_at ?? undefined,
     archived_at: row.archived_at ?? undefined,
+    metadata: row.metadata ?? {},
+    preview_status: getPreviewMetadata(row).status ?? undefined,
+    preview_thumbnail_path: getPreviewMetadata(row).thumbnail_path ?? undefined,
+    preview_generated_at: getPreviewMetadata(row).generated_at ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -230,7 +268,7 @@ export async function listFiles(
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs, status, due_at,
+      share_with_clients, share_with_subs, status, due_at, metadata,
       uploaded_by, archived_at, created_at, updated_at,
       current_version_id,
       app_users!files_uploaded_by_fkey(full_name, avatar_url),
@@ -323,7 +361,7 @@ export async function getFile(fileId: string, orgId?: string): Promise<FileRecor
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs,
+      share_with_clients, share_with_subs, metadata,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -381,7 +419,7 @@ export async function createFileRecord(input: FileInput, orgId?: string): Promis
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs,
+      share_with_clients, share_with_subs, metadata,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -462,7 +500,7 @@ export async function updateFile(
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs,
+      share_with_clients, share_with_subs, metadata,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -515,7 +553,7 @@ export async function archiveFile(fileId: string, orgId?: string): Promise<FileR
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs,
+      share_with_clients, share_with_subs, metadata,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -571,7 +609,7 @@ export async function unarchiveFile(fileId: string, orgId?: string): Promise<Fil
     .select(`
       id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
       checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs,
+      share_with_clients, share_with_subs, metadata,
       uploaded_by, archived_at, created_at, updated_at,
       app_users!files_uploaded_by_fkey(full_name, avatar_url)
     `)
@@ -663,14 +701,14 @@ export async function deleteFile(fileId: string, orgId?: string): Promise<void> 
  */
 export async function getSignedUrl(
   fileId: string,
-  _expiresIn: number = 3600,
+  expiresIn: number = 600,
   orgId?: string
 ): Promise<string> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
   const { data: file, error } = await supabase
     .from("files")
-    .select("storage_path")
+    .select("storage_path, file_name")
     .eq("org_id", resolvedOrgId)
     .eq("id", fileId)
     .single()
@@ -679,7 +717,15 @@ export async function getSignedUrl(
     throw new Error("File not found")
   }
 
-  return buildInternalFileUrl(fileId)
+  const result = await createFilesDownloadUrl({
+    supabase,
+    orgId: resolvedOrgId,
+    path: file.storage_path,
+    fileName: file.file_name,
+    expiresIn,
+  })
+
+  return result.downloadUrl
 }
 
 /**
@@ -695,11 +741,18 @@ export async function listFilesWithUrls(
 
   const dataWithUrls = result.data.map((file) => {
     const internalUrl = buildInternalFileUrl(file.id)
+    const previewUrl = file.preview_thumbnail_path ? `/api/files/${file.id}/preview` : undefined
 
     return {
       ...file,
       download_url: internalUrl,
-      thumbnail_url: file.mime_type?.startsWith("image/") ? internalUrl : undefined,
+      thumbnail_url:
+        previewUrl ??
+        (needsGeneratedImagePreview(file.mime_type, file.file_name, file.storage_path)
+          ? `/api/files/${file.id}/preview`
+          : canUseOriginalAsImagePreview(file.mime_type)
+            ? internalUrl
+            : undefined),
     }
   })
 
@@ -790,6 +843,7 @@ export async function listChildFolders(
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const normalizedParentPath = normalizeFolderPath(parentPath)
   const childPaths = new Set<string>()
+  const fileCountByChildPath = new Map<string, number>()
 
   let persistedFoldersQuery = supabase
     .from("project_file_folders")
@@ -831,7 +885,10 @@ export async function listChildFolders(
 
   for (const row of fileFolders ?? []) {
     const childPath = extractImmediateChildPath(normalizedParentPath, (row as any).folder_path)
-    if (childPath) childPaths.add(childPath)
+    if (childPath) {
+      childPaths.add(childPath)
+      fileCountByChildPath.set(childPath, (fileCountByChildPath.get(childPath) ?? 0) + 1)
+    }
   }
 
   return Array.from(childPaths)
@@ -839,6 +896,7 @@ export async function listChildFolders(
     .map((path) => ({
       path,
       name: path.split("/").filter(Boolean).pop() ?? path,
+      itemCount: fileCountByChildPath.get(path) ?? 0,
     }))
 }
 

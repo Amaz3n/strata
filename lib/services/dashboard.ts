@@ -27,7 +27,6 @@ export async function getDashboardSnapshot(
     activeProjects: projects.filter(
       (p) =>
         p.status === "active" ||
-        p.status === "planning" ||
         p.status === "on_hold",
     ).length,
     tasksThisWeek: tasks.filter((task) => isDueThisWeek(task.due_date)).length,
@@ -358,7 +357,7 @@ export async function getControlTowerData(
     projectsByStatus[p.status] = (projectsByStatus[p.status] ?? 0) + 1;
   }
   const activeProjects = projects.filter((p) =>
-    ["active", "planning", "on_hold"].includes(p.status),
+    ["active", "on_hold"].includes(p.status),
   );
 
   // Tasks
@@ -569,7 +568,7 @@ export async function getLifecycleBoard(
       .from("projects")
       .select("id, name, status, start_date, end_date")
       .eq("org_id", resolvedOrgId)
-      .in("status", ["planning", "bidding", "active", "on_hold", "completed"]),
+      .in("status", ["active", "on_hold", "completed"]),
     // Setup: unsigned contracts
     supabase
       .from("contracts")
@@ -1336,7 +1335,7 @@ export async function getWatchlist(
     .from("projects")
     .select("id, name, status, total_value")
     .eq("org_id", resolvedOrgId)
-    .in("status", ["active", "planning", "on_hold"]);
+    .in("status", ["active", "on_hold"]);
 
   if (!projects || projects.length === 0) return [];
 

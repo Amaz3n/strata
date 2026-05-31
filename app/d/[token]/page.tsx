@@ -8,7 +8,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ENVELOPE_EVENT_TYPES } from "@/lib/esign/unified-contracts"
 import { recordESignEvent } from "@/lib/services/esign-events"
 import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
+import { loadEstimateByIdForPortal } from "@/lib/services/estimate-portal"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { EstimateBuilderSigningClient } from "@/components/portal/estimate-builder-signing-client"
 import { DocumentSigningClient } from "./document-signing-client"
 
 export const revalidate = 0
@@ -86,7 +88,10 @@ export default async function DocumentSigningPage({ params }: Params) {
           document_type,
           status,
           source_file_id,
-          executed_file_id
+          executed_file_id,
+          source_entity_type,
+          source_entity_id,
+          metadata
         )
       `,
     )
@@ -141,6 +146,11 @@ export default async function DocumentSigningPage({ params }: Params) {
   const envelopeId = signingRequest.envelope_id ?? signingRequest.group_id ?? signingRequest.id
   const sequence = signingRequest.sequence ?? 1
   const signerRole = signingRequest.signer_role ?? "client"
+
+  const estimateId =
+    signingRequest.document.source_entity_type === "estimate"
+      ? signingRequest.document.source_entity_id
+      : (signingRequest.document.metadata?.estimate_id as string | undefined)
 
   let groupRequestsQuery = supabase
     .from("document_signing_requests")
@@ -199,6 +209,26 @@ export default async function DocumentSigningPage({ params }: Params) {
         viewed_at: now.toISOString(),
       },
     })
+  }
+
+  if (estimateId) {
+    const estimate = await loadEstimateByIdForPortal({
+      supabase,
+      orgId: signingRequest.org_id,
+      estimateId,
+    })
+    if (!estimate) {
+      notFound()
+    }
+
+    return (
+      <EstimateBuilderSigningClient
+        token={token}
+        estimate={estimate}
+        signerEmail={signingRequest.sent_to_email}
+        pdfUrl={`/estimates/${estimate.id}/export`}
+      />
+    )
   }
 
   const { data: fields, error: fieldsError } = await supabase

@@ -60,7 +60,7 @@ import {
 
 type RecipientRole = "signer" | "cc"
 type PrepareStep = "envelope" | "fields"
-type DocumentType = "proposal" | "contract" | "change_order" | "other"
+type DocumentType = "estimate" | "proposal" | "contract" | "change_order" | "other"
 
 type EnvelopeRecipient = {
   id: string
@@ -97,6 +97,7 @@ type RecipientSuggestion = {
 }
 
 const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string> = {
+  estimate: "estimate_id",
   proposal: "proposal_id",
   change_order: "change_order_id",
   lien_waiver: "lien_waiver_id",
@@ -148,6 +149,8 @@ interface EnvelopeWizardProps {
 
 function getSourceOptionTypeLabel(type: UnifiedSignableEntityType) {
   switch (type) {
+    case "estimate":
+      return "Estimate"
     case "change_order":
       return "Change Order"
     case "proposal":

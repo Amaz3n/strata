@@ -16,6 +16,10 @@ import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
 import { approveChangeOrderFromEnvelopeExecution } from "@/lib/services/change-orders"
 import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
 import {
+  executeEstimateFromEnvelopeExecution,
+  submitEstimateBuilderSignatureBySigningToken,
+} from "@/lib/services/estimate-portal"
+import {
   buildOrgScopedPath,
   downloadFilesObject,
   getFilesStorageProvider,
@@ -178,7 +182,7 @@ export async function submitDocumentSignatureAction(input: {
 
   const { data: document, error: documentError } = await supabase
     .from("documents")
-    .select("id, org_id, project_id, title, document_type, source_file_id, source_entity_type, source_entity_id, created_by, metadata")
+    .select("id, org_id, project_id, prospect_id, title, document_type, source_file_id, source_entity_type, source_entity_id, created_by, metadata")
     .eq("id", signingRequest.document_id)
     .single()
 
@@ -414,10 +418,14 @@ export async function submitDocumentSignatureAction(input: {
     const timestamp = Date.now()
     const safeTitle = document.title.replace(/[^a-zA-Z0-9.-]/g, "_").slice(0, 80)
     const executedName = `${safeTitle || "document"}_executed.pdf`
+    const projectId = (document.project_id as string | null) ?? null
+    const prospectId = (document.prospect_id as string | null) ?? null
+    const storageContextType = projectId ? "projects" : prospectId ? "prospects" : "documents"
+    const storageContextId = projectId ?? prospectId ?? document.id
     const executedPath = buildOrgScopedPath(
       document.org_id,
-      "projects",
-      document.project_id,
+      storageContextType,
+      storageContextId,
       "esign",
       document.id,
       "executed",
@@ -439,14 +447,15 @@ export async function submitDocumentSignatureAction(input: {
       .from("files")
       .insert({
         org_id: document.org_id,
-        project_id: document.project_id,
+        project_id: projectId,
+        prospect_id: prospectId,
         file_name: executedName,
         storage_path: executedPath,
         mime_type: "application/pdf",
         size_bytes: executedBytes.length,
         visibility: "private",
         category: "contracts",
-        folder_path: `/projects/${document.project_id}/esign/executed`,
+        folder_path: projectId ? `/projects/${projectId}/esign/executed` : `/prospects/${storageContextId}/esign/executed`,
         source: "generated",
         uploaded_by: uploaderId,
         share_with_clients: false,
@@ -532,6 +541,24 @@ export async function submitDocumentSignatureAction(input: {
       await acceptProposalFromEnvelopeExecution({
         orgId: signingRequest.org_id,
         proposalId,
+        documentId: document.id,
+        envelopeId,
+        executedFileId: executedFile.id,
+        signerName: input.signerName.trim(),
+        signerEmail: submittedSignerEmail,
+        signerIp,
+      })
+    }
+
+    const estimateId =
+      document.source_entity_type === "estimate"
+        ? document.source_entity_id
+        : (document.metadata?.estimate_id as string | undefined)
+
+    if (estimateId) {
+      await executeEstimateFromEnvelopeExecution({
+        orgId: signingRequest.org_id,
+        estimateId,
         documentId: document.id,
         envelopeId,
         executedFileId: executedFile.id,
@@ -702,4 +729,20 @@ export async function submitDocumentSignatureAction(input: {
 
   revalidatePath(`/d/${input.token}`)
   return { success: true, executedDocumentUrl }
+}
+
+export async function submitEstimateBuilderSignatureAction(input: {
+  token: string
+  signerName: string
+  signerEmail?: string | null
+  signatureText?: string | null
+  signatureImage?: string | null
+  consentText: string
+}) {
+  const h = await headers()
+  const forwarded = h.get("x-forwarded-for")
+  const signerIp = forwarded?.split(",")?.[0]?.trim() ?? h.get("x-real-ip")
+  const result = await submitEstimateBuilderSignatureBySigningToken({ ...input, signerIp })
+  revalidatePath(`/d/${input.token}`)
+  return result
 }

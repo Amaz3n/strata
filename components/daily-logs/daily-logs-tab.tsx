@@ -11,6 +11,8 @@ import {
   isBefore,
   isAfter,
 } from "date-fns"
+import { toast } from "sonner"
+import { useSearchParams } from "next/navigation"
 
 import type { DailyLog, ScheduleItem, Task } from "@/lib/types"
 import type { EnhancedFileMetadata, FileCategory, ProjectActivity, ProjectPunchItem } from "@/app/(app)/projects/[id]/actions"
@@ -18,9 +20,12 @@ import type { DailyLogInput } from "@/lib/validation/daily-logs"
 import { cn } from "@/lib/utils"
 
 import { FileViewer } from "@/components/files/file-viewer"
+import { isHeicFile } from "@/components/files/types"
 import { useMobileAction } from "@/components/layout/mobile-action-context"
+import { useUser } from "@/lib/auth/client"
 import { QuickLogEntry } from "./quick-log-entry"
 import { ActivityCalendar } from "./activity-calendar"
+import { HighlightedMentionsText, MentionTextarea, type MentionableUser } from "./mention-textarea"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -34,6 +39,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import {
   Plus,
+  AtSign,
   MoreHorizontal,
   Camera,
   FileText,
@@ -46,6 +52,8 @@ import {
   TrendingUp,
   AlertTriangle,
   Search,
+  MessageSquare,
+  Send,
   SlidersHorizontal,
 } from "@/components/icons"
 import { DateRange } from "react-day-picker"
@@ -240,11 +248,83 @@ interface LogEntryProps {
   scheduleById: Record<string, ScheduleItem>
   tasksById: Record<string, Task>
   punchById: Record<string, ProjectPunchItem>
+  mentionableUsers: MentionableUser[]
+  isHighlighted?: boolean
   onImageClick: (file: EnhancedFileMetadata) => void
+  onCreateComment: (dailyLogId: string, values: { body: string; mentioned_user_ids?: string[] }) => Promise<NonNullable<DailyLog["comments"]>[number]>
+  onUpdateLog: (dailyLogId: string, values: { summary?: string; weather?: string; mentioned_user_ids?: string[] }) => Promise<Pick<DailyLog, "id" | "notes" | "weather" | "updated_at" | "mentions">>
 }
 
-function LogEntry({ log, photos, scheduleById, tasksById, punchById, onImageClick }: LogEntryProps) {
+function CommentComposer({
+  dailyLogId,
+  mentionableUsers,
+  onCreateComment,
+}: {
+  dailyLogId: string
+  mentionableUsers: MentionableUser[]
+  onCreateComment: LogEntryProps["onCreateComment"]
+}) {
+  const [body, setBody] = useState("")
+  const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  async function submitComment() {
+    if (!body.trim()) return
+    setIsSubmitting(true)
+    try {
+      await onCreateComment(dailyLogId, {
+        body: body.trim(),
+        mentioned_user_ids: mentionedUserIds,
+      })
+      setBody("")
+      setMentionedUserIds([])
+      toast.success("Reply added")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to add reply")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="relative mt-3 border-t pt-3">
+      <div className="relative flex items-center gap-2">
+        <div className="min-w-0 flex-1 rounded-md border bg-background">
+          <MentionTextarea
+            value={body}
+            onChange={setBody}
+            mentionableUsers={mentionableUsers}
+            mentionedUserIds={mentionedUserIds}
+            onMentionedUserIdsChange={setMentionedUserIds}
+            placeholder="Reply or @mention someone..."
+            multiline={false}
+            onSubmit={() => void submitComment()}
+            className="pr-2"
+          />
+        </div>
+        <Button
+          type="button"
+          size="icon"
+          className="h-9 w-9 flex-shrink-0"
+          disabled={!body.trim() || isSubmitting}
+          onClick={() => void submitComment()}
+        >
+          <Send className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function LogEntry({ log, photos, scheduleById, tasksById, punchById, mentionableUsers, isHighlighted, onImageClick, onCreateComment, onUpdateLog }: LogEntryProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [editSummary, setEditSummary] = useState(log.notes ?? "")
+  const [editMentionIds, setEditMentionIds] = useState<string[]>((log.mentions ?? []).map((mention) => mention.mentioned_user_id))
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
   const entries = log.entries ?? []
+  const mentions = log.mentions ?? []
+  const comments = log.comments ?? []
   const workEntries = entries.filter(e => e.entry_type === "work")
   const inspections = entries.filter(e => e.entry_type === "inspection")
   const taskUpdates = entries.filter(e => e.entry_type === "task_update")
@@ -254,10 +334,34 @@ function LogEntry({ log, photos, scheduleById, tasksById, punchById, onImageClic
   const passedInspections = inspections.filter(i => i.inspection_result === "pass")
 
   const hasStructuredContent = workEntries.length > 0 || inspections.length > 0 || taskUpdates.length > 0 || punchUpdates.length > 0
-  const hasContent = log.notes || hasStructuredContent || photos.length > 0
+  const hasContent = log.notes || hasStructuredContent || photos.length > 0 || mentions.length > 0 || comments.length > 0
+
+  useEffect(() => {
+    if (isEditing) return
+    setEditSummary(log.notes ?? "")
+    setEditMentionIds((log.mentions ?? []).map((mention) => mention.mentioned_user_id))
+  }, [isEditing, log.notes, log.mentions])
+
+  async function saveEdit() {
+    setIsSavingEdit(true)
+    try {
+      await onUpdateLog(log.id, {
+        summary: editSummary.trim(),
+        weather: log.weather,
+        mentioned_user_ids: editMentionIds,
+      })
+      setIsEditing(false)
+      toast.success("Log updated")
+    } catch (error) {
+      console.error(error)
+      toast.error("Failed to update log")
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
 
   return (
-    <div className="group flex gap-3 pb-4">
+    <div id={`daily-log-${log.id}`} className={cn("group flex scroll-mt-24 gap-3 pb-4", isHighlighted && "rounded-lg bg-primary/5 ring-2 ring-primary/20")}>
       {/* Time marker */}
       <div className="w-14 flex-shrink-0 text-[11px] text-muted-foreground font-medium text-right pt-[14px]">
         {log.created_at && format(parseISO(log.created_at), "h:mm a")}
@@ -295,8 +399,48 @@ function LogEntry({ log, photos, scheduleById, tasksById, punchById, onImageClic
           {/* Header row */}
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
-              {log.notes && (
-                <p className="text-sm leading-relaxed">{log.notes}</p>
+              {isEditing ? (
+                <div className="space-y-2">
+                  <div className="rounded-lg border bg-muted/30">
+                    <MentionTextarea
+                      value={editSummary}
+                      onChange={setEditSummary}
+                      mentionableUsers={mentionableUsers}
+                      mentionedUserIds={editMentionIds}
+                      onMentionedUserIdsChange={setEditMentionIds}
+                      placeholder="What happened on site today?"
+                      rows={2}
+                      className="min-h-[72px]"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setEditSummary(log.notes ?? "")
+                        setEditMentionIds((log.mentions ?? []).map((mention) => mention.mentioned_user_id))
+                        setIsEditing(false)
+                      }}
+                      disabled={isSavingEdit}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void saveEdit()}
+                      disabled={isSavingEdit}
+                    >
+                      {isSavingEdit ? "Saving..." : "Save"}
+                    </Button>
+                  </div>
+                </div>
+              ) : log.notes && (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                  <HighlightedMentionsText value={log.notes} mentionableUsers={mentionableUsers} />
+                </p>
               )}
               {!hasContent && (
                 <p className="text-sm text-muted-foreground italic">Empty log entry</p>
@@ -314,7 +458,7 @@ function LogEntry({ log, photos, scheduleById, tasksById, punchById, onImageClic
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem>Edit</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setIsEditing(true)}>Edit</DropdownMenuItem>
                 <DropdownMenuItem>Duplicate</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
@@ -430,6 +574,20 @@ function LogEntry({ log, photos, scheduleById, tasksById, punchById, onImageClic
             </div>
           )}
 
+          {mentions.length > 0 && (
+            <div className={cn("flex flex-wrap gap-1.5", (log.notes || workEntries.length > 0 || passedInspections.length > 0 || taskUpdates.length > 0 || punchUpdates.length > 0) && "mt-3")}>
+              {mentions.map((mention) => (
+                <span
+                  key={mention.id}
+                  className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                >
+                  <AtSign className="h-3 w-3" />
+                  {mention.user?.full_name ?? mention.user?.email ?? "Mentioned user"}
+                </span>
+              ))}
+            </div>
+          )}
+
           {/* Photos */}
           {photos.length > 0 && (
             <div className={cn("flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-1", (log.notes || workEntries.length > 0 || passedInspections.length > 0 || taskUpdates.length > 0 || punchUpdates.length > 0) && "mt-3")}>
@@ -460,6 +618,48 @@ function LogEntry({ log, photos, scheduleById, tasksById, punchById, onImageClic
                   </button>
                 )
               })}
+            </div>
+          )}
+
+          {(
+            <div className={cn((log.notes || workEntries.length > 0 || passedInspections.length > 0 || taskUpdates.length > 0 || punchUpdates.length > 0 || mentions.length > 0 || photos.length > 0) && "mt-3")}>
+              {comments.length > 0 && (
+                <div className="space-y-2 border-t pt-3">
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    <MessageSquare className="h-3 w-3" />
+                    Replies
+                  </div>
+                  {comments.map((comment) => (
+                    <div key={comment.id} className="rounded-md bg-muted/50 px-3 py-2 text-sm">
+                      <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          {comment.author?.full_name ?? comment.author?.email ?? "Teammate"}
+                        </span>
+                        <span>{format(parseISO(comment.created_at), "MMM d, h:mm a")}</span>
+                      </div>
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        <HighlightedMentionsText value={comment.body} mentionableUsers={mentionableUsers} />
+                      </p>
+                      {comment.mentions && comment.mentions.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {comment.mentions.map((mention) => (
+                            <span key={mention.id} className="inline-flex items-center gap-1 rounded-full bg-background px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                              <AtSign className="h-2.5 w-2.5" />
+                              {mention.user?.full_name ?? mention.user?.email ?? "Mentioned user"}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <CommentComposer
+                dailyLogId={log.id}
+                mentionableUsers={mentionableUsers}
+                onCreateComment={onCreateComment}
+              />
             </div>
           )}
         </div>
@@ -544,7 +744,10 @@ interface DailyLogsTabProps {
   tasks: Task[]
   punchItems: ProjectPunchItem[]
   activity: ProjectActivity[]
+  mentionableUsers: MentionableUser[]
   onCreateLog: (values: DailyLogInput) => Promise<DailyLog>
+  onCreateComment: (dailyLogId: string, values: { body: string; mentioned_user_ids?: string[] }) => Promise<NonNullable<DailyLog["comments"]>[number]>
+  onUpdateLog: (dailyLogId: string, values: { summary?: string; weather?: string; mentioned_user_ids?: string[] }) => Promise<Pick<DailyLog, "id" | "notes" | "weather" | "updated_at" | "mentions">>
   onUploadFiles: (
     files: File[],
     context?: {
@@ -558,8 +761,8 @@ interface DailyLogsTabProps {
 }
 
 interface DailyLogsFiltersPopoverContentProps {
-  feedFilter: "all" | "logs" | "photos"
-  setFeedFilter: (value: "all" | "logs" | "photos") => void
+  feedFilter: "all" | "logs" | "photos" | "mentions"
+  setFeedFilter: (value: "all" | "logs" | "photos" | "mentions") => void
   logDateRange: DateRange | undefined
   setLogDateRange: (range: DateRange | undefined) => void
   searchTerm: string
@@ -592,6 +795,7 @@ function DailyLogsFiltersPopoverContent({
                 { key: "all", label: "All" },
                 { key: "logs", label: "Logs" },
                 { key: "photos", label: "Photos" },
+                { key: "mentions", label: "Mentions" },
               ] as const
             ).map(({ key, label }) => (
               <button
@@ -681,14 +885,20 @@ export function DailyLogsTab({
   tasks,
   punchItems,
   activity,
+  mentionableUsers,
   onCreateLog,
+  onCreateComment,
+  onUpdateLog,
   onUploadFiles,
   onDownloadFile,
 }: DailyLogsTabProps) {
   const today = new Date()
+  const { user } = useUser()
+  const searchParams = useSearchParams()
+  const highlightedLogId = searchParams.get("logId")
 
   // State
-  const [feedFilter, setFeedFilter] = useState<'all' | 'logs' | 'photos'>('all')
+  const [feedFilter, setFeedFilter] = useState<'all' | 'logs' | 'photos' | 'mentions'>('all')
   const [logDateRange, setLogDateRange] = useState<DateRange | undefined>()
   const [searchTerm, setSearchTerm] = useState("")
 
@@ -744,7 +954,10 @@ export function DailyLogsTab({
 
   // Get all image files
   const imageFiles = useMemo(() =>
-    files.filter(f => f.mime_type && f.mime_type.startsWith('image/') && (f.category === "photos" || f.daily_log_id)),
+    files.filter(f => {
+      const isImg = (f.mime_type && f.mime_type.startsWith('image/')) || isHeicFile(f.mime_type, f.file_name)
+      return isImg && (f.category === "photos" || f.daily_log_id)
+    }),
     [files]
   )
 
@@ -755,6 +968,15 @@ export function DailyLogsTab({
     // Filter logs
     const filteredLogs = dailyLogs.filter(log => {
       if (feedFilter === 'photos') return false
+      if (feedFilter === 'mentions') {
+        const currentUserId = user?.id
+        if (!currentUserId) return false
+        const logMentioned = (log.mentions ?? []).some((mention) => mention.mentioned_user_id === currentUserId)
+        const commentMentioned = (log.comments ?? []).some((comment) =>
+          (comment.mentions ?? []).some((mention) => mention.mentioned_user_id === currentUserId)
+        )
+        if (!logMentioned && !commentMentioned) return false
+      }
 
       const logDate = parseISO(log.date)
       const from = logDateRange?.from ? startOfDay(logDateRange.from) : null
@@ -774,8 +996,16 @@ export function DailyLogsTab({
           punchById[entry.punch_item_id ?? ""]?.title,
         ].filter(Boolean).join(" "))
         .join(" ")
+      const mentionText = [
+        ...(log.mentions ?? []).map((mention) => mention.user?.full_name ?? mention.user?.email),
+        ...(log.comments ?? []).map((comment) => [
+          comment.body,
+          comment.author?.full_name,
+          ...(comment.mentions ?? []).map((mention) => mention.user?.full_name ?? mention.user?.email),
+        ].filter(Boolean).join(" ")),
+      ].filter(Boolean).join(" ")
 
-      return [log.notes, log.weather, entryText].some(value =>
+      return [log.notes, log.weather, entryText, mentionText].some(value =>
         (value ?? "").toString().toLowerCase().includes(term)
       )
     })
@@ -783,6 +1013,7 @@ export function DailyLogsTab({
     // Filter photos
     const filteredPhotos = imageFiles.filter(photo => {
       if (feedFilter === 'logs') return false
+      if (feedFilter === 'mentions') return false
 
       const photoDate = parseISO(photo.created_at)
       const from = logDateRange?.from ? startOfDay(logDateRange.from) : null
@@ -830,12 +1061,23 @@ export function DailyLogsTab({
     return {
       daySummaries: summaries,
     }
-  }, [dailyLogs, imageFiles, feedFilter, logDateRange, searchTerm, scheduleById, tasksById, punchById])
+  }, [dailyLogs, imageFiles, feedFilter, logDateRange, searchTerm, scheduleById, tasksById, punchById, user?.id])
 
   function handleImageClick(file: EnhancedFileMetadata) {
     setViewerFile(file)
     setViewerOpen(true)
   }
+
+  useEffect(() => {
+    if (!highlightedLogId || daySummaries.length === 0) return
+    const handle = window.setTimeout(() => {
+      document.getElementById(`daily-log-${highlightedLogId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      })
+    }, 100)
+    return () => window.clearTimeout(handle)
+  }, [highlightedLogId, daySummaries.length])
 
   const hasActiveFilters = feedFilter !== 'all' || logDateRange?.from || searchTerm.trim().length > 0
 
@@ -929,6 +1171,7 @@ export function DailyLogsTab({
           scheduleItems={scheduleItems}
           tasks={tasks}
           punchItems={punchItems}
+          mentionableUsers={mentionableUsers}
           onCreateLog={onCreateLog}
           onUploadFiles={onUploadFiles}
         />
@@ -954,6 +1197,7 @@ export function DailyLogsTab({
                 punchItems={punchItems}
                 onCreateLog={onCreateLog}
                 onUploadFiles={onUploadFiles}
+                mentionableUsers={mentionableUsers}
                 trigger={
                   <Button>
                     <Plus className="mr-2 h-4 w-4" />
@@ -997,7 +1241,11 @@ export function DailyLogsTab({
                           scheduleById={scheduleById}
                           tasksById={tasksById}
                           punchById={punchById}
+                          mentionableUsers={mentionableUsers}
+                          isHighlighted={highlightedLogId === log.id}
                           onImageClick={handleImageClick}
+                          onCreateComment={onCreateComment}
+                          onUpdateLog={onUpdateLog}
                         />
                       ))}
 
@@ -1034,6 +1282,7 @@ export function DailyLogsTab({
         scheduleItems={scheduleItems}
         tasks={tasks}
         punchItems={punchItems}
+        mentionableUsers={mentionableUsers}
         onCreateLog={onCreateLog}
         onUploadFiles={onUploadFiles}
         open={mobileLogOpen}

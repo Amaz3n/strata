@@ -152,6 +152,9 @@ const logoImage: React.CSSProperties = {
   display: "block",
   margin: "0 auto",
   padding: "6px",
+  width: "56px",
+  height: "56px",
+  objectFit: "contain",
 }
 
 const logoFallback: React.CSSProperties = {

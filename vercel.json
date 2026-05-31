@@ -23,6 +23,10 @@
     {
       "path": "/api/jobs/weekly-executive-snapshot",
       "schedule": "0 13 * * 5"
+    },
+    {
+      "path": "/api/jobs/follow-up-reminders",
+      "schedule": "0 13 * * *"
     }
   ],
   "functions": {
@@ -46,6 +50,9 @@
     },
     "app/api/jobs/weekly-executive-snapshot/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/jobs/follow-up-reminders/route.ts": {
+      "maxDuration": 120
     }
   }
 }

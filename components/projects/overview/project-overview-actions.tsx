@@ -43,9 +43,7 @@ import { PortalLinkCreator } from "@/components/sharing/portal-link-creator"
 import { AccessTokenList } from "@/components/sharing/access-token-list"
 import { PortalAccountList } from "@/components/sharing/portal-account-list"
 import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
-import { ProjectSetupWizardSheet } from "@/app/(app)/projects/[id]/project-setup-wizard-sheet"
 import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
-import { ProjectOverviewSetupChecklist } from "./project-overview-setup-checklist"
 import { ManageTeamSheet } from "@/components/projects/manage-team-sheet"
 
 import {
@@ -89,7 +87,6 @@ export function ProjectOverviewActions({
 
   const [sharingSheetOpen, setSharingSheetOpen] = useState(false)
   const [settingsSheetOpen, setSettingsSheetOpen] = useState(false)
-  const [setupWizardOpen, setSetupWizardOpen] = useState(false)
   const [contractSheetOpen, setContractSheetOpen] = useState(false)
   const [manageTeamOpen, setManageTeamOpen] = useState(false)
 
@@ -284,16 +281,6 @@ export function ProjectOverviewActions({
 
   return (
     <>
-      <ProjectOverviewSetupChecklist
-        project={project}
-        proposals={proposals}
-        contract={contract}
-        draws={draws}
-        scheduleItemCount={scheduleItemCount}
-        portalTokens={portalTokensState}
-        onOpenSetupWizard={() => setSetupWizardOpen(true)}
-      />
-
       <header className="border-b">
         <div className="px-5 sm:px-8 lg:px-12 py-5 flex items-center gap-4">
           <ProjectAvatar
@@ -450,15 +437,7 @@ export function ProjectOverviewActions({
                   <Users className="mr-2 h-4 w-4" />
                   Manage team
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={(e) => {
-                    e.preventDefault()
-                    setSetupWizardOpen(true)
-                  }}
-                >
-                  <Link2 className="mr-2 h-4 w-4" />
-                  Setup wizard
-                </DropdownMenuItem>
+
 
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive">Archive project</DropdownMenuItem>
@@ -475,26 +454,6 @@ export function ProjectOverviewActions({
         open={settingsSheetOpen}
         onOpenChange={setSettingsSheetOpen}
         onSave={handleSaveProject}
-      />
-      <ProjectSetupWizardSheet
-        open={setupWizardOpen}
-        onOpenChange={setSetupWizardOpen}
-        onOpenProjectSettings={() => {
-          setSetupWizardOpen(false)
-          setSettingsSheetOpen(true)
-        }}
-        onOpenTeamSheet={() => {
-          setSetupWizardOpen(false)
-          setManageTeamOpen(true)
-        }}
-        project={project}
-        contacts={contacts}
-        team={team}
-        proposals={proposals}
-        contract={contract}
-        scheduleItemCount={scheduleItemCount}
-        drawsCount={draws.length}
-        portalTokens={portalTokensState}
       />
       <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
       <ManageTeamSheet

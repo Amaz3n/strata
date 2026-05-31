@@ -9,6 +9,7 @@ import {
   getProjectTasksAction,
   listProjectPunchItemsAction,
   getProjectActivityAction,
+  getProjectTeamAction,
 } from "../actions"
 import { ProjectDailyLogsClient } from "./project-daily-logs-client"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -49,13 +50,14 @@ async function ProjectDailyLogsData({ id }: { id: string }) {
     notFound()
   }
 
-  const [dailyLogs, files, scheduleItems, tasks, punchItems, activity] = await Promise.all([
+  const [dailyLogs, files, scheduleItems, tasks, punchItems, activity, projectTeam] = await Promise.all([
     getProjectDailyLogsAction(id),
     getProjectFilesAction(id),
     getProjectScheduleAction(id),
     getProjectTasksAction(id),
     listProjectPunchItemsAction(id),
     getProjectActivityAction(id),
+    getProjectTeamAction(id),
   ])
 
   return (
@@ -69,6 +71,13 @@ async function ProjectDailyLogsData({ id }: { id: string }) {
         tasks={tasks}
         punchItems={punchItems}
         activity={activity}
+        mentionableUsers={projectTeam.map((member) => ({
+          id: member.user_id,
+          name: member.full_name,
+          email: member.email,
+          avatar_url: member.avatar_url,
+          role: member.role_label,
+        }))}
       />
     </div>
   )

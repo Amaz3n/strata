@@ -60,6 +60,7 @@ function mapProject(row: any): Project {
     end_date: row.end_date ?? undefined,
     address,
     client_id: row.client_id ?? undefined,
+    prospect_id: row.prospect_id ?? null,
     property_type: row.property_type ?? undefined,
     project_type: row.project_type ?? undefined,
     description: row.description ?? undefined,
@@ -102,7 +103,7 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, property_type, project_type, description, total_value, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, created_at, updated_at,
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, snapshot, created_at, updated_at)
 `
 
@@ -166,6 +167,7 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     description: input.description,
     total_value: input.total_value,
     created_by: userId,
+    prospect_id: input.prospect_id || null,
   }
 
   const { data, error } = await supabase

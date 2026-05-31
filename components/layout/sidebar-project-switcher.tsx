@@ -61,6 +61,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
     let mounted = true
     async function loadProjects() {
       try {
+        setIsLoading(true)
         const response = await fetch("/api/projects", { cache: "no-store" })
         if (!response.ok) {
           const text = await response.text()
@@ -82,8 +83,20 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
       }
     }
     loadProjects()
+
+    const handleOrgChange = () => {
+      loadProjects()
+    }
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("arc-org-change", handleOrgChange)
+    }
+
     return () => {
       mounted = false
+      if (typeof window !== "undefined") {
+        window.removeEventListener("arc-org-change", handleOrgChange)
+      }
     }
   }, [])
 
