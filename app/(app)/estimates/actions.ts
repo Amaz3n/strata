@@ -4,7 +4,13 @@ import { revalidatePath } from "next/cache"
 
 import type { Estimate } from "@/lib/types"
 import { requireOrgContext } from "@/lib/services/context"
-import { createEstimate, duplicateEstimate, reviseEstimate, updateEstimateStatus } from "@/lib/services/estimates"
+import {
+  createEstimate,
+  createEstimateVersion,
+  duplicateEstimate,
+  reviseEstimate,
+  updateEstimateStatus,
+} from "@/lib/services/estimates"
 import {
   sendEstimate,
   getEstimateShareLink,
@@ -95,6 +101,59 @@ export async function reviseEstimateAction(estimateId: string) {
   const estimate = await reviseEstimate({ estimateId })
   revalidatePath("/estimates")
   return estimate
+}
+
+export async function createEstimateVersionAction(estimateId: string, input: unknown) {
+  const parsed = estimateInputSchema.parse(input)
+  const estimate = await createEstimateVersion({
+    estimateId,
+    input: {
+      ...parsed,
+      lines: parsed.lines.map((line, index) => ({ ...line, sort_order: index, markup_pct: line.markup_pct ?? 0 })),
+    },
+  })
+  revalidatePath("/estimates")
+  revalidatePath("/pipeline")
+  return estimate
+}
+
+/** Loads an estimate plus its line items so the builder can revise it in the estimate sheet. */
+export async function getEstimateForEditAction(estimateId: string) {
+  const { supabase, orgId } = await requireOrgContext()
+  const { data, error } = await supabase
+    .from("estimates")
+    .select("*, items:estimate_items(*), recipient:contacts(id, full_name, email)")
+    .eq("org_id", orgId)
+    .eq("id", estimateId)
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error(`Estimate not found: ${error?.message ?? "missing"}`)
+  }
+
+  const metadata = (data.metadata as Record<string, any> | null) ?? {}
+  const adHocRecipient = (metadata.recipient as { name?: string | null; email?: string | null } | null) ?? null
+  const items = [...((data.items as any[]) ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+
+  return {
+    id: data.id as string,
+    title: (data.title as string) ?? "",
+    version: (data.version as number) ?? 1,
+    summary: typeof metadata.summary === "string" ? metadata.summary : "",
+    terms: typeof metadata.terms === "string" ? metadata.terms : "",
+    valid_until: (data.valid_until as string | null) ?? null,
+    decision_note: (data.decision_note as string | null) ?? null,
+    recipient_contact_id: (data.recipient_contact_id as string | null) ?? null,
+    recipient_name: (data.recipient as any)?.full_name ?? adHocRecipient?.name ?? null,
+    recipient_email: (data.recipient as any)?.email ?? adHocRecipient?.email ?? null,
+    lines: items.map((item: any) => ({
+      description: (item.description as string) ?? "",
+      quantity: (item.quantity as number) ?? 1,
+      unit_cost_cents: (item.unit_cost_cents as number) ?? 0,
+      cost_code_id: (item.cost_code_id as string | null) ?? null,
+      item_type: (item.item_type as string) ?? "line",
+    })),
+  }
 }
 
 export async function listEstimateCommentsAction(estimateId: string) {

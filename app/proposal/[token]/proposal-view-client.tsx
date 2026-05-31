@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { QuotePortalShell, type PortalStatusTone } from "@/components/portal/quote-portal-shell"
 import { QuoteDocumentView, type QuoteViewLine } from "@/components/portal/quote-document-view"
+import { formatLocalDate } from "@/lib/utils"
 
 type ProposalLine = {
   id: string
@@ -165,7 +166,7 @@ export function ProposalViewClient({ proposal, pdfUrl, continueSigningUrl }: Pro
 
           {proposal.valid_until ? (
             <p className="text-xs text-muted-foreground">
-              Expires on {new Date(proposal.valid_until).toLocaleDateString()}
+              Expires on {formatLocalDate(proposal.valid_until, "MMM d, yyyy")}
             </p>
           ) : null}
         </CardContent>

@@ -111,6 +111,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
   const [street, setStreet] = useState("")
   const [city, setCity] = useState("")
   const [state, setState] = useState("")
+  const [postalCode, setPostalCode] = useState("")
 
   const [notes, setNotes] = useState("")
 
@@ -127,6 +128,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
     setStreet("")
     setCity("")
     setState("")
+    setPostalCode("")
     setNotes("")
   }
 
@@ -147,6 +149,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
       setStreet(prospect.jobsite_location?.street ?? "")
       setCity(prospect.jobsite_location?.city ?? "")
       setState(prospect.jobsite_location?.state ?? "")
+      setPostalCode(prospect.jobsite_location?.postal_code ?? "")
       setNotes(prospect.notes ?? "")
     } else {
       reset()
@@ -168,11 +171,12 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
     }
 
     const jobsite =
-      street.trim() || city.trim() || state.trim()
+      street.trim() || city.trim() || state.trim() || postalCode.trim()
         ? {
             street: street.trim() || undefined,
             city: city.trim() || undefined,
             state: state.trim() || undefined,
+            postal_code: postalCode.trim() || undefined,
           }
         : undefined
 
@@ -425,7 +429,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
                   className="h-10"
                 />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="jobsite-city">City</Label>
                   <Input
@@ -454,6 +458,16 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
                       )}
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="jobsite-zip">Zip code</Label>
+                  <Input
+                    id="jobsite-zip"
+                    value={postalCode}
+                    onChange={(e) => setPostalCode(e.target.value)}
+                    placeholder="Zip code"
+                    className="h-10"
+                  />
                 </div>
               </div>
             </Section>

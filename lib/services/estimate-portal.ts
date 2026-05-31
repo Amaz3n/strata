@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from "crypto"
 
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { NotificationService } from "@/lib/services/notifications"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
@@ -12,6 +13,7 @@ import { renderEstimatePdf } from "@/lib/pdfs/estimate"
 import { generateExecutedPdf, type ESignAuditTrailItem } from "@/lib/pdfs/esign"
 import { recordESignEvent } from "@/lib/services/esign-events"
 import { buildOrgScopedPath, downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
+import { formatLocalDate } from "@/lib/utils"
 
 export type EstimateDecision = "approved" | "rejected" | "changes_requested"
 
@@ -259,7 +261,7 @@ export async function sendEstimate({
       projectName: (estimate as any).project?.name ?? (estimate as any).prospect?.name ?? null,
       totalLabel: formatMoney(estimate.total_cents),
       validUntil: estimate.valid_until
-        ? new Date(estimate.valid_until).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+        ? formatLocalDate(estimate.valid_until, "MMMM d, yyyy")
         : null,
       message: message ?? null,
     }),
@@ -495,11 +497,23 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
   if (!estimate) return null
 
   if (estimate.status === "sent") {
-    await supabase
+    const { data: updated } = await supabase
       .from("estimates")
       .update({ viewed_at: new Date().toISOString() })
       .eq("id", estimate.id)
       .is("viewed_at", null)
+      .select("id")
+      .maybeSingle()
+
+    if (updated) {
+      await recordEvent({
+        orgId: estimate.org_id,
+        eventType: "estimate_viewed",
+        entityType: "estimate",
+        entityId: estimate.id,
+        payload: { title: estimate.title },
+      })
+    }
   }
 
   const { data: comments } = await supabase
@@ -802,7 +816,7 @@ async function generateExecutedEstimateArtifact({
         size_bytes: pdf.length,
         visibility: "private",
         category: "contracts",
-        folder_path: projectId ? `/projects/${projectId}/contracts` : `/prospects/${contextId}/contracts`,
+        folder_path: "Contracts",
         source: "generated",
         uploaded_by: userId,
         tags: ["estimate", "executed"],
@@ -1132,7 +1146,7 @@ async function issueBuilderEstimateSigningEnvelope(input: {
       size_bytes: sourcePdf.length,
       visibility: "private",
       category: "contracts",
-      folder_path: projectId ? `/projects/${projectId}/esign` : `/prospects/${contextId}/esign`,
+      folder_path: "Contracts",
       source: "generated",
       uploaded_by: estimate.created_by ?? null,
       tags: ["estimate", "client-signed", "builder-signature"],
@@ -1646,6 +1660,50 @@ const DECISION_KIND: Record<EstimateDecision, string> = {
   changes_requested: "changes_requested",
 }
 
+/**
+ * Notifies the builder (estimate creator, falling back to the prospect owner) when a
+ * client requests changes or declines from the portal. Creates an in-app notification
+ * and queues the matching email — mirroring the countersign nudge the builder gets when
+ * a client approves. Best-effort: a notification failure never blocks the client decision.
+ */
+async function notifyBuilderOfClientResponse(input: {
+  supabase: ServiceClient
+  orgId: string
+  estimate: any
+  decision: Exclude<EstimateDecision, "approved">
+  clientName: string
+  note: string | null
+}) {
+  const { supabase, orgId, estimate, decision, clientName, note } = input
+  const builderUserId =
+    (typeof estimate.created_by === "string" && estimate.created_by) ||
+    (typeof estimate.prospect?.owner_user_id === "string" && estimate.prospect.owner_user_id) ||
+    null
+  if (!builderUserId) return
+
+  const isChanges = decision === "changes_requested"
+  const action = isChanges ? "requested changes to" : "declined"
+  const title = isChanges ? `Changes requested: ${estimate.title}` : `Estimate declined: ${estimate.title}`
+  const message = note
+    ? `${clientName} ${action} "${estimate.title}":\n${note}`
+    : `${clientName} ${action} "${estimate.title}".`
+
+  try {
+    await new NotificationService().createAndQueue({
+      orgId,
+      userId: builderUserId,
+      type: isChanges ? "estimate_changes_requested" : "estimate_declined",
+      title,
+      message,
+      entityType: "estimate",
+      entityId: estimate.id,
+      metadata: { prospect_id: estimate.prospect_id ?? null, decision, client_name: clientName },
+    })
+  } catch (error) {
+    console.error("[estimate-portal] Failed to notify builder of client response:", error)
+  }
+}
+
 /** Client submits a decision (approve / reject / request changes) from the portal. No e-signature. */
 export async function submitEstimateDecision(input: {
   token: string
@@ -1660,7 +1718,7 @@ export async function submitEstimateDecision(input: {
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, created_by, recipient:contacts(full_name, email)",
+      "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, created_by, recipient:contacts(full_name, email), prospect:prospects(name, owner_user_id)",
     )
     .eq("token_hash", tokenHash)
     .maybeSingle()
@@ -1773,6 +1831,30 @@ export async function submitEstimateDecision(input: {
       .eq("org_id", estimate.org_id)
       .eq("id", (estimate as any).prospect_id)
       .in("status", ["pricing", "estimate_sent", "changes_requested"])
+  }
+
+  // Reflect a change request on the prospect row so the pipeline no longer shows
+  // "Estimate sent" once the client has come back with edits.
+  if (input.decision === "changes_requested" && (estimate as any).prospect_id) {
+    await supabase
+      .from("prospects")
+      .update({ status: "changes_requested", updated_at: nowIso })
+      .eq("org_id", estimate.org_id)
+      .eq("id", (estimate as any).prospect_id)
+      .in("status", ["pricing", "estimate_sent"])
+  }
+
+  // Notify the builder when the client requests changes or declines — parity with the
+  // countersign nudge they receive on approval.
+  if (input.decision === "changes_requested" || input.decision === "rejected") {
+    await notifyBuilderOfClientResponse({
+      supabase,
+      orgId: estimate.org_id,
+      estimate,
+      decision: input.decision,
+      clientName: name,
+      note: input.note?.trim() || null,
+    })
   }
 
   await recordAudit({

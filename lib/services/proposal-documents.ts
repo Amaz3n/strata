@@ -134,7 +134,7 @@ export async function generateProposalSigningDocument({
       size_bytes: pdf.length,
       visibility: "private",
       category: "contracts",
-      folder_path: `/projects/${proposal.project_id}/esign/source`,
+      folder_path: "Contracts",
       source: "generated",
     },
     resolvedOrgId,

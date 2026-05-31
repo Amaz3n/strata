@@ -225,11 +225,12 @@ export function ProspectDetailSheet({ contactId, open, onOpenChange, teamMembers
                         <MapPin className="h-4 w-4 mt-0.5" />
                         <div>
                           {prospect.jobsite_location.street && <div>{prospect.jobsite_location.street}</div>}
-                          {(prospect.jobsite_location.city || prospect.jobsite_location.state) && (
+                          {(prospect.jobsite_location.city || prospect.jobsite_location.state || prospect.jobsite_location.postal_code) && (
                             <div>
                               {prospect.jobsite_location.city}
                               {prospect.jobsite_location.city && prospect.jobsite_location.state && ", "}
                               {prospect.jobsite_location.state}
+                              {prospect.jobsite_location.postal_code && ` ${prospect.jobsite_location.postal_code}`}
                             </div>
                           )}
                         </div>

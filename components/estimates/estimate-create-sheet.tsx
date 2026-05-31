@@ -27,6 +27,23 @@ type LineDraft = {
 
 const NEW_LINE: LineDraft = { description: "", quantity: 1, unit_cost: "", cost_code_id: undefined }
 
+export type EstimateSheetInitial = {
+  title?: string | null
+  summary?: string | null
+  terms?: string | null
+  valid_until?: string | null
+  version?: number | null
+  recipient_contact_id?: string | null
+  recipient_name?: string | null
+  recipient_email?: string | null
+  lines?: Array<{
+    description?: string | null
+    quantity?: number | null
+    unit_cost_cents?: number | null
+    cost_code_id?: string | null
+  }>
+}
+
 interface EstimateCreateSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -45,6 +62,25 @@ interface EstimateCreateSheetProps {
   prospectContacts?: Array<{ name: string; email?: string | null }>
   onCreate: (input: EstimateInput) => Promise<void> | void
   loading?: boolean
+  /**
+   * "revise" seeds the form from {@link initialEstimate} and saves a new version.
+   * Mount the sheet with a `key` (e.g. the estimate id) so the seeded state is fresh.
+   */
+  mode?: "create" | "revise"
+  initialEstimate?: EstimateSheetInitial
+  /** Client's requested changes, shown as a reference panel while revising. */
+  requestedChanges?: string | null
+}
+
+function centsToInput(cents?: number | null): number | string {
+  if (cents === null || cents === undefined) return ""
+  return cents / 100
+}
+
+function parseLocalDate(value?: string | null): Date | undefined {
+  if (!value) return undefined
+  const parsed = new Date(`${value}T00:00:00`)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
 }
 
 const money = (value: number) => value.toLocaleString("en-US", { style: "currency", currency: "USD" })
@@ -65,22 +101,42 @@ export function EstimateCreateSheet({
   prospectContacts,
   onCreate,
   loading,
+  mode = "create",
+  initialEstimate,
+  requestedChanges,
 }: EstimateCreateSheetProps) {
-  const [recipientId, setRecipientId] = useState<string>(defaultRecipientId ?? "")
-  // Prospect mode: recipient is an ad-hoc name/email (not a Directory contact).
-  const [prospectChoice, setProspectChoice] = useState<{ name: string; email: string | null }>(
-    prospectRecipient ? { name: prospectRecipient.name, email: prospectRecipient.email ?? null } : { name: "", email: null },
+  const isRevise = mode === "revise"
+  const seededLines: LineDraft[] =
+    initialEstimate?.lines && initialEstimate.lines.length > 0
+      ? initialEstimate.lines.map((line) => ({
+          description: line.description ?? "",
+          quantity: line.quantity ?? 1,
+          unit_cost: centsToInput(line.unit_cost_cents),
+          cost_code_id: line.cost_code_id ?? undefined,
+        }))
+      : [{ ...NEW_LINE }]
+
+  const [recipientId, setRecipientId] = useState<string>(
+    initialEstimate?.recipient_contact_id ?? defaultRecipientId ?? "",
   )
+  // Prospect mode: recipient is an ad-hoc name/email (not a Directory contact).
+  const [prospectChoice, setProspectChoice] = useState<{ name: string; email: string | null }>(() => {
+    if (initialEstimate?.recipient_name || initialEstimate?.recipient_email) {
+      return { name: initialEstimate.recipient_name ?? "", email: initialEstimate.recipient_email ?? null }
+    }
+    return prospectRecipient ? { name: prospectRecipient.name, email: prospectRecipient.email ?? null } : { name: "", email: null }
+  })
   const [recipientPickerOpen, setRecipientPickerOpen] = useState(false)
   const [addingRecipient, setAddingRecipient] = useState(false)
   const [newRecipientName, setNewRecipientName] = useState("")
   const [newRecipientEmail, setNewRecipientEmail] = useState("")
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "")
-  const [title, setTitle] = useState("")
-  const [scope, setScope] = useState("")
-  const [terms, setTerms] = useState(defaultTerms ?? "")
-  const [validUntil, setValidUntil] = useState<Date | undefined>(undefined)
-  const [lines, setLines] = useState<LineDraft[]>([{ ...NEW_LINE }])
+  const [title, setTitle] = useState(initialEstimate?.title ?? "")
+  const [scope, setScope] = useState(initialEstimate?.summary ?? "")
+  const [terms, setTerms] = useState(initialEstimate?.terms ?? defaultTerms ?? "")
+  const [validUntil, setValidUntil] = useState<Date | undefined>(parseLocalDate(initialEstimate?.valid_until))
+  const [validUntilOpen, setValidUntilOpen] = useState(false)
+  const [lines, setLines] = useState<LineDraft[]>(seededLines)
   const [showErrors, setShowErrors] = useState(false)
 
   const total = useMemo(
@@ -89,12 +145,14 @@ export function EstimateCreateSheet({
   )
 
   useEffect(() => {
+    if (isRevise) return
     if (defaultRecipientId) setRecipientId(defaultRecipientId)
-  }, [defaultRecipientId])
+  }, [defaultRecipientId, isRevise])
 
   useEffect(() => {
+    if (isRevise) return
     if (prospectRecipient) setProspectChoice({ name: prospectRecipient.name, email: prospectRecipient.email ?? null })
-  }, [prospectRecipient])
+  }, [prospectRecipient, isRevise])
 
   useEffect(() => {
     if (defaultProjectId) setProjectId(defaultProjectId)
@@ -119,6 +177,7 @@ export function EstimateCreateSheet({
     setScope("")
     setTerms(defaultTerms ?? "")
     setValidUntil(undefined)
+    setValidUntilOpen(false)
     setLines([{ ...NEW_LINE }])
     setShowErrors(false)
   }
@@ -180,9 +239,15 @@ export function EstimateCreateSheet({
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
             <Receipt className="h-5 w-5" />
-            New estimate
+            {isRevise
+              ? `Revise estimate${initialEstimate?.version ? ` · v${initialEstimate.version + 1}` : ""}`
+              : "New estimate"}
           </SheetTitle>
-          <SheetDescription>Build a clear, client-ready estimate. You can revise and re-send versions later.</SheetDescription>
+          <SheetDescription>
+            {isRevise
+              ? "Address the client's requested changes, then save as a new version to send."
+              : "Build a clear, client-ready estimate. You can revise and re-send versions later."}
+          </SheetDescription>
         </SheetHeader>
 
         <form
@@ -191,6 +256,13 @@ export function EstimateCreateSheet({
         >
           <ScrollArea className="flex-1 min-h-0">
             <div className="px-6 py-5 space-y-6">
+              {isRevise && requestedChanges?.trim() ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-600">Client requested changes</p>
+                  <p className="mt-1.5 whitespace-pre-line text-sm text-foreground">{requestedChanges.trim()}</p>
+                </div>
+              ) : null}
+
               {/* Basics */}
               <div className="space-y-4">
                 <div className="space-y-1.5">
@@ -312,7 +384,7 @@ export function EstimateCreateSheet({
                   </div>
                   <div className="space-y-1.5">
                     <Label>Valid until</Label>
-                    <Popover>
+                    <Popover open={validUntilOpen} onOpenChange={setValidUntilOpen}>
                       <PopoverTrigger asChild>
                         <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !validUntil && "text-muted-foreground")}>
                           <CalendarDays className="mr-2 h-4 w-4" />
@@ -320,7 +392,15 @@ export function EstimateCreateSheet({
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar mode="single" selected={validUntil} onSelect={setValidUntil} initialFocus />
+                        <Calendar
+                          mode="single"
+                          selected={validUntil}
+                          onSelect={(date) => {
+                            setValidUntil(date)
+                            setValidUntilOpen(false)
+                          }}
+                          initialFocus
+                        />
                       </PopoverContent>
                     </Popover>
                   </div>
@@ -440,7 +520,7 @@ export function EstimateCreateSheet({
                 Cancel
               </Button>
               <Button type="submit" disabled={loading} className="flex-1">
-                {loading ? "Saving..." : "Create estimate"}
+                {loading ? "Saving..." : isRevise ? "Save new version" : "Create estimate"}
               </Button>
             </div>
           </div>

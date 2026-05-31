@@ -59,6 +59,18 @@ const ACTIVE_STATUSES = new Set<ProspectStatus>([
 
 const PAGE_SIZE = 25
 
+function formatBudgetRange(budget?: string | null): string {
+  const map: Record<string, string> = {
+    under_100k: "Under $100k",
+    "100k_250k": "$100k – $250k",
+    "250k_500k": "$250k – $500k",
+    "500k_1m": "$500k – $1M",
+    over_1m: "Over $1M",
+    undecided: "Undecided",
+  }
+  return map[budget ?? ""] ?? ""
+}
+
 const statusLabels: Record<ProspectStatus, string> = {
   new: "New",
   contacted: "Contacted",
@@ -381,6 +393,10 @@ export function ProspectsClient({
                 <TableCell className="px-4 py-3.5 text-right text-sm tabular-nums">
                   {prospect.estimate_value_cents ? (
                     <span className="font-medium">{formatMoneyCents(prospect.estimate_value_cents)}</span>
+                  ) : prospect.budget_range && formatBudgetRange(prospect.budget_range) ? (
+                    <span className="text-xs text-muted-foreground italic font-normal">
+                      {formatBudgetRange(prospect.budget_range)}
+                    </span>
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}

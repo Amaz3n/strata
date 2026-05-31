@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from "crypto"
 import { NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { isDateExpired } from "@/lib/utils"
 
 function requireProposalSecret() {
   const secret = process.env.PROPOSAL_SECRET
@@ -64,7 +65,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       return NextResponse.redirect(new URL(`/proposal/${token}`, request.url))
     }
 
-    if (proposal.valid_until && new Date(proposal.valid_until) < new Date()) {
+    if (isDateExpired(proposal.valid_until)) {
       return NextResponse.redirect(new URL(`/proposal/${token}`, request.url))
     }
 

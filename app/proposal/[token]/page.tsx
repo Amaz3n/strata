@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ProposalViewClient } from "./proposal-view-client"
+import { isDateExpired, formatLocalDate } from "@/lib/utils"
 
 export const revalidate = 0
 
@@ -82,14 +83,14 @@ export default async function ProposalPage({ params }: Params) {
     )
   }
 
-  if (proposal.valid_until && new Date(proposal.valid_until) < new Date()) {
+  if (isDateExpired(proposal.valid_until)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-12">
         <div className="text-center">
           <div className="mb-4 text-6xl">⏰</div>
           <h1 className="text-2xl font-bold text-orange-600">Proposal Expired</h1>
           <p className="mt-2 text-gray-600">
-            This proposal expired on {new Date(proposal.valid_until).toLocaleDateString()}.
+            This proposal expired on {formatLocalDate(proposal.valid_until, "MMMM d, yyyy")}.
             <br />
             Please contact us for an updated proposal.
           </p>

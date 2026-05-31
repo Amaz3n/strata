@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import { formatLocalDate } from "@/lib/utils"
 
 import type { Contact, CostCode, Estimate } from "@/lib/types"
 import type { EstimateInput } from "@/lib/validation/estimates"
@@ -318,7 +319,7 @@ export function EstimatesClient({
                     <div className="font-semibold">{formatCurrency(estimate.total_cents)}</div>
                   </TableCell>
                   <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                    {estimate.valid_until ? format(new Date(estimate.valid_until), "MMM d, yyyy") : "—"}
+                    {estimate.valid_until ? formatLocalDate(estimate.valid_until, "MMM d, yyyy") : "—"}
                   </TableCell>
                   <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
                     {estimate.created_at ? format(new Date(estimate.created_at), "MMM d, yyyy") : "—"}

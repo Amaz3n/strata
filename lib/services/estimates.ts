@@ -636,5 +636,135 @@ export async function reviseEstimate({ estimateId, orgId }: { estimateId: string
   return newEstimate
 }
 
+/**
+ * Creates the next version of an estimate from edited input. Unlike {@link reviseEstimate}
+ * (which clones the prior version verbatim), this persists the builder's edited title,
+ * recipient, terms and line items — used when the builder revises in response to a client
+ * change request. The prior version is preserved (read-only) and marked superseded.
+ */
+export async function createEstimateVersion({
+  estimateId,
+  input,
+  orgId,
+}: {
+  estimateId: string
+  input: {
+    title: string
+    recipient_contact_id?: string | null
+    recipient_name?: string | null
+    recipient_email?: string | null
+    summary?: string
+    terms?: string
+    valid_until?: string
+    tax_rate?: number
+    markup_percent?: number
+    lines: z.infer<typeof estimateLineSchema>[]
+  }
+  orgId?: string
+}) {
+  const parsedLines = estimateLineSchema.array().min(1).parse(input.lines)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: loadError } = await supabase
+    .from("estimates")
+    .select("id, project_id, prospect_id, opportunity_id, version, version_group_id, currency, metadata")
+    .eq("id", estimateId)
+    .eq("org_id", resolvedOrgId)
+    .single()
+
+  if (loadError || !existing) {
+    throw new Error("Estimate not found")
+  }
+
+  const versionGroupId = (existing.version_group_id as string | null) ?? existing.id
+  const newVersion = (existing.version ?? 1) + 1
+  const totals = calculateTotals(parsedLines, input.tax_rate ?? 0)
+  const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
+
+  const { data: newEstimate, error: insertError } = await supabase
+    .from("estimates")
+    .insert({
+      org_id: resolvedOrgId,
+      project_id: existing.project_id,
+      prospect_id: existing.prospect_id ?? null,
+      opportunity_id: existing.opportunity_id,
+      recipient_contact_id: input.recipient_contact_id ?? null,
+      title: stripNul(input.title),
+      status: "draft",
+      version: newVersion,
+      version_group_id: versionGroupId,
+      supersedes_estimate_id: existing.id,
+      is_current_version: true,
+      subtotal_cents: totals.subtotal,
+      tax_cents: totals.tax,
+      total_cents: totals.total,
+      currency: existing.currency,
+      valid_until: input.valid_until ?? null,
+      metadata: {
+        ...existingMetadata,
+        tax_rate: input.tax_rate ?? 0,
+        markup_percent: input.markup_percent ?? 0,
+        summary: stripNul(input.summary) ?? null,
+        terms: stripNul(input.terms) ?? null,
+        recipient:
+          input.recipient_name || input.recipient_email
+            ? { name: stripNul(input.recipient_name) ?? null, email: stripNul(input.recipient_email) ?? null }
+            : existingMetadata.recipient ?? null,
+      },
+      created_by: userId,
+    })
+    .select("*")
+    .single()
+
+  if (insertError || !newEstimate) {
+    throw new Error(`Failed to revise estimate: ${insertError?.message}`)
+  }
+
+  const itemsPayload = parsedLines.map((line, idx) => ({
+    org_id: resolvedOrgId,
+    estimate_id: newEstimate.id,
+    cost_code_id: line.cost_code_id ?? null,
+    item_type: line.item_type ?? "line",
+    description: stripNul(line.description),
+    quantity: line.quantity ?? 1,
+    unit: stripNul(line.unit) ?? null,
+    unit_cost_cents: line.unit_cost_cents ?? 0,
+    markup_pct: line.markup_pct ?? 0,
+    sort_order: line.sort_order ?? idx,
+    metadata: line.metadata ?? {},
+  }))
+
+  const { error: itemError } = await supabase.from("estimate_items").insert(itemsPayload)
+  if (itemError) {
+    throw new Error(`Failed to save revised estimate lines: ${itemError.message}`)
+  }
+
+  // Mark the prior version as superseded so the portal/list show the latest as current.
+  await supabase
+    .from("estimates")
+    .update({ is_current_version: false })
+    .eq("id", existing.id)
+    .eq("org_id", resolvedOrgId)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "estimate",
+    entityId: newEstimate.id,
+    after: { ...newEstimate, supersedes: existing.id },
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "estimate_revised",
+    entityType: "estimate",
+    entityId: newEstimate.id,
+    payload: { version: newVersion, supersedes_estimate_id: existing.id, title: newEstimate.title },
+  })
+
+  return newEstimate
+}
+
 
 

@@ -134,6 +134,12 @@ function formatCurrency(cents?: number | null) {
 
 function formatDate(value?: string | null) {
   if (!value) return null
+  // If it's a YYYY-MM-DD date string, format it timezone-safely in UTC
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return value
+    return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })
+  }
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })

@@ -56,6 +56,8 @@ export type NotificationType =
   | "estimate_created"
   | "estimate_updated"
   | "estimate_sent"
+  | "estimate_changes_requested"
+  | "estimate_declined"
   | "proposal_created"
   | "proposal_updated"
   | "proposal_sent"

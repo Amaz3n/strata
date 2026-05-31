@@ -307,12 +307,29 @@ export interface ProspectActivity {
 export async function listProspectActivity(prospectId: string, orgId?: string, limit = 12): Promise<ProspectActivity[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
-  const { data, error } = await supabase
+  // Fetch estimates associated with this prospect
+  const { data: estimates } = await supabase
+    .from("estimates")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("prospect_id", prospectId)
+
+  const estimateIds = (estimates ?? []).map((e) => e.id)
+
+  let query = supabase
     .from("events")
     .select("id, event_type, payload, created_at")
     .eq("org_id", resolvedOrgId)
-    .eq("entity_type", "prospect")
-    .eq("entity_id", prospectId)
+
+  if (estimateIds.length > 0) {
+    // Query events where entity is this prospect OR any of this prospect's estimates
+    const orFilter = `and(entity_type.eq.prospect,entity_id.eq.${prospectId}),and(entity_type.eq.estimate,entity_id.in.(${estimateIds.join(",")}))`
+    query = query.or(orFilter)
+  } else {
+    query = query.eq("entity_type", "prospect").eq("entity_id", prospectId)
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .limit(limit)
 

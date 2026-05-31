@@ -17,7 +17,9 @@ import {
 } from "@/app/(app)/pipeline/actions"
 import {
   createEstimateAction,
+  createEstimateVersionAction,
   getEstimateBuilderSigningLinkAction,
+  getEstimateForEditAction,
   getEstimateShareLinkAction,
   sendEstimateAction,
 } from "@/app/(app)/estimates/actions"
@@ -50,6 +52,8 @@ import {
   Hammer,
   Mail,
   MapPin,
+  MessageSquare,
+  PenLine,
   Phone,
   Plus,
   Receipt,
@@ -57,10 +61,11 @@ import {
   User,
   X,
 } from "@/components/icons"
-import { cn, formatPhone } from "@/lib/utils"
+import { cn, formatPhone, formatLocalDate } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import { ConvertProspectSheet } from "./convert-prospect-sheet"
-import { EstimateCreateSheet } from "@/components/estimates/estimate-create-sheet"
+import { EstimateCreateSheet, type EstimateSheetInitial } from "@/components/estimates/estimate-create-sheet"
+import { EstimateActivitySheet } from "@/components/estimates/estimate-activity-sheet"
 
 interface ProspectDetailSheetProps {
   prospectId?: string
@@ -152,8 +157,81 @@ function formatActivityType(eventType: string): string {
     prospect_deleted: "Prospect deleted",
     prospect_contact_added: "Contact added",
     prospect_contact_updated: "Contact updated",
+    prospect_estimate_created: "Estimate created",
+    estimate_sent: "Estimate sent",
+    estimate_viewed: "Estimate opened by client",
+    estimate_client_signed: "Estimate signed by client",
+    estimate_changes_requested: "Changes requested by client",
+    estimate_rejected: "Estimate rejected by client",
+    estimate_executed: "Estimate executed (signed)",
+    estimate_comment_added: "New estimate message",
   }
   return map[eventType] ?? eventType.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())
+}
+
+function renderActivityDetails(event: ProspectActivity): React.ReactNode {
+  const p = event.payload as any
+  if (!p) return null
+
+  switch (event.event_type) {
+    case "prospect_estimate_created":
+      return p.estimate_title ? (
+        <span className="text-xs text-muted-foreground">
+          Created estimate <span className="font-medium text-foreground">"{p.estimate_title}"</span>
+        </span>
+      ) : null
+    case "estimate_sent":
+      return p.title ? (
+        <span className="text-xs text-muted-foreground">
+          Sent estimate <span className="font-medium text-foreground">"{p.title}"</span>
+          {p.recipient_email ? ` to ${p.recipient_email}` : ""}
+        </span>
+      ) : null
+    case "estimate_viewed":
+      return p.title ? (
+        <span className="text-xs text-muted-foreground">
+          Client viewed estimate <span className="font-medium text-foreground">"{p.title}"</span>
+        </span>
+      ) : null
+    case "estimate_client_signed":
+      return p.title ? (
+        <span className="text-xs text-muted-foreground">
+          Signed by <span className="font-medium text-foreground">{p.by || "Client"}</span> for estimate <span className="font-medium text-foreground">"{p.title}"</span>
+        </span>
+      ) : null
+    case "estimate_changes_requested":
+      return p.title ? (
+        <span className="text-xs text-muted-foreground">
+          Changes requested by <span className="font-medium text-foreground">{p.by || "Client"}</span> on estimate <span className="font-medium text-foreground">"{p.title}"</span>
+        </span>
+      ) : null
+    case "estimate_rejected":
+      return p.title ? (
+        <span className="text-xs text-muted-foreground">
+          Rejected by <span className="font-medium text-foreground">{p.by || "Client"}</span> on estimate <span className="font-medium text-foreground">"{p.title}"</span>
+        </span>
+      ) : null
+    case "estimate_executed":
+      return p.title ? (
+        <span className="text-xs text-muted-foreground">
+          Countersigned by <span className="font-medium text-foreground">{p.signer_name || "Builder"}</span> — estimate <span className="font-medium text-foreground">"{p.title}"</span> is executed
+        </span>
+      ) : null
+    case "estimate_comment_added":
+      return (
+        <span className="text-xs text-muted-foreground">
+          Comment posted by <span className="font-medium text-foreground">{p.author_type === "client" ? "Client" : "Builder"}</span>
+        </span>
+      )
+    case "prospect_status_changed":
+      return p.new_status ? (
+        <span className="text-xs text-muted-foreground">
+          Moved from <span className="capitalize">{p.old_status || "unknown"}</span> to <span className="font-medium text-foreground capitalize">{p.new_status}</span>
+        </span>
+      ) : null
+    default:
+      return null
+  }
 }
 
 function formatCurrency(cents?: number | null): string {
@@ -244,6 +322,15 @@ export function ProspectDetailSheet({
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [copyingId, setCopyingId] = useState<string | null>(null)
   const [signingId, setSigningId] = useState<string | null>(null)
+  const [openingReviseId, setOpeningReviseId] = useState<string | null>(null)
+  const [revising, setRevising] = useState(false)
+  const [reviseOpen, setReviseOpen] = useState(false)
+  const [reviseTarget, setReviseTarget] = useState<{
+    estimateId: string
+    initial: EstimateSheetInitial
+    changes: string | null
+  } | null>(null)
+  const [activityEstimate, setActivityEstimate] = useState<EstimateRow | null>(null)
 
   const refreshProspect = useCallback(async () => {
     if (!resolvedProspectId) return
@@ -365,6 +452,37 @@ export function ProspectDetailSheet({
     }
   }
 
+  async function handleOpenRevise(estimateId: string) {
+    setOpeningReviseId(estimateId)
+    try {
+      await ensureCreateData()
+      const initial = await getEstimateForEditAction(estimateId)
+      setReviseTarget({ estimateId, initial, changes: initial.decision_note })
+      setReviseOpen(true)
+    } catch (error) {
+      toast({ title: "Couldn't open revision", description: (error as Error).message })
+    } finally {
+      setOpeningReviseId(null)
+    }
+  }
+
+  async function handleSubmitRevision(input: EstimateInput) {
+    if (!reviseTarget) return
+    setRevising(true)
+    try {
+      await createEstimateVersionAction(reviseTarget.estimateId, { ...input, prospect_id: prospect?.id })
+      setReviseOpen(false)
+      setReviseTarget(null)
+      toast({ title: "New version created", description: "Send the revised estimate when it's ready." })
+      await refreshProspect()
+      router.refresh()
+    } catch (error) {
+      toast({ title: "Failed to save revision", description: (error as Error).message })
+    } finally {
+      setRevising(false)
+    }
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -479,16 +597,17 @@ export function ProspectDetailSheet({
                       <Field label="Timeline" value={formatTimeline(prospect.timeline_preference)} />
                       <Field label="Stage" value={statusLabels[prospect.status] ?? prospect.status} />
                     </div>
-                    {prospect.jobsite_location?.street || prospect.jobsite_location?.city ? (
+                    {prospect.jobsite_location?.street || prospect.jobsite_location?.city || prospect.jobsite_location?.postal_code ? (
                       <div className="mt-3 flex items-start gap-2 border-t pt-3 text-sm text-muted-foreground">
                         <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
                         <div>
                           {prospect.jobsite_location.street ? <div>{prospect.jobsite_location.street}</div> : null}
-                          {prospect.jobsite_location.city || prospect.jobsite_location.state ? (
+                          {prospect.jobsite_location.city || prospect.jobsite_location.state || prospect.jobsite_location.postal_code ? (
                             <div>
                               {prospect.jobsite_location.city}
                               {prospect.jobsite_location.city && prospect.jobsite_location.state ? ", " : ""}
                               {prospect.jobsite_location.state}
+                              {prospect.jobsite_location.postal_code ? ` ${prospect.jobsite_location.postal_code}` : ""}
                             </div>
                           ) : null}
                         </div>
@@ -565,8 +684,43 @@ export function ProspectDetailSheet({
                               {estimate.client_signed_at ? (
                                 <span className="text-emerald-600">Signed {format(new Date(estimate.client_signed_at), "MMM d")}</span>
                               ) : null}
-                              {estimate.valid_until ? <span>Valid to {format(new Date(estimate.valid_until), "MMM d")}</span> : null}
+                              {estimate.valid_until ? <span>Valid to {formatLocalDate(estimate.valid_until, "MMM d")}</span> : null}
                             </div>
+
+                            {statusKey === "changes_requested" && !superseded ? (
+                              <div className="mt-2.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-600">
+                                  Client requested changes
+                                </p>
+                                {estimate.decision_note ? (
+                                  <p className="mt-1 whitespace-pre-line text-xs text-foreground">{estimate.decision_note}</p>
+                                ) : (
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    The client asked for changes — open the thread for details.
+                                  </p>
+                                )}
+                                <div className="mt-2 flex items-center gap-1.5">
+                                  <Button
+                                    size="sm"
+                                    className="h-7 px-2.5 text-xs"
+                                    onClick={() => void handleOpenRevise(estimate.id)}
+                                    disabled={openingReviseId === estimate.id}
+                                  >
+                                    <PenLine className="mr-1.5 h-3.5 w-3.5" />
+                                    {openingReviseId === estimate.id ? "Opening…" : "Revise estimate"}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 px-2 text-xs"
+                                    onClick={() => setActivityEstimate(estimate)}
+                                  >
+                                    <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                                    View thread
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : null}
 
                             <div className="mt-2.5 flex items-center gap-1.5 border-t pt-2.5">
                               {statusKey !== "executed" && statusKey !== "converted_to_project" ? (
@@ -601,6 +755,17 @@ export function ProspectDetailSheet({
                                   PDF
                                 </a>
                               </Button>
+                              {estimate.sent_at ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-xs"
+                                  onClick={() => setActivityEstimate(estimate)}
+                                >
+                                  <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                                  Thread
+                                </Button>
+                              ) : null}
                               {statusKey === "client_signed" ? (
                                 <Button
                                   size="sm"
@@ -629,20 +794,24 @@ export function ProspectDetailSheet({
                     </div>
                   ) : (
                     <div className="space-y-0">
-                      {activity.map((event, index) => (
-                        <div key={event.id} className="flex gap-3">
-                          <div className="flex flex-col items-center">
-                            <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary/70" />
-                            {index < activity.length - 1 ? <span className="w-px flex-1 bg-border" /> : null}
+                      {activity.map((event, index) => {
+                        const details = renderActivityDetails(event)
+                        return (
+                          <div key={event.id} className="flex gap-3">
+                            <div className="flex flex-col items-center">
+                              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary/70" />
+                              {index < activity.length - 1 ? <span className="w-px flex-1 bg-border" /> : null}
+                            </div>
+                            <div className="pb-5">
+                              <p className="text-sm font-medium">{formatActivityType(event.event_type)}</p>
+                              {details && <div className="mt-0.5">{details}</div>}
+                              <p className="mt-1 text-[10px] text-muted-foreground">
+                                {format(new Date(event.created_at), "MMM d, yyyy 'at' h:mm a")}
+                              </p>
+                            </div>
                           </div>
-                          <div className="pb-5">
-                            <p className="text-sm font-medium">{formatActivityType(event.event_type)}</p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">
-                              {format(new Date(event.created_at), "MMM d, yyyy 'at' h:mm a")}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </TabsContent>
@@ -705,6 +874,45 @@ export function ProspectDetailSheet({
           loading={creating}
         />
       ) : null}
+
+      {prospect && createData && reviseTarget ? (
+        <EstimateCreateSheet
+          key={`revise-${reviseTarget.estimateId}`}
+          open={reviseOpen}
+          onOpenChange={(open) => {
+            setReviseOpen(open)
+            if (!open) setReviseTarget(null)
+          }}
+          contacts={createData.contacts}
+          costCodes={createData.costCodes}
+          defaultTerms={createData.defaultTerms}
+          defaultProspectId={prospect.id}
+          mode="revise"
+          initialEstimate={reviseTarget.initial}
+          requestedChanges={reviseTarget.changes}
+          prospectRecipient={
+            reviseTarget.initial.recipient_name || reviseTarget.initial.recipient_email
+              ? {
+                  name: reviseTarget.initial.recipient_name ?? "",
+                  email: reviseTarget.initial.recipient_email ?? null,
+                }
+              : primaryContact
+                ? { name: primaryContact.full_name, email: primaryContact.email ?? null }
+                : undefined
+          }
+          prospectContacts={(prospect.contacts ?? []).map((c) => ({ name: c.full_name, email: c.email ?? null }))}
+          onCreate={handleSubmitRevision}
+          loading={revising}
+        />
+      ) : null}
+
+      <EstimateActivitySheet
+        estimate={activityEstimate}
+        open={!!activityEstimate}
+        onOpenChange={(open) => {
+          if (!open) setActivityEstimate(null)
+        }}
+      />
 
       {prospect ? (
         <ConvertProspectSheet

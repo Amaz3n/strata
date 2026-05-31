@@ -1494,6 +1494,12 @@ function buildNotificationHref(payload: any): string | null {
   const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
   const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
 
+  // Pipeline estimates live outside the project workspace; route to the
+  // prospect pipeline (or the standalone estimates list) so the CTA still works.
+  if (entityType === "estimate") {
+    return typeof payload?.prospect_id === "string" ? "/pipeline" : "/estimates"
+  }
+
   if (!projectId) return null
 
   switch (entityType) {

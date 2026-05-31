@@ -2,6 +2,7 @@ import { notFound } from "next/navigation"
 
 import { loadEstimateByToken } from "@/lib/services/estimate-portal"
 import { EstimatePortalClient } from "@/components/portal/estimate-portal-client"
+import { isDateExpired } from "@/lib/utils"
 
 export const revalidate = 0
 
@@ -17,7 +18,7 @@ export default async function EstimatePortalPage({ params }: Params) {
     notFound()
   }
 
-  const expired = !!estimate.valid_until && new Date(estimate.valid_until) < new Date()
+  const expired = isDateExpired(estimate.valid_until)
 
   return (
     <EstimatePortalClient
