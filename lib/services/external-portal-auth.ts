@@ -124,6 +124,23 @@ function normalizeWorkspaceProjectStatus(status: unknown): ExternalPortalWorkspa
   }
 }
 
+function formatProjectLocation(location: unknown): string | null {
+  if (!location) return null
+  if (typeof location === "string") return location.trim() || null
+  if (typeof location !== "object") return null
+
+  const value = location as Record<string, unknown>
+  const direct = value.address ?? value.formatted
+  if (typeof direct === "string" && direct.trim()) return direct.trim()
+
+  const cityState = [value.city, value.state].filter((part): part is string => typeof part === "string" && !!part.trim()).join(", ")
+  const lines = [value.street1, value.street2, cityState, value.postal_code ?? value.zip]
+    .filter((part): part is string => typeof part === "string" && !!part.trim())
+    .map((part) => part.trim())
+
+  return lines.length > 0 ? lines.join(", ") : null
+}
+
 function sortWorkspaceItems(a: ExternalPortalWorkspaceItem, b: ExternalPortalWorkspaceItem) {
   const projectComparison = a.project_name.localeCompare(b.project_name)
   if (projectComparison !== 0) return projectComparison
@@ -602,7 +619,7 @@ export async function getExternalPortalWorkspaceContext({
           id,
           token:portal_access_tokens!inner(
             id, token, portal_type, expires_at, max_access_count, access_count, last_accessed_at, pin_required, paused_at, revoked_at,
-            project:projects(id, name, status, address),
+            project:projects(id, name, status, location),
             company:companies(id, name),
             contact:contacts(id, full_name, email)
           )
@@ -626,7 +643,7 @@ export async function getExternalPortalWorkspaceContext({
               invite_email,
               company:companies!bid_invites_org_company_fk(id, name),
               contact:contacts!bid_invites_org_contact_fk(id, full_name, email),
-              bid_package:bid_packages!bid_invites_org_package_fk(id, title, due_at, status, project:projects(id, name, status, address))
+              bid_package:bid_packages!bid_invites_org_package_fk(id, title, due_at, status, project:projects(id, name, status, location))
             )
           )
         `,
@@ -685,7 +702,7 @@ export async function getExternalPortalWorkspaceContext({
       project_id: project.id,
       project_name: project.name,
       project_status: normalizeWorkspaceProjectStatus(project.status),
-      project_address: project.address ?? null,
+      project_address: formatProjectLocation(project.location),
       company_name: company?.name ?? null,
       contact_name: contactName,
       last_accessed_at: resolvedToken.last_accessed_at ?? null,
@@ -720,7 +737,7 @@ export async function getExternalPortalWorkspaceContext({
       project_id: project.id,
       project_name: project.name,
       project_status: normalizeWorkspaceProjectStatus(project.status),
-      project_address: project.address ?? null,
+      project_address: formatProjectLocation(project.location),
       company_name: company?.name ?? null,
       contact_name: contact?.full_name ?? contact?.email ?? null,
       due_at: bidPackage.due_at ?? null,

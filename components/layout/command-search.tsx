@@ -955,6 +955,8 @@ function AiResponsePanel({
 type ViewMode = "idle" | "search" | "ai"
 export function CommandSearch({ className }: CommandSearchProps) {
   const [open, setOpen] = useState(false)
+  const [aiEnabled, setAiEnabled] = useState(true)
+  const aiConfigLoadedRef = useRef(false)
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -1062,6 +1064,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
 
   const askAi = useCallback(
     async (overrideQuery?: string) => {
+      if (!aiEnabled) return
       const prompt = (overrideQuery ?? query).trim()
       if (!prompt) return
 
@@ -1208,8 +1211,30 @@ export function CommandSearch({ className }: CommandSearchProps) {
         }
       }
     },
-    [aiSessionId, closeAiStream, query],
+    [aiEnabled, aiSessionId, closeAiStream, query],
   )
+
+  // Resolve whether the AI affordances should be shown for this org (once, on first open).
+  useEffect(() => {
+    if (!open || aiConfigLoadedRef.current) return
+    aiConfigLoadedRef.current = true
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await fetch("/api/ai-search/config", { cache: "no-store" })
+        if (!response.ok) return
+        const payload = (await response.json().catch(() => ({}))) as { enabled?: unknown }
+        if (!cancelled && typeof payload.enabled === "boolean") {
+          setAiEnabled(payload.enabled)
+        }
+      } catch {
+        // Leave the default (enabled) in place; the server still gates the actual request.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   // Keyboard shortcut to open
   useEffect(() => {
@@ -1441,9 +1466,13 @@ export function CommandSearch({ className }: CommandSearchProps) {
         return
       }
 
-      // Otherwise, ask AI
+      // Otherwise, ask AI — or, when AI is disabled, open the top result.
       if (query.trim()) {
-        void askAi()
+        if (aiEnabled) {
+          void askAi()
+        } else if (flatResults.length > 0) {
+          handleNavigate(flatResults[0].href)
+        }
       }
     }
   }
@@ -1487,7 +1516,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
           onClick={() => setOpen(true)}
         >
           <Search className="mr-2 h-4 w-4" />
-          <span className="truncate">Search or ask a question...</span>
+          <span className="truncate">{aiEnabled ? "Search or ask a question..." : "Search records..."}</span>
           <kbd className="pointer-events-none absolute right-1.5 top-1.5 hidden h-5 select-none items-center gap-1 rounded-none border border-border/60 bg-background/80 px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
             <span className="text-xs">⌘</span>K
           </kbd>
@@ -1585,7 +1614,9 @@ export function CommandSearch({ className }: CommandSearchProps) {
                 value={query}
                 onChange={(e) => handleQueryChange(e.target.value)}
                 onKeyDown={handleInputKeyDown}
-                placeholder={viewMode === "ai" ? "Ask a follow-up..." : "Search records or ask a question..."}
+                placeholder={
+                  viewMode === "ai" ? "Ask a follow-up..." : aiEnabled ? "Search records or ask a question..." : "Search records..."
+                }
                 className="h-12 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
                 autoFocus
               />
@@ -1598,7 +1629,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
                   <X className="size-3.5" />
                 </button>
               )}
-              {viewMode !== "ai" && query.trim() && (
+              {viewMode !== "ai" && query.trim() && aiEnabled && (
                 <div className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/60">
                   <CornerDownLeft className="size-3" />
                   <span>Ask AI</span>
@@ -1618,13 +1649,29 @@ export function CommandSearch({ className }: CommandSearchProps) {
               {viewMode === "idle" && (
                 <div className="px-4 py-6">
                   <div className="rounded-none border border-border/60 bg-muted/20 p-4">
-                    <div className="mb-1.5 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
-                      <Sparkles className="size-3.5 text-cyan-400" />
-                      Ask Naturally
-                    </div>
-                    <p className="text-sm text-foreground/85">
-                      Ask anything about your company data in your own words. Example topics: invoices, projects, approvals, cash, schedule, RFIs, or submittals.
-                    </p>
+                    {aiEnabled ? (
+                      <>
+                        <div className="mb-1.5 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
+                          <Sparkles className="size-3.5 text-cyan-400" />
+                          Ask Naturally
+                        </div>
+                        <p className="text-sm text-foreground/85">
+                          Ask anything about your company data in your own words. Example topics: invoices, projects, approvals, cash, schedule, RFIs, or submittals.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="mb-1.5 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
+                          <Search className="size-3.5 text-muted-foreground" />
+                          Search Records
+                        </div>
+                        <p className="text-sm text-foreground/85">
+                          Find projects, contacts, companies, invoices, and more. Type a name, number, or an amount like
+                          {" "}
+                          <span className="font-medium">$5,000</span> or <span className="font-medium">over 10k</span>.
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -1642,9 +1689,11 @@ export function CommandSearch({ className }: CommandSearchProps) {
                   {!isLoading && flatResults.length === 0 && (
                     <div className="space-y-1 py-6 text-center">
                       <p className="text-sm text-muted-foreground">No records found</p>
-                      <p className="text-xs text-muted-foreground/60">
-                        Press <kbd className="rounded-none border border-border/60 bg-muted/50 px-1 py-0.5 font-mono text-[10px]">Enter</kbd> to ask AI instead
-                      </p>
+                      {aiEnabled && (
+                        <p className="text-xs text-muted-foreground/60">
+                          Press <kbd className="rounded-none border border-border/60 bg-muted/50 px-1 py-0.5 font-mono text-[10px]">Enter</kbd> to ask AI instead
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -1699,7 +1748,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
                     ))}
 
                   {/* AI suggestion at bottom of search results */}
-                  {flatResults.length > 0 && (
+                  {flatResults.length > 0 && aiEnabled && (
                     <div className="border-t border-border/40 px-4 py-2">
                       <button
                         type="button"
@@ -1752,7 +1801,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
                     </span>
                     <span className="flex items-center gap-1">
                       <kbd className="rounded-none border border-border/40 px-1 py-0.5 font-mono">↵</kbd>
-                      {selectedIndex >= 0 ? "Open" : "Ask AI"}
+                      {selectedIndex >= 0 ? "Open" : aiEnabled ? "Ask AI" : "Open"}
                     </span>
                     <span className="flex items-center gap-1">
                       <kbd className="rounded-none border border-border/40 px-1 py-0.5 font-mono">Esc</kbd>

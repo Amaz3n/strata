@@ -83,11 +83,140 @@ const SEARCH_DOCUMENT_BACKFILL_MAX_BATCH = 12
 
 const searchDocumentBackfillSeenAt = new Map<string, number>()
 
+// Entity sets used when the caller does not request specific types.
+const DEFAULT_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company"]
+// Live ("preferFast") header search: widened to surface the records users expect to find
+// instantly — contacts, companies, and invoices — not just project/task/file.
+const FAST_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company", "invoice", "payment"]
+// Money-bearing entities, used when the query is a bare amount/amount range.
+const MONEY_ENTITY_TYPES: SearchEntityType[] = [
+  "invoice",
+  "payment",
+  "estimate",
+  "budget",
+  "commitment",
+  "change_order",
+  "contract",
+  "proposal",
+]
+// Maps each money entity to the integer-cents column its amount lives in.
+const AMOUNT_FIELD_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
+  invoice: "total_cents",
+  payment: "amount_cents",
+  estimate: "total_cents",
+  budget: "total_cents",
+  commitment: "total_cents",
+  change_order: "total_cents",
+  contract: "total_cents",
+  proposal: "total_cents",
+}
+
 function sanitizeSearchTerm(query: string) {
   return query
     .replace(/[,%()]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+// Parse a single monetary token ("$5,000", "5k", "1.2m", "750.50") into integer cents.
+function parseAmountToCents(token: string): number | null {
+  let normalized = token.trim().toLowerCase().replace(/\$/g, "").replace(/,/g, "").replace(/\s+/g, "")
+  if (!normalized) return null
+
+  let multiplier = 1
+  if (normalized.endsWith("k")) {
+    multiplier = 1_000
+    normalized = normalized.slice(0, -1)
+  } else if (normalized.endsWith("m")) {
+    multiplier = 1_000_000
+    normalized = normalized.slice(0, -1)
+  }
+
+  if (!/^\d*\.?\d+$/.test(normalized)) return null
+  const value = Number.parseFloat(normalized)
+  if (!Number.isFinite(value)) return null
+  return Math.round(value * multiplier * 100)
+}
+
+const AMOUNT_TOKEN = String.raw`\$?\s?\d[\d,]*(?:\.\d{1,2})?\s?[km]?`
+
+interface ParsedAmountQuery {
+  matched: boolean
+  amountMin?: number
+  amountMax?: number
+  residualText: string
+}
+
+// Detect monetary intent in a free-text query and split out an amount filter (in cents)
+// from the remaining text. Supports ranges ("between 1k and 5k", "1000-2000"),
+// comparisons ("over 5000", "under $500", "5k+"), and bare amounts ("$5,000", "5000").
+function parseAmountQuery(raw: string): ParsedAmountQuery {
+  const original = raw.trim()
+  if (!original) return { matched: false, residualText: "" }
+  const text = original.toLowerCase()
+
+  const strip = (matchStr: string) =>
+    original
+      .replace(new RegExp(escapeRegExp(matchStr), "i"), " ")
+      .replace(/\s+/g, " ")
+      .trim()
+
+  // between X and Y
+  let match = text.match(new RegExp(`between\\s+(${AMOUNT_TOKEN})\\s+and\\s+(${AMOUNT_TOKEN})`, "i"))
+  if (match) {
+    const lo = parseAmountToCents(match[1])
+    const hi = parseAmountToCents(match[2])
+    if (lo !== null && hi !== null) {
+      return { matched: true, amountMin: Math.min(lo, hi), amountMax: Math.max(lo, hi), residualText: strip(match[0]) }
+    }
+  }
+
+  // X to Y / X - Y range
+  match = text.match(new RegExp(`(${AMOUNT_TOKEN})\\s*(?:-|–|to)\\s*(${AMOUNT_TOKEN})`, "i"))
+  if (match) {
+    const lo = parseAmountToCents(match[1])
+    const hi = parseAmountToCents(match[2])
+    if (lo !== null && hi !== null) {
+      return { matched: true, amountMin: Math.min(lo, hi), amountMax: Math.max(lo, hi), residualText: strip(match[0]) }
+    }
+  }
+
+  // over / above / more than / at least / >= X  (also "X+")
+  match =
+    text.match(new RegExp(`(?:>=?|over|above|more than|greater than|at least|min(?:imum)?)\\s*(${AMOUNT_TOKEN})`, "i")) ??
+    text.match(new RegExp(`(${AMOUNT_TOKEN})\\s*\\+`, "i"))
+  if (match) {
+    const lo = parseAmountToCents(match[1])
+    if (lo !== null) return { matched: true, amountMin: lo, residualText: strip(match[0]) }
+  }
+
+  // under / below / less than / at most / <= X
+  match = text.match(new RegExp(`(?:<=?|under|below|less than|at most|max(?:imum)?)\\s*(${AMOUNT_TOKEN})`, "i"))
+  if (match) {
+    const hi = parseAmountToCents(match[1])
+    if (hi !== null) return { matched: true, amountMax: hi, residualText: strip(match[0]) }
+  }
+
+  // Bare amount. Require an explicit money signal ($, k/m suffix, comma grouping, or decimal)
+  // OR a query that is nothing but a number, to avoid hijacking ordinary text searches.
+  const bareSignal = text.match(
+    new RegExp(`(?:^|\\s)(\\$\\s?\\d[\\d,]*(?:\\.\\d{1,2})?\\s?[km]?|\\d[\\d,]*(?:\\.\\d{1,2})?[km]|\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,2})?|\\d+\\.\\d{1,2})(?=\\s|$)`, "i"),
+  )
+  const bareToken = bareSignal?.[1] ?? (/^\$?\s?\d[\d,]*(?:\.\d{1,2})?\s?[km]?$/i.test(original) ? original : null)
+  if (bareToken) {
+    const cents = parseAmountToCents(bareToken)
+    if (cents !== null) {
+      // For a whole-dollar amount, capture cents within that dollar (e.g. 5000 → $5000.00–$5000.99).
+      const amountMax = bareToken.includes(".") ? cents : cents + 99
+      return { matched: true, amountMin: cents, amountMax, residualText: strip(bareToken) }
+    }
+  }
+
+  return { matched: false, residualText: original }
 }
 
 function shouldForceEntityFanout(filters: SearchFilters) {
@@ -586,26 +715,44 @@ export async function searchEntities(
     return []
   }
 
-  // Default to key entity types if none specified
-  const typesToSearch = entityTypes.length > 0 ? entityTypes : [
-    ...(preferFast ? ['project', 'task', 'file'] : ['project', 'task', 'file', 'contact', 'company'])
-  ] as SearchEntityType[]
+  // Detect a monetary intent ("invoices over $5k", "5000") and fold it into the filters.
+  const amountParse = parseAmountQuery(trimmedQuery)
+  const effectiveFilters: SearchFilters = { ...filters }
+  if (amountParse.matched) {
+    if (amountParse.amountMin !== undefined) effectiveFilters.amountMin = amountParse.amountMin
+    if (amountParse.amountMax !== undefined) effectiveFilters.amountMax = amountParse.amountMax
+  }
+  const searchText = amountParse.matched ? amountParse.residualText : trimmedQuery
+  const amountOnly = amountParse.matched && searchText.trim().length === 0
+
+  // Default to key entity types if none specified.
+  let typesToSearch: SearchEntityType[]
+  if (entityTypes.length > 0) {
+    typesToSearch = entityTypes
+  } else if (amountOnly) {
+    // A bare amount only makes sense against money-bearing records.
+    typesToSearch = [...MONEY_ENTITY_TYPES]
+  } else {
+    const base = preferFast ? FAST_SEARCH_ENTITY_TYPES : DEFAULT_SEARCH_ENTITY_TYPES
+    typesToSearch = amountParse.matched ? Array.from(new Set([...base, ...MONEY_ENTITY_TYPES])) : [...base]
+  }
 
   const results: SearchResult[] = []
   const promises: Promise<void>[] = []
-  const canUseUnifiedIndex = !shouldForceEntityFanout(filters)
+  // Amount filters (set above) force the per-entity fan-out via shouldForceEntityFanout.
+  const canUseUnifiedIndex = !shouldForceEntityFanout(effectiveFilters)
 
-  if (trimmedQuery && canUseUnifiedIndex) {
+  if (searchText.trim() && canUseUnifiedIndex) {
     const indexed = await searchViaUnifiedIndex(
       supabase,
       resolvedOrgId,
-      trimmedQuery,
+      searchText,
       typesToSearch,
       targetLimit,
     )
     if (indexed.length > 0) {
       results.push(...indexed)
-      if (shouldShortCircuitUnifiedIndex(indexed.length, targetLimit, filters, preferFast)) {
+      if (shouldShortCircuitUnifiedIndex(indexed.length, targetLimit, effectiveFilters, preferFast)) {
         return indexed.slice(0, targetLimit)
       }
     }
@@ -626,7 +773,7 @@ export async function searchEntities(
     promises.push(
       (async () => {
         try {
-          const result = await searchSingleEntity(supabase, resolvedOrgId, entityType, query, filters, {
+          const result = await searchSingleEntity(supabase, resolvedOrgId, entityType, searchText, effectiveFilters, {
             ...options,
             limit: perEntityLimit,
           })
@@ -742,6 +889,17 @@ async function searchSingleEntity(
 
   if (filters.createdBy) {
     queryBuilder = queryBuilder.eq('created_by', filters.createdBy)
+  }
+
+  // Amount range filter for money-bearing entities (values are integer cents).
+  const amountField = AMOUNT_FIELD_BY_ENTITY[entityType]
+  if (amountField) {
+    if (filters.amountMin !== undefined) {
+      queryBuilder = queryBuilder.gte(amountField, filters.amountMin)
+    }
+    if (filters.amountMax !== undefined) {
+      queryBuilder = queryBuilder.lte(amountField, filters.amountMax)
+    }
   }
 
   const { data, error } = await queryBuilder

@@ -1,10 +1,9 @@
 import { notFound } from "next/navigation"
 
 import { validatePortalToken, loadSubPortalData, recordPortalAccess } from "@/lib/services/portal-access"
-import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { getExternalPortalGateContext, getExternalPortalWorkspaceContext } from "@/lib/services/external-portal-auth"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { SubPortalClient } from "./sub-portal-client"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 import type { ComplianceDocumentType } from "@/lib/types"
@@ -21,30 +20,6 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
 
   if (!access) {
     notFound()
-  }
-
-  if (access.require_account) {
-    const hasAccountAccess = await hasExternalPortalGrantForToken({
-      orgId: access.org_id,
-      tokenId: access.id,
-      tokenType: "portal",
-    })
-    if (!hasAccountAccess) {
-      const gateContext = await getExternalPortalGateContext({ token, tokenType: "portal" })
-      return (
-        <PortalAccountGate
-          token={token}
-          tokenType="portal"
-          orgName={gateContext?.orgName ?? "the builder"}
-          projectName={gateContext?.projectName ?? "this project"}
-          defaultMode={gateContext?.defaultMode}
-          initialEmail={gateContext?.expectedEmail ?? ""}
-          suggestedFullName={gateContext?.suggestedFullName ?? ""}
-          emailLocked={gateContext?.emailLocked}
-          hasExistingAccount={gateContext?.hasExistingAccount}
-        />
-      )
-    }
   }
 
   // Check if this token is properly configured for sub portal
@@ -100,6 +75,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
 
   await recordPortalAccess(access.id)
   const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
+  const gateContext = workspace ? null : await getExternalPortalGateContext({ token, tokenType: "portal" })
 
   return (
     <SubPortalClient
@@ -112,6 +88,8 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       pinRequired={access.pin_required}
       complianceDocumentTypes={complianceDocumentTypes}
       workspace={workspace}
+      inviteEmail={gateContext?.expectedEmail ?? ""}
+      suggestedFullName={gateContext?.suggestedFullName ?? ""}
     />
   )
 }

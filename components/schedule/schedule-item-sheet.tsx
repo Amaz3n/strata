@@ -251,8 +251,10 @@ export function ScheduleItemSheet({
     },
   })
 
-  // Reset form when item or initialDates changes
+  // Reset form when item, open, or initialDates changes
   useEffect(() => {
+    setExpandedSection("")
+
     if (item) {
       form.reset({
         project_id: item.project_id,
@@ -304,11 +306,22 @@ export function ScheduleItemSheet({
         name: "",
         item_type: "task",
         status: "planned",
+        start_date: "",
+        end_date: "",
         progress: 0,
+        assigned_to: undefined,
         phase: undefined,
         trade: undefined,
+        location: undefined,
+        planned_hours: undefined,
         constraint_type: "asap",
         is_critical_path: false,
+        color: undefined,
+        notes: "",
+        dependencies: [],
+        cost_code_id: undefined,
+        budget_cents: undefined,
+        actual_cost_cents: undefined,
       })
       // If initialDates provided (from quick add), use those
       if (initialDates) {
@@ -322,8 +335,11 @@ export function ScheduleItemSheet({
       setInspectionChecklist([])
       setInspectionSignedBy("")
       setInspectionSignedAt(undefined)
+      setInspectionAttachments([])
+      setShareInspectionAttachmentsWithClients(false)
+      setNewChecklistItem("")
     }
-  }, [item, activeProjectId, form, initialDates])
+  }, [item, activeProjectId, form, initialDates, open])
 
   const isInspection = form.watch("item_type") === "inspection"
   const assignedToValue = form.watch("assigned_to")

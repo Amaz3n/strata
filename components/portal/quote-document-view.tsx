@@ -39,6 +39,17 @@ const money = (cents?: number | null) => currency.format((cents ?? 0) / 100)
 
 function formatDate(value?: string | null) {
   if (!value) return null
+  // If it starts with a YYYY-MM-DD pattern, parse it timezone-safely as a UTC date
+  const match = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (match) {
+    const year = parseInt(match[1], 10)
+    const month = parseInt(match[2], 10) - 1
+    const day = parseInt(match[3], 10)
+    const d = new Date(Date.UTC(year, month, day))
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })
+    }
+  }
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })

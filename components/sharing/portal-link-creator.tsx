@@ -526,7 +526,7 @@ export function PortalLinkCreator({
           <Info className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
           {shareMethod === "email" ? (
             <p>
-              We'll send a secure email invite directly. The recipient will log in securely or register a new account on Arc to access the project workspace.
+              We'll send a secure email invite directly. The recipient can use the link from their email, then optionally claim an Arc account from inside the portal.
             </p>
           ) : (
             <p>

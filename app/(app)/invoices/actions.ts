@@ -463,7 +463,7 @@ export async function listUnbilledCostsAction(projectId: string) {
         supabase,
         orgId,
         contractId: contract.id,
-        costCodeId: cost.cost_code_id,
+        costCodeId: cost.cost_code_id ?? null,
         occurredOn: new Date(cost.occurred_on),
       })
       resolvedMarkupPercent = markup.percent

@@ -1,8 +1,7 @@
 import { notFound } from "next/navigation"
 
 import { validatePortalToken, loadClientPortalData, recordPortalAccess } from "@/lib/services/portal-access"
-import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
-import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
+import { getExternalPortalGateContext, getExternalPortalWorkspaceContext } from "@/lib/services/external-portal-auth"
 import { PortalPublicClient } from "./portal-client"
 
 interface PortalPageProps {
@@ -19,30 +18,6 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
     notFound()
   }
 
-  if (access.require_account) {
-    const hasAccountAccess = await hasExternalPortalGrantForToken({
-      orgId: access.org_id,
-      tokenId: access.id,
-      tokenType: "portal",
-    })
-    if (!hasAccountAccess) {
-      const gateContext = await getExternalPortalGateContext({ token, tokenType: "portal" })
-      return (
-        <PortalAccountGate
-          token={token}
-          tokenType="portal"
-          orgName={gateContext?.orgName ?? "the builder"}
-          projectName={gateContext?.projectName ?? "this project"}
-          defaultMode={gateContext?.defaultMode}
-          initialEmail={gateContext?.expectedEmail ?? ""}
-          suggestedFullName={gateContext?.suggestedFullName ?? ""}
-          emailLocked={gateContext?.emailLocked}
-          hasExistingAccount={gateContext?.hasExistingAccount}
-        />
-      )
-    }
-  }
-
   const data = await loadClientPortalData({
     orgId: access.org_id,
     projectId: access.project_id,
@@ -54,6 +29,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
 
   await recordPortalAccess(access.id)
   const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
+  const gateContext = workspace ? null : await getExternalPortalGateContext({ token, tokenType: "portal" })
 
   return (
     <PortalPublicClient
@@ -63,6 +39,8 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
       pinRequired={access.pin_required}
       canMessage={access.permissions.can_message}
       workspace={workspace}
+      inviteEmail={gateContext?.expectedEmail ?? ""}
+      suggestedFullName={gateContext?.suggestedFullName ?? ""}
     />
   )
 }

@@ -170,7 +170,7 @@ export function FileViewer({
         setCurrentIndex(idx)
       }
     }
-  }, [file?.id, files, hasFileList])
+  }, [file, files, hasFileList])
 
   useEffect(() => {
     if (!open || !currentFileIsPdf) return

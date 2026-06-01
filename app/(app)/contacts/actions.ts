@@ -164,17 +164,17 @@ export async function sendPortalInviteAction({
       contactId,
       companyId: resolvedCompanyId,
       permissions: {},
-      requireAccount: true,
+      requireAccount: false,
       orgId,
     })
 
-  if (!token.require_account) {
+  if (token.require_account) {
     await setPortalTokenRequireAccount({
       tokenId: token.id,
-      requireAccount: true,
+      requireAccount: false,
       orgId,
     })
-    token = { ...token, require_account: true }
+    token = { ...token, require_account: false }
   }
 
   const [{ data: projectRow }, { data: orgRow }] = await Promise.all([

@@ -26,6 +26,7 @@ import {
   normalizeAiProvider,
   upsertPlatformAiSearchDefaultConfig,
 } from "@/lib/services/ai-config"
+import { listOrgAiSearchAccess, setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
 
 const enterOrgContextSchema = z.object({
   orgId: z.string().uuid("Invalid organization id"),
@@ -69,6 +70,11 @@ const setOrganizationStatusSchema = z.object({
 const updatePlatformAiDefaultsSchema = z.object({
   provider: z.enum(AI_PROVIDER_VALUES),
   model: z.string().trim().max(120).optional(),
+})
+
+const setAiSearchAccessSchema = z.object({
+  orgId: z.string().uuid("Invalid organization id"),
+  enabled: z.boolean(),
 })
 
 type PlatformOnboardingState = {
@@ -341,6 +347,42 @@ export async function updatePlatformAiDefaultsAction(input: { provider: string; 
     model,
     source: "platform" as const,
   }
+}
+
+export async function getAiSearchAccessAction() {
+  const { user } = await requireAuth()
+  await requirePermission("platform.org.access", { userId: user.id })
+
+  const [canManage, orgs] = await Promise.all([
+    hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
+    listOrgAiSearchAccess(),
+  ])
+
+  return { canManage, orgs }
+}
+
+export async function setAiSearchAccessAction(input: { orgId: string; enabled: boolean }) {
+  const parsed = setAiSearchAccessSchema.safeParse(input)
+  if (!parsed.success) {
+    return { error: parsed.error.errors[0]?.message ?? "Invalid AI search access request." }
+  }
+
+  const { user } = await requireAuth()
+  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+  try {
+    await setOrgAiSearchAccess({
+      orgId: parsed.data.orgId,
+      enabled: parsed.data.enabled,
+      actorId: user.id,
+    })
+  } catch (error: any) {
+    console.error("Failed to update AI search access", error)
+    return { error: error?.message ?? "Unable to update AI search access." }
+  }
+
+  revalidatePath("/platform")
+  return { success: true as const, orgId: parsed.data.orgId, enabled: parsed.data.enabled }
 }
 
 export async function clearPlatformAiDefaultsAction() {

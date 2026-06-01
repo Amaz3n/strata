@@ -528,6 +528,7 @@ export interface PortalPermissions {
   can_approve_change_orders: boolean
   can_submit_selections: boolean
   can_create_punch_items: boolean
+  can_message: boolean
   can_view_invoices?: boolean
   can_pay_invoices?: boolean
   can_view_rfis?: boolean
@@ -1182,9 +1183,6 @@ export interface Submittal {
   updated_at: string
 }
 
-export interface PortalMessageThread {
-  messages: PortalMessage[]
-}
 
 export interface PortalFinancialSummary {
   contractTotal: number

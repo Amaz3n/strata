@@ -2044,7 +2044,6 @@ function UnifiedDocumentsLayoutInner() {
         initialFiles={uploadFiles}
         projectId={projectId}
         folderPath={currentPath}
-        folderOptions={folderOptions}
         onUploadComplete={refreshFiles}
       />
 

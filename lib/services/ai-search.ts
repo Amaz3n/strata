@@ -5386,6 +5386,9 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     getOrgAiSearchConfigFromContext(context),
     getAiSearchRuntimeFlags(context),
   ])
+  if (!runtimeFlags.enabled) {
+    throw new Error("AI search is turned off for this organization.")
+  }
   const assistantRuntimeInfoQuery = isAssistantRuntimeInfoQuery(normalizedQuery)
   const assistantMode = assistantRuntimeInfoQuery
     ? "general"

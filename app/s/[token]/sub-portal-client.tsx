@@ -24,12 +24,15 @@ import type {
 interface SubPortalClientProps {
   data: SubPortalData
   token: string
+  canMessage?: boolean
   canSubmitInvoices?: boolean
   canDownloadFiles?: boolean
   canUploadComplianceDocs?: boolean
   pinRequired?: boolean
   complianceDocumentTypes?: ComplianceDocumentType[]
   workspace?: ExternalPortalWorkspaceContext | null
+  inviteEmail?: string
+  suggestedFullName?: string
 }
 
 export function SubPortalClient({
@@ -41,6 +44,8 @@ export function SubPortalClient({
   pinRequired = false,
   complianceDocumentTypes = [],
   workspace = null,
+  inviteEmail = "",
+  suggestedFullName = "",
 }: SubPortalClientProps) {
   const [activeTab, setActiveTab] = useState<SubPortalTab>("dashboard")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
@@ -138,6 +143,8 @@ export function SubPortalClient({
       pinVerified={pinVerified}
       token={token}
       tokenType="portal"
+      email={inviteEmail}
+      suggestedFullName={suggestedFullName}
       pinGate={
         <PortalPinGate
           token={token}

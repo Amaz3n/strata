@@ -1,6 +1,17 @@
 import { Document, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
 import { format, differenceInDays, addDays, isSameDay, isWeekend } from "date-fns"
 
+function parseDate(dateString?: string | null): Date | null {
+  if (!dateString) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    const [year, month, day] = dateString.split("-").map(Number)
+    const date = new Date(year, month - 1, day)
+    return isNaN(date.getTime()) ? null : date
+  }
+  const date = new Date(dateString)
+  return isNaN(date.getTime()) ? null : date
+}
+
 export type ScheduleItemData = {
   id: string
   name: string
@@ -243,8 +254,8 @@ const styles = StyleSheet.create({
 
 function formatDateRange(start: string | null, end: string | null): string {
   if (!start) return "No dates"
-  const startDate = new Date(start)
-  const endDate = end ? new Date(end) : null
+  const startDate = parseDate(start) || new Date(start)
+  const endDate = end ? parseDate(end) || new Date(end) : null
 
   if (!endDate || isSameDay(startDate, endDate)) {
     return format(startDate, "MMM d, yyyy")
@@ -287,7 +298,9 @@ function ScheduleGanttDocument({ data }: { data: ScheduleGanttPdfData }) {
     if (!a.start_date && !b.start_date) return 0
     if (!a.start_date) return 1
     if (!b.start_date) return -1
-    return new Date(a.start_date).getTime() - new Date(b.start_date).getTime()
+    const dateA = parseDate(a.start_date)
+    const dateB = parseDate(b.start_date)
+    return (dateA?.getTime() || 0) - (dateB?.getTime() || 0)
   })
 
   return (
@@ -302,7 +315,7 @@ function ScheduleGanttDocument({ data }: { data: ScheduleGanttPdfData }) {
           <View style={styles.headerRight}>
             {data.dateRange && (
               <Text style={styles.dateRange}>
-                {format(new Date(data.dateRange.start), "MMM d, yyyy")} - {format(new Date(data.dateRange.end), "MMM d, yyyy")}
+                {format(parseDate(data.dateRange.start) || new Date(data.dateRange.start), "MMM d, yyyy")} - {format(parseDate(data.dateRange.end) || new Date(data.dateRange.end), "MMM d, yyyy")}
               </Text>
             )}
             <Text style={styles.subtitle}>{data.items.length} items</Text>

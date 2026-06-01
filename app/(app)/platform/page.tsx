@@ -8,6 +8,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { AdminStats } from "@/components/admin/admin-stats"
 import { QuickActions } from "@/components/admin/quick-actions"
 import { PlatformAiDefaultsCard } from "@/components/platform/platform-ai-defaults-card"
+import { AiSearchAccessCard } from "@/components/platform/ai-search-access-card"
+import { listOrgAiSearchAccess } from "@/lib/services/ai-search-access"
 import { getPlans } from "@/lib/services/admin"
 import Link from "next/link"
 
@@ -32,12 +34,13 @@ async function PlatformData() {
   }
 
   const { user } = await requireAuth()
-  const [orgs, session, plans, platformAiConfig, canManagePlatformAi] = await Promise.all([
+  const [orgs, session, plans, platformAiConfig, canManagePlatformAi, aiSearchAccess] = await Promise.all([
     listPlatformOrganizations(),
     getPlatformSessionState(),
     getPlans(),
     getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() }),
     hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
+    listOrgAiSearchAccess(),
   ])
 
   return (
@@ -92,6 +95,8 @@ async function PlatformData() {
             initialSource={platformAiConfig.source}
             canManage={canManagePlatformAi}
           />
+
+          <AiSearchAccessCard orgs={aiSearchAccess} canManage={canManagePlatformAi} />
         </div>
       </div>
 

@@ -496,8 +496,8 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
         if (impact.start_date && impact.end_date) {
           next[impact.id] = { 
             requestId, 
-            startDate: new Date(impact.start_date), 
-            endDate: new Date(impact.end_date) 
+            startDate: parseDate(impact.start_date) || new Date(), 
+            endDate: parseDate(impact.end_date) || new Date() 
           }
         }
       })

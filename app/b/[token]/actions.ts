@@ -165,6 +165,8 @@ export async function uploadBidFileAction({
         mime_type: file.type,
         size_bytes: file.size,
         visibility: "private",
+        category: "other",
+        folder_path: "/submittals",
         metadata: {
           uploaded_via_portal: true,
           bid_invite_id: access.bid_invite_id,

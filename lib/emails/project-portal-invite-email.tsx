@@ -60,8 +60,8 @@ export function ProjectPortalInviteEmail({
               <strong>{displayOrgName}</strong> shared this Arc portal with you for <strong>{projectName}</strong>.
             </Text>
             <Text style={paragraph}>
-              Open the project below. If this is your first time in Arc, you will be prompted to claim your account
-              before entering the portal.
+              Open the project below from this secure email link. If you want one place to find every shared project later,
+              you can claim your Arc account from inside the portal.
             </Text>
 
             <Section style={metaCard}>
@@ -77,9 +77,9 @@ export function ProjectPortalInviteEmail({
             </Section>
 
             <Section style={contentCard}>
-              <Text style={contentLabel}>After you sign in</Text>
+              <Text style={contentLabel}>Optional account access</Text>
               <Text style={contentText}>
-                Arc will keep this project in your workspace so you can come back to it later from one hub.
+                Claiming an account keeps this project in your workspace so you can come back to it later from one hub.
               </Text>
             </Section>
 

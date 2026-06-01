@@ -125,6 +125,7 @@ export async function uploadPunchItemAttachmentAction({
       size_bytes: file.size,
       visibility: "private",
       category: "photos",
+      folder_path: "/photos",
       share_with_clients: true,
       metadata: {
         uploaded_via_portal: true,
@@ -269,7 +270,6 @@ export async function detachPunchItemAttachmentAction({
     throw new Error(`Failed to remove attachment: ${error.message}`)
   }
 }
-
 
 
 

@@ -167,6 +167,7 @@ function getFeatureDescription(flagKey: string): string {
     'multi_org': 'Support for multiple organizations per user',
     'premium_support': 'Priority support and dedicated account manager',
     'unlimited_projects': 'Remove project limits for this organization',
+    'ai_search_enabled': 'Master switch for the conversational AI search command bar',
     'ai_search_planner_v2': 'Enable AI search planner v2 orchestration path',
     'ai_search_hybrid_retrieval': 'Enable lexical + semantic hybrid retrieval in AI search',
     'ai_search_memory': 'Persist and reuse conversation memory in AI search sessions',

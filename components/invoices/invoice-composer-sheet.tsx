@@ -202,7 +202,7 @@ function DatePicker({ value, onChange, className }: { value: string; onChange: (
   const date = parseDate(value)
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -362,7 +362,7 @@ function QboLineAccountPicker({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -1336,7 +1336,7 @@ export function InvoiceComposerSheet({
               </div>
 
               {showQboCustomerPicker && (
-                <Popover open={customerPickerOpen} onOpenChange={setCustomerPickerOpen}>
+                <Popover open={customerPickerOpen} onOpenChange={setCustomerPickerOpen} modal>
                   <PopoverTrigger asChild>
                     <Button
                       type="button"

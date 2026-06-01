@@ -158,6 +158,8 @@ export async function uploadInvoiceFileAction({
         mime_type: file.type,
         size_bytes: file.size,
         visibility: "private",
+        category: "financials",
+        folder_path: "/financials",
         metadata: {
           uploaded_via_portal: true,
           portal_token_id: portalToken.id,

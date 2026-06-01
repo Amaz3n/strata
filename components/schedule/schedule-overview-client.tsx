@@ -8,7 +8,7 @@ import { ScheduleProvider, useSchedule } from "./schedule-context"
 import { ScheduleView } from "./schedule-view"
 import { ScheduleOverviewEmptyState } from "./schedule-empty-state"
 import { GanttChartSkeleton } from "./schedule-skeleton"
-import { STATUS_COLORS } from "./types"
+import { STATUS_COLORS, parseDate } from "./types"
 import type { ScheduleBulkItemUpdate } from "./types"
 
 import { Button } from "@/components/ui/button"
@@ -60,11 +60,11 @@ function ScheduleStats({
     const completed = items.filter((i) => i.status === "completed").length
     const inProgress = items.filter((i) => i.status === "in_progress").length
     const overdue = items.filter((i) => {
-      const endDate = i.end_date ? new Date(i.end_date) : null
+      const endDate = i.end_date ? parseDate(i.end_date) : null
       return endDate && isBefore(endDate, today) && i.status !== "completed"
     }).length
     const dueThisWeek = items.filter((i) => {
-      const endDate = i.end_date ? new Date(i.end_date) : null
+      const endDate = i.end_date ? parseDate(i.end_date) : null
       if (!endDate || i.status === "completed") return false
       const daysUntil = differenceInDays(endDate, today)
       return daysUntil >= 0 && daysUntil <= 7

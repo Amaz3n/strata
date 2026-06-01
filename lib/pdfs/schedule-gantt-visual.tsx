@@ -11,6 +11,17 @@ import {
   startOfDay,
 } from "date-fns"
 
+function parseDate(dateString?: string | null): Date | null {
+  if (!dateString) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    const [year, month, day] = dateString.split("-").map(Number)
+    const date = new Date(year, month - 1, day)
+    return isNaN(date.getTime()) ? null : date
+  }
+  const date = new Date(dateString)
+  return isNaN(date.getTime()) ? null : date
+}
+
 export type ScheduleItemData = {
   id: string
   name: string
@@ -764,19 +775,21 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
     .sort((a, b) => {
       if (a.is_critical_path && !b.is_critical_path) return -1
       if (!a.is_critical_path && b.is_critical_path) return 1
-      return new Date(a.start_date!).getTime() - new Date(b.start_date!).getTime()
+      const dateA = parseDate(a.start_date)
+      const dateB = parseDate(b.start_date)
+      return (dateA?.getTime() || 0) - (dateB?.getTime() || 0)
     })
 
   let scheduleWindowStart: Date
   let scheduleWindowEnd: Date
 
   if (data.dateRange) {
-    scheduleWindowStart = startOfDay(new Date(data.dateRange.start))
-    scheduleWindowEnd = startOfDay(new Date(data.dateRange.end))
+    scheduleWindowStart = startOfDay(parseDate(data.dateRange.start) || new Date(data.dateRange.start))
+    scheduleWindowEnd = startOfDay(parseDate(data.dateRange.end) || new Date(data.dateRange.end))
   } else {
     const dates = itemsWithDates.flatMap((item) => [
-      item.start_date ? new Date(item.start_date) : null,
-      item.end_date ? new Date(item.end_date) : null,
+      item.start_date ? parseDate(item.start_date) : null,
+      item.end_date ? parseDate(item.end_date) : null,
     ]).filter(Boolean) as Date[]
 
     scheduleWindowStart = dates.length > 0 ? startOfDay(new Date(Math.min(...dates.map((date) => date.getTime())))) : startOfDay(new Date())
@@ -948,8 +961,8 @@ function ScheduleGanttVisualDocument({ data }: { data: ScheduleGanttVisualPdfDat
                       ...(item.is_critical_path ? [styles.timelineRowCritical] : []),
                     ]
 
-                    const itemStart = item.start_date ? startOfDay(new Date(item.start_date)) : null
-                    const itemEndBase = item.end_date ? startOfDay(new Date(item.end_date)) : itemStart
+                    const itemStart = item.start_date ? startOfDay(parseDate(item.start_date) || new Date(item.start_date)) : null
+                    const itemEndBase = item.end_date ? startOfDay(parseDate(item.end_date) || new Date(item.end_date)) : itemStart
                     const itemEnd = itemStart && itemEndBase && itemEndBase < itemStart ? itemStart : itemEndBase
 
                     if (!itemStart || !itemEnd) {

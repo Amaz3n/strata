@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from "react"
+import { startOfDay } from "date-fns"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
 import type {
   ScheduleContextValue,
@@ -22,8 +23,8 @@ const defaultViewState: ScheduleViewState = {
   showCriticalPath: true,
   showWeekends: false,
   dateRange: {
-    start: addDays(new Date(), -180), // 6 months back
-    end: addDays(new Date(), 180), // 6 months forward
+    start: startOfDay(addDays(new Date(), -180)), // 6 months back
+    end: startOfDay(addDays(new Date(), 180)), // 6 months forward
   },
   selectedItemId: null,
   hoveredItemId: null,

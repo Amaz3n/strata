@@ -19,7 +19,10 @@ interface PortalPublicClientProps {
   token: string
   portalType?: "client" | "sub"
   pinRequired?: boolean
+  canMessage?: boolean
   workspace?: ExternalPortalWorkspaceContext | null
+  inviteEmail?: string
+  suggestedFullName?: string
 }
 
 export function PortalPublicClient({
@@ -28,6 +31,8 @@ export function PortalPublicClient({
   portalType = "client",
   pinRequired = false,
   workspace = null,
+  inviteEmail = "",
+  suggestedFullName = "",
 }: PortalPublicClientProps) {
   const [activeTab, setActiveTab] = useState<PortalTab | "roadmap">("home")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
@@ -87,6 +92,8 @@ export function PortalPublicClient({
       pinVerified={pinVerified}
       token={token}
       tokenType="portal"
+      email={inviteEmail}
+      suggestedFullName={suggestedFullName}
       pinGate={
         <PortalPinGate
           token={token}

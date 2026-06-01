@@ -32,7 +32,7 @@ import { createContact } from "@/lib/services/contacts"
 import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
 import { requireOrgContext } from "@/lib/services/context"
-import { buildInternalFileUrl } from "@/lib/services/files"
+import { buildInternalFileUrl, getDefaultFolderForCategory, normalizeFolderPath } from "@/lib/services/files"
 import { triggerFileIndexing } from "@/lib/services/files-indexing"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import {
@@ -3728,6 +3728,7 @@ export async function uploadProjectFileAction(
   const scheduleItemId = formData.get("schedule_item_id")?.toString() ?? null
   const category = formData.get("category")?.toString() ?? null
   const description = formData.get("description")?.toString() ?? null
+  const folderPath = formData.get("folderPath")?.toString() ?? null
   const tagsRaw = formData.get("tags")?.toString()
   let tags: string[] = []
   if (tagsRaw) {
@@ -3742,7 +3743,13 @@ export async function uploadProjectFileAction(
   // Generate unique storage path
   const timestamp = Date.now()
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const storagePath = `${orgId}/${projectId}/${timestamp}_${safeName}`
+  const inferredCategory = (category as FileCategory | null) ?? inferFileCategory(file.name, file.type)
+  const resolvedFolderPath =
+    normalizeFolderPath(folderPath) ??
+    (dailyLogId ? "/daily-logs" : undefined) ??
+    getDefaultFolderForCategory(inferredCategory)
+  const storageFolder = resolvedFolderPath?.split("/").filter(Boolean).join("/") || "general"
+  const storagePath = `${orgId}/${projectId}/${storageFolder}/uploads/${timestamp}_${safeName}`
 
   const bytes = Buffer.from(await file.arrayBuffer())
   await uploadFilesObject({
@@ -3768,7 +3775,8 @@ export async function uploadProjectFileAction(
       size_bytes: file.size,
       visibility: "private",
       uploaded_by: userId,
-      category: category ?? undefined,
+      category: inferredCategory,
+      folder_path: resolvedFolderPath,
       description: description ?? undefined,
       tags: tags ?? [],
     })

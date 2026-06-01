@@ -410,12 +410,24 @@ function ExpenseQBOStatus({ expense, compact = false }: { expense: ProjectExpens
 function ExpenseStatusIcon({ status }: { status: string }) {
   const label = statusLabels[status] ?? status
   if (status === "approved" || status === "invoiced") {
-    return <CheckCircle2 className="h-4 w-4 text-success" aria-label={label} title={label} />
+    return (
+      <span title={label}>
+        <CheckCircle2 className="h-4 w-4 text-success" aria-label={label} />
+      </span>
+    )
   }
   if (status === "rejected") {
-    return <XCircle className="h-4 w-4 text-destructive" aria-label={label} title={label} />
+    return (
+      <span title={label}>
+        <XCircle className="h-4 w-4 text-destructive" aria-label={label} />
+      </span>
+    )
   }
-  return <Clock className="h-4 w-4 text-muted-foreground" aria-label={label} title={label} />
+  return (
+    <span title={label}>
+      <Clock className="h-4 w-4 text-muted-foreground" aria-label={label} />
+    </span>
+  )
 }
 
 function isSupportedReceiptFile(file: File | null | undefined) {

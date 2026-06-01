@@ -1,7 +1,14 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import type { OrgServiceContext } from "@/lib/services/context"
 import { isFeatureEnabledForOrg } from "@/lib/services/feature-flags"
 
+// Master on/off switch for the conversational AI search feature. Default ON; platform
+// admins can disable it per-org from the /platform page.
+export const AI_SEARCH_ENABLED_FLAG_KEY = "ai_search_enabled"
+
 export const AI_SEARCH_FEATURE_FLAGS = {
+  enabled: AI_SEARCH_ENABLED_FLAG_KEY,
   plannerV2: "ai_search_planner_v2",
   hybridRetrieval: "ai_search_hybrid_retrieval",
   conversationMemory: "ai_search_memory",
@@ -11,6 +18,7 @@ export const AI_SEARCH_FEATURE_FLAGS = {
 } as const
 
 export interface AiSearchRuntimeFlags {
+  enabled: boolean
   plannerV2: boolean
   hybridRetrieval: boolean
   conversationMemory: boolean
@@ -32,7 +40,22 @@ function parseEnvFlag(name: string, fallback: boolean) {
   return fallback
 }
 
+// Lightweight standalone check for the master switch — used by the stream route guard and
+// the client-facing config endpoint without resolving every AI search flag.
+export async function isAiSearchEnabledForOrg(input: {
+  supabase: SupabaseClient
+  orgId: string
+}): Promise<boolean> {
+  return isFeatureEnabledForOrg({
+    supabase: input.supabase,
+    orgId: input.orgId,
+    flagKey: AI_SEARCH_ENABLED_FLAG_KEY,
+    defaultEnabled: parseEnvFlag("AI_SEARCH_ENABLED_DEFAULT", true),
+  })
+}
+
 export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promise<AiSearchRuntimeFlags> {
+  const enabledDefault = parseEnvFlag("AI_SEARCH_ENABLED_DEFAULT", true)
   const plannerDefault = parseEnvFlag("AI_SEARCH_PLANNER_V2_DEFAULT", true)
   const hybridDefault = parseEnvFlag("AI_SEARCH_HYBRID_RETRIEVAL_DEFAULT", true)
   const memoryDefault = parseEnvFlag("AI_SEARCH_MEMORY_DEFAULT", true)
@@ -40,7 +63,13 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
   const generalDefault = parseEnvFlag("AI_SEARCH_GENERAL_ASSISTANT_DEFAULT", true)
   const evalDefault = parseEnvFlag("AI_SEARCH_EVAL_HARNESS_DEFAULT", false)
 
-  const [plannerV2, hybridRetrieval, conversationMemory, multiStepPlanning, generalAssistant, evalHarness] = await Promise.all([
+  const [enabled, plannerV2, hybridRetrieval, conversationMemory, multiStepPlanning, generalAssistant, evalHarness] = await Promise.all([
+    isFeatureEnabledForOrg({
+      supabase: context.supabase,
+      orgId: context.orgId,
+      flagKey: AI_SEARCH_FEATURE_FLAGS.enabled,
+      defaultEnabled: enabledDefault,
+    }),
     isFeatureEnabledForOrg({
       supabase: context.supabase,
       orgId: context.orgId,
@@ -80,6 +109,7 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
   ])
 
   return {
+    enabled,
     plannerV2,
     hybridRetrieval,
     conversationMemory,

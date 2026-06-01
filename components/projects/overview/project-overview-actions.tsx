@@ -23,7 +23,6 @@ import {
   revokePortalTokenAction,
   pausePortalTokenAction,
   resumePortalTokenAction,
-  setPortalTokenRequireAccountAction,
   setExternalPortalAccountStatusAction,
   setPortalTokenPinAction,
   removePortalTokenPinAction,
@@ -223,26 +222,6 @@ export function ProjectOverviewActions({
     }
   }
 
-  async function handleSetRequireAccount(tokenId: string, requireAccount: boolean) {
-    setSharingLoading(true)
-    try {
-      await setPortalTokenRequireAccountAction({
-        token_id: tokenId,
-        project_id: project.id,
-        require_account: requireAccount,
-      })
-      setPortalTokensState((prev) =>
-        prev.map((token) => (token.id === tokenId ? { ...token, require_account: requireAccount } : token))
-      )
-      toast.success(requireAccount ? "Account required enabled" : "Link-only access enabled")
-    } catch (error) {
-      console.error(error)
-      toast.error("Failed to update access mode")
-    } finally {
-      setSharingLoading(false)
-    }
-  }
-
   async function handleSetAccountStatus(accountId: string, status: "active" | "paused" | "revoked") {
     setSharingLoading(true)
     try {
@@ -385,7 +364,6 @@ export function ProjectOverviewActions({
                               onRevoke={handleTokenRevoke}
                               onPause={handleTokenPause}
                               onResume={handleTokenResume}
-                              onSetRequireAccount={handleSetRequireAccount}
                               isLoading={sharingLoading}
                               onSetPin={handleSetPin}
                               onClearPin={handleClearPin}
