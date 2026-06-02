@@ -17,11 +17,16 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { QboImportPanel } from "@/components/integrations/qbo-import-sheet"
 import { cn } from "@/lib/utils"
 
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  projectId?: string
+  projectName?: string | null
+  initialTab?: "sync" | "import"
   /** Optional: open an invoice's detail when its row is clicked. */
   onOpenInvoice?: (invoiceId: string) => void
 }
@@ -45,17 +50,19 @@ function formatRelative(value?: string | null) {
   return formatDistanceToNow(date, { addSuffix: true })
 }
 
-export function QboSyncSheet({ open, onOpenChange, onOpenInvoice }: Props) {
+export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initialTab = "sync", onOpenInvoice }: Props) {
   const [items, setItems] = useState<QboSyncItem[]>([])
   const [connected, setConnected] = useState(true)
   const [loading, setLoading] = useState(false)
   const [syncingAll, setSyncingAll] = useState(false)
   const [syncingId, setSyncingId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<"sync" | "import">(initialTab)
+  const canImport = Boolean(projectId)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const queue = await listQboSyncQueueAction()
+      const queue = await listQboSyncQueueAction({ projectId })
       setItems(queue.items)
       setConnected(queue.connected)
     } catch (error: any) {
@@ -63,11 +70,15 @@ export function QboSyncSheet({ open, onOpenChange, onOpenInvoice }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [projectId])
 
   useEffect(() => {
     if (open) void load()
   }, [open, load])
+
+  useEffect(() => {
+    if (open) setActiveTab(canImport ? initialTab : "sync")
+  }, [canImport, initialTab, open])
 
   const failedCount = useMemo(() => items.filter((item) => item.status === "error").length, [items])
   const pendingCount = items.length - failedCount
@@ -86,7 +97,7 @@ export function QboSyncSheet({ open, onOpenChange, onOpenInvoice }: Props) {
     if (syncingAll || items.length === 0) return
     setSyncingAll(true)
     try {
-      const result = await syncAllQboPendingAction()
+      const result = await syncAllQboPendingAction({ projectId })
       if (result.failed > 0) {
         toast.warning(`Synced ${result.synced}, ${result.failed} failed`, { description: "Open the failed items to see why." })
       } else {
@@ -120,36 +131,50 @@ export function QboSyncSheet({ open, onOpenChange, onOpenInvoice }: Props) {
         mobileFullscreen
         className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
       >
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "sync" | "import")} className="flex min-h-0 flex-1 flex-col">
         <SheetHeader className="space-y-3 border-b px-6 pb-5 pt-6">
           <div className="flex items-start justify-between gap-4 pr-8">
             <div className="space-y-1">
-              <SheetTitle className="text-lg">QuickBooks sync</SheetTitle>
+              <SheetTitle className="text-lg">QuickBooks</SheetTitle>
               <SheetDescription className="text-left">
                 {connected
-                  ? "Records sync to QuickBooks automatically every few minutes. Push everything now if you don't want to wait."
+                  ? projectName
+                    ? `Manage QuickBooks sync and imports for ${projectName}.`
+                    : "Records sync to QuickBooks automatically every few minutes. Push everything now if you don't want to wait."
                   : "Connect QuickBooks in Settings to start syncing."}
               </SheetDescription>
             </div>
-            <Button onClick={handleSyncAll} disabled={!connected || syncingAll || loading || items.length === 0} className="shrink-0">
-              {syncingAll ? <Spinner className="mr-1.5 size-4" /> : <RefreshCcw className="mr-1.5 size-4" />}
-              Sync now
-            </Button>
+            {activeTab === "sync" ? (
+              <Button onClick={handleSyncAll} disabled={!connected || syncingAll || loading || items.length === 0} className="shrink-0">
+                {syncingAll ? <Spinner className="mr-1.5 size-4" /> : <RefreshCcw className="mr-1.5 size-4" />}
+                Sync now
+              </Button>
+            ) : null}
           </div>
           {connected && (
-            <div className="flex items-center gap-2 text-xs">
-              <Badge variant="secondary" className="h-6 rounded-none">
-                {pendingCount} waiting
-              </Badge>
-              {failedCount > 0 && (
-                <Badge variant="secondary" className="h-6 gap-1 rounded-none border-destructive/30 bg-destructive/10 text-destructive">
-                  <AlertCircle className="size-3" />
-                  {failedCount} failed
+            <div className="flex flex-col gap-3">
+              {canImport ? (
+                <TabsList className="h-9 w-full justify-start rounded-none sm:w-auto">
+                  <TabsTrigger value="sync" className="rounded-none">Sync to QBO</TabsTrigger>
+                  <TabsTrigger value="import" className="rounded-none">Import from QBO</TabsTrigger>
+                </TabsList>
+              ) : null}
+              <div className="flex items-center gap-2 text-xs">
+                <Badge variant="secondary" className="h-6 rounded-none">
+                  {pendingCount} waiting
                 </Badge>
-              )}
+                {failedCount > 0 && (
+                  <Badge variant="secondary" className="h-6 gap-1 rounded-none border-destructive/30 bg-destructive/10 text-destructive">
+                    <AlertCircle className="size-3" />
+                    {failedCount} failed
+                  </Badge>
+                )}
+              </div>
             </div>
           )}
         </SheetHeader>
 
+        <TabsContent value="sync" className="m-0 flex min-h-0 flex-1 flex-col">
         <ScrollArea className="flex-1">
           {loading && items.length === 0 ? (
             <div className="space-y-3 p-6">
@@ -195,6 +220,13 @@ export function QboSyncSheet({ open, onOpenChange, onOpenInvoice }: Props) {
             </div>
           )}
         </ScrollArea>
+        </TabsContent>
+        {canImport && projectId ? (
+          <TabsContent value="import" className="m-0 flex min-h-0 flex-1 flex-col">
+            <QboImportPanel active={open && activeTab === "import"} projectId={projectId} projectName={projectName} />
+          </TabsContent>
+        ) : null}
+        </Tabs>
       </SheetContent>
     </Sheet>
   )

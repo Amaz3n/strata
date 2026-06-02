@@ -155,6 +155,7 @@ const styles = StyleSheet.create({
   sigRow: { flexDirection: "row", gap: 32, marginTop: 20 },
   sigCol: { flexGrow: 1, flexBasis: 0 },
   sigLine: { borderBottomWidth: 1, borderColor: "#1a1a1a", height: 28, justifyContent: "flex-end" },
+  sigLineText: { fontSize: 9, marginBottom: 3 },
   sigImageBox: { borderBottomWidth: 1, borderColor: "#1a1a1a", height: 56, justifyContent: "flex-end" },
   sigImage: { maxHeight: 52, objectFit: "contain", marginBottom: 2 },
   sigLabel: { fontSize: 8, color: "#6b6b6b", marginTop: 4 },
@@ -365,9 +366,10 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
                     Signature{signer.role ? ` · ${signer.role}` : ""}
                   </Text>
                   {signer.name ? <Text style={styles.sigMeta}>{signer.name}</Text> : null}
-                  <View style={[styles.sigLine, { marginTop: 18 }]} />
+                  <View style={[styles.sigLine, { marginTop: 18 }]}>
+                    {signer.signedAt ? <Text style={styles.sigLineText}>{formatDate(signer.signedAt)}</Text> : null}
+                  </View>
                   <Text style={styles.sigLabel}>Date</Text>
-                  {signer.signedAt ? <Text style={styles.sigMeta}>{formatDate(signer.signedAt)}</Text> : null}
                 </View>
               ))}
             </View>

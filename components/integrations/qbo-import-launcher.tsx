@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Download } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { QboImportSheet } from "@/components/integrations/qbo-import-sheet"
+import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 
 type Props = {
   projectId: string
@@ -23,7 +23,13 @@ export function QboImportLauncher({ projectId, projectName, variant = "outline",
         <Download className="size-4" />
         Import from QuickBooks
       </Button>
-      <QboImportSheet open={open} onOpenChange={setOpen} projectId={projectId} projectName={projectName} />
+      <QboSyncSheet
+        open={open}
+        onOpenChange={setOpen}
+        projectId={projectId}
+        projectName={projectName}
+        initialTab="import"
+      />
     </>
   )
 }

@@ -179,7 +179,7 @@ export function PayablesExplorer({
         <div className="flex w-full gap-2 sm:w-auto">
           <Button type="button" variant="outline" onClick={onOpenSyncSheet} className="w-full sm:w-auto">
             <ExternalLink className="mr-2 h-4 w-4" />
-            Sync all
+            QuickBooks
           </Button>
           <Button type="button" onClick={onAddPayable} className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" />

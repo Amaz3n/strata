@@ -31,6 +31,12 @@ type Props = {
   projectName?: string | null
 }
 
+type QboImportPanelProps = {
+  active?: boolean
+  projectId: string
+  projectName?: string | null
+}
+
 const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "invoice", label: "Invoices" },
   { key: "expense", label: "Expenses" },
@@ -70,6 +76,28 @@ function sinceDateFor(value: string): string | null {
 }
 
 export function QboImportSheet({ open, onOpenChange, projectId, projectName }: Props) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        mobileFullscreen
+        className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
+      >
+        <SheetHeader className="space-y-3 border-b px-6 pb-5 pt-6">
+          <div className="space-y-1 pr-8">
+            <SheetTitle className="text-lg">Import from QuickBooks</SheetTitle>
+            <SheetDescription className="text-left">
+              Select unmatched QuickBooks invoices, expenses, bills, or payments and import them into {projectName ?? "this project"}.
+            </SheetDescription>
+          </div>
+        </SheetHeader>
+        <QboImportPanel active={open} projectId={projectId} projectName={projectName} />
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+export function QboImportPanel({ active = true, projectId, projectName }: QboImportPanelProps) {
   const [records, setRecords] = useState<QboImportRecord[]>([])
   const [connected, setConnected] = useState(true)
   const [loading, setLoading] = useState(false)
@@ -95,8 +123,8 @@ export function QboImportSheet({ open, onOpenChange, projectId, projectName }: P
   )
 
   useEffect(() => {
-    if (open) void load(lookback)
-  }, [open, lookback, load])
+    if (active) void load(lookback)
+  }, [active, lookback, load])
 
   const sections = useMemo(
     () =>
@@ -168,41 +196,31 @@ export function QboImportSheet({ open, onOpenChange, projectId, projectName }: P
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        mobileFullscreen
-        className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
-      >
-        <SheetHeader className="space-y-3 border-b px-6 pb-5 pt-6">
-          <div className="space-y-1 pr-8">
-            <SheetTitle className="text-lg">Import from QuickBooks</SheetTitle>
-            <SheetDescription className="text-left">
-              {connected
-                ? `These QuickBooks transactions aren't in Arc yet. Select the ones for ${projectName ?? "this project"} — invoices, expenses, bills, or payments created directly in QuickBooks — and import them here.`
-                : "Connect QuickBooks in Settings to import existing transactions."}
-            </SheetDescription>
+    <>
+      {connected && (
+        <div className="flex shrink-0 flex-col gap-2 border-b bg-muted/20 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground">
+            Import unmatched QuickBooks transactions into {projectName ?? "this project"}.
+          </p>
+          <div className="flex items-center gap-2">
+            <Select value={lookback} onValueChange={setLookback} disabled={loading || importing}>
+              <SelectTrigger className="h-8 w-44 rounded-none text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOOKBACK_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Badge variant="secondary" className="h-6 rounded-none">
+              {records.length} unmatched
+            </Badge>
           </div>
-          {connected && (
-            <div className="flex items-center gap-2">
-              <Select value={lookback} onValueChange={setLookback} disabled={loading || importing}>
-                <SelectTrigger className="h-8 w-44 rounded-none text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LOOKBACK_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Badge variant="secondary" className="h-6 rounded-none">
-                {records.length} unmatched
-              </Badge>
-            </div>
-          )}
-        </SheetHeader>
+        </div>
+      )}
 
         <ScrollArea className="flex-1">
           {!connected ? (
@@ -309,8 +327,7 @@ export function QboImportSheet({ open, onOpenChange, projectId, projectName }: P
             </Button>
           </div>
         )}
-      </SheetContent>
-    </Sheet>
+    </>
   )
 }
 

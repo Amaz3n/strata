@@ -208,6 +208,7 @@ export function InvoicesClient({
   const qboPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
   const qboErrorCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "error").length, [items])
   const isProjectScoped = projectScoped
+  const scopedProject = isProjectScoped && projects.length === 1 ? projects[0] : null
 
   async function refreshInvoices() {
     try {
@@ -489,8 +490,8 @@ export function InvoicesClient({
               size="icon"
               onClick={() => setQueueOpen(true)}
               className={fullBleed ? "relative h-9 w-9 shrink-0 bg-background" : "relative shrink-0"}
-              title={`Sync queue: ${qboPendingCount} pending, ${qboErrorCount} failed`}
-              aria-label={`Open sync queue. ${qboPendingCount} pending, ${qboErrorCount} failed`}
+              title={`QuickBooks: ${qboPendingCount} waiting, ${qboErrorCount} failed`}
+              aria-label={`Open QuickBooks sheet. ${qboPendingCount} waiting, ${qboErrorCount} failed`}
             >
               <RefreshCcw className="h-4 w-4" />
               {(qboPendingCount > 0 || qboErrorCount > 0) && (
@@ -532,7 +533,13 @@ export function InvoicesClient({
         mode="edit"
         invoice={editingInvoice}
       />
-      <QboSyncSheet open={queueOpen} onOpenChange={setQueueOpen} onOpenInvoice={handleOpenDetail} />
+      <QboSyncSheet
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        projectId={scopedProject?.id}
+        projectName={scopedProject?.name}
+        onOpenInvoice={handleOpenDetail}
+      />
 
       <AnimatePresence>
         <div className={fullBleed ? "overflow-hidden border-b" : "rounded-lg border overflow-hidden"}>

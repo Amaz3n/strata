@@ -970,7 +970,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         isSubmitting={isPending}
       />
 
-      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} />
+      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
 
       <Sheet open={Boolean(accountingExpense)} onOpenChange={closeAccounting}>
         <SheetContent side="right" className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] flex flex-col p-0 shadow-2xl">
@@ -1166,7 +1166,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
           <div className="flex w-full gap-2 sm:w-auto">
             <Button type="button" variant="outline" onClick={() => setSyncSheetOpen(true)} className="w-full sm:w-auto">
               <RefreshCcw className="mr-2 h-4 w-4" />
-              Sync all
+              QuickBooks
             </Button>
             <Button onClick={openBlankExpense} className="w-full sm:w-auto">
               <Plus className="mr-2 h-4 w-4" />

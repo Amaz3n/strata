@@ -16,6 +16,7 @@ export type QboSyncEntityType = "invoice" | "expense" | "bill" | "payment" | "bi
 export type QboSyncItem = {
   id: string
   entityType: QboSyncEntityType
+  projectId: string | null
   label: string
   sublabel: string | null
   amountCents: number
@@ -40,9 +41,10 @@ function mapStatus(value?: string | null): "pending" | "error" {
  * entity type. Invoices/expenses/bills carry their own qbo_sync_status; payments live only in the
  * shared qbo_sync_records ledger. Org-scoped on every query (service client bypasses RLS).
  */
-export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
+export async function listQboSyncQueueAction(params?: { projectId?: string | null }): Promise<QboSyncQueue> {
   const { orgId } = await requireOrgContext()
   const supabase = createServiceSupabaseClient()
+  const projectId = params?.projectId ?? null
 
   const [{ data: connection }, { data: projectRows }] = await Promise.all([
     supabase.from("qbo_connections").select("id").eq("org_id", orgId).eq("status", "active").maybeSingle(),
@@ -80,10 +82,12 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
   ])
 
   const invoices = invoicesAll.filter(
-    (invoice) => invoice.qbo_sync_status === "pending" || invoice.qbo_sync_status === "error",
+    (invoice) =>
+      (invoice.qbo_sync_status === "pending" || invoice.qbo_sync_status === "error") &&
+      (!projectId || invoice.project_id === projectId),
   )
-  const expenses = (expensesRes.data ?? []) as any[]
-  const bills = (billsRes.data ?? []) as any[]
+  const expenses = ((expensesRes.data ?? []) as any[]).filter((expense) => !projectId || expense.project_id === projectId)
+  const bills = ((billsRes.data ?? []) as any[]).filter((bill) => !projectId || bill.project_id === projectId)
   const paymentRecords = (paymentRecordsRes.data ?? []) as any[]
 
   // Latest sync record per entity (for qbo id / last attempt / error) on invoices, expenses, bills.
@@ -122,6 +126,7 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
     items.push({
       id: invoice.id,
       entityType: "invoice",
+      projectId: invoice.project_id ?? null,
       label: invoice.invoice_number || invoice.title || "Invoice",
       sublabel: invoice.project_id ? projectName.get(invoice.project_id) ?? null : null,
       amountCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
@@ -139,6 +144,7 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
     items.push({
       id: expense.id as string,
       entityType: "expense",
+      projectId: (expense.project_id as string | null) ?? null,
       label: (expense.description as string)?.trim() || vendor || "Expense",
       sublabel: vendor ?? (expense.project_id ? projectName.get(expense.project_id as string) ?? null : null),
       amountCents: Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0),
@@ -156,6 +162,7 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
     items.push({
       id: bill.id as string,
       entityType: "bill",
+      projectId: (bill.project_id as string | null) ?? null,
       label: bill.bill_number ? `Bill ${bill.bill_number}` : commitment?.title || "Vendor bill",
       sublabel: commitment?.company?.name ?? (bill.project_id ? projectName.get(bill.project_id as string) ?? null : null),
       amountCents: Number(bill.total_cents ?? 0),
@@ -173,7 +180,7 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
     const { data: paymentRows } = await supabase
       .from("payments")
       .select(
-        "id, amount_cents, received_at, created_at, invoice:invoices(invoice_number, title), bill:vendor_bills(bill_number)",
+        "id, amount_cents, received_at, created_at, invoice:invoices(invoice_number, title, project_id), bill:vendor_bills(bill_number, project_id)",
       )
       .eq("org_id", orgId)
       .in("id", paymentIds)
@@ -182,6 +189,8 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
     for (const record of paymentRecords) {
       const payment = paymentById.get(record.entity_id as string)
       const isBillPayment = record.entity_type === "bill_payment"
+      const paymentProjectId = (isBillPayment ? payment?.bill?.project_id : payment?.invoice?.project_id) ?? null
+      if (projectId && paymentProjectId !== projectId) continue
       const reference = isBillPayment
         ? payment?.bill?.bill_number
           ? `Bill ${payment.bill.bill_number}`
@@ -190,6 +199,7 @@ export async function listQboSyncQueueAction(): Promise<QboSyncQueue> {
       items.push({
         id: record.entity_id as string,
         entityType: isBillPayment ? "bill_payment" : "payment",
+        projectId: paymentProjectId,
         label: `Payment · ${reference}`,
         sublabel: null,
         amountCents: Number(payment?.amount_cents ?? 0),
@@ -228,9 +238,9 @@ export async function syncQboItemAction(entityType: QboSyncEntityType, id: strin
 }
 
 /** Push every pending/failed item now. Returns a summary; never throws on individual failures. */
-export async function syncAllQboPendingAction(): Promise<{ synced: number; failed: number }> {
+export async function syncAllQboPendingAction(params?: { projectId?: string | null }): Promise<{ synced: number; failed: number }> {
   const { orgId } = await requireOrgContext()
-  const { items } = await listQboSyncQueueAction()
+  const { items } = await listQboSyncQueueAction({ projectId: params?.projectId })
 
   let synced = 0
   let failed = 0

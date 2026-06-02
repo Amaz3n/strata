@@ -420,7 +420,7 @@ export function ProjectPayablesClient({
         onSuccess={() => router.refresh()}
       />
 
-      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} />
+      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
 
       {/* Unified Bill Details Sheet */}
       <Sheet 
