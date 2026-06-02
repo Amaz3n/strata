@@ -7,6 +7,7 @@ import { submitEstimateBuilderSignatureAction } from "@/app/d/[token]/actions"
 import { SignatureCapture } from "@/app/d/[token]/components/signature-capture"
 import { CheckCircle2, PenLine } from "@/components/icons"
 import { QuoteDocumentView, type QuoteViewLine } from "@/components/portal/quote-document-view"
+import { EstimatePhotoGallery } from "@/components/portal/estimate-photo-gallery"
 import { QuotePortalShell } from "@/components/portal/quote-portal-shell"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -50,8 +51,6 @@ export function EstimateBuilderSigningClient({
     () =>
       estimate.items.map((it) => {
         const isGroup = it.item_type === "group"
-        const base = (it.unit_cost_cents ?? 0) * (it.quantity ?? 1)
-        const amount = isGroup ? null : Math.round(base + (base * (it.markup_pct ?? 0)) / 100)
         return {
           id: it.id,
           kind: isGroup ? "section" : "item",
@@ -59,12 +58,18 @@ export function EstimateBuilderSigningClient({
           quantity: it.quantity,
           unit: it.unit,
           unit_cost_cents: it.unit_cost_cents,
-          amount_cents: amount,
+          amount_cents: it.amount_cents,
           notes: it.notes,
+          is_optional: it.is_optional,
         }
       }),
     [estimate.items],
   )
+
+  // This document is already client-signed: optional add-ons are locked to the
+  // client's recorded selection and the total reflects that acceptance.
+  const acceptedOptionalIds = estimate.accepted_options?.ids ?? []
+  const documentTotal = estimate.accepted_options?.accepted_total_cents ?? estimate.total_cents
 
   function submitSignature() {
     if (!signerName.trim()) {
@@ -114,6 +119,7 @@ export function EstimateBuilderSigningClient({
         <QuoteDocumentView
           orgName={estimate.org_name}
           orgLogoUrl={estimate.org_logo_url}
+          orgAddress={estimate.org_address}
           documentLabel="Estimate"
           title={estimate.title}
           number={`v${estimate.version}`}
@@ -122,20 +128,33 @@ export function EstimateBuilderSigningClient({
           projectName={estimate.project_name}
           issuedAt={estimate.issued_at}
           validUntil={estimate.valid_until}
+          intro={estimate.intro}
           summary={estimate.summary}
           terms={estimate.terms}
           lines={viewLines}
-          totalCents={estimate.total_cents}
+          totalCents={documentTotal}
+          accentColor={estimate.accent_color}
+          fontFamily={estimate.font_family}
+          pricingDisplay={estimate.pricing_display}
+          selectedOptionalIds={acceptedOptionalIds}
         />
       }
     >
+      {estimate.photos.length > 0 ? (
+        <Card className="overflow-hidden">
+          <CardContent className="p-5">
+            <EstimatePhotoGallery photos={estimate.photos} accentColor={estimate.accent_color} />
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card className="overflow-hidden">
         <CardContent className="space-y-5 p-5">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
               Project total
             </p>
-            <p className="mt-1 text-3xl font-bold tracking-tight tabular-nums">{money(estimate.total_cents)}</p>
+            <p className="mt-1 text-3xl font-bold tracking-tight tabular-nums" style={{ color: estimate.accent_color ?? undefined }}>{money(documentTotal)}</p>
             {estimate.project_name ? <p className="mt-1 text-xs text-muted-foreground">{estimate.project_name}</p> : null}
           </div>
 

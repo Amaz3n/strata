@@ -357,6 +357,15 @@ const organizationSettingsSchema = z.object({
   defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
   proposalTermsTemplate: z.string().trim().max(8000).optional().default(""),
   estimateTermsTemplate: z.string().trim().max(8000).optional().default(""),
+  estimateAccentColor: z
+    .string()
+    .trim()
+    .regex(/^#[0-9a-fA-F]{6}$/, "Use a 6-digit hex color like #2563eb.")
+    .optional()
+    .or(z.literal(""))
+    .default(""),
+  estimateFont: z.string().trim().max(40).optional().default(""),
+  estimateIntroTemplate: z.string().trim().max(4000).optional().default(""),
   estimateBuilderSignerMode: z.enum(["estimate_creator", "prospect_owner", "specific_user"]).optional().default("estimate_creator"),
   estimateBuilderSignerUserId: z.string().uuid().nullable().optional(),
   aiProvider: z.enum(AI_PROVIDER_VALUES).optional(),
@@ -525,6 +534,9 @@ export async function getOrganizationSettingsAction() {
     defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
     proposalTermsTemplate: String(settings.proposal_terms_template ?? ""),
     estimateTermsTemplate: String(settings.estimate_terms_template ?? ""),
+    estimateAccentColor: String(settings.estimate_accent_color ?? ""),
+    estimateFont: String(settings.estimate_font ?? ""),
+    estimateIntroTemplate: String(settings.estimate_intro_template ?? ""),
     estimateBuilderSignerMode:
       settings.estimate_builder_signer_mode === "prospect_owner" || settings.estimate_builder_signer_mode === "specific_user"
         ? settings.estimate_builder_signer_mode
@@ -552,6 +564,9 @@ export async function updateOrganizationSettingsAction(input: {
   defaultInvoiceNote?: string
   proposalTermsTemplate?: string
   estimateTermsTemplate?: string
+  estimateAccentColor?: string
+  estimateFont?: string
+  estimateIntroTemplate?: string
   estimateBuilderSignerMode?: "estimate_creator" | "prospect_owner" | "specific_user"
   estimateBuilderSignerUserId?: string | null
   aiProvider?: string
@@ -600,6 +615,9 @@ export async function updateOrganizationSettingsAction(input: {
     invoice_default_note: parsed.data.defaultInvoiceNote || null,
     proposal_terms_template: parsed.data.proposalTermsTemplate || null,
     estimate_terms_template: parsed.data.estimateTermsTemplate || null,
+    estimate_accent_color: parsed.data.estimateAccentColor || null,
+    estimate_font: parsed.data.estimateFont || null,
+    estimate_intro_template: parsed.data.estimateIntroTemplate || null,
     estimate_builder_signer_mode: parsed.data.estimateBuilderSignerMode,
     estimate_builder_signer_user_id:
       parsed.data.estimateBuilderSignerMode === "specific_user" ? parsed.data.estimateBuilderSignerUserId || null : null,

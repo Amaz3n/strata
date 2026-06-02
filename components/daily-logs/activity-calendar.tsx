@@ -25,6 +25,11 @@ export function ActivityCalendar({
     const alerts = new Set<string>()
     const actives = new Set<string>()
 
+    const logDatesById = dailyLogs.reduce<Record<string, string>>((acc, log) => {
+      acc[log.id] = log.date
+      return acc
+    }, {})
+
     for (const log of dailyLogs) {
       actives.add(log.date)
       const hasFailed = (log.entries ?? []).some(
@@ -34,7 +39,8 @@ export function ActivityCalendar({
     }
 
     for (const photo of photos) {
-      const key = format(parseISO(photo.created_at), "yyyy-MM-dd")
+      const logDate = photo.daily_log_id ? logDatesById[photo.daily_log_id] : null
+      const key = logDate || format(parseISO(photo.created_at), "yyyy-MM-dd")
       actives.add(key)
     }
 

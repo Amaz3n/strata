@@ -45,7 +45,9 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar"
-import type { User } from "@/lib/types"
+import type { Project, User } from "@/lib/types"
+import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
+import { useSidebarProjects } from "./use-sidebar-projects"
 
 interface AppSidebarProps {
   user?: User | null
@@ -197,10 +199,41 @@ function buildWorkspaceGroups(
   return [{ items }]
 }
 
-function buildProjectGroups(projectId: string, section: string): SidebarNavGroup[] {
+function getFinancialLandingUrl(projectId: string, project?: Project) {
+  const base = `/projects/${projectId}`
+  if (!project) return `${base}/financials`
+  const config = getProjectFinancialFeatureConfig(project, project.billing_contract)
+  if (config.landingPage === "receivables") return `${base}/financials/receivables`
+  if (config.landingPage === "budget") return `${base}/financials/budget`
+  return `${base}/financials`
+}
+
+function buildFinancialSubs(projectId: string, section: string, project?: Project): SidebarNavSubItem[] {
   const base = `/projects/${projectId}`
   const url = (suffix = "") => `${base}${suffix}`
-  const financialSections = ["financials", "budget", "commitments", "payables", "receivables", "invoices", "reports"]
+  const config = project ? getProjectFinancialFeatureConfig(project, project.billing_contract) : null
+
+  return [
+    config?.showInbox === false
+      ? null
+      : { title: "Inbox", url: url("/financials"), isActive: section === "financials" || section === "cost-inbox", requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"] },
+    { title: "Budget", url: url("/financials/budget"), isActive: section === "budget" || section === "commitments", requiredAny: ["budget.read", "commitment.read"] },
+    { title: "Receivables", url: url("/financials/receivables"), isActive: section === "receivables" || section === "invoices", requiredAny: ["invoice.read", "payment.read", "draw.read"] },
+    { title: "Payables", url: url("/financials/payables"), isActive: section === "payables", requiredAny: ["bill.read", "commitment.read"] },
+    config?.showTime === false
+      ? null
+      : { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
+    config?.showExpenses === false
+      ? null
+      : { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
+    { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
+  ].filter(Boolean) as SidebarNavSubItem[]
+}
+
+function buildProjectGroups(projectId: string, section: string, project?: Project): SidebarNavGroup[] {
+  const base = `/projects/${projectId}`
+  const url = (suffix = "") => `${base}${suffix}`
+  const financialSections = ["financials", "budget", "commitments", "payables", "receivables", "invoices", "reports", "time", "expenses", "change-orders", "cost-inbox"]
 
   const planSubs: SidebarNavSubItem[] = [
     { title: "Documents", url: url("/documents"), isActive: section === "documents", requiredAny: ["docs.read"] },
@@ -216,15 +249,7 @@ function buildProjectGroups(projectId: string, section: string): SidebarNavGroup
     { title: "Submittals", url: url("/submittals"), isActive: section === "submittals", requiredAny: ["submittal.read"] },
     { title: "Decisions", url: url("/decisions"), isActive: section === "decisions", requiredAny: ["decision.read", "decision.write"] },
   ]
-  const financialSubs: SidebarNavSubItem[] = [
-    { title: "Inbox", url: url("/financials"), isActive: section === "financials" || section === "cost-inbox", requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"] },
-    { title: "Budget", url: url("/financials/budget"), isActive: section === "budget" || section === "commitments", requiredAny: ["budget.read", "commitment.read"] },
-    { title: "Receivables", url: url("/financials/receivables"), isActive: section === "receivables" || section === "invoices", requiredAny: ["invoice.read", "payment.read", "draw.read"] },
-    { title: "Payables", url: url("/financials/payables"), isActive: section === "payables", requiredAny: ["bill.read", "commitment.read"] },
-    { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
-    { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
-    { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
-  ]
+  const financialSubs = buildFinancialSubs(projectId, section, project)
   const closeSubs: SidebarNavSubItem[] = [
     { title: "Closeout", url: url("/closeout"), isActive: section === "closeout", requiredAny: ["closeout.read", "closeout.write"] },
     { title: "Warranty", url: url("/warranty"), isActive: section === "warranty", requiredAny: ["warranty.read", "warranty.write"] },
@@ -256,7 +281,7 @@ function buildProjectGroups(projectId: string, section: string): SidebarNavGroup
         },
         {
           title: "Financials",
-          url: url("/financials"),
+          url: getFinancialLandingUrl(projectId, project),
           icon: Wallet,
           isActive: financialSubs.some((s) => s.isActive) || financialSections.includes(section),
           items: financialSubs,
@@ -282,6 +307,11 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
   const isProject = Boolean(projectId)
   const section = getProjectSection(pathname)
   const permissionSet = useMemo(() => new Set(permissions), [permissions])
+  const { projects } = useSidebarProjects()
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === projectId),
+    [projects, projectId],
+  )
 
   const [activeSettingsTab, setActiveSettingsTab] = useState(searchParams.get("tab") ?? "profile")
   const settingsReturnTo = searchParams.get("returnTo") || "/"
@@ -310,13 +340,13 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
   const navGroups = useMemo(() => {
     if (isSettings) return [] as SidebarNavGroup[]
     if (isProject && projectId) {
-      return filterGroups(buildProjectGroups(projectId, section), permissionSet)
+      return filterGroups(buildProjectGroups(projectId, section, currentProject), permissionSet)
     }
     return filterGroups(
       buildWorkspaceGroups(pathname, pipelineBadgeCount, canAccessPlatform),
       permissionSet,
     )
-  }, [isSettings, isProject, projectId, section, pathname, pipelineBadgeCount, canAccessPlatform, permissionSet])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, canAccessPlatform, permissionSet])
 
   const navMain = navGroups.map((group) => ({
     ...group,

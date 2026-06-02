@@ -89,6 +89,19 @@ const US_STATES = [
   { value: "WY", label: "Wyoming" }
 ]
 
+const statusLabels: Record<string, string> = {
+  new: "New",
+  contacted: "Contacted",
+  qualified: "Qualified",
+  pricing: "Pricing",
+  estimate_sent: "Estimate sent",
+  changes_requested: "Changes requested",
+  client_approved: "Client approved",
+  executed: "Executed",
+  won: "Won",
+  lost: "Lost",
+}
+
 export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }: AddProspectDialogProps) {
   const isEdit = Boolean(prospect)
   const [isPending, startTransition] = useTransition()
@@ -99,6 +112,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
   const [name, setName] = useState("")
   const [source, setSource] = useState("")
   const [ownerId, setOwnerId] = useState<string | undefined>()
+  const [status, setStatus] = useState<string>("new")
 
   const [contactName, setContactName] = useState("")
   const [phone, setPhone] = useState("")
@@ -119,6 +133,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
     setName("")
     setSource("")
     setOwnerId(user?.id ?? undefined)
+    setStatus("new")
     setContactName("")
     setPhone("")
     setEmail("")
@@ -140,6 +155,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
       setName(prospect.name ?? "")
       setSource(prospect.source ?? "")
       setOwnerId(prospect.owner_user_id ?? undefined)
+      setStatus(prospect.status ?? "new")
       setContactName(contact?.full_name ?? "")
       setPhone(contact?.phone ?? "")
       setEmail(contact?.email ?? "")
@@ -198,6 +214,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
             budget_range: budgetRange ?? null,
             timeline_preference: timeline ?? null,
             jobsite_location: jobsite ?? null,
+            status: status,
           })
 
           const existingContact = prospect.primary_contact ?? prospect.contacts?.[0]
@@ -222,6 +239,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
           budget_range: budgetRange,
           timeline_preference: timeline,
           jobsite_location: jobsite,
+          status: status,
           primary_contact: { ...contactPayload, is_primary: true },
         })
         router.refresh()
@@ -280,7 +298,22 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
                   className="h-10"
                 />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="prospect-status">Stage</Label>
+                  <Select value={status} onValueChange={(v) => setStatus(v)}>
+                    <SelectTrigger id="prospect-status" className="!h-10 w-full">
+                      <SelectValue placeholder="Select stage" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(statusLabels).map(([key, label]) => (
+                        <SelectItem key={key} value={key}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="prospect-source">Lead source</Label>
                   <Select value={source || "none"} onValueChange={(v) => setSource(v === "none" ? "" : v)}>

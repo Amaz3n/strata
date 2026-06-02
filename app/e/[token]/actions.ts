@@ -22,6 +22,7 @@ export async function submitEstimateDecisionAction(input: {
   token: string
   decision: EstimateDecision
   note?: string
+  selected_optional_ids?: string[]
   signature?: {
     signer_name: string
     signer_email?: string | null

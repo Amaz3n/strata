@@ -1,5 +1,15 @@
 import { z } from "zod"
 
+export const PRICING_DISPLAY_MODES = ["itemized", "subtotals", "lump_sum"] as const
+export type PricingDisplayMode = (typeof PRICING_DISPLAY_MODES)[number]
+
+export const estimatePhotoSchema = z.object({
+  /** R2 storage path (org-scoped). */
+  path: z.string().min(1),
+  caption: z.string().trim().max(280).optional().nullable(),
+})
+export type EstimatePhotoInput = z.infer<typeof estimatePhotoSchema>
+
 export const estimateLineInputSchema = z.object({
   description: z.string().min(1, "Description is required"),
   quantity: z.number().min(0),
@@ -9,6 +19,8 @@ export const estimateLineInputSchema = z.object({
   markup_pct: z.number().optional(),
   unit: z.string().optional(),
   notes: z.string().optional(),
+  /** Client-selectable upgrade/add-on; excluded from the base total. */
+  is_optional: z.boolean().optional(),
 })
 
 export const estimateInputSchema = z.object({
@@ -21,6 +33,12 @@ export const estimateInputSchema = z.object({
   recipient_email: z.string().trim().email().optional().nullable(),
   summary: z.string().optional(),
   terms: z.string().optional(),
+  /** Cover note shown above the line items in the portal and PDF. */
+  intro: z.string().optional(),
+  /** Controls how much pricing breakdown the client sees. */
+  pricing_display: z.enum(PRICING_DISPLAY_MODES).optional(),
+  /** Interactive portal gallery (stored as R2 paths on the estimate). */
+  photos: z.array(estimatePhotoSchema).optional(),
   valid_until: z.string().optional(),
   tax_rate: z.number().optional(),
   markup_percent: z.number().optional(),

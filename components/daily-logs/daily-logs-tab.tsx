@@ -253,6 +253,7 @@ interface LogEntryProps {
   onImageClick: (file: EnhancedFileMetadata) => void
   onCreateComment: (dailyLogId: string, values: { body: string; mentioned_user_ids?: string[] }) => Promise<NonNullable<DailyLog["comments"]>[number]>
   onUpdateLog: (dailyLogId: string, values: { summary?: string; weather?: string; mentioned_user_ids?: string[] }) => Promise<Pick<DailyLog, "id" | "notes" | "weather" | "updated_at" | "mentions">>
+  onDeleteLog?: (dailyLogId: string) => Promise<void>
 }
 
 function CommentComposer({
@@ -317,7 +318,7 @@ function CommentComposer({
   )
 }
 
-function LogEntry({ log, photos, scheduleById, tasksById, punchById, mentionableUsers, isHighlighted, onImageClick, onCreateComment, onUpdateLog }: LogEntryProps) {
+function LogEntry({ log, photos, scheduleById, tasksById, punchById, mentionableUsers, isHighlighted, onImageClick, onCreateComment, onUpdateLog, onDeleteLog }: LogEntryProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editSummary, setEditSummary] = useState(log.notes ?? "")
   const [editMentionIds, setEditMentionIds] = useState<string[]>((log.mentions ?? []).map((mention) => mention.mentioned_user_id))
@@ -459,9 +460,27 @@ function LogEntry({ log, photos, scheduleById, tasksById, punchById, mentionable
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => setIsEditing(true)}>Edit</DropdownMenuItem>
-                <DropdownMenuItem>Duplicate</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
+                {onDeleteLog && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-destructive font-medium cursor-pointer"
+                      onClick={async () => {
+                        if (confirm("Are you sure you want to delete this daily log? All associated comments and mentions will be deleted.")) {
+                          try {
+                            await onDeleteLog(log.id)
+                            toast.success("Daily log deleted")
+                          } catch (error) {
+                            console.error(error)
+                            toast.error("Failed to delete daily log")
+                          }
+                        }
+                      }}
+                    >
+                      Delete
+                    </DropdownMenuItem>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -758,6 +777,7 @@ interface DailyLogsTabProps {
     },
   ) => Promise<void>
   onDownloadFile: (file: EnhancedFileMetadata) => Promise<void>
+  onDeleteLog?: (dailyLogId: string) => Promise<void>
 }
 
 interface DailyLogsFiltersPopoverContentProps {
@@ -891,6 +911,7 @@ export function DailyLogsTab({
   onUpdateLog,
   onUploadFiles,
   onDownloadFile,
+  onDeleteLog,
 }: DailyLogsTabProps) {
   const today = new Date()
   const { user } = useUser()
@@ -951,6 +972,13 @@ export function DailyLogsTab({
     }, {}),
     [punchItems],
   )
+
+  const logDatesById = useMemo(() => {
+    return dailyLogs.reduce<Record<string, string>>((acc, log) => {
+      acc[log.id] = log.date
+      return acc
+    }, {})
+  }, [dailyLogs])
 
   // Get all image files
   const imageFiles = useMemo(() =>
@@ -1015,7 +1043,8 @@ export function DailyLogsTab({
       if (feedFilter === 'logs') return false
       if (feedFilter === 'mentions') return false
 
-      const photoDate = parseISO(photo.created_at)
+      const logDateStr = photo.daily_log_id ? logDatesById[photo.daily_log_id] : null
+      const photoDate = logDateStr ? parseISO(logDateStr) : parseISO(photo.created_at)
       const from = logDateRange?.from ? startOfDay(logDateRange.from) : null
       const to = logDateRange?.to ? endOfDay(logDateRange.to) : null
       if (from && isBefore(photoDate, from)) return false
@@ -1037,11 +1066,13 @@ export function DailyLogsTab({
     }, {})
 
     const photosByDate = filteredPhotos.reduce<Record<string, EnhancedFileMetadata[]>>((acc, photo) => {
-      const dateKey = format(parseISO(photo.created_at), 'yyyy-MM-dd')
+      const logDate = photo.daily_log_id ? logDatesById[photo.daily_log_id] : null
+      const dateKey = logDate || format(parseISO(photo.created_at), 'yyyy-MM-dd')
       if (!acc[dateKey]) acc[dateKey] = []
       acc[dateKey].push(photo)
       return acc
     }, {})
+
 
     // Get all unique dates
     const allDates = new Set([...Object.keys(logsByDate), ...Object.keys(photosByDate)])
@@ -1061,7 +1092,8 @@ export function DailyLogsTab({
     return {
       daySummaries: summaries,
     }
-  }, [dailyLogs, imageFiles, feedFilter, logDateRange, searchTerm, scheduleById, tasksById, punchById, user?.id])
+  }, [dailyLogs, imageFiles, feedFilter, logDateRange, searchTerm, scheduleById, tasksById, punchById, user?.id, logDatesById])
+
 
   function handleImageClick(file: EnhancedFileMetadata) {
     setViewerFile(file)
@@ -1246,8 +1278,10 @@ export function DailyLogsTab({
                           onImageClick={handleImageClick}
                           onCreateComment={onCreateComment}
                           onUpdateLog={onUpdateLog}
+                          onDeleteLog={onDeleteLog}
                         />
                       ))}
+
 
                       {/* Standalone photos */}
                       {standalonePhotos.length > 0 && summary.logs.length === 0 && (

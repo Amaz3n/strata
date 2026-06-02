@@ -2,8 +2,11 @@
 
 import { revalidatePath } from "next/cache"
 
+import { randomUUID } from "crypto"
+
 import type { Estimate } from "@/lib/types"
 import { requireOrgContext } from "@/lib/services/context"
+import { buildOrgScopedPath, createFilesDownloadUrl, uploadFilesObject } from "@/lib/storage/files-storage"
 import {
   createEstimate,
   createEstimateVersion,
@@ -52,6 +55,41 @@ export async function createEstimateAction(input: unknown) {
   })
   revalidatePath("/estimates")
   return estimate
+}
+
+const PHOTO_MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+}
+
+/**
+ * Uploads a single estimate gallery photo to org-scoped R2 storage and returns
+ * its storage path plus a short-lived preview URL for the builder's sheet.
+ */
+export async function uploadEstimatePhotoAction(formData: FormData) {
+  const { supabase, orgId } = await requireOrgContext()
+
+  const raw = formData.get("photo")
+  const file = raw instanceof File ? raw : null
+  if (!file) return { error: "Choose an image to upload." }
+
+  const ext = PHOTO_MIME_EXT[file.type]
+  if (!ext) return { error: "Use PNG, JPG, WEBP, or GIF." }
+  if (file.size > 15 * 1024 * 1024) return { error: "Images must be 15MB or smaller." }
+
+  const path = buildOrgScopedPath(orgId, "estimates", "photos", `${randomUUID()}.${ext}`)
+  const bytes = Buffer.from(await file.arrayBuffer())
+
+  try {
+    await uploadFilesObject({ supabase, orgId, path, bytes, contentType: file.type, cacheControl: "private, max-age=31536000" })
+    const { downloadUrl } = await createFilesDownloadUrl({ supabase, orgId, path, expiresIn: 3600 })
+    return { path, url: downloadUrl }
+  } catch (error: any) {
+    console.error("Failed to upload estimate photo", error)
+    return { error: error?.message ?? "Failed to upload image." }
+  }
 }
 
 export async function listEstimateTemplatesAction() {
@@ -135,12 +173,36 @@ export async function getEstimateForEditAction(estimateId: string) {
   const adHocRecipient = (metadata.recipient as { name?: string | null; email?: string | null } | null) ?? null
   const items = [...((data.items as any[]) ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
 
+  // Resolve photo storage paths to short-lived preview URLs for the revise sheet.
+  const rawPhotos = Array.isArray(metadata.photos) ? (metadata.photos as any[]) : []
+  const photos = (
+    await Promise.all(
+      rawPhotos.map(async (photo) => {
+        const path = typeof photo?.path === "string" ? photo.path : null
+        if (!path) return null
+        try {
+          const { downloadUrl } = await createFilesDownloadUrl({ supabase, orgId, path, expiresIn: 3600 })
+          return { path, url: downloadUrl, caption: typeof photo.caption === "string" ? photo.caption : null }
+        } catch {
+          return { path, url: null, caption: typeof photo.caption === "string" ? photo.caption : null }
+        }
+      }),
+    )
+  ).filter((p): p is { path: string; url: string | null; caption: string | null } => p !== null)
+
+  const pricingRaw = metadata.display?.pricing
+  const pricing_display =
+    pricingRaw === "subtotals" || pricingRaw === "lump_sum" ? pricingRaw : "itemized"
+
   return {
     id: data.id as string,
     title: (data.title as string) ?? "",
     version: (data.version as number) ?? 1,
     summary: typeof metadata.summary === "string" ? metadata.summary : "",
     terms: typeof metadata.terms === "string" ? metadata.terms : "",
+    intro: typeof metadata.intro === "string" ? metadata.intro : "",
+    pricing_display: pricing_display as "itemized" | "subtotals" | "lump_sum",
+    photos,
     valid_until: (data.valid_until as string | null) ?? null,
     decision_note: (data.decision_note as string | null) ?? null,
     recipient_contact_id: (data.recipient_contact_id as string | null) ?? null,
@@ -151,7 +213,8 @@ export async function getEstimateForEditAction(estimateId: string) {
       quantity: (item.quantity as number) ?? 1,
       unit_cost_cents: (item.unit_cost_cents as number) ?? 0,
       cost_code_id: (item.cost_code_id as string | null) ?? null,
-      item_type: (item.item_type as string) ?? "line",
+      item_type: (item.item_type === "group" ? "group" : "line") as "line" | "group",
+      is_optional: item.metadata?.is_optional === true,
     })),
   }
 }

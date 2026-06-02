@@ -88,6 +88,7 @@ export function FileViewer({
     pdfjs: any
   } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
   const pdfViewportRef = useRef<HTMLDivElement>(null)
   const gestureRef = useRef({
     startTouches: [] as Array<{ x: number; y: number }>,
@@ -110,8 +111,26 @@ export function FileViewer({
     ? Math.min(Math.max(activeIndex, 0), files.length - 1)
     : 0
   const currentFile = hasFileList ? files[clampedIndex] : file
+  const currentFileId = currentFile?.id
   const currentFileIsPdf = currentFile ? isPdfFile(currentFile.mime_type) : false
   const currentPdfUrl = currentFile ? (currentFile.download_url ?? `/api/files/${currentFile.id}/raw`) : null
+  const currentFileHasGeneratedImagePreview =
+    Boolean(currentFile?.thumbnail_url) &&
+    currentFile?.thumbnail_url !== currentFile?.download_url
+  const currentFileIsHeic = currentFile ? isHeicFile(currentFile.mime_type, currentFile.file_name) : false
+  const currentFileIsImage = currentFile
+    ? isBrowserRenderableImage(
+        currentFile.mime_type,
+        currentFile.file_name,
+        currentFileHasGeneratedImagePreview
+      )
+    : false
+  const currentImageSrc =
+    currentFile && currentFileIsImage
+      ? currentFileIsHeic && currentFile.thumbnail_url
+        ? currentFile.thumbnail_url
+        : currentFile.download_url
+      : undefined
 
   useEffect(() => {
     if (!open || !currentFileIsPdf) return
@@ -164,13 +183,10 @@ export function FileViewer({
     setPdfLoadFailed(false)
     setImageLoadFailed(false)
 
-    if (hasFileList && file) {
-      const idx = files.findIndex((f) => f.id === file.id)
-      if (idx >= 0) {
-        setCurrentIndex(idx)
-      }
+    if (hasFileList && derivedIndexFromFile >= 0) {
+      setCurrentIndex(derivedIndexFromFile)
     }
-  }, [file, files, hasFileList])
+  }, [currentFileId, derivedIndexFromFile, hasFileList])
 
   useEffect(() => {
     if (!open || !currentFileIsPdf) return
@@ -277,6 +293,23 @@ export function FileViewer({
     setImageLoadFailed(true)
     setIsLoading(false)
   }, [])
+
+  useEffect(() => {
+    if (!open || !currentImageSrc) return
+
+    const img = imageRef.current
+    const resolvedImageSrc = new URL(currentImageSrc, window.location.href).href
+    if (!img || img.src !== resolvedImageSrc || !img.complete) return
+
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight })
+      setImageLoadFailed(false)
+      setIsLoading(false)
+    } else {
+      setImageLoadFailed(true)
+      setIsLoading(false)
+    }
+  }, [open, currentImageSrc])
 
   // Keyboard navigation
   useEffect(() => {
@@ -417,15 +450,8 @@ export function FileViewer({
 
   if (!open || !currentFile) return null
 
-  const hasGeneratedImagePreview =
-    Boolean(currentFile.thumbnail_url) &&
-    currentFile.thumbnail_url !== currentFile.download_url
-  const isImage = isBrowserRenderableImage(
-    currentFile.mime_type,
-    currentFile.file_name,
-    hasGeneratedImagePreview
-  )
-  const isHeic = isHeicFile(currentFile.mime_type, currentFile.file_name)
+  const isImage = currentFileIsImage
+  const isHeic = currentFileIsHeic
   const isPdf = isPdfFile(currentFile.mime_type)
   const isVideo = isVideoFile(currentFile.mime_type)
   const activePdfPageClamped = Math.min(Math.max(activePdfPage, 1), Math.max(pdfPageCount, 1))
@@ -674,7 +700,7 @@ export function FileViewer({
             </div>
           )}
 
-          {isImage && (currentFile.download_url || currentFile.thumbnail_url) && !imageLoadFailed && (
+          {isImage && currentImageSrc && !imageLoadFailed && (
             <div
               className="absolute inset-0 flex items-center justify-center touch-none select-none"
               onTouchStart={handleTouchStart}
@@ -694,7 +720,8 @@ export function FileViewer({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={isHeic && currentFile.thumbnail_url ? currentFile.thumbnail_url : currentFile.download_url}
+                  ref={imageRef}
+                  src={currentImageSrc}
                   alt={currentFile.file_name}
                   className={cn(
                     "max-w-full max-h-full w-auto h-auto object-contain pointer-events-none",

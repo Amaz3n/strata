@@ -3138,6 +3138,40 @@ export async function updateProjectDailyLogAction(
   }
 }
 
+export async function deleteProjectDailyLogAction(projectId: string, dailyLogId: string): Promise<void> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+
+  const { error } = await supabase
+    .from("daily_logs")
+    .delete()
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", dailyLogId)
+
+  if (error) {
+    throw new Error(`Failed to delete daily log: ${error.message}`)
+  }
+
+  await recordEvent({
+    orgId,
+    eventType: "daily_log_deleted",
+    entityType: "daily_log",
+    entityId: dailyLogId,
+    payload: { project_id: projectId },
+  })
+
+  await recordAudit({
+    orgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "daily_log",
+    entityId: dailyLogId,
+  })
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+}
+
+
 export async function createDailyLogCommentAction(
   projectId: string,
   dailyLogId: string,

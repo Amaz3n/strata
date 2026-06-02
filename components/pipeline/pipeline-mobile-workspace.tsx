@@ -58,6 +58,7 @@ export function PipelineMobileWorkspace({
   const [detailId, setDetailId] = useState<string | undefined>()
   const [detailOpen, setDetailOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
+  const [editProspect, setEditProspect] = useState<Prospect | null>(null)
   const { setAction } = useMobileAction()
 
   useEffect(() => {
@@ -207,8 +208,27 @@ export function PipelineMobileWorkspace({
         )}
       </div>
 
-      <ProspectDetailSheet prospectId={detailId} open={detailOpen} onOpenChange={setDetailOpen} teamMembers={teamMembers} />
-      <AddProspectDialog open={addOpen} onOpenChange={setAddOpen} teamMembers={teamMembers} />
+      <ProspectDetailSheet
+        prospectId={detailId}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        teamMembers={teamMembers}
+        onEditProspect={(p) => {
+          setDetailOpen(false)
+          setEditProspect(p)
+        }}
+      />
+      <AddProspectDialog
+        open={Boolean(editProspect) || addOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditProspect(null)
+            setAddOpen(false)
+          }
+        }}
+        teamMembers={teamMembers}
+        prospect={editProspect}
+      />
     </>
   )
 }

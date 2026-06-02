@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useMemo } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import {
   ChevronsUpDown,
@@ -26,6 +26,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { Project } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useHydrated } from "@/hooks/use-hydrated"
+import { useSidebarProjects } from "./use-sidebar-projects"
 
 function isArchived(status?: Project["status"]) {
   return status === "completed" || status === "cancelled"
@@ -50,61 +51,16 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
   const isPending = useIsNavigationPending()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [projects, setProjects] = useState<Project[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const { projects, isLoading, loadError } = useSidebarProjects()
   const hydrated = useHydrated()
   const pathProjectId = getProjectIdFromPath(pathname)
   const resolvedProjectId = projectId ?? pathProjectId ?? undefined
 
-  useEffect(() => {
-    let mounted = true
-    async function loadProjects() {
-      try {
-        setIsLoading(true)
-        const response = await fetch("/api/projects", { cache: "no-store" })
-        if (!response.ok) {
-          const text = await response.text()
-          throw new Error(`Project fetch failed (${response.status}): ${text}`)
-        }
-        const payload = await response.json()
-        if (mounted) {
-          setProjects(payload?.projects ?? [])
-          setLoadError(null)
-        }
-      } catch (error) {
-        console.error("Failed to load projects", error)
-        if (mounted) {
-          setProjects([])
-          setLoadError(error instanceof Error ? error.message : "Unknown error")
-        }
-      } finally {
-        if (mounted) setIsLoading(false)
-      }
-    }
-    loadProjects()
-
-    const handleOrgChange = () => {
-      loadProjects()
-    }
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("arc-org-change", handleOrgChange)
-    }
-
-    return () => {
-      mounted = false
-      if (typeof window !== "undefined") {
-        window.removeEventListener("arc-org-change", handleOrgChange)
-      }
-    }
-  }, [])
-
-  const sortedProjects = [...projects].sort((a, b) => {
+  const sortedProjects = useMemo(() => [...projects].sort((a, b) => {
     const activeRank = Number(isArchived(a.status)) - Number(isArchived(b.status))
     if (activeRank !== 0) return activeRank
     return a.name.localeCompare(b.name)
-  })
+  }), [projects])
 
   const currentProject = projects.find((p) => p.id === resolvedProjectId)
 

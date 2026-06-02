@@ -121,7 +121,7 @@ export function ReceivablesTab({
 
         <TabsContent value="draws" className="m-0">
           <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
-          <div className="p-4 sm:p-6 lg:p-8">
+          <div>
             <DrawScheduleManager
               projectId={projectId}
               initialDraws={draws}

@@ -77,6 +77,12 @@ interface QueryAccountResponse {
   }
 }
 
+interface QueryClassResponse {
+  QueryResponse: {
+    Class?: Array<{ Id?: string; Name?: string; FullyQualifiedName?: string; Active?: boolean }>
+  }
+}
+
 interface QBOCustomer {
   Id?: string
   SyncToken?: string
@@ -101,6 +107,7 @@ interface QBOInvoice {
       ItemRef: { value: string; name?: string }
       Qty?: number
       UnitPrice?: number
+      ClassRef?: { value: string; name?: string }
     }
   }>
   PrivateNote?: string
@@ -126,6 +133,7 @@ interface QBOInvoiceLineSnapshot {
     Qty?: number
     UnitPrice?: number
     TaxCodeRef?: { value?: string; name?: string }
+    ClassRef?: { value?: string; name?: string }
   }
 }
 
@@ -180,6 +188,12 @@ export interface QBOCustomerOption {
 export interface QBOVendorOption {
   id: string
   name: string
+}
+
+export interface QBOClassOption {
+  id: string
+  name: string
+  fullyQualifiedName?: string
 }
 
 export class QBOClient {
@@ -499,6 +513,18 @@ export class QBOClient {
         name: String(account.Name),
         fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
         accountType: account.AccountType ? String(account.AccountType) : undefined,
+      }))
+  }
+
+  async listClasses(limit = 1000): Promise<QBOClassOption[]> {
+    const query = `SELECT Id, Name, FullyQualifiedName FROM Class WHERE Active = true ORDERBY FullyQualifiedName MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
+    const result = await this.request<QueryClassResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    return (result.QueryResponse.Class ?? [])
+      .filter((qboClass) => qboClass.Id && qboClass.Name)
+      .map((qboClass) => ({
+        id: String(qboClass.Id),
+        name: String(qboClass.Name),
+        fullyQualifiedName: qboClass.FullyQualifiedName ? String(qboClass.FullyQualifiedName) : undefined,
       }))
   }
 

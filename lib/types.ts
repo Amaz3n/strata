@@ -182,6 +182,8 @@ export interface Project {
   description?: string
   retainage_percent?: number
   total_contract_value_cents?: number
+  qbo_class_id?: string | null
+  qbo_class_name?: string | null
   billing_contract?: Contract | null
   created_at: string
   updated_at: string

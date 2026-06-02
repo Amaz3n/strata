@@ -33,9 +33,10 @@ import { toast } from "sonner"
 import { useForm, type UseFormReturn } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import type { Contact, Project, ProjectStatus } from "@/lib/types"
-import { createProjectAction, updateProjectAction, deleteProjectAction } from "./actions"
+import { createProjectAction, updateProjectAction, deleteProjectAction, listProjectQboClassesAction } from "./actions"
 import { projectInputSchema } from "@/lib/validation/projects"
 import type { ProjectInput } from "@/lib/validation/projects"
+import type { QBOClassOption } from "@/lib/integrations/accounting/qbo-api"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
@@ -141,6 +142,8 @@ function projectToFormValues(project: Project): ProjectInput {
     requires_client_cost_approval: project.billing_contract?.requires_client_cost_approval ?? false,
     open_book: project.billing_contract?.open_book ?? true,
     total_contract_value_cents: contractValueCents,
+    qbo_class_id: project.qbo_class_id ?? null,
+    qbo_class_name: project.qbo_class_name ?? null,
   }
 }
 
@@ -178,6 +181,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
   // Filters
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | "all">("all")
+  const [qboClasses, setQboClasses] = useState<QBOClassOption[]>([])
 
   const createForm = useForm<ProjectInput>({
     resolver: zodResolver(projectInputSchema),
@@ -202,6 +206,8 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
       requires_client_cost_approval: false,
       open_book: true,
       total_contract_value_cents: undefined,
+      qbo_class_id: null,
+      qbo_class_name: null,
     },
   })
 
@@ -228,8 +234,24 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
       requires_client_cost_approval: false,
       open_book: true,
       total_contract_value_cents: undefined,
+      qbo_class_id: null,
+      qbo_class_name: null,
     },
   })
+
+  useEffect(() => {
+    let cancelled = false
+    listProjectQboClassesAction()
+      .then((classes) => {
+        if (!cancelled) setQboClasses(classes)
+      })
+      .catch(() => {
+        if (!cancelled) setQboClasses([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Sync create date range → form
   useEffect(() => {
@@ -268,7 +290,30 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
     try {
       const created = await createProjectAction(normalizeProjectInput(values))
       setProjectsState((prev) => [created, ...prev])
-      createForm.reset()
+      createForm.reset({
+        name: "",
+        status: "active",
+        start_date: "",
+        end_date: "",
+        address: "",
+        client_id: null,
+        total_value: undefined,
+        property_type: undefined,
+        project_type: undefined,
+        description: "",
+        contract_type: "fixed",
+        billing_model: "fixed_price",
+        markup_percent: undefined,
+        gmp_cents: undefined,
+        savings_split_owner_pct: undefined,
+        savings_split_builder_pct: undefined,
+        labor_burden_multiplier: 1,
+        requires_client_cost_approval: false,
+        open_book: true,
+        total_contract_value_cents: undefined,
+        qbo_class_id: null,
+        qbo_class_name: null,
+      })
       setCreateDateRange(undefined)
       toast.success("Project created", { description: created.name })
       setCreateSheetOpen(false)
@@ -511,6 +556,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         isSubmitting={isCreating}
         onSubmit={handleCreate}
         clientContacts={clientContacts}
+        qboClasses={qboClasses}
         onClose={() => {
           createForm.reset()
           setCreateDateRange(undefined)
@@ -529,6 +575,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         isSubmitting={isUpdating}
         onSubmit={handleUpdate}
         clientContacts={clientContacts}
+        qboClasses={qboClasses}
         onClose={() => {
           setEditSheetOpen(false)
           setEditingProject(null)
@@ -607,6 +654,7 @@ interface ProjectFormSheetProps {
   isSubmitting: boolean
   onSubmit: (values: ProjectInput) => Promise<void>
   clientContacts: Contact[]
+  qboClasses: QBOClassOption[]
   onClose: () => void
 }
 
@@ -620,6 +668,7 @@ function ProjectFormSheet({
   isSubmitting,
   onSubmit,
   clientContacts,
+  qboClasses,
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
@@ -759,6 +808,45 @@ function ProjectFormSheet({
                   </FormItem>
                 )}
               />
+              {qboClasses.length > 0 ? (
+                <FormField
+                  control={form.control}
+                  name="qbo_class_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>QuickBooks class</FormLabel>
+                      <Select
+                        value={field.value ?? "none"}
+                        onValueChange={(value) => {
+                          if (value === "none") {
+                            field.onChange(null)
+                            form.setValue("qbo_class_name", null)
+                            return
+                          }
+                          const selected = qboClasses.find((qboClass) => qboClass.id === value)
+                          field.onChange(value)
+                          form.setValue("qbo_class_name", selected?.fullyQualifiedName ?? selected?.name ?? null)
+                        }}
+                      >
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select class" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="none">Not set</SelectItem>
+                          {qboClasses.map((qboClass) => (
+                            <SelectItem key={qboClass.id} value={qboClass.id}>
+                              {qboClass.fullyQualifiedName ?? qboClass.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ) : null}
               <div className="grid grid-cols-2 gap-3">
                 <FormField
                   control={form.control}
@@ -875,14 +963,9 @@ function ProjectFormSheet({
                 {isCostBilling ? (
                   <div className="grid gap-3 sm:grid-cols-2">
                     {usesMarkup ? <NumberField form={form} name="markup_percent" label="Default markup %" suffix="%" /> : null}
-                    <NumberField form={form} name="labor_burden_multiplier" label="Labor burden multiplier" step="0.01" />
                     {isGmpBilling ? <MoneyCentsField form={form} name="gmp_cents" label="GMP" /> : null}
                     {isGmpBilling ? <NumberField form={form} name="savings_split_owner_pct" label="Owner savings %" suffix="%" /> : null}
                     {isGmpBilling ? <NumberField form={form} name="savings_split_builder_pct" label="Builder savings %" suffix="%" /> : null}
-                    <div className="space-y-3 rounded-md border p-3">
-                      <BooleanField form={form} name="open_book" label="Open-book client detail" />
-                      <BooleanField form={form} name="requires_client_cost_approval" label="Client cost approval" />
-                    </div>
                   </div>
                 ) : null}
               </div>

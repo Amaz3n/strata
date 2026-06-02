@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server"
 
 import { requireOrgContext } from "@/lib/services/context"
-import { getOrgBranding } from "@/lib/services/estimate-portal"
+import { getOrgBranding, resolveEstimateRecipient } from "@/lib/services/estimate-portal"
 import { renderEstimatePdf } from "@/lib/pdfs/estimate"
+import { PRICING_DISPLAY_MODES, type PricingDisplayMode } from "@/lib/validation/estimates"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 
 export async function GET(
@@ -15,7 +16,9 @@ export async function GET(
   const [estimateResult, branding] = await Promise.all([
     supabase
       .from("estimates")
-      .select("*, items:estimate_items(*), project:projects(name), recipient:contacts(full_name, email)")
+      .select(
+        "*, items:estimate_items(*), project:projects(name), prospect:prospects(name, prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)",
+      )
       .eq("org_id", orgId)
       .eq("id", id)
       .single(),
@@ -76,19 +79,35 @@ export async function GET(
         ]
       : undefined
 
+  const metadata = (estimate.metadata as Record<string, any> | null) ?? {}
+  const recipient = resolveEstimateRecipient(estimate)
+  const accepted = (metadata.accepted_options as { ids?: string[]; accepted_total_cents?: number } | null) ?? null
+  const isSigned = Boolean(estimate.client_signed_at || estimate.builder_signed_at)
+  const pricingRaw = metadata.display?.pricing
+  const pricingDisplay = (PRICING_DISPLAY_MODES as readonly string[]).includes(pricingRaw)
+    ? (pricingRaw as PricingDisplayMode)
+    : "itemized"
+
   const pdf = await renderEstimatePdf({
     orgName: branding.name ?? undefined,
     orgLogoUrl: branding.logoUrl,
     orgAddress: branding.address,
+    accentColor: branding.estimateAccentColor,
+    fontFamily: branding.estimateFont,
     estimateTitle: estimate.title,
-    recipientName: estimate.recipient?.full_name ?? undefined,
-    recipientEmail: estimate.recipient?.email ?? null,
-    projectName: estimate.project?.name ?? null,
-    summary: estimate.metadata?.summary ?? undefined,
-    terms: estimate.metadata?.terms ?? undefined,
+    recipientName: recipient.name ?? undefined,
+    recipientEmail: recipient.email ?? null,
+    projectName: estimate.project?.name ?? estimate.prospect?.name ?? null,
+    issuedAt: estimate.created_at ?? null,
+    intro: typeof metadata.intro === "string" ? metadata.intro : null,
+    summary: typeof metadata.summary === "string" ? metadata.summary : undefined,
+    terms: typeof metadata.terms === "string" ? metadata.terms : (branding.estimateTermsTemplate ?? undefined),
+    pricingDisplay,
+    acceptedOptionalIds: accepted?.ids ?? null,
+    hideUnacceptedOptionals: isSigned,
     subtotalCents: estimate.subtotal_cents,
     taxCents: estimate.tax_cents,
-    totalCents: estimate.total_cents,
+    totalCents: isSigned && accepted?.accepted_total_cents != null ? accepted.accepted_total_cents : estimate.total_cents,
     validUntil: estimate.valid_until,
     documentLabel: signers ? (estimate.executed_at ? "Executed Estimate" : "Client-Signed Estimate") : undefined,
     signers,

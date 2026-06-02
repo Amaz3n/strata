@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { SignatureCapture } from "@/app/d/[token]/components/signature-capture"
 import { QuotePortalShell, type PortalStatusTone } from "@/components/portal/quote-portal-shell"
 import { QuoteDocumentView, type QuoteViewLine } from "@/components/portal/quote-document-view"
+import { EstimatePhotoGallery } from "@/components/portal/estimate-photo-gallery"
 import { submitEstimateDecisionAction, type EstimatePortalPayload } from "@/app/e/[token]/actions"
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
@@ -67,8 +68,6 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
     () =>
       estimate.items.map((it) => {
         const isGroup = it.item_type === "group"
-        const base = (it.unit_cost_cents ?? 0) * (it.quantity ?? 1)
-        const amount = isGroup ? null : Math.round(base + (base * (it.markup_pct ?? 0)) / 100)
         return {
           id: it.id,
           kind: isGroup ? "section" : "item",
@@ -76,12 +75,31 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           quantity: it.quantity,
           unit: it.unit,
           unit_cost_cents: it.unit_cost_cents,
-          amount_cents: amount,
+          amount_cents: it.amount_cents,
           notes: it.notes,
+          is_optional: it.is_optional,
         }
       }),
     [estimate.items],
   )
+
+  // Optional add-ons the client can toggle. Pre-fill from the recorded selection
+  // once signed; otherwise start unselected and let the client opt in.
+  const optionalAmountById = useMemo(
+    () => new Map(estimate.items.filter((it) => it.is_optional).map((it) => [it.id, it.amount_cents ?? 0])),
+    [estimate.items],
+  )
+  const [selectedOptionalIds, setSelectedOptionalIds] = useState<string[]>(estimate.accepted_options?.ids ?? [])
+  const toggleOptional = (id: string) =>
+    setSelectedOptionalIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+
+  const baseTotal = estimate.total_cents ?? 0
+  const selectedOptionalTotal = selectedOptionalIds.reduce((sum, id) => sum + (optionalAmountById.get(id) ?? 0), 0)
+  const displayTotal =
+    isApproved && estimate.accepted_options
+      ? estimate.accepted_options.accepted_total_cents
+      : baseTotal + selectedOptionalTotal
+  const hasOptionals = optionalAmountById.size > 0
 
   function runDecision(decision: "approved" | "rejected" | "changes_requested", note?: string) {
     startTransition(async () => {
@@ -90,6 +108,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           token,
           decision,
           note,
+          selected_optional_ids: decision === "approved" ? selectedOptionalIds : undefined,
           signature:
             decision === "approved"
               ? {
@@ -156,6 +175,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
         <QuoteDocumentView
           orgName={estimate.org_name}
           orgLogoUrl={estimate.org_logo_url}
+          orgAddress={estimate.org_address}
           documentLabel="Estimate"
           title={estimate.title}
           number={`v${estimate.version}`}
@@ -164,18 +184,37 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           projectName={estimate.project_name}
           issuedAt={estimate.issued_at}
           validUntil={estimate.valid_until}
+          intro={estimate.intro}
           summary={estimate.summary}
           terms={estimate.terms}
           lines={viewLines}
-          totalCents={estimate.total_cents}
+          totalCents={displayTotal}
+          accentColor={estimate.accent_color}
+          fontFamily={estimate.font_family}
+          pricingDisplay={estimate.pricing_display}
+          selectedOptionalIds={selectedOptionalIds}
+          onToggleOptional={canDecide ? toggleOptional : undefined}
         />
       }
     >
+      {estimate.photos.length > 0 ? (
+        <Card className="overflow-hidden">
+          <CardContent className="p-5">
+            <EstimatePhotoGallery photos={estimate.photos} accentColor={estimate.accent_color} />
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card className="overflow-hidden">
         <CardContent className="space-y-5 p-5">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Project total</p>
-            <p className="mt-1 text-3xl font-bold tracking-tight tabular-nums">{money(estimate.total_cents)}</p>
+            <p className="mt-1 text-3xl font-bold tracking-tight tabular-nums" style={{ color: estimate.accent_color ?? undefined }}>{money(displayTotal)}</p>
+            {hasOptionals && selectedOptionalTotal > 0 ? (
+              <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+                Includes {money(selectedOptionalTotal)} in selected add-ons
+              </p>
+            ) : null}
             {estimate.project_name ? <p className="mt-1 text-xs text-muted-foreground">{estimate.project_name}</p> : null}
           </div>
 

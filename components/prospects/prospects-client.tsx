@@ -256,7 +256,16 @@ export function ProspectsClient({
         teamMembers={teamMembers}
         prospect={editProspect}
       />
-      <ProspectDetailSheet prospectId={detailId} open={detailOpen} onOpenChange={setDetailOpen} teamMembers={teamMembers} />
+      <ProspectDetailSheet
+        prospectId={detailId}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        teamMembers={teamMembers}
+        onEditProspect={(p) => {
+          setDetailOpen(false)
+          setEditProspect(p)
+        }}
+      />
 
       <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>

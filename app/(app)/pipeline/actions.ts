@@ -160,18 +160,22 @@ export async function getEstimateCreateDataAction() {
   const { listContacts } = await import("@/lib/services/contacts")
   const { listCostCodes } = await import("@/lib/services/cost-codes")
   const { getOrgBranding } = await import("@/lib/services/estimate-portal")
+  const { listEstimateTemplates } = await import("@/lib/services/estimate-templates")
 
   const { orgId } = await requireOrgContext()
-  const [contacts, costCodes, branding] = await Promise.all([
+  const [contacts, costCodes, branding, templates] = await Promise.all([
     listContacts(),
     listCostCodes().catch(() => []),
     getOrgBranding(orgId),
+    listEstimateTemplates(orgId).catch(() => []),
   ])
 
   return {
     contacts,
     costCodes,
     defaultTerms: branding.estimateTermsTemplate ?? "",
+    defaultIntro: branding.estimateIntroTemplate ?? "",
+    templates: templates.map((t) => ({ id: t.id, name: t.name, description: t.description, lines: t.lines })),
   }
 }
 

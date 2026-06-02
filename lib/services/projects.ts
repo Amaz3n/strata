@@ -65,6 +65,8 @@ function mapProject(row: any): Project {
     project_type: row.project_type ?? undefined,
     description: row.description ?? undefined,
     total_value: row.total_value ?? undefined,
+    qbo_class_id: row.qbo_class_id ?? null,
+    qbo_class_name: row.qbo_class_name ?? null,
     billing_contract: billingContractRow ? mapProjectBillingContract(billingContractRow) : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -103,7 +105,7 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, qbo_class_id, qbo_class_name, created_at, updated_at,
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, snapshot, created_at, updated_at)
 `
 
@@ -166,6 +168,8 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     project_type: input.project_type,
     description: input.description,
     total_value: input.total_value,
+    qbo_class_id: input.qbo_class_id?.trim() || null,
+    qbo_class_name: input.qbo_class_name?.trim() || null,
     created_by: userId,
     prospect_id: input.prospect_id || null,
   }
@@ -252,6 +256,8 @@ export async function updateProject({
     project_type: parsed.project_type ?? existing.data.project_type,
     description: parsed.description ?? existing.data.description,
     total_value: parsed.total_value ?? existing.data.total_value,
+    qbo_class_id: projectNullableValue<string>(parsed, "qbo_class_id", existing.data.qbo_class_id),
+    qbo_class_name: projectNullableValue<string>(parsed, "qbo_class_name", existing.data.qbo_class_name),
   }
 
   const { data, error } = await supabase

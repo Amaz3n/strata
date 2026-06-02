@@ -2,14 +2,31 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
-import { Calendar as CalendarIcon, ArrowDown, ArrowUp, FileText, MoreHorizontal, Plus, ReceiptText, Trash2, Search, X } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
+import {
+  ArrowDown,
+  ArrowUp,
+  BadgeDollarSign,
+  Calendar as CalendarIcon,
+  CheckCircle2,
+  Clock3,
+  FileCheck2,
+  FileText,
+  LockKeyhole,
+  MoreHorizontal,
+  Plus,
+  ReceiptText,
+  Search,
+  Trash2,
+  Wallet,
+  X,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import type { Contract, DrawSchedule, ScheduleItem, CostCode } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter, SheetDescription } from "@/components/ui/sheet"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
@@ -109,12 +126,22 @@ export function DrawScheduleManager({
     const billed = draws
       .filter((d) => d.status === "invoiced" || d.status === "partial" || d.status === "paid")
       .reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
-    return { total, billed }
+    const collected = draws.filter((d) => d.status === "paid").reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
+    const pending = draws.filter((d) => d.status === "pending").reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
+    const open = billed - collected
+    return { total, billed, collected, pending, open }
   }, [draws, effectiveAmountCents])
 
-  const progress = totals.total > 0 ? Math.round((totals.billed / totals.total) * 100) : 0
+  const billingProgress = totals.total > 0 ? Math.round((totals.billed / totals.total) * 100) : 0
+  const collectionProgress = totals.total > 0 ? Math.round((totals.collected / totals.total) * 100) : 0
+  const scheduledCoverage = revisedContractCents > 0 ? Math.round((totals.total / revisedContractCents) * 100) : 0
   const overContract = revisedContractCents > 0 && totals.total > revisedContractCents
   const unallocatedCents = revisedContractCents > 0 ? revisedContractCents - totals.total : 0
+  const varianceLabel = unallocatedCents === 0 ? "Balanced" : overContract ? "Over scheduled" : "Unscheduled"
+  const nextActionDraw = draws.find((draw) => draw.status === "pending" && !draw.invoice_id)
+  const contractBasisLabel = revisedContractCents > 0
+    ? `${formatCurrency(contract?.total_cents ?? 0)} contract${approvedChangeOrdersTotalCents ? ` + ${formatCurrency(approvedChangeOrdersTotalCents)} approved COs` : ""}`
+    : "No active contract basis"
 
   function openCreate() {
     setEditing(null)
@@ -229,189 +256,302 @@ export function DrawScheduleManager({
   }, [draws, search])
 
   return (
-    <Card className="shadow-sm overflow-hidden border-none bg-transparent">
-      <CardHeader className="px-0 pt-0 pb-4 flex flex-row items-center justify-between space-y-0">
-        <div className="space-y-1">
-          <CardTitle className="text-xl font-bold">Draw Schedule</CardTitle>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{formatCurrency(totals.billed)}</span>
-            <span>billed of</span>
-            <span className="font-medium text-foreground">{formatCurrency(totals.total)}</span>
-            <span className={cn("ml-1 font-bold", overContract ? "text-destructive" : "text-primary")}>
-              {progress}%
-            </span>
+    <div className="w-full bg-background">
+      <div className="border-b bg-muted/20 px-4 py-5 sm:px-6 lg:px-8">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-xl font-semibold tracking-tight">Draw Schedule</h2>
+              <Badge variant="outline" className="rounded-sm bg-background text-[11px]">
+                {draws.length} draws
+              </Badge>
+              <Badge
+                variant="secondary"
+                className={cn(
+                  "rounded-sm text-[11px]",
+                  unallocatedCents === 0
+                    ? "bg-emerald-100 text-emerald-700"
+                    : overContract
+                      ? "bg-destructive/10 text-destructive"
+                      : "bg-amber-100 text-amber-700",
+                )}
+              >
+                {varianceLabel}
+              </Badge>
+            </div>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Built from the revised contract value so invoicing, collection, and retainage stay tied to one project billing basis.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {nextActionDraw ? (
+              <Button variant="outline" size="sm" onClick={() => handleGenerateInvoice(nextActionDraw)} disabled={saving || invoicingId}>
+                <ReceiptText className="mr-2 h-4 w-4" />
+                Invoice next draw
+              </Button>
+            ) : null}
+            <Button onClick={openCreate} size="sm">
+              <Plus className="mr-2 h-4 w-4" />
+              Add draw
+            </Button>
           </div>
         </div>
-        <Button onClick={openCreate} size="sm" className="shadow-sm">
-          <Plus className="h-4 w-4 mr-2" />
-          Add draw
-        </Button>
-      </CardHeader>
 
-      <CardContent className="px-0">
-        <div className="relative mb-6">
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <DrawMetric icon={BadgeDollarSign} label="Revised contract" value={formatCurrency(revisedContractCents)} detail={contractBasisLabel} />
+          <DrawMetric
+            icon={FileCheck2}
+            label="Scheduled"
+            value={formatCurrency(totals.total)}
+            detail={`${scheduledCoverage}% of revised contract`}
+            tone={overContract ? "danger" : unallocatedCents > 0 ? "warn" : "good"}
+          />
+          <DrawMetric icon={ReceiptText} label="Billed" value={formatCurrency(totals.billed)} detail={`${billingProgress}% of schedule`} />
+          <DrawMetric icon={Wallet} label="Collected" value={formatCurrency(totals.collected)} detail={`${collectionProgress}% collected`} tone="good" />
+        </div>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="rounded-md border bg-background p-3">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="font-medium text-muted-foreground">Billing progress</span>
+              <span className="font-semibold tabular-nums">{formatCurrency(totals.billed)} / {formatCurrency(totals.total)}</span>
+            </div>
+            <Progress value={billingProgress} className="h-2" />
+          </div>
+          <div className="rounded-md border bg-background p-3">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="font-medium text-muted-foreground">{varianceLabel}</span>
+              <span className={cn("font-semibold tabular-nums", overContract ? "text-destructive" : unallocatedCents > 0 ? "text-amber-700" : "text-emerald-700")}>
+                {formatCurrency(Math.abs(unallocatedCents))}
+              </span>
+            </div>
+            <Progress value={Math.min(100, scheduledCoverage)} className="h-2" />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 border-b px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+        <div className="relative w-full lg:max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input 
-            placeholder="Search draws by title or description..." 
-            className="pl-10 bg-muted/20"
+          <Input
+            placeholder="Search draws"
+            className="h-9 rounded-md border-muted-foreground/20 bg-background pl-9 pr-9"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          {search && (
-            <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7" onClick={() => setSearch("")}>
+          {search ? (
+            <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2" onClick={() => setSearch("")}>
               <X className="h-4 w-4" />
             </Button>
-          )}
+          ) : null}
         </div>
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <StatusPill icon={Clock3} label={`${formatCurrency(totals.pending)} pending`} />
+          <StatusPill icon={ReceiptText} label={`${formatCurrency(totals.open)} open AR`} />
+          <StatusPill icon={CheckCircle2} label={`${formatCurrency(totals.collected)} collected`} />
+        </div>
+      </div>
 
-        <div className="mt-6">
-          {filteredDraws.length === 0 ? (
-            <div className={`${compact ? "py-4 text-xs sm:text-sm" : "py-10 text-sm"} text-center border border-dashed rounded-lg text-muted-foreground bg-muted/5`}>
-              {search ? "No draws match your search." : "No draws scheduled yet."}
+      <div className="px-4 py-4 sm:px-6 lg:px-8">
+        {filteredDraws.length === 0 ? (
+          <div className="flex min-h-48 flex-col items-center justify-center rounded-md border border-dashed bg-muted/10 text-center">
+            <p className="text-sm font-medium">{search ? "No draws match your search." : "No draws scheduled yet."}</p>
+            <p className="mt-1 text-xs text-muted-foreground">Create a contract-based draw schedule to start controlling project cash-in.</p>
+            {!search ? (
+              <Button className="mt-4" size="sm" onClick={openCreate}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add first draw
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-md border bg-background">
+            <div className="hidden grid-cols-[72px_minmax(240px,1.3fr)_minmax(160px,.8fr)_minmax(160px,.8fr)_140px_112px] border-b bg-muted/40 px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground lg:grid">
+              <div>Draw</div>
+              <div>Scope</div>
+              <div>Trigger</div>
+              <div>Status</div>
+              <div className="text-right">Amount</div>
+              <div className="text-right">Actions</div>
             </div>
-          ) : (
-            <div className={`space-y-4 sm:space-y-6 relative before:absolute before:inset-y-0 ${compact ? "before:left-[15px]" : "before:left-[19px]"} before:w-0.5 before:bg-muted`}>
-              {filteredDraws.map((draw, index) => {
-                const status = statusMap[draw.status] ?? statusMap.pending
-                const amount = effectiveAmountCents(draw)
-                const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
-                
-                let dueLabel = "—"
-                if (draw.due_trigger === "milestone") {
-                  if (milestone) {
-                    const projectedDate = milestone.end_date ? format(new Date(milestone.end_date), "MMM d, yyyy") : ""
-                    dueLabel = `${milestone.name}${projectedDate ? ` (${projectedDate})` : ""}`
-                  } else {
-                    dueLabel = "Milestone"
-                  }
-                } else if (draw.due_date) {
-                  dueLabel = format(new Date(draw.due_date), "MMM d, yyyy")
-                } else if ((draw.metadata as any)?.due_trigger_label) {
-                  dueLabel = (draw.metadata as any).due_trigger_label
+
+            {filteredDraws.map((draw, index) => {
+              const status = statusMap[draw.status] ?? statusMap.pending
+              const amount = effectiveAmountCents(draw)
+              const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
+              const allocations = ((draw.metadata as any)?.allocations ?? []) as { cost_code_id: string; amount_cents: number; description?: string }[]
+
+              let dueLabel = "No trigger"
+              if (draw.due_trigger === "milestone") {
+                if (milestone) {
+                  const projectedDate = milestone.end_date ? format(new Date(milestone.end_date), "MMM d, yyyy") : ""
+                  dueLabel = `${milestone.name}${projectedDate ? ` · ${projectedDate}` : ""}`
+                } else {
+                  dueLabel = "Milestone"
                 }
+              } else if (draw.due_date) {
+                dueLabel = format(new Date(draw.due_date), "MMM d, yyyy")
+              } else if ((draw.metadata as any)?.due_trigger_label) {
+                dueLabel = (draw.metadata as any).due_trigger_label
+              }
 
-                const hasInvoice = !!draw.invoice_id
-                const canInvoice = draw.status === "pending" && !hasInvoice
-                const canDelete = draw.status === "pending" && !hasInvoice
-                
-                const dotColor = draw.status === "paid" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : draw.status === "invoiced" || draw.status === "partial" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" : "bg-muted text-muted-foreground"
+              const hasInvoice = !!draw.invoice_id
+              const canInvoice = draw.status === "pending" && !hasInvoice
+              const canDelete = draw.status === "pending" && !hasInvoice
+              const locked = hasInvoice || draw.status !== "pending"
+              const readinessLabel = draw.status === "paid"
+                ? "Collected"
+                : draw.status === "partial"
+                  ? "Partially collected"
+                  : draw.status === "invoiced"
+                    ? "Invoice out"
+                    : canInvoice
+                      ? "Ready to invoice"
+                      : "Pending"
 
-                return (
-                  <div key={draw.id} className="relative flex items-start gap-3 sm:gap-4 group">
-                    <div className={`relative z-10 flex ${compact ? "h-8 w-8 text-xs" : "h-10 w-10 text-sm"} shrink-0 items-center justify-center rounded-full border-[3px] border-background ${dotColor} font-semibold shadow-sm transition-colors`}>
+              return (
+                <div
+                  key={draw.id}
+                  className="grid gap-3 border-b px-4 py-4 last:border-b-0 lg:grid-cols-[72px_minmax(240px,1.3fr)_minmax(160px,.8fr)_minmax(160px,.8fr)_140px_112px] lg:items-center"
+                >
+                  <div className="flex items-center gap-3 lg:block">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-md border bg-muted/40 text-sm font-semibold tabular-nums">
                       {draw.draw_number}
                     </div>
+                    <Badge className={cn("lg:hidden", status.tone)} variant="secondary">
+                      {status.label}
+                    </Badge>
+                  </div>
 
-                    <div className={`flex-1 rounded-lg border bg-card ${compact ? "p-3" : "p-4"} shadow-sm transition-all hover:shadow-md`}>
-                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                        <div className={`flex-1 ${compact ? "space-y-0.5" : "space-y-1.5"}`}>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className={`font-semibold ${compact ? "text-xs sm:text-sm" : "text-base"}`}>{draw.title}</p>
-                            <Badge className={`text-[10px] sm:text-xs font-bold uppercase tracking-wider ${status.tone}`} variant="secondary">
-                              {status.label}
-                            </Badge>
-                            {typeof draw.percent_of_contract === "number" ? (
-                              <Badge variant="outline" className="text-[10px] sm:text-xs font-normal bg-muted/20">
-                                {draw.percent_of_contract}% of contract
-                              </Badge>
-                            ) : null}
-                          </div>
-                          {draw.description ? (
-                            <p className={`${compact ? "text-[10px] sm:text-xs" : "text-sm"} text-muted-foreground line-clamp-2`}>{draw.description}</p>
-                          ) : null}
-                          <div className={`${compact ? "text-[10px]" : "text-xs"} text-muted-foreground flex flex-wrap items-center gap-1.5 mt-1`}>
-                            <span className="font-medium text-foreground/80">Due:</span> 
-                            <span>{dueLabel}</span>
-                            {hasInvoice ? <><span className="text-muted-foreground/30">•</span><span className="text-blue-600 dark:text-blue-400 font-semibold flex items-center gap-1"><ReceiptText className="h-3 w-3" /> Invoice linked</span></> : null}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center sm:items-start gap-3 sm:gap-4 sm:flex-col sm:items-end w-full sm:w-auto mt-2 sm:mt-0">
-                          <div className={`text-right ${compact ? "text-sm sm:text-base" : "text-lg"} font-bold tracking-tight shrink-0 tabular-nums`}>{formatCurrency(amount)}</div>
-                          <div className="flex-1 sm:hidden"></div>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity border">
-                                <MoreHorizontal className="h-4 w-4" />
-                                <span className="sr-only">Actions</span>
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-48 shadow-xl">
-                              <DropdownMenuItem onClick={() => openEdit(draw)} disabled={saving || invoicingId}>
-                                <FileText className="h-4 w-4 mr-2" />
-                                Edit draw
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleMove(draw, "up")}
-                                disabled={saving || index === 0}
-                              >
-                                <ArrowUp className="h-4 w-4 mr-2" />
-                                Move up
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleMove(draw, "down")}
-                                disabled={saving || index === filteredDraws.length - 1}
-                              >
-                                <ArrowDown className="h-4 w-4 mr-2" />
-                                Move down
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={() => handleGenerateInvoice(draw)}
-                                disabled={saving || invoicingId || !canInvoice}
-                                className="text-blue-600 focus:text-blue-600 focus:bg-blue-50"
-                              >
-                                <ReceiptText className="h-4 w-4 mr-2" />
-                                Generate invoice
-                              </DropdownMenuItem>
-                              {hasInvoice ? (
-                                <DropdownMenuItem asChild>
-                                  <a href={`/projects/${projectId}/invoices?open=${draw.invoice_id}`}>
-                                    <ExternalLink className="h-4 w-4 mr-2" />
-                                    Open invoice
-                                  </a>
-                                </DropdownMenuItem>
-                              ) : null}
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                className="text-destructive focus:text-destructive focus:bg-destructive/5"
-                                onClick={() => handleDelete(draw)}
-                                disabled={saving || !canDelete}
-                              >
-                                <Trash2 className="h-4 w-4 mr-2" />
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                      </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-semibold">{draw.title}</p>
+                      {locked ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                          <LockKeyhole className="h-3 w-3" />
+                          Locked
+                        </span>
+                      ) : null}
+                    </div>
+                    {draw.description ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{draw.description}</p> : null}
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {typeof draw.percent_of_contract === "number" ? (
+                        <Badge variant="outline" className="rounded-sm text-[11px]">
+                          {draw.percent_of_contract}% of revised contract
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="rounded-sm text-[11px]">Fixed amount</Badge>
+                      )}
+                      {allocations.length > 0 ? (
+                        <Badge variant="outline" className="rounded-sm text-[11px]">
+                          {allocations.length} cost codes
+                        </Badge>
+                      ) : null}
                     </div>
                   </div>
-                )
-              })}
 
-              {!search && revisedContractCents > 0 && unallocatedCents > 0 && (
-                <div className="relative flex items-start gap-3 sm:gap-4 pt-2">
-                  <div className={`relative z-10 flex ${compact ? "h-8 w-8 text-xs" : "h-10 w-10 text-sm"} shrink-0 items-center justify-center rounded-full border-[3px] border-background bg-muted/50 font-semibold text-muted-foreground shadow-sm`}>
-                    +
+                  <div className="text-xs">
+                    <p className="font-medium text-foreground">{dueLabel}</p>
+                    <p className="mt-1 text-muted-foreground capitalize">{draw.due_trigger ?? "manual"} basis</p>
                   </div>
-                  <div className={`flex-1 rounded-lg border border-dashed bg-muted/5 ${compact ? "p-3" : "p-4"} flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-inner`}>
-                    <div>
-                      <p className={`font-semibold ${compact ? "text-xs sm:text-sm" : "text-sm"} text-muted-foreground`}>Unallocated Contract Balance</p>
-                      <p className={`${compact ? "text-[10px]" : "text-xs"} text-muted-foreground mt-0.5 font-medium`}>
-                        {formatCurrency(unallocatedCents)} remaining from the total contract of {formatCurrency(revisedContractCents)}
-                      </p>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={openCreate} disabled={saving} className="bg-background">
-                      Add final draw
-                    </Button>
+
+                  <div className="space-y-1">
+                    <Badge className={cn("hidden w-fit rounded-sm lg:inline-flex", status.tone)} variant="secondary">
+                      {status.label}
+                    </Badge>
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      {draw.status === "paid" ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : hasInvoice ? <ReceiptText className="h-3.5 w-3.5 text-blue-600" /> : <Clock3 className="h-3.5 w-3.5" />}
+                      {readinessLabel}
+                    </p>
+                  </div>
+
+                  <div className="text-left lg:text-right">
+                    <p className="text-base font-semibold tabular-nums">{formatCurrency(amount)}</p>
+                    {revisedContractCents > 0 ? (
+                      <p className="text-xs text-muted-foreground">{Math.round((amount / revisedContractCents) * 1000) / 10}% basis</p>
+                    ) : null}
+                  </div>
+
+                  <div className="flex items-center justify-start gap-2 lg:justify-end">
+                    {canInvoice ? (
+                      <Button size="sm" className="h-8" onClick={() => handleGenerateInvoice(draw)} disabled={saving || invoicingId}>
+                        Invoice
+                      </Button>
+                    ) : hasInvoice ? (
+                      <Button variant="outline" size="sm" className="h-8" asChild>
+                        <a href={`/projects/${projectId}/invoices?open=${draw.invoice_id}`}>Open</a>
+                      </Button>
+                    ) : null}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 border">
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">Actions</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-48">
+                        <DropdownMenuItem onClick={() => openEdit(draw)} disabled={saving || invoicingId || locked}>
+                          <FileText className="mr-2 h-4 w-4" />
+                          Edit draw
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleMove(draw, "up")} disabled={saving || index === 0}>
+                          <ArrowUp className="mr-2 h-4 w-4" />
+                          Move up
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleMove(draw, "down")} disabled={saving || index === filteredDraws.length - 1}>
+                          <ArrowDown className="mr-2 h-4 w-4" />
+                          Move down
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => handleGenerateInvoice(draw)} disabled={saving || invoicingId || !canInvoice}>
+                          <ReceiptText className="mr-2 h-4 w-4" />
+                          Generate invoice
+                        </DropdownMenuItem>
+                        {hasInvoice ? (
+                          <DropdownMenuItem asChild>
+                            <a href={`/projects/${projectId}/invoices?open=${draw.invoice_id}`}>
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              Open invoice
+                            </a>
+                          </DropdownMenuItem>
+                        ) : null}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDelete(draw)} disabled={saving || !canDelete}>
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
-              )}
+              )
+            })}
+          </div>
+        )}
+
+        {!search && revisedContractCents > 0 && unallocatedCents !== 0 ? (
+          <div
+            className={cn(
+              "mt-4 flex flex-col gap-3 rounded-md border px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
+              overContract ? "border-destructive/30 bg-destructive/5" : "border-amber-200 bg-amber-50 text-amber-950",
+            )}
+          >
+            <div>
+              <p className="text-sm font-semibold">{varianceLabel}: {formatCurrency(Math.abs(unallocatedCents))}</p>
+              <p className="mt-1 text-xs opacity-80">
+                {overContract
+                  ? "Scheduled draws exceed the revised contract basis. Adjust percentages or approved change order handling before invoicing."
+                  : "There is contract value not assigned to a draw yet."}
+              </p>
             </div>
-          )}
-        </div>
-      </CardContent>
+            {!overContract ? (
+              <Button variant="outline" size="sm" onClick={openCreate} disabled={saving} className="bg-background">
+                Add balancing draw
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
 
       <DrawDialog
         open={isDialogOpen}
@@ -426,7 +566,52 @@ export function DrawScheduleManager({
         costCodes={costCodes ?? []}
         onSave={handleSave}
       />
-    </Card>
+    </div>
+  )
+}
+
+function DrawMetric({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone = "neutral",
+}: {
+  icon: LucideIcon
+  label: string
+  value: string
+  detail: string
+  tone?: "neutral" | "good" | "warn" | "danger"
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-md border bg-background p-4",
+        tone === "good" && "border-emerald-200 bg-emerald-50/60",
+        tone === "warn" && "border-amber-200 bg-amber-50/70",
+        tone === "danger" && "border-destructive/30 bg-destructive/5",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium text-muted-foreground">{label}</p>
+          <p className="mt-1 text-xl font-semibold tracking-tight tabular-nums">{value}</p>
+        </div>
+        <div className="flex h-9 w-9 items-center justify-center rounded-md border bg-background/80">
+          <Icon className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </div>
+      <p className="mt-3 line-clamp-2 text-xs text-muted-foreground">{detail}</p>
+    </div>
+  )
+}
+
+function StatusPill({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+  return (
+    <span className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 font-medium">
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </span>
   )
 }
 

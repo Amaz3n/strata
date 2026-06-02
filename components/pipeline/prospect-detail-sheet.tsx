@@ -64,7 +64,7 @@ import {
 import { cn, formatPhone, formatLocalDate } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import { ConvertProspectSheet } from "./convert-prospect-sheet"
-import { EstimateCreateSheet, type EstimateSheetInitial } from "@/components/estimates/estimate-create-sheet"
+import { EstimateCreateSheet, type EstimateSheetInitial, type EstimateTemplateOption } from "@/components/estimates/estimate-create-sheet"
 import { EstimateActivitySheet } from "@/components/estimates/estimate-activity-sheet"
 
 interface ProspectDetailSheetProps {
@@ -73,6 +73,7 @@ interface ProspectDetailSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   teamMembers: TeamMember[]
+  onEditProspect?: (prospect: Prospect) => void
 }
 
 const statusLabels: Record<string, string> = {
@@ -299,6 +300,7 @@ export function ProspectDetailSheet({
   open,
   onOpenChange,
   teamMembers,
+  onEditProspect,
 }: ProspectDetailSheetProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -318,6 +320,8 @@ export function ProspectDetailSheet({
     contacts: Contact[]
     costCodes: CostCode[]
     defaultTerms: string
+    defaultIntro?: string
+    templates?: EstimateTemplateOption[]
   } | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [copyingId, setCopyingId] = useState<string | null>(null)
@@ -502,16 +506,29 @@ export function ProspectDetailSheet({
         ) : (
           <>
             <SheetHeader className="space-y-0 px-6 pb-0 pt-6 text-left">
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Building2 className="h-5 w-5" />
+              <div className="flex items-start justify-between gap-3 mr-6">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <Building2 className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <SheetTitle className="truncate text-lg leading-tight">{prospect.name}</SheetTitle>
+                    <SheetDescription className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <span>Created on {format(new Date(prospect.created_at), "MM/dd/yy")}</span>
+                    </SheetDescription>
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <SheetTitle className="truncate text-lg leading-tight">{prospect.name}</SheetTitle>
-                  <SheetDescription className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    <span>Created on {format(new Date(prospect.created_at), "MM/dd/yy")}</span>
-                  </SheetDescription>
-                </div>
+                {onEditProspect && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0 px-2.5 text-xs"
+                    onClick={() => onEditProspect(prospect)}
+                  >
+                    <PenLine className="mr-1 h-3.5 w-3.5" />
+                    Edit
+                  </Button>
+                )}
               </div>
             </SheetHeader>
 
@@ -862,6 +879,8 @@ export function ProspectDetailSheet({
           contacts={createData.contacts}
           costCodes={createData.costCodes}
           defaultTerms={createData.defaultTerms}
+          defaultIntro={createData.defaultIntro}
+          templates={createData.templates}
           defaultProspectId={prospect.id}
           defaultRecipientId={resolveRecipientId(prospect, createData.contacts)}
           prospectRecipient={

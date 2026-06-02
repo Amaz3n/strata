@@ -26,6 +26,7 @@ interface InvoiceForSync {
   status?: string | null
   metadata?: Record<string, any> | null
   lines: InvoiceLineRow[]
+  project?: { qbo_class_id?: string | null; qbo_class_name?: string | null } | null
 }
 
 interface ProjectExpenseForSync {
@@ -49,10 +50,12 @@ interface ProjectExpenseForSync {
   qbo_ap_account_name?: string | null
   qbo_vendor_id?: string | null
   qbo_vendor_name?: string | null
+  qbo_class_id?: string | null
+  qbo_class_name?: string | null
   qbo_id?: string | null
   receipt_file_id?: string | null
   metadata?: Record<string, any> | null
-  project?: { name?: string | null } | null
+  project?: { name?: string | null; qbo_class_id?: string | null; qbo_class_name?: string | null } | null
   vendor_company?: { name?: string | null } | null
 }
 
@@ -75,7 +78,9 @@ interface VendorBillForSync {
   qbo_ap_account_name?: string | null
   qbo_vendor_id?: string | null
   qbo_vendor_name?: string | null
-  project?: { name?: string | null } | null
+  qbo_class_id?: string | null
+  qbo_class_name?: string | null
+  project?: { name?: string | null; qbo_class_id?: string | null; qbo_class_name?: string | null } | null
   commitment?: {
     title?: string | null
     company?: { name?: string | null } | null
@@ -102,7 +107,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
   const { data: invoice, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, metadata, invoice_lines (description, quantity, unit_price_cents, metadata)",
+      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, metadata, project:projects(qbo_class_id, qbo_class_name), invoice_lines (description, quantity, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -174,6 +179,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       (typedInvoice.lines ?? []).map(async (line) => {
         const lineIncomeAccountId = (line.metadata as any)?.qbo_income_account_id
         const itemRef = await resolveServiceItem(lineIncomeAccountId)
+        const classRef = resolveQBOClassRef(line.metadata, typedInvoice.project)
         return {
           DetailType: "SalesItemLineDetail" as const,
           Amount: (line.quantity * line.unit_price_cents) / 100,
@@ -185,6 +191,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
             TaxCodeRef: {
               value: (line.metadata as any)?.taxable === false ? "NON" : "TAX",
             },
+            ClassRef: classRef,
           },
         }
       }),
@@ -536,8 +543,8 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
       `
       id, org_id, project_id, vendor_company_id, vendor_name_text, expense_date, description, amount_cents, tax_cents, payment_method, is_billable, receipt_file_id,
       qbo_transaction_type, qbo_expense_account_id, qbo_expense_account_name, qbo_payment_account_id, qbo_payment_account_name,
-      qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name, qbo_id, metadata,
-      project:projects(name),
+      qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name, qbo_class_id, qbo_class_name, qbo_id, metadata,
+      project:projects(name, qbo_class_id, qbo_class_name),
       vendor_company:companies(name)
     `,
     )
@@ -569,6 +576,14 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
     const customer = await getOrCreateProjectCustomer({ client, supabase, orgId, projectId: typedExpense.project_id, projectName: typedExpense.project?.name ?? null })
     const totalAmount = (Number(typedExpense.amount_cents ?? 0) + Number(typedExpense.tax_cents ?? 0)) / 100
     const lineDescription = typedExpense.description?.trim() || vendorName
+    const classRef = resolveQBOClassRef(
+      {
+        ...((typedExpense.metadata as Record<string, any> | null) ?? {}),
+        qbo_class_id: typedExpense.qbo_class_id,
+        qbo_class_name: typedExpense.qbo_class_name,
+      },
+      typedExpense.project,
+    )
     const line = {
       DetailType: "AccountBasedExpenseLineDetail",
       Amount: totalAmount,
@@ -585,6 +600,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
             }
           : undefined,
         BillableStatus: typedExpense.is_billable === false ? "NotBillable" : "Billable",
+        ClassRef: classRef,
       },
     }
 
@@ -709,8 +725,8 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
     .select(
       `
       id, org_id, project_id, commitment_id, bill_number, bill_date, due_date, total_cents, currency, file_id, metadata,
-      qbo_id, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
-      project:projects(name),
+      qbo_id, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name, qbo_class_id, qbo_class_name,
+      project:projects(name, qbo_class_id, qbo_class_name),
       commitment:commitments(title, company:companies(name)),
       bill_lines(id, description, quantity, unit_cost_cents, metadata)
     `,
@@ -765,6 +781,14 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
         typeof metadata.qbo_expense_account_name === "string" && metadata.qbo_expense_account_name
           ? metadata.qbo_expense_account_name
           : typedBill.qbo_expense_account_name ?? undefined
+      const classRef = resolveQBOClassRef(
+        {
+          ...metadata,
+          qbo_class_id: metadata.qbo_class_id ?? typedBill.qbo_class_id,
+          qbo_class_name: metadata.qbo_class_name ?? typedBill.qbo_class_name,
+        },
+        typedBill.project,
+      )
 
       return {
         DetailType: "AccountBasedExpenseLineDetail",
@@ -782,6 +806,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
               }
             : undefined,
           BillableStatus: "Billable",
+          ClassRef: classRef,
         },
       }
     })
@@ -1505,6 +1530,33 @@ function resolveCustomerName(invoice: InvoiceForSync) {
   const title = invoice.title?.trim()
   if (title) return title
   return `Customer ${invoice.invoice_number}`
+}
+
+function resolveQBOClassRef(
+  metadata?: Record<string, any> | null,
+  project?: { qbo_class_id?: string | null; qbo_class_name?: string | null } | null,
+): { value: string; name?: string } | undefined {
+  const metadataClassId =
+    typeof metadata?.qbo_class_id === "string" && metadata.qbo_class_id.trim().length > 0
+      ? metadata.qbo_class_id.trim()
+      : null
+  const metadataClassName =
+    typeof metadata?.qbo_class_name === "string" && metadata.qbo_class_name.trim().length > 0
+      ? metadata.qbo_class_name.trim()
+      : undefined
+  if (metadataClassId) return { value: metadataClassId, name: metadataClassName }
+
+  const projectClassId =
+    typeof project?.qbo_class_id === "string" && project.qbo_class_id.trim().length > 0
+      ? project.qbo_class_id.trim()
+      : null
+  if (!projectClassId) return undefined
+
+  const projectClassName =
+    typeof project?.qbo_class_name === "string" && project.qbo_class_name.trim().length > 0
+      ? project.qbo_class_name.trim()
+      : undefined
+  return { value: projectClassId, name: projectClassName }
 }
 
 function resolveExpenseVendorName(expense: ProjectExpenseForSync) {

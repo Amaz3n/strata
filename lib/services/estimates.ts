@@ -15,8 +15,69 @@ const estimateLineSchema = z.object({
   unit_cost_cents: z.number().int().default(0),
   markup_pct: z.number().default(0),
   sort_order: z.number().int().default(0),
+  notes: z.string().optional(),
+  /** Client-selectable upgrade/add-on; excluded from the base total. */
+  is_optional: z.boolean().optional(),
   metadata: z.record(z.any()).optional(),
 })
+
+type EstimateLine = z.infer<typeof estimateLineSchema>
+
+/**
+ * Builds the persisted `metadata` jsonb for an estimate line, folding the
+ * structured `notes`/`is_optional` fields into the bag the portal/PDF read from.
+ */
+function buildLineMetadata(line: EstimateLine): Record<string, any> {
+  const metadata: Record<string, any> = { ...(line.metadata ?? {}) }
+  const notes = stripNul(line.notes)
+  if (notes) metadata.notes = notes
+  else delete metadata.notes
+  if (line.is_optional) metadata.is_optional = true
+  else delete metadata.is_optional
+  return metadata
+}
+
+/** Maps parsed lines to `estimate_items` insert rows for a given estimate. */
+function buildItemsPayload(orgId: string, estimateId: string, lines: EstimateLine[]) {
+  return lines.map((line, idx) => ({
+    org_id: orgId,
+    estimate_id: estimateId,
+    cost_code_id: line.cost_code_id ?? null,
+    item_type: line.item_type ?? "line",
+    description: stripNul(line.description),
+    quantity: line.quantity ?? 1,
+    unit: stripNul(line.unit) ?? null,
+    unit_cost_cents: line.unit_cost_cents ?? 0,
+    markup_pct: line.markup_pct ?? 0,
+    sort_order: line.sort_order ?? idx,
+    metadata: buildLineMetadata(line),
+  }))
+}
+
+/**
+ * Folds the presentation extras (per-estimate cover note, pricing display mode,
+ * portal photo gallery) into the estimate `metadata` jsonb. Omits empty values
+ * so existing rows stay clean.
+ */
+function buildPresentationMetadata(input: {
+  intro?: string | null
+  pricing_display?: string | null
+  photos?: Array<{ path: string; caption?: string | null }> | null
+}): Record<string, any> {
+  const metadata: Record<string, any> = {}
+  const intro = stripNul(input.intro)
+  if (intro) metadata.intro = intro
+  if (input.pricing_display && input.pricing_display !== "itemized") {
+    metadata.display = { pricing: input.pricing_display }
+  }
+  if (input.photos && input.photos.length > 0) {
+    metadata.photos = input.photos.map((photo) => ({
+      path: photo.path,
+      caption: stripNul(photo.caption) ?? null,
+    }))
+  }
+  return metadata
+}
 
 // Postgres text and jsonb columns cannot store NUL (U+0000) characters; pasted
 // content and some org templates can contain them, which surfaces as a
@@ -32,6 +93,8 @@ function calculateTotals(
   taxRate = 0,
 ): { subtotal: number; tax: number; total: number } {
   const subtotal = lines.reduce((sum, line) => {
+    // Optional add-ons and group headers never contribute to the base total.
+    if (line.is_optional || line.item_type === "group") return sum
     const base = (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     const markup = Math.round(base * (line.markup_pct ?? 0) / 100)
     return sum + base + markup
@@ -91,19 +154,7 @@ export async function createEstimateFromTemplate({
     throw new Error(`Failed to create estimate: ${estimateError?.message}`)
   }
 
-  const itemsPayload = parsedLines.map((line, idx) => ({
-    org_id: resolvedOrgId,
-    estimate_id: estimate.id,
-    cost_code_id: line.cost_code_id ?? null,
-    item_type: line.item_type ?? "line",
-    description: stripNul(line.description),
-    quantity: line.quantity ?? 1,
-    unit: stripNul(line.unit) ?? null,
-    unit_cost_cents: line.unit_cost_cents ?? 0,
-    markup_pct: line.markup_pct ?? 0,
-    sort_order: line.sort_order ?? idx,
-    metadata: line.metadata ?? {},
-  }))
+  const itemsPayload = buildItemsPayload(resolvedOrgId, estimate.id, parsedLines)
 
   const { error: lineError } = await supabase.from("estimate_items").insert(itemsPayload)
   if (lineError) {
@@ -131,6 +182,9 @@ export async function createEstimate({
   title,
   summary,
   terms,
+  intro,
+  pricing_display,
+  photos,
   valid_until,
   tax_rate,
   markup_percent,
@@ -145,6 +199,9 @@ export async function createEstimate({
   title: string
   summary?: string
   terms?: string
+  intro?: string
+  pricing_display?: string
+  photos?: Array<{ path: string; caption?: string | null }>
   valid_until?: string
   tax_rate?: number
   markup_percent?: number
@@ -179,6 +236,7 @@ export async function createEstimate({
           recipient_name || recipient_email
             ? { name: stripNul(recipient_name) ?? null, email: stripNul(recipient_email) ?? null }
             : null,
+        ...buildPresentationMetadata({ intro, pricing_display, photos }),
       },
       created_by: userId,
     })
@@ -189,19 +247,7 @@ export async function createEstimate({
     throw new Error(`Failed to create estimate: ${estimateError?.message}`)
   }
 
-  const itemsPayload = parsedLines.map((line, idx) => ({
-    org_id: resolvedOrgId,
-    estimate_id: estimate.id,
-    cost_code_id: line.cost_code_id ?? null,
-    item_type: line.item_type ?? "line",
-    description: stripNul(line.description),
-    quantity: line.quantity ?? 1,
-    unit: stripNul(line.unit) ?? null,
-    unit_cost_cents: line.unit_cost_cents ?? 0,
-    markup_pct: line.markup_pct ?? 0,
-    sort_order: line.sort_order ?? idx,
-    metadata: line.metadata ?? {},
-  }))
+  const itemsPayload = buildItemsPayload(resolvedOrgId, estimate.id, parsedLines)
 
   const { error: lineError } = await supabase.from("estimate_items").insert(itemsPayload)
   if (lineError) {
@@ -372,19 +418,7 @@ export async function updateEstimateLines({
 
   await supabase.from("estimate_items").delete().eq("estimate_id", estimateId).eq("org_id", resolvedOrgId)
 
-  const itemsPayload = parsedLines.map((line, idx) => ({
-    org_id: resolvedOrgId,
-    estimate_id: estimateId,
-    cost_code_id: line.cost_code_id ?? null,
-    item_type: line.item_type ?? "line",
-    description: stripNul(line.description),
-    quantity: line.quantity ?? 1,
-    unit: stripNul(line.unit) ?? null,
-    unit_cost_cents: line.unit_cost_cents ?? 0,
-    markup_pct: line.markup_pct ?? 0,
-    sort_order: line.sort_order ?? idx,
-    metadata: line.metadata ?? {},
-  }))
+  const itemsPayload = buildItemsPayload(resolvedOrgId, estimateId, parsedLines)
 
   const { error: lineError } = await supabase.from("estimate_items").insert(itemsPayload)
   if (lineError) {
@@ -655,6 +689,9 @@ export async function createEstimateVersion({
     recipient_email?: string | null
     summary?: string
     terms?: string
+    intro?: string
+    pricing_display?: string
+    photos?: Array<{ path: string; caption?: string | null }>
     valid_until?: string
     tax_rate?: number
     markup_percent?: number
@@ -710,6 +747,15 @@ export async function createEstimateVersion({
           input.recipient_name || input.recipient_email
             ? { name: stripNul(input.recipient_name) ?? null, email: stripNul(input.recipient_email) ?? null }
             : existingMetadata.recipient ?? null,
+        // Reset presentation fields from the revision input (drop stale intro/display/photos).
+        intro: null,
+        display: null,
+        photos: null,
+        ...buildPresentationMetadata({
+          intro: input.intro,
+          pricing_display: input.pricing_display,
+          photos: input.photos,
+        }),
       },
       created_by: userId,
     })
@@ -720,19 +766,7 @@ export async function createEstimateVersion({
     throw new Error(`Failed to revise estimate: ${insertError?.message}`)
   }
 
-  const itemsPayload = parsedLines.map((line, idx) => ({
-    org_id: resolvedOrgId,
-    estimate_id: newEstimate.id,
-    cost_code_id: line.cost_code_id ?? null,
-    item_type: line.item_type ?? "line",
-    description: stripNul(line.description),
-    quantity: line.quantity ?? 1,
-    unit: stripNul(line.unit) ?? null,
-    unit_cost_cents: line.unit_cost_cents ?? 0,
-    markup_pct: line.markup_pct ?? 0,
-    sort_order: line.sort_order ?? idx,
-    metadata: line.metadata ?? {},
-  }))
+  const itemsPayload = buildItemsPayload(resolvedOrgId, newEstimate.id, parsedLines)
 
   const { error: itemError } = await supabase.from("estimate_items").insert(itemsPayload)
   if (itemError) {

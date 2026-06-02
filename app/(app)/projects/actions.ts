@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { createProject, listProjects, updateProject, archiveProject, deleteProject } from "@/lib/services/projects"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
+import { QBOClient, type QBOClassOption } from "@/lib/integrations/accounting/qbo-api"
 import type { Contact } from "@/lib/types"
 
 export async function listProjectsAction() {
@@ -27,6 +28,13 @@ export async function listProjectClientContactsAction(): Promise<Contact[]> {
   }
 
   return (data ?? []) as Contact[]
+}
+
+export async function listProjectQboClassesAction(): Promise<QBOClassOption[]> {
+  const { orgId } = await requireOrgContext()
+  const client = await QBOClient.forOrg(orgId)
+  if (!client) return []
+  return client.listClasses().catch(() => [])
 }
 
 export async function createProjectAction(input: unknown) {

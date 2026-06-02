@@ -11,7 +11,8 @@ import { ENVELOPE_EVENT_TYPES, buildUnifiedSigningUrl } from "@/lib/esign/unifie
 import { renderEstimatePdf } from "@/lib/pdfs/estimate"
 import { generateExecutedPdf, type ESignAuditTrailItem } from "@/lib/pdfs/esign"
 import { recordESignEvent } from "@/lib/services/esign-events"
-import { buildOrgScopedPath, downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
+import { buildOrgScopedPath, createFilesDownloadUrl, downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
+import { PRICING_DISPLAY_MODES, type PricingDisplayMode } from "@/lib/validation/estimates"
 import { formatLocalDate } from "@/lib/utils"
 
 export type EstimateDecision = "approved" | "rejected" | "changes_requested"
@@ -81,6 +82,22 @@ export type OrgBranding = {
   slug: string | null
   proposalTermsTemplate: string | null
   estimateTermsTemplate: string | null
+  /** Hex accent color applied to client-facing estimate documents. */
+  estimateAccentColor: string | null
+  /** Display font family for estimate documents (CSS font-family keyword). */
+  estimateFont: string | null
+  /** Default cover note seeded into new estimates. */
+  estimateIntroTemplate: string | null
+}
+
+const HEX_COLOR = /^#?[0-9a-fA-F]{6}$/
+
+/** Normalizes a stored accent color to a `#rrggbb` string, or null when unset/invalid. */
+export function normalizeAccentColor(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!HEX_COLOR.test(trimmed)) return null
+  return trimmed.startsWith("#") ? trimmed.toLowerCase() : `#${trimmed.toLowerCase()}`
 }
 
 /**
@@ -134,6 +151,10 @@ export async function getOrgBranding(orgId: string, client?: ServiceClient): Pro
       (typeof settings.proposal_terms_template === "string" && settings.proposal_terms_template) || null,
     estimateTermsTemplate:
       (typeof settings.estimate_terms_template === "string" && settings.estimate_terms_template) || null,
+    estimateAccentColor: normalizeAccentColor(settings.estimate_accent_color),
+    estimateFont: (typeof settings.estimate_font === "string" && settings.estimate_font) || null,
+    estimateIntroTemplate:
+      (typeof settings.estimate_intro_template === "string" && settings.estimate_intro_template) || null,
   }
 }
 
@@ -399,6 +420,7 @@ export type EstimatePortalData = {
   project_name: string | null
   org_name: string | null
   org_logo_url: string | null
+  org_address: string | null
   responded_at: string | null
   decision_note: string | null
   client_signed_at: string | null
@@ -408,8 +430,33 @@ export type EstimatePortalData = {
   signature_document_id: string | null
   signature_data: Record<string, any> | null
   is_current_version: boolean
+  /** Cover note shown above the line items. */
+  intro: string | null
+  /** How much pricing breakdown the client sees. */
+  pricing_display: PricingDisplayMode
+  /** Hex accent color for the document chrome. */
+  accent_color: string | null
+  /** CSS font-family for the document body. */
+  font_family: string | null
+  /** Resolved, signed gallery photo URLs. */
+  photos: EstimatePhotoView[]
+  /** Recorded once the client signs: which add-ons they accepted + the final total. */
+  accepted_options: AcceptedOptions | null
   items: EstimatePortalLine[]
   comments: EstimateCommentDto[]
+}
+
+export type EstimatePhotoView = {
+  id: string
+  url: string
+  caption: string | null
+}
+
+export type AcceptedOptions = {
+  ids: string[]
+  optional_total_cents: number
+  base_total_cents: number
+  accepted_total_cents: number
 }
 
 export type EstimatePortalLine = {
@@ -421,9 +468,89 @@ export type EstimatePortalLine = {
   unit_cost_cents: number | null
   markup_pct: number | null
   notes: string | null
+  /** Client-selectable upgrade/add-on, excluded from the base total. */
+  is_optional: boolean
+  /** Computed extended amount (qty × unit + markup). */
+  amount_cents: number | null
 }
 
-function mapEstimatePortalData(estimate: any, comments: EstimateCommentDto[]): EstimatePortalData {
+/** Extended amount for a line: qty × unit cost, plus markup. Groups have no amount. */
+function lineAmountCents(it: any): number | null {
+  if ((it.item_type ?? "line") === "group") return null
+  const base = (it.unit_cost_cents ?? 0) * (it.quantity ?? 1)
+  return Math.round(base + (base * (it.markup_pct ?? 0)) / 100)
+}
+
+function normalizePricingDisplay(value: unknown): PricingDisplayMode {
+  return typeof value === "string" && (PRICING_DISPLAY_MODES as readonly string[]).includes(value)
+    ? (value as PricingDisplayMode)
+    : "itemized"
+}
+
+/**
+ * Recomputes which optional add-ons a client accepted and the resulting total,
+ * authoritatively, from the persisted line items (never trusting a client total).
+ */
+export function resolveAcceptedOptions(
+  items: any[],
+  baseTotalCents: number,
+  selectedIds: string[],
+): AcceptedOptions {
+  const selected = new Set(selectedIds)
+  const ids: string[] = []
+  let optionalTotal = 0
+  for (const it of items ?? []) {
+    if ((it.item_type ?? "line") === "group") continue
+    if (!it.metadata?.is_optional) continue
+    if (selected.has(it.id)) {
+      ids.push(it.id)
+      optionalTotal += lineAmountCents(it) ?? 0
+    }
+  }
+  return {
+    ids,
+    optional_total_cents: optionalTotal,
+    base_total_cents: baseTotalCents,
+    accepted_total_cents: baseTotalCents + optionalTotal,
+  }
+}
+
+/** Resolves persisted photo storage paths to short-lived signed URLs for portal display. */
+async function resolveEstimatePhotos(
+  supabase: ServiceClient,
+  orgId: string,
+  metadata: Record<string, any> | null,
+): Promise<EstimatePhotoView[]> {
+  const photos = Array.isArray(metadata?.photos) ? (metadata!.photos as any[]) : []
+  if (photos.length === 0) return []
+  const resolved = await Promise.all(
+    photos.map(async (photo, idx): Promise<EstimatePhotoView | null> => {
+      const path = typeof photo?.path === "string" ? photo.path : null
+      if (!path) return null
+      try {
+        const { downloadUrl } = await createFilesDownloadUrl({ supabase, orgId, path, expiresIn: 3600 })
+        return { id: `${idx}`, url: downloadUrl, caption: typeof photo.caption === "string" ? photo.caption : null }
+      } catch (error) {
+        console.error(`[resolveEstimatePhotos] Failed to sign photo ${path}:`, error)
+        return null
+      }
+    }),
+  )
+  return resolved.filter((p): p is EstimatePhotoView => p !== null)
+}
+
+type PortalExtras = {
+  photos?: EstimatePhotoView[]
+  accentColor?: string | null
+  fontFamily?: string | null
+  orgAddress?: string | null
+}
+
+function mapEstimatePortalData(
+  estimate: any,
+  comments: EstimateCommentDto[],
+  extras: PortalExtras = {},
+): EstimatePortalData {
   const metadata = (estimate.metadata as Record<string, any> | null) ?? {}
   const items: EstimatePortalLine[] = [...((estimate as any).items ?? [])]
     .sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
@@ -436,9 +563,20 @@ function mapEstimatePortalData(estimate: any, comments: EstimateCommentDto[]): E
       unit_cost_cents: it.unit_cost_cents,
       markup_pct: it.markup_pct,
       notes: typeof it.metadata?.notes === "string" ? it.metadata.notes : null,
+      is_optional: it.metadata?.is_optional === true,
+      amount_cents: lineAmountCents(it),
     }))
 
+  const acceptedOptions = (metadata.accepted_options as AcceptedOptions | null) ?? null
+
   return {
+    intro: typeof metadata.intro === "string" ? metadata.intro : null,
+    pricing_display: normalizePricingDisplay(metadata.display?.pricing),
+    accent_color: extras.accentColor ?? null,
+    font_family: extras.fontFamily ?? null,
+    org_address: extras.orgAddress ?? null,
+    photos: extras.photos ?? [],
+    accepted_options: acceptedOptions,
     id: estimate.id,
     org_id: estimate.org_id,
     title: estimate.title,
@@ -515,14 +653,23 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
     }
   }
 
-  const { data: comments } = await supabase
-    .from("estimate_comments")
-    .select("id, author_type, author_name, author_email, kind, body, created_at")
-    .eq("org_id", estimate.org_id)
-    .eq("estimate_id", estimate.id)
-    .order("created_at", { ascending: true })
+  const [{ data: comments }, branding, photos] = await Promise.all([
+    supabase
+      .from("estimate_comments")
+      .select("id, author_type, author_name, author_email, kind, body, created_at")
+      .eq("org_id", estimate.org_id)
+      .eq("estimate_id", estimate.id)
+      .order("created_at", { ascending: true }),
+    getOrgBranding(estimate.org_id, supabase),
+    resolveEstimatePhotos(supabase, estimate.org_id, estimate.metadata as Record<string, any> | null),
+  ])
 
-  return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[])
+  return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[], {
+    photos,
+    accentColor: branding.estimateAccentColor,
+    fontFamily: branding.estimateFont,
+    orgAddress: branding.address,
+  })
 }
 
 export async function loadEstimateByIdForPortal(input: {
@@ -552,14 +699,23 @@ export async function loadEstimateByIdForPortal(input: {
   }
   if (!estimate) return null
 
-  const { data: comments } = await supabase
-    .from("estimate_comments")
-    .select("id, author_type, author_name, author_email, kind, body, created_at")
-    .eq("org_id", estimate.org_id)
-    .eq("estimate_id", estimate.id)
-    .order("created_at", { ascending: true })
+  const [{ data: comments }, branding, photos] = await Promise.all([
+    supabase
+      .from("estimate_comments")
+      .select("id, author_type, author_name, author_email, kind, body, created_at")
+      .eq("org_id", estimate.org_id)
+      .eq("estimate_id", estimate.id)
+      .order("created_at", { ascending: true }),
+    getOrgBranding(estimate.org_id, supabase),
+    resolveEstimatePhotos(supabase, estimate.org_id, estimate.metadata as Record<string, any> | null),
+  ])
 
-  return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[])
+  return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[], {
+    photos,
+    accentColor: branding.estimateAccentColor,
+    fontFamily: branding.estimateFont,
+    orgAddress: branding.address,
+  })
 }
 
 /** Renders the estimate PDF for the public portal, resolved by raw token. Returns null if not found. */
@@ -572,7 +728,7 @@ export async function renderEstimatePdfByToken(
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      `id, org_id, title, status, metadata, subtotal_cents, tax_cents, total_cents, valid_until,
+      `id, org_id, title, status, metadata, subtotal_cents, tax_cents, total_cents, valid_until, created_at,
        executed_file_id,
        client_signed_at, builder_signed_at, executed_at, signature_data,
        items:estimate_items(*),
@@ -639,19 +795,30 @@ export async function renderEstimatePdfByToken(
         ]
       : undefined
 
+  const acceptedOptions = (metadata.accepted_options as AcceptedOptions | null) ?? null
+  const isSigned = Boolean((estimate as any).client_signed_at || (estimate as any).builder_signed_at)
+  const totalForPdf = isSigned && acceptedOptions ? acceptedOptions.accepted_total_cents : estimate.total_cents
+
   const pdf = await renderEstimatePdf({
     orgName: branding.name ?? undefined,
     orgLogoUrl: branding.logoUrl,
     orgAddress: branding.address,
+    accentColor: branding.estimateAccentColor,
+    fontFamily: branding.estimateFont,
     estimateTitle: estimate.title,
     recipientName: pdfRecipient.name ?? undefined,
     recipientEmail: pdfRecipient.email ?? null,
     projectName: (estimate as any).project?.name ?? (estimate as any).prospect?.name ?? null,
+    issuedAt: (estimate as any).created_at ?? null,
+    intro: typeof metadata.intro === "string" ? metadata.intro : null,
     summary: typeof metadata.summary === "string" ? metadata.summary : null,
     terms: typeof metadata.terms === "string" ? metadata.terms : null,
+    pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
+    acceptedOptionalIds: acceptedOptions?.ids ?? null,
+    hideUnacceptedOptionals: isSigned,
     subtotalCents: estimate.subtotal_cents,
     taxCents: estimate.tax_cents,
-    totalCents: estimate.total_cents,
+    totalCents: totalForPdf,
     validUntil: estimate.valid_until,
     documentLabel: signers ? ((estimate as any).executed_at ? "Executed Estimate" : "Client-Signed Estimate") : undefined,
     signers,
@@ -665,6 +832,7 @@ function estimateLinesToQuoteLines(lines: any[]) {
   return [...(lines ?? [])]
     .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
     .map((line) => ({
+      id: line.id,
       description: line.description,
       quantity: line.quantity,
       unit: line.unit,
@@ -733,20 +901,28 @@ async function generateExecutedEstimateArtifact({
     const executedRecipient = resolveEstimateRecipient(estimate)
     const fileName = safePdfName(`executed-estimate-${estimate.title ?? estimate.id}.pdf`)
 
+    const executedAccepted = (metadata.accepted_options as AcceptedOptions | null) ?? null
     const basePdf = await renderEstimatePdf({
       orgName: branding.name ?? undefined,
       orgLogoUrl: branding.logoUrl,
       orgAddress: branding.address,
+      accentColor: branding.estimateAccentColor,
+      fontFamily: branding.estimateFont,
       documentLabel: "Executed Estimate",
       estimateTitle: estimate.title,
       recipientName: executedRecipient.name ?? clientSigner.signer_name ?? undefined,
       recipientEmail: executedRecipient.email ?? clientSigner.signer_email ?? null,
       projectName: estimate.project?.name ?? estimate.prospect?.name ?? null,
+      issuedAt: (estimate as any).created_at ?? null,
+      intro: typeof metadata.intro === "string" ? metadata.intro : null,
       summary: typeof metadata.summary === "string" ? metadata.summary : null,
       terms: typeof metadata.terms === "string" ? metadata.terms : branding.estimateTermsTemplate,
+      pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
+      acceptedOptionalIds: executedAccepted?.ids ?? null,
+      hideUnacceptedOptionals: true,
       subtotalCents: estimate.subtotal_cents,
       taxCents: estimate.tax_cents,
-      totalCents: estimate.total_cents,
+      totalCents: executedAccepted ? executedAccepted.accepted_total_cents : estimate.total_cents,
       validUntil: estimate.valid_until,
       signers: [
         {
@@ -1088,20 +1264,28 @@ async function issueBuilderEstimateSigningEnvelope(input: {
   const contextType = projectId ? "projects" : prospectId ? "prospects" : "estimates"
   const contextId = projectId ?? prospectId ?? estimate.id
 
+  const builderAccepted = (metadata.accepted_options as AcceptedOptions | null) ?? null
   const sourcePdf = await renderEstimatePdf({
     orgName: branding.name ?? undefined,
     orgLogoUrl: branding.logoUrl,
     orgAddress: branding.address,
+    accentColor: branding.estimateAccentColor,
+    fontFamily: branding.estimateFont,
     documentLabel: "Client-Signed Estimate",
     estimateTitle: estimate.title,
     recipientName: estimate.recipient?.full_name ?? clientSigner.signer_name ?? undefined,
     recipientEmail: estimate.recipient?.email ?? clientSigner.signer_email ?? null,
     projectName: estimate.project?.name ?? estimate.prospect?.name ?? null,
+    issuedAt: (estimate as any).created_at ?? null,
+    intro: typeof metadata.intro === "string" ? metadata.intro : null,
     summary: typeof metadata.summary === "string" ? metadata.summary : null,
     terms: typeof metadata.terms === "string" ? metadata.terms : branding.estimateTermsTemplate,
+    pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
+    acceptedOptionalIds: builderAccepted?.ids ?? null,
+    hideUnacceptedOptionals: true,
     subtotalCents: estimate.subtotal_cents,
     taxCents: estimate.tax_cents,
-    totalCents: estimate.total_cents,
+    totalCents: builderAccepted ? builderAccepted.accepted_total_cents : estimate.total_cents,
     validUntil: estimate.valid_until,
     signers: [
       {
@@ -1764,6 +1948,8 @@ export async function submitEstimateDecision(input: {
   decision: EstimateDecision
   note?: string | null
   signature?: EstimateSignatureInput | null
+  /** Ids of optional add-on line items the client chose to accept. */
+  selected_optional_ids?: string[] | null
   ip?: string | null
 }): Promise<{ status: string }> {
   const supabase = createServiceSupabaseClient()
@@ -1772,7 +1958,7 @@ export async function submitEstimateDecision(input: {
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, created_by, recipient:contacts(full_name, email), prospect:prospects(name, owner_user_id)",
+      "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, metadata, total_cents, created_by, items:estimate_items(id, item_type, quantity, unit_cost_cents, markup_pct, metadata), recipient:contacts(full_name, email), prospect:prospects(name, owner_user_id)",
     )
     .eq("token_hash", tokenHash)
     .maybeSingle()
@@ -1810,6 +1996,17 @@ export async function submitEstimateDecision(input: {
     if (!signature?.consent_accepted || !signerName) {
       throw new Error("Please sign and accept the estimate before approving.")
     }
+
+    // Authoritatively resolve which optional add-ons the client accepted and the
+    // resulting total, recomputed server-side from the persisted line items.
+    const accepted = resolveAcceptedOptions(
+      (estimate as any).items ?? [],
+      (estimate as any).total_cents ?? 0,
+      input.selected_optional_ids ?? [],
+    )
+    const existingMetadata = ((estimate as any).metadata as Record<string, any> | null) ?? {}
+    update.metadata = { ...existingMetadata, accepted_options: accepted }
+
     update.approved_at = nowIso
     update.client_signed_at = nowIso
     update.signature_data = {
@@ -1822,6 +2019,7 @@ export async function submitEstimateDecision(input: {
         consent_accepted: true,
         signed_at: nowIso,
         signer_ip: input.ip ?? null,
+        accepted_total_cents: accepted.accepted_total_cents,
         source: "estimate_portal",
       },
     }

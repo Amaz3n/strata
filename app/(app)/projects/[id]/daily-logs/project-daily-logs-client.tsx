@@ -10,6 +10,7 @@ import {
   createProjectDailyLogAction,
   createDailyLogCommentAction,
   updateProjectDailyLogAction,
+  deleteProjectDailyLogAction,
   uploadProjectFileAction,
   getFileDownloadUrlAction,
 } from "../actions"
@@ -120,8 +121,13 @@ export function ProjectDailyLogsClient({
         )))
         return updated
       }}
+      onDeleteLog={async (dailyLogId) => {
+        await deleteProjectDailyLogAction(projectId, dailyLogId)
+        setDailyLogs((prev) => prev.filter((log) => log.id !== dailyLogId))
+      }}
       onUploadFiles={handleFileUpload}
       onDownloadFile={handleFileDownload}
     />
+
   )
 }

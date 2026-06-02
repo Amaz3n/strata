@@ -386,6 +386,8 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
         taxable: taxCode !== "NON",
         qbo_item_id: refValue(line.SalesItemLineDetail?.ItemRef),
         qbo_item_name: refName(line.SalesItemLineDetail?.ItemRef),
+        qbo_class_id: refValue(line.SalesItemLineDetail?.ClassRef),
+        qbo_class_name: refName(line.SalesItemLineDetail?.ClassRef),
       }
     })
     .filter((line) => line.description.length > 0 || line.unit_price_cents !== 0)
@@ -431,6 +433,8 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
           taxable: line.taxable,
           qbo_income_account_id: line.qbo_item_id,
           qbo_income_account_name: line.qbo_item_name,
+          qbo_class_id: line.qbo_class_id,
+          qbo_class_name: line.qbo_class_name,
         },
       })),
     )
@@ -474,6 +478,7 @@ async function importExpense(ctx: ResolvedContext, client: QBOClient, connection
   const firstLine = (qbo.Line ?? []).find((line: any) => line?.Description) ?? (qbo.Line ?? [])[0]
   const accountLine = (qbo.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
   const accountRef = accountLine?.AccountBasedExpenseLineDetail?.AccountRef
+  const classRef = accountLine?.AccountBasedExpenseLineDetail?.ClassRef
   const description = String(firstLine?.Description ?? qbo.PrivateNote ?? refName(accountRef) ?? "Imported QuickBooks expense")
   const nowIso = new Date().toISOString()
 
@@ -501,6 +506,8 @@ async function importExpense(ctx: ResolvedContext, client: QBOClient, connection
       qbo_vendor_name: refName(vendorRef),
       qbo_expense_account_id: refValue(accountRef),
       qbo_expense_account_name: refName(accountRef),
+      qbo_class_id: refValue(classRef),
+      qbo_class_name: refName(classRef),
     })
     .select("id")
     .single()
@@ -543,6 +550,7 @@ async function importBill(ctx: ResolvedContext, client: QBOClient, connectionId:
   const vendorRef = qbo.VendorRef
   const accountLine = (qbo.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
   const accountRef = accountLine?.AccountBasedExpenseLineDetail?.AccountRef
+  const classRef = accountLine?.AccountBasedExpenseLineDetail?.ClassRef
   const nowIso = new Date().toISOString()
   const status = balanceCents <= 0 && totalCents > 0 ? "paid" : "approved"
 
@@ -569,6 +577,8 @@ async function importBill(ctx: ResolvedContext, client: QBOClient, connectionId:
       qbo_vendor_name: refName(vendorRef),
       qbo_expense_account_id: refValue(accountRef),
       qbo_expense_account_name: refName(accountRef),
+      qbo_class_id: refValue(classRef),
+      qbo_class_name: refName(classRef),
     })
     .select("id")
     .single()

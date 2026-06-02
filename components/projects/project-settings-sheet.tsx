@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -20,6 +20,8 @@ import { Settings, CalendarDays } from "@/components/icons"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
 import { Switch } from "@/components/ui/switch"
 import { resolveProjectBillingModel, type ProjectBillingModel } from "@/lib/financials/billing-model"
+import { listProjectQboClassesAction } from "@/app/(app)/projects/actions"
+import type { QBOClassOption } from "@/lib/integrations/accounting/qbo-api"
 
 const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
   { label: "Active", value: "active" },
@@ -78,6 +80,9 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [propertyType, setPropertyType] = useState<Project["property_type"] | undefined>(project.property_type)
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
   const [clientId, setClientId] = useState<string | null | undefined>(project.client_id)
+  const [qboClassId, setQboClassId] = useState<string | null>(project.qbo_class_id ?? null)
+  const [qboClassName, setQboClassName] = useState<string | null>(project.qbo_class_name ?? null)
+  const [qboClasses, setQboClasses] = useState<QBOClassOption[]>([])
   const [retainagePercent, setRetainagePercent] = useState<string>(String(project.retainage_percent ?? "0"))
   const billingContract = contract ?? project.billing_contract ?? null
   const [billingModel, setBillingModel] = useState<ProjectBillingModel>(resolveProjectBillingModel(project, billingContract))
@@ -96,6 +101,27 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const isGmpBilling = billingModel === "cost_plus_gmp"
   const usesMarkup = billingModel === "cost_plus_percent" || billingModel === "cost_plus_gmp" || billingModel === "time_and_materials"
   const contractType = billingModel === "time_and_materials" ? "time_materials" : isCostBilling ? "cost_plus" : "fixed"
+
+  useEffect(() => {
+    if (!open) return
+    setQboClassId(project.qbo_class_id ?? null)
+    setQboClassName(project.qbo_class_name ?? null)
+  }, [open, project.id, project.qbo_class_id, project.qbo_class_name])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    listProjectQboClassesAction()
+      .then((classes) => {
+        if (!cancelled) setQboClasses(classes)
+      })
+      .catch(() => {
+        if (!cancelled) setQboClasses([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -124,6 +150,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       labor_burden_multiplier: isCostBilling && laborBurdenMultiplier ? Number.parseFloat(laborBurdenMultiplier) : 1,
       open_book: openBook,
       requires_client_cost_approval: requiresClientCostApproval,
+      qbo_class_id: qboClassId,
+      qbo_class_name: qboClassName,
     }
 
     setSaving(true)
@@ -324,6 +352,36 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   Used as the default client for portal invites and signatures. This does not grant portal access.
                 </p>
               </div>
+              {qboClasses.length > 0 ? (
+                <div className="space-y-2">
+                  <Label>QuickBooks class</Label>
+                  <Select
+                    value={qboClassId ?? "none"}
+                    onValueChange={(value) => {
+                      if (value === "none") {
+                        setQboClassId(null)
+                        setQboClassName(null)
+                        return
+                      }
+                      const selected = qboClasses.find((qboClass) => qboClass.id === value)
+                      setQboClassId(value)
+                      setQboClassName(selected?.fullyQualifiedName ?? selected?.name ?? null)
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select class" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Not set</SelectItem>
+                      {qboClasses.map((qboClass) => (
+                        <SelectItem key={qboClass.id} value={qboClass.id}>
+                          {qboClass.fullyQualifiedName ?? qboClass.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
 
               <div className="pt-4 border-t">
                 <h4 className="text-sm font-semibold mb-4 uppercase tracking-wider text-muted-foreground">Financial Terms</h4>

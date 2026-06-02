@@ -9,38 +9,72 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus } from "@/components/icons"
+import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageIcon, X, ChevronUp, ChevronDown, Loader2 } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
+import { uploadEstimatePhotoAction } from "@/app/(app)/estimates/actions"
+import type { PricingDisplayMode } from "@/lib/validation/estimates"
 
 type LineDraft = {
+  item_type: "line" | "group"
   description: string
   quantity: number | string
   unit_cost: number | string
   cost_code_id: string | undefined
+  is_optional: boolean
 }
 
-const NEW_LINE: LineDraft = { description: "", quantity: 1, unit_cost: "", cost_code_id: undefined }
+type PhotoDraft = { path: string; url: string; caption: string }
+
+const NEW_LINE: LineDraft = { item_type: "line", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false }
+const newLine = (): LineDraft => ({ ...NEW_LINE })
+const newSection = (): LineDraft => ({ item_type: "group", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false })
+
+export type EstimateTemplateOption = {
+  id: string
+  name: string
+  description?: string | null
+  lines: Array<{
+    item_type?: "line" | "group" | null
+    description?: string | null
+    quantity?: number | null
+    unit_cost_cents?: number | null
+    cost_code_id?: string | null
+    is_optional?: boolean | null
+  }>
+}
+
+const PRICING_DISPLAY_OPTIONS: Array<{ value: PricingDisplayMode; label: string; hint: string }> = [
+  { value: "itemized", label: "Itemized", hint: "Show quantity, unit cost, and amount per line" },
+  { value: "subtotals", label: "Amounts only", hint: "Hide unit costs — show line amounts and total" },
+  { value: "lump_sum", label: "Lump sum", hint: "Hide all line pricing — show only the total" },
+]
 
 export type EstimateSheetInitial = {
   title?: string | null
   summary?: string | null
   terms?: string | null
+  intro?: string | null
+  pricing_display?: PricingDisplayMode | null
   valid_until?: string | null
   version?: number | null
   recipient_contact_id?: string | null
   recipient_name?: string | null
   recipient_email?: string | null
+  photos?: Array<{ path: string; url?: string | null; caption?: string | null }>
   lines?: Array<{
+    item_type?: "line" | "group" | null
     description?: string | null
     quantity?: number | null
     unit_cost_cents?: number | null
     cost_code_id?: string | null
+    is_optional?: boolean | null
   }>
 }
 
@@ -50,6 +84,8 @@ interface EstimateCreateSheetProps {
   contacts: Contact[]
   costCodes: CostCode[]
   defaultTerms?: string
+  defaultIntro?: string
+  templates?: EstimateTemplateOption[]
   defaultRecipientId?: string
   defaultProjectId?: string
   defaultProspectId?: string
@@ -94,6 +130,8 @@ export function EstimateCreateSheet({
   contacts,
   costCodes,
   defaultTerms,
+  defaultIntro,
+  templates,
   defaultRecipientId,
   defaultProjectId,
   defaultProspectId,
@@ -109,12 +147,14 @@ export function EstimateCreateSheet({
   const seededLines: LineDraft[] =
     initialEstimate?.lines && initialEstimate.lines.length > 0
       ? initialEstimate.lines.map((line) => ({
+          item_type: line.item_type === "group" ? "group" : "line",
           description: line.description ?? "",
           quantity: line.quantity ?? 1,
           unit_cost: centsToInput(line.unit_cost_cents),
           cost_code_id: line.cost_code_id ?? undefined,
+          is_optional: line.is_optional ?? false,
         }))
-      : [{ ...NEW_LINE }]
+      : [newLine()]
 
   const [recipientId, setRecipientId] = useState<string>(
     initialEstimate?.recipient_contact_id ?? defaultRecipientId ?? "",
@@ -134,13 +174,35 @@ export function EstimateCreateSheet({
   const [title, setTitle] = useState(initialEstimate?.title ?? "")
   const [scope, setScope] = useState(initialEstimate?.summary ?? "")
   const [terms, setTerms] = useState(initialEstimate?.terms ?? defaultTerms ?? "")
+  const [intro, setIntro] = useState(initialEstimate?.intro ?? defaultIntro ?? "")
+  const [pricingDisplay, setPricingDisplay] = useState<PricingDisplayMode>(initialEstimate?.pricing_display ?? "itemized")
+  const [photos, setPhotos] = useState<PhotoDraft[]>(
+    (initialEstimate?.photos ?? []).map((p) => ({ path: p.path, url: p.url ?? "", caption: p.caption ?? "" })),
+  )
+  const [uploadingPhotos, setUploadingPhotos] = useState(false)
   const [validUntil, setValidUntil] = useState<Date | undefined>(parseLocalDate(initialEstimate?.valid_until))
   const [validUntilOpen, setValidUntilOpen] = useState(false)
   const [lines, setLines] = useState<LineDraft[]>(seededLines)
   const [showErrors, setShowErrors] = useState(false)
 
+  // Base total excludes section headers and optional add-ons (shown separately as upgrades).
   const total = useMemo(
-    () => lines.reduce((sum, line) => sum + (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1), 0),
+    () =>
+      lines.reduce(
+        (sum, line) =>
+          line.item_type === "group" || line.is_optional
+            ? sum
+            : sum + (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1),
+        0,
+      ),
+    [lines],
+  )
+  const optionalTotal = useMemo(
+    () =>
+      lines.reduce(
+        (sum, line) => (line.item_type !== "group" && line.is_optional ? sum + (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1) : sum),
+        0,
+      ),
     [lines],
   )
 
@@ -161,8 +223,59 @@ export function EstimateCreateSheet({
   const updateLine = (idx: number, patch: Partial<LineDraft>) =>
     setLines((prev) => prev.map((line, i) => (i === idx ? { ...line, ...patch } : line)))
 
-  const addLine = () => setLines((prev) => [...prev, { ...NEW_LINE }])
-  const removeLine = (idx: number) => setLines((prev) => prev.filter((_, i) => i !== idx))
+  const addLine = () => setLines((prev) => [...prev, newLine()])
+  const addSection = () => setLines((prev) => [...prev, newSection()])
+  const removeLine = (idx: number) => setLines((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== idx)))
+  const moveLine = (idx: number, dir: -1 | 1) =>
+    setLines((prev) => {
+      const next = idx + dir
+      if (next < 0 || next >= prev.length) return prev
+      const copy = [...prev]
+      ;[copy[idx], copy[next]] = [copy[next], copy[idx]]
+      return copy
+    })
+
+  function applyTemplate(template: EstimateTemplateOption) {
+    if (!template.lines || template.lines.length === 0) return
+    setLines(
+      template.lines.map((line) => ({
+        item_type: line.item_type === "group" ? "group" : "line",
+        description: line.description ?? "",
+        quantity: line.quantity ?? 1,
+        unit_cost: centsToInput(line.unit_cost_cents),
+        cost_code_id: line.cost_code_id ?? undefined,
+        is_optional: line.is_optional ?? false,
+      })),
+    )
+    if (!title.trim()) setTitle(template.name)
+    toast.success(`Loaded “${template.name}”`)
+  }
+
+  async function handlePhotoFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return
+    const files = Array.from(fileList)
+    setUploadingPhotos(true)
+    try {
+      for (const file of files) {
+        const formData = new FormData()
+        formData.append("photo", file)
+        const result = await uploadEstimatePhotoAction(formData)
+        if ("error" in result && result.error) {
+          toast.error(result.error)
+          continue
+        }
+        if ("path" in result && result.path) {
+          setPhotos((prev) => [...prev, { path: result.path, url: result.url ?? "", caption: "" }])
+        }
+      }
+    } finally {
+      setUploadingPhotos(false)
+    }
+  }
+
+  const updatePhotoCaption = (idx: number, caption: string) =>
+    setPhotos((prev) => prev.map((p, i) => (i === idx ? { ...p, caption } : p)))
+  const removePhoto = (idx: number) => setPhotos((prev) => prev.filter((_, i) => i !== idx))
 
   const resetForm = () => {
     setRecipientId(defaultRecipientId ?? "")
@@ -176,30 +289,27 @@ export function EstimateCreateSheet({
     setTitle("")
     setScope("")
     setTerms(defaultTerms ?? "")
+    setIntro(defaultIntro ?? "")
+    setPricingDisplay("itemized")
+    setPhotos([])
     setValidUntil(undefined)
     setValidUntilOpen(false)
-    setLines([{ ...NEW_LINE }])
+    setLines([newLine()])
     setShowErrors(false)
   }
 
   const handleCreate = () => {
-    let hasError = false
-
-    if (!title.trim()) {
-      hasError = true
-    }
-
     const hasEmptyDescription = lines.some((l) => !l.description.trim())
-    if (hasEmptyDescription) {
-      hasError = true
-    }
+    const hasLineItem = lines.some((l) => l.item_type !== "group" && l.description.trim())
 
-    if (hasError) {
+    if (!title.trim() || hasEmptyDescription || !hasLineItem) {
       setShowErrors(true)
       toast.error("Please fill out all required fields", {
         description: !title.trim()
           ? "The estimate title is required."
-          : "All line items must have a description.",
+          : !hasLineItem
+            ? "Add at least one line item (not just a section heading)."
+            : "Every section and line item needs a description.",
       })
       return
     }
@@ -214,14 +324,18 @@ export function EstimateCreateSheet({
       recipient_email: prospectRecipient ? prospectChoice.email || undefined : undefined,
       summary: scope || undefined,
       terms: terms || undefined,
+      intro: intro || undefined,
+      pricing_display: pricingDisplay,
+      photos: photos.map((p) => ({ path: p.path, caption: p.caption.trim() || null })),
       valid_until: validUntil ? format(validUntil, "yyyy-MM-dd") : undefined,
       lines: lines.map((line) => ({
-        cost_code_id: line.cost_code_id,
+        cost_code_id: line.item_type === "group" ? undefined : line.cost_code_id,
         description: line.description.trim(),
         quantity: Number(line.quantity) || 1,
-        unit_cost_cents: Math.round((Number(line.unit_cost) || 0) * 100),
+        unit_cost_cents: line.item_type === "group" ? 0 : Math.round((Number(line.unit_cost) || 0) * 100),
         markup_pct: 0,
-        item_type: "line",
+        item_type: line.item_type,
+        is_optional: line.item_type === "group" ? undefined : line.is_optional,
       })),
     }
 
@@ -260,6 +374,30 @@ export function EstimateCreateSheet({
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3.5">
                   <p className="text-xs font-semibold uppercase tracking-wide text-amber-600">Client requested changes</p>
                   <p className="mt-1.5 whitespace-pre-line text-sm text-foreground">{requestedChanges.trim()}</p>
+                </div>
+              ) : null}
+
+              {!isRevise && templates && templates.length > 0 ? (
+                <div className="space-y-1.5">
+                  <Label>Start from template</Label>
+                  <Select
+                    onValueChange={(id) => {
+                      const template = templates.find((t) => t.id === id)
+                      if (template) applyTemplate(template)
+                    }}
+                  >
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="Choose a template…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map((template) => (
+                        <SelectItem key={template.id} value={template.id}>
+                          {template.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Seeds sections and line items — edit everything after.</p>
                 </div>
               ) : null}
 
@@ -406,6 +544,11 @@ export function EstimateCreateSheet({
                   </div>
                 </div>
                 <div className="space-y-1.5">
+                  <Label htmlFor="est-intro">Cover note</Label>
+                  <Textarea id="est-intro" value={intro} onChange={(e) => setIntro(e.target.value)} rows={3} placeholder="A short, friendly intro shown above the line items…" />
+                  <p className="text-xs text-muted-foreground">Prefilled from your organization default. Edit anytime in Settings → Organization.</p>
+                </div>
+                <div className="space-y-1.5">
                   <Label htmlFor="est-scope">Scope</Label>
                   <Textarea id="est-scope" value={scope} onChange={(e) => setScope(e.target.value)} rows={3} placeholder="Describe what this estimate covers…" />
                 </div>
@@ -416,21 +559,60 @@ export function EstimateCreateSheet({
                 <div className="flex items-center justify-between">
                   <div>
                     <Label className="text-sm font-semibold">Line items</Label>
-                    <p className="text-xs text-muted-foreground">Enter the client price for each item.</p>
+                    <p className="text-xs text-muted-foreground">Group work into sections and mark upgrades as optional add-ons.</p>
                   </div>
-                  <Button type="button" variant="outline" size="sm" onClick={addLine}>
-                    <Plus className="mr-1.5 h-4 w-4" />
-                    Add item
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={addSection}>
+                      <LayoutGrid className="mr-1.5 h-4 w-4" />
+                      Section
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={addLine}>
+                      <Plus className="mr-1.5 h-4 w-4" />
+                      Item
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="space-y-2.5">
                   {lines.map((line, idx) => {
                     const lineTotal = (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1)
+                    const Reorder = (
+                      <div className="flex flex-col">
+                        <button type="button" onClick={() => moveLine(idx, -1)} disabled={idx === 0} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="Move up">
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" onClick={() => moveLine(idx, 1)} disabled={idx === lines.length - 1} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="Move down">
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )
+
+                    if (line.item_type === "group") {
+                      return (
+                        <div key={idx} className="flex items-center gap-2 rounded-md border border-dashed bg-muted/40 p-2.5">
+                          {Reorder}
+                          <LayoutGrid className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <Input
+                            value={line.description}
+                            onChange={(e) => updateLine(idx, { description: e.target.value })}
+                            placeholder="Section heading (e.g. Demolition)"
+                            className={cn(
+                              "h-9 flex-1 font-semibold uppercase tracking-wide",
+                              showErrors && !line.description.trim() && "border-destructive focus-visible:ring-destructive",
+                            )}
+                          />
+                          <Button type="button" variant="ghost" size="icon" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={() => removeLine(idx)} disabled={lines.length === 1}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )
+                    }
+
                     return (
-                      <div key={idx} className="border bg-muted/20 p-3 space-y-3">
-                        {/* Row 1: description · qty · unit cost */}
+                      <div key={idx} className={cn("border bg-muted/20 p-3 space-y-3", line.is_optional && "border-primary/40 bg-primary/5")}>
+                        {/* Row 1: reorder · description · qty · unit cost */}
                         <div className="flex items-end gap-2">
+                          {Reorder}
                           <div className="flex-1 space-y-1">
                             <Label className={cn("text-[10px] uppercase tracking-wide text-muted-foreground", showErrors && !line.description.trim() && "text-destructive")}>Description</Label>
                             <Input
@@ -473,7 +655,7 @@ export function EstimateCreateSheet({
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
-                        {/* Row 2: cost code · total */}
+                        {/* Row 2: cost code · optional · total */}
                         <div className="flex items-end gap-2">
                           <div className="flex-1 space-y-1">
                             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Cost code</Label>
@@ -489,6 +671,10 @@ export function EstimateCreateSheet({
                               </SelectContent>
                             </Select>
                           </div>
+                          <label className="flex h-9 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+                            <Checkbox checked={line.is_optional} onCheckedChange={(c) => updateLine(idx, { is_optional: c === true })} />
+                            Optional add-on
+                          </label>
                           <div className="space-y-1 text-right">
                             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Line total</Label>
                             <div className="flex h-9 items-center justify-end px-2 text-sm font-semibold tabular-nums">{money(lineTotal)}</div>
@@ -499,10 +685,92 @@ export function EstimateCreateSheet({
                   })}
                 </div>
 
+                {optionalTotal > 0 ? (
+                  <div className="flex items-center justify-between border-t pt-2 text-sm text-muted-foreground">
+                    <span className="text-xs uppercase tracking-wide">Optional add-ons</span>
+                    <span className="tabular-nums">+ {money(optionalTotal)}</span>
+                  </div>
+                ) : null}
+
                 <div className="flex items-center justify-between border-t-2 border-foreground/80 pt-3">
-                  <span className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Total</span>
+                  <span className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Base total</span>
                   <span className="text-xl font-bold tabular-nums">{money(total)}</span>
                 </div>
+
+                {/* Pricing display */}
+                <div className="space-y-1.5 pt-1">
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Client sees</Label>
+                  <Select value={pricingDisplay} onValueChange={(v) => setPricingDisplay(v as PricingDisplayMode)}>
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PRICING_DISPLAY_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">{PRICING_DISPLAY_OPTIONS.find((o) => o.value === pricingDisplay)?.hint}</p>
+                </div>
+              </div>
+
+              {/* Photos */}
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-sm font-semibold">Photos</Label>
+                  <p className="text-xs text-muted-foreground">Shown as an interactive gallery on the client portal — tap to enlarge.</p>
+                </div>
+                {photos.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {photos.map((photo, idx) => (
+                      <div key={photo.path} className="space-y-1.5">
+                        <div className="relative aspect-[4/3] overflow-hidden rounded-md border bg-muted">
+                          {photo.url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={photo.url} alt={photo.caption || "Estimate photo"} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full items-center justify-center"><ImageIcon className="h-6 w-6 text-muted-foreground" /></div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => removePhoto(idx)}
+                            className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-background/90 text-muted-foreground shadow hover:text-destructive"
+                            aria-label="Remove photo"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <Input
+                          value={photo.caption}
+                          onChange={(e) => updatePhotoCaption(idx, e.target.value)}
+                          placeholder="Caption (optional)"
+                          className="h-8 text-xs"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <label className={cn(
+                  "flex cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed p-5 text-center transition-colors hover:border-primary/50 hover:bg-muted/30",
+                  uploadingPhotos && "pointer-events-none opacity-60",
+                )}>
+                  {uploadingPhotos ? <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /> : <ImageIcon className="h-5 w-5 text-muted-foreground" />}
+                  <span className="text-sm font-medium">{uploadingPhotos ? "Uploading…" : "Add photos"}</span>
+                  <span className="text-xs text-muted-foreground">PNG, JPG, WEBP or GIF · up to 15MB each</span>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    className="hidden"
+                    disabled={uploadingPhotos}
+                    onChange={(e) => {
+                      void handlePhotoFiles(e.target.files)
+                      e.target.value = ""
+                    }}
+                  />
+                </label>
               </div>
 
               {/* Terms */}

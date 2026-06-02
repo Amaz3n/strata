@@ -260,6 +260,9 @@ type OrganizationSettingsData = {
   defaultInvoiceNote: string
   proposalTermsTemplate: string
   estimateTermsTemplate: string
+  estimateAccentColor: string
+  estimateFont: string
+  estimateIntroTemplate: string
   estimateBuilderSignerMode: "estimate_creator" | "prospect_owner" | "specific_user"
   estimateBuilderSignerUserId: string
   aiProvider: AiProvider
@@ -371,6 +374,9 @@ export function SettingsWindow({
     defaultInvoiceNote: "",
     proposalTermsTemplate: "",
     estimateTermsTemplate: "",
+    estimateAccentColor: "",
+    estimateFont: "",
+    estimateIntroTemplate: "",
     estimateBuilderSignerMode: "estimate_creator" as "estimate_creator" | "prospect_owner" | "specific_user",
     estimateBuilderSignerUserId: "",
     aiProvider: "openai" as AiProvider,
@@ -410,6 +416,9 @@ export function SettingsWindow({
       defaultInvoiceNote: data.defaultInvoiceNote ?? "",
       proposalTermsTemplate: data.proposalTermsTemplate ?? "",
       estimateTermsTemplate: data.estimateTermsTemplate ?? "",
+      estimateAccentColor: data.estimateAccentColor ?? "",
+      estimateFont: data.estimateFont ?? "",
+      estimateIntroTemplate: data.estimateIntroTemplate ?? "",
       estimateBuilderSignerMode: data.estimateBuilderSignerMode ?? "estimate_creator",
       estimateBuilderSignerUserId: data.estimateBuilderSignerUserId ?? "",
       aiProvider: data.aiProvider ?? "openai",
@@ -752,7 +761,7 @@ export function SettingsWindow({
     }
   }
 
-  const handleOrganizationFieldChange = (field: "name" | "billingEmail" | "addressLine1" | "addressLine2" | "city" | "state" | "postalCode" | "country" | "defaultPaymentTermsDays" | "defaultInvoiceNote" | "proposalTermsTemplate" | "estimateTermsTemplate" | "estimateBuilderSignerMode" | "estimateBuilderSignerUserId", value: string | number) => {
+  const handleOrganizationFieldChange = (field: "name" | "billingEmail" | "addressLine1" | "addressLine2" | "city" | "state" | "postalCode" | "country" | "defaultPaymentTermsDays" | "defaultInvoiceNote" | "proposalTermsTemplate" | "estimateTermsTemplate" | "estimateAccentColor" | "estimateFont" | "estimateIntroTemplate" | "estimateBuilderSignerMode" | "estimateBuilderSignerUserId", value: string | number) => {
     setOrganizationForm((prev) => ({ ...prev, [field]: value }))
     setOrganizationNotice(null)
     setOrganizationError(null)
@@ -821,6 +830,9 @@ export function SettingsWindow({
         defaultInvoiceNote: organizationForm.defaultInvoiceNote,
         proposalTermsTemplate: organizationForm.proposalTermsTemplate,
         estimateTermsTemplate: organizationForm.estimateTermsTemplate,
+        estimateAccentColor: organizationForm.estimateAccentColor,
+        estimateFont: organizationForm.estimateFont,
+        estimateIntroTemplate: organizationForm.estimateIntroTemplate,
         estimateBuilderSignerMode: organizationForm.estimateBuilderSignerMode,
         estimateBuilderSignerUserId: organizationForm.estimateBuilderSignerUserId || null,
         aiProvider: useInheritedAiDefaults ? undefined : organizationForm.aiProvider,
@@ -1280,6 +1292,65 @@ export function SettingsWindow({
                           <p className="-mt-1 text-xs text-muted-foreground">Templated terms &amp; conditions added to the proposal PDF above the signature block.</p>
                           <Textarea id="proposal-terms-template" value={organizationForm.proposalTermsTemplate} onChange={(event) => handleOrganizationFieldChange("proposalTermsTemplate", event.target.value)} placeholder={"Payment schedule, scope of work, warranty, and change-order terms…"} className="min-h-[120px]" disabled={!organizationSettings?.canManageOrganization} />
                         </div>
+                      </div>
+
+                      <div className="space-y-5 border-t border-border/70 pt-6">
+                        <div>
+                          <p className="text-sm font-semibold">Estimate branding</p>
+                          <p className="text-xs text-muted-foreground">Applied to client-facing estimates — the review portal and the PDF. Per-estimate overrides always win.</p>
+                        </div>
+                        <div className="grid gap-5 sm:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label htmlFor="estimate-accent-color" className="text-sm font-medium">Accent color</Label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                aria-label="Accent color"
+                                value={organizationForm.estimateAccentColor || "#1a1a1a"}
+                                onChange={(event) => handleOrganizationFieldChange("estimateAccentColor", event.target.value)}
+                                disabled={!organizationSettings?.canManageOrganization}
+                                className="h-10 w-12 cursor-pointer rounded border bg-transparent p-1 disabled:opacity-50"
+                              />
+                              <Input
+                                id="estimate-accent-color"
+                                value={organizationForm.estimateAccentColor}
+                                onChange={(event) => handleOrganizationFieldChange("estimateAccentColor", event.target.value)}
+                                placeholder="#2563eb"
+                                className="h-10 max-w-[140px] font-mono"
+                                disabled={!organizationSettings?.canManageOrganization}
+                              />
+                              {organizationForm.estimateAccentColor ? (
+                                <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => handleOrganizationFieldChange("estimateAccentColor", "")} disabled={!organizationSettings?.canManageOrganization}>
+                                  Reset
+                                </button>
+                              ) : null}
+                            </div>
+                            <p className="text-xs text-muted-foreground">Used for headers, section titles, and the total.</p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="estimate-font" className="text-sm font-medium">Portal font</Label>
+                            <Select value={organizationForm.estimateFont || "__default"} onValueChange={(value) => handleOrganizationFieldChange("estimateFont", value === "__default" ? "" : value)} disabled={!organizationSettings?.canManageOrganization}>
+                              <SelectTrigger id="estimate-font" className="h-10">
+                                <SelectValue placeholder="Default" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__default">Default (system sans)</SelectItem>
+                                <SelectItem value="Georgia, 'Times New Roman', serif">Serif (Georgia)</SelectItem>
+                                <SelectItem value="'Inter', system-ui, sans-serif">Inter</SelectItem>
+                                <SelectItem value="'Courier New', ui-monospace, monospace">Monospace</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">Applies to the review portal document.</p>
+                          </div>
+                        </div>
+                        <div className="space-y-3">
+                          <Label htmlFor="estimate-intro-template" className="text-sm font-medium">Default cover note</Label>
+                          <p className="-mt-1 text-xs text-muted-foreground">A short intro seeded into every new estimate (editable per estimate). Appears above the line items.</p>
+                          <Textarea id="estimate-intro-template" value={organizationForm.estimateIntroTemplate} onChange={(event) => handleOrganizationFieldChange("estimateIntroTemplate", event.target.value)} placeholder={"Thanks for the opportunity to bid your project. Below is a detailed breakdown of the scope and pricing…"} className="min-h-[96px]" disabled={!organizationSettings?.canManageOrganization} />
+                        </div>
+                        <a href="/settings/templates" className="inline-flex items-center text-sm font-medium text-primary hover:underline">
+                          Manage estimate templates →
+                        </a>
                       </div>
 
                       <div className="space-y-5 border-t border-border/70 pt-6">
