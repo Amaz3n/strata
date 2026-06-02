@@ -1,7 +1,8 @@
 "use client"
 
+import Link from "next/link"
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
-import { Download, Link2, Plug } from "lucide-react"
+import { Download, ExternalLink, Link2, Plug } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -44,6 +45,14 @@ const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "payment", label: "Invoice payments" },
   { key: "bill_payment", label: "Bill payments" },
 ]
+
+const TYPE_LABELS: Record<QboImportEntityType, string> = {
+  invoice: "Invoices",
+  expense: "Expenses",
+  bill: "Bills",
+  payment: "Invoice payments",
+  bill_payment: "Bill payments",
+}
 
 const LOOKBACK_OPTIONS: { value: string; label: string; days: number | null }[] = [
   { value: "90", label: "Last 90 days", days: 90 },
@@ -104,6 +113,10 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
   const [importing, setImporting] = useState(false)
   const [lookback, setLookback] = useState("365")
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [visibleTypes, setVisibleTypes] = useState<Set<QboImportEntityType>>(
+    () => new Set(SECTIONS.map((section) => section.key)),
+  )
+  const [lastImport, setLastImport] = useState<Record<QboImportEntityType, number> | null>(null)
 
   const load = useCallback(
     async (lookbackValue: string) => {
@@ -130,16 +143,32 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
     () =>
       SECTIONS.map((section) => ({
         ...section,
-        items: records.filter((record) => record.entityType === section.key),
+        items: records.filter((record) => record.entityType === section.key && visibleTypes.has(record.entityType)),
       })).filter((section) => section.items.length > 0),
-    [records],
+    [records, visibleTypes],
   )
+
+  const recordByKey = useMemo(() => new Map(records.map((record) => [rowKey(record), record])), [records])
+
+  function dependencyKeys(record: QboImportRecord) {
+    if (record.dependencyStatus !== "available_to_import" || !record.linkedEntityType) return []
+    return (record.linkedQboIds ?? []).map((qboId) => `${record.linkedEntityType}:${qboId}`).filter((key) => recordByKey.has(key))
+  }
+
+  function canImportRecord(record: QboImportRecord) {
+    return record.dependencyStatus !== "missing"
+  }
 
   const toggle = (key: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      const record = recordByKey.get(key)
+      if (next.has(key)) {
+        next.delete(key)
+      } else if (record && canImportRecord(record)) {
+        next.add(key)
+        for (const dependencyKey of dependencyKeys(record)) next.add(dependencyKey)
+      }
       return next
     })
   }
@@ -150,7 +179,10 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
       for (const item of items) {
         const key = rowKey(item)
         if (allSelected) next.delete(key)
-        else next.add(key)
+        else if (canImportRecord(item)) {
+          next.add(key)
+          for (const dependencyKey of dependencyKeys(item)) next.add(dependencyKey)
+        }
       }
       return next
     })
@@ -164,6 +196,25 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
     () => selectedItems.reduce((sum, item) => sum + item.amountCents, 0),
     [selectedItems],
   )
+
+  const visibleTypeCounts = useMemo(() => {
+    return records.reduce<Record<QboImportEntityType, number>>(
+      (acc, record) => {
+        acc[record.entityType] += 1
+        return acc
+      },
+      { invoice: 0, expense: 0, bill: 0, payment: 0, bill_payment: 0 },
+    )
+  }, [records])
+
+  function toggleType(type: QboImportEntityType) {
+    setVisibleTypes((prev) => {
+      const next = new Set(prev)
+      if (next.has(type) && next.size > 1) next.delete(type)
+      else next.add(type)
+      return next
+    })
+  }
 
   const handleImport = async () => {
     if (importing || selectedItems.length === 0) return
@@ -187,6 +238,17 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
             : "Nothing new to import",
         )
       }
+      if (result.imported > 0) {
+        setLastImport(
+          selectedItems.reduce<Record<QboImportEntityType, number>>(
+            (acc, item) => {
+              acc[item.entityType] += 1
+              return acc
+            },
+            { invoice: 0, expense: 0, bill: 0, payment: 0, bill_payment: 0 },
+          ),
+        )
+      }
       await load(lookback)
     } catch (error: any) {
       toast.error("Import failed", { description: error?.message ?? "Try again." })
@@ -199,9 +261,12 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
     <>
       {connected && (
         <div className="flex shrink-0 flex-col gap-2 border-b bg-muted/20 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted-foreground">
-            Import unmatched QuickBooks transactions into {projectName ?? "this project"}.
-          </p>
+          <div className="min-w-0 space-y-2">
+            <p className="text-xs text-muted-foreground">Import unmatched QuickBooks transactions into:</p>
+            <div className="inline-flex max-w-full items-center border bg-background px-2.5 py-1 text-xs font-medium">
+              <span className="truncate">{projectName ?? "Current project"}</span>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <Select value={lookback} onValueChange={setLookback} disabled={loading || importing}>
               <SelectTrigger className="h-8 w-44 rounded-none text-xs">
@@ -219,6 +284,34 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
               {records.length} unmatched
             </Badge>
           </div>
+        </div>
+      )}
+
+      {connected && (
+        <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-6 py-2">
+          {SECTIONS.map((section) => (
+            <button
+              key={section.key}
+              type="button"
+              onClick={() => toggleType(section.key)}
+              className={cn(
+                "flex h-8 shrink-0 items-center gap-1.5 border px-2.5 text-xs font-medium transition-colors",
+                visibleTypes.has(section.key) ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {section.label}
+              <span className="bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{visibleTypeCounts[section.key]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {lastImport && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-emerald-500/10 px-6 py-3 text-xs">
+          <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
+          {(lastImport.invoice > 0 || lastImport.payment > 0) && <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />}
+          {(lastImport.bill > 0 || lastImport.bill_payment > 0) && <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />}
+          {lastImport.expense > 0 && <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />}
         </div>
       )}
 
@@ -261,15 +354,17 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
                     <ul>
                       {section.items.map((item) => {
                         const key = rowKey(item)
+                        const blocked = !canImportRecord(item)
                         return (
                           <li key={key}>
                             <button
                               type="button"
                               onClick={() => toggle(key)}
-                              disabled={importing}
+                              disabled={importing || blocked}
                               className={cn(
                                 "flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-muted/40",
                                 selected.has(key) && "bg-primary/5",
+                                blocked && "cursor-not-allowed opacity-60",
                               )}
                             >
                               <Checkbox checked={selected.has(key)} className="mt-0.5 rounded-none" tabIndex={-1} />
@@ -287,11 +382,19 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
                                     <span className="shrink-0">· {formatMoney(item.balanceCents)} open</span>
                                   )}
                                   {(item.entityType === "payment" || item.entityType === "bill_payment") && (
-                                    <span className="inline-flex shrink-0 items-center gap-0.5">
+                                    <span className={cn(
+                                      "inline-flex shrink-0 items-center gap-0.5",
+                                      item.dependencyStatus === "missing" && "text-destructive",
+                                      item.dependencyStatus === "available_to_import" && "text-amber-700 dark:text-amber-400",
+                                      item.dependencyStatus === "already_in_arc" && "text-emerald-700 dark:text-emerald-400",
+                                    )}>
                                       <Link2 className="size-3" />
-                                      {item.hasLinks ? "linked" : "unlinked"}
+                                      {item.dependencyMessage ?? (item.hasLinks ? "linked" : "unlinked")}
                                     </span>
                                   )}
+                                  {item.possibleMatch ? (
+                                    <span className="shrink-0 text-amber-700 dark:text-amber-400">Possible match: {item.possibleMatch}</span>
+                                  ) : null}
                                 </div>
                               </div>
                             </button>
@@ -328,6 +431,17 @@ export function QboImportPanel({ active = true, projectId, projectName }: QboImp
           </div>
         )}
     </>
+  )
+}
+
+function ImportLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Button asChild variant="outline" size="sm" className="h-7 bg-background px-2 text-xs">
+      <Link href={href}>
+        {label}
+        <ExternalLink className="ml-1.5 size-3" />
+      </Link>
+    </Button>
   )
 }
 

@@ -41,6 +41,11 @@ export type QboImportRecord = {
   balanceCents: number | null
   /** True when QBO links this transaction to others we can resolve (used for payments). */
   hasLinks: boolean
+  linkedEntityType?: "invoice" | "bill"
+  linkedQboIds?: string[]
+  dependencyStatus?: "already_in_arc" | "available_to_import" | "missing" | null
+  dependencyMessage?: string | null
+  possibleMatch?: string | null
 }
 
 export type QboImportListing = {
@@ -258,6 +263,7 @@ export async function listImportableQboRecords({
           hasLinks: false,
         })
       } else if (type === "payment") {
+        const linkedQboIds = extractLinkedInvoiceQboIds(row)
         records.push({
           qboId,
           entityType: type,
@@ -266,9 +272,12 @@ export async function listImportableQboRecords({
           date: normalizeDate(row.TxnDate),
           amountCents: toCents(row.TotalAmt),
           balanceCents: null,
-          hasLinks: extractLinkedInvoiceQboIds(row).length > 0,
+          hasLinks: linkedQboIds.length > 0,
+          linkedEntityType: "invoice",
+          linkedQboIds,
         })
       } else if (type === "bill_payment") {
+        const linkedQboIds = extractLinkedBillQboIds(row)
         records.push({
           qboId,
           entityType: type,
@@ -277,9 +286,103 @@ export async function listImportableQboRecords({
           date: normalizeDate(row.TxnDate),
           amountCents: toCents(row.TotalAmt),
           balanceCents: null,
-          hasLinks: extractLinkedBillQboIds(row).length > 0,
+          hasLinks: linkedQboIds.length > 0,
+          linkedEntityType: "bill",
+          linkedQboIds,
         })
       }
+    }
+  }
+
+  const qboIdsByType = records.reduce<Record<QboImportEntityType, Set<string>>>(
+    (acc, record) => {
+      acc[record.entityType].add(record.qboId)
+      return acc
+    },
+    {
+      invoice: new Set(),
+      expense: new Set(),
+      bill: new Set(),
+      payment: new Set(),
+      bill_payment: new Set(),
+    },
+  )
+
+  for (const record of records) {
+    if (record.entityType !== "payment" && record.entityType !== "bill_payment") continue
+    const parentType = record.linkedEntityType
+    const linkedIds = record.linkedQboIds ?? []
+    if (!parentType || linkedIds.length === 0) {
+      record.dependencyStatus = "missing"
+      record.dependencyMessage = record.entityType === "payment"
+        ? "This payment is not linked to a QBO invoice."
+        : "This bill payment is not linked to a QBO bill."
+      continue
+    }
+
+    const alreadyLinked = linkedIds.some((id) => linked[parentType].has(id))
+    const availableToImport = linkedIds.some((id) => qboIdsByType[parentType].has(id))
+    if (alreadyLinked) {
+      record.dependencyStatus = "already_in_arc"
+      record.dependencyMessage = parentType === "invoice" ? "Linked invoice is already in Arc." : "Linked bill is already in Arc."
+    } else if (availableToImport) {
+      record.dependencyStatus = "available_to_import"
+      record.dependencyMessage = parentType === "invoice" ? "Linked invoice is available in this list." : "Linked bill is available in this list."
+    } else {
+      record.dependencyStatus = "missing"
+      record.dependencyMessage = parentType === "invoice"
+        ? "Import the linked invoice first."
+        : "Import the linked bill first."
+    }
+  }
+
+  const [invoiceCandidates, expenseCandidates, billCandidates] = await Promise.all([
+    records.some((record) => record.entityType === "invoice")
+      ? supabase
+          .from("invoices")
+          .select("invoice_number, title, total_cents, issue_date")
+          .eq("org_id", resolvedOrgId)
+          .is("qbo_id", null)
+          .limit(500)
+      : Promise.resolve({ data: [] as any[] }),
+    records.some((record) => record.entityType === "expense")
+      ? supabase
+          .from("project_expenses")
+          .select("description, vendor_name_text, amount_cents, expense_date")
+          .eq("org_id", resolvedOrgId)
+          .is("qbo_id", null)
+          .limit(500)
+      : Promise.resolve({ data: [] as any[] }),
+    records.some((record) => record.entityType === "bill")
+      ? supabase
+          .from("vendor_bills")
+          .select("bill_number, total_cents, bill_date")
+          .eq("org_id", resolvedOrgId)
+          .is("qbo_id", null)
+          .limit(500)
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+
+  for (const record of records) {
+    if (record.entityType === "invoice") {
+      const match = (invoiceCandidates.data ?? []).find((invoice: any) =>
+        (record.docNumber && invoice.invoice_number === record.docNumber) ||
+        (Number(invoice.total_cents ?? 0) === record.amountCents && normalizeDate(invoice.issue_date) === record.date),
+      )
+      if (match) record.possibleMatch = match.invoice_number ? `Invoice #${match.invoice_number}` : match.title ?? "Existing invoice"
+    } else if (record.entityType === "expense") {
+      const match = (expenseCandidates.data ?? []).find((expense: any) =>
+        Number(expense.amount_cents ?? 0) === record.amountCents &&
+        normalizeDate(expense.expense_date) === record.date &&
+        (!record.counterparty || !expense.vendor_name_text || String(expense.vendor_name_text).toLowerCase() === record.counterparty.toLowerCase()),
+      )
+      if (match) record.possibleMatch = match.description ?? match.vendor_name_text ?? "Existing expense"
+    } else if (record.entityType === "bill") {
+      const match = (billCandidates.data ?? []).find((bill: any) =>
+        (record.docNumber && bill.bill_number === record.docNumber) ||
+        (Number(bill.total_cents ?? 0) === record.amountCents && normalizeDate(bill.bill_date) === record.date),
+      )
+      if (match) record.possibleMatch = match.bill_number ? `Bill #${match.bill_number}` : "Existing bill"
     }
   }
 

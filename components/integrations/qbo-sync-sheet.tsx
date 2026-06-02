@@ -6,9 +6,11 @@ import { AlertCircle, ArrowUpRight, Check, RefreshCcw } from "lucide-react"
 import { toast } from "sonner"
 
 import {
+  listQboSyncHistoryAction,
   listQboSyncQueueAction,
   syncAllQboPendingAction,
   syncQboItemAction,
+  type QboSyncHistoryItem,
   type QboSyncEntityType,
   type QboSyncItem,
 } from "@/app/(app)/integrations/qbo-sync-actions"
@@ -26,7 +28,7 @@ type Props = {
   onOpenChange: (open: boolean) => void
   projectId?: string
   projectName?: string | null
-  initialTab?: "sync" | "import"
+  initialTab?: "sync" | "import" | "history"
   /** Optional: open an invoice's detail when its row is clicked. */
   onOpenInvoice?: (invoiceId: string) => void
 }
@@ -56,7 +58,9 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
   const [loading, setLoading] = useState(false)
   const [syncingAll, setSyncingAll] = useState(false)
   const [syncingId, setSyncingId] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<"sync" | "import">(initialTab)
+  const [activeTab, setActiveTab] = useState<"sync" | "import" | "history">(initialTab)
+  const [history, setHistory] = useState<QboSyncHistoryItem[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const canImport = Boolean(projectId)
 
   const load = useCallback(async () => {
@@ -80,8 +84,19 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     if (open) setActiveTab(canImport ? initialTab : "sync")
   }, [canImport, initialTab, open])
 
+  useEffect(() => {
+    if (!open || activeTab !== "history") return
+    setHistoryLoading(true)
+    void listQboSyncHistoryAction({ projectId })
+      .then(setHistory)
+      .catch((error: any) => toast.error("Couldn't load QuickBooks history", { description: error?.message ?? "Try again." }))
+      .finally(() => setHistoryLoading(false))
+  }, [activeTab, open, projectId])
+
   const failedCount = useMemo(() => items.filter((item) => item.status === "error").length, [items])
   const pendingCount = items.length - failedCount
+  const healthTone = failedCount > 0 ? "border-destructive/30 bg-destructive/10 text-destructive" : pendingCount > 0 ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+  const healthLabel = failedCount > 0 ? "Needs attention" : pendingCount > 0 ? "Waiting to sync" : "In sync"
 
   const sections = useMemo(
     () =>
@@ -131,7 +146,7 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
         mobileFullscreen
         className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
       >
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "sync" | "import")} className="flex min-h-0 flex-1 flex-col">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "sync" | "import" | "history")} className="flex min-h-0 flex-1 flex-col">
         <SheetHeader className="space-y-3 border-b px-6 pb-5 pt-6">
           <div className="flex items-start justify-between gap-4 pr-8">
             <div className="space-y-1">
@@ -143,6 +158,11 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
                     : "Records sync to QuickBooks automatically every few minutes. Push everything now if you don't want to wait."
                   : "Connect QuickBooks in Settings to start syncing."}
               </SheetDescription>
+              {projectId ? (
+                <div className="inline-flex max-w-full border bg-muted/30 px-2.5 py-1 text-xs font-medium">
+                  <span className="truncate">Project: {projectName ?? projectId}</span>
+                </div>
+              ) : null}
             </div>
             {activeTab === "sync" ? (
               <Button onClick={handleSyncAll} disabled={!connected || syncingAll || loading || items.length === 0} className="shrink-0">
@@ -157,9 +177,13 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
                 <TabsList className="h-9 w-full justify-start rounded-none sm:w-auto">
                   <TabsTrigger value="sync" className="rounded-none">Sync to QBO</TabsTrigger>
                   <TabsTrigger value="import" className="rounded-none">Import from QBO</TabsTrigger>
+                  <TabsTrigger value="history" className="rounded-none">History</TabsTrigger>
                 </TabsList>
               ) : null}
               <div className="flex items-center gap-2 text-xs">
+                <Badge variant="secondary" className={cn("h-6 rounded-none border", healthTone)}>
+                  {healthLabel}
+                </Badge>
                 <Badge variant="secondary" className="h-6 rounded-none">
                   {pendingCount} waiting
                 </Badge>
@@ -175,6 +199,9 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
         </SheetHeader>
 
         <TabsContent value="sync" className="m-0 flex min-h-0 flex-1 flex-col">
+        <div className="border-b bg-muted/20 px-6 py-2 text-xs text-muted-foreground">
+          Send Arc invoices, expenses, bills, and payments to QuickBooks.
+        </div>
         <ScrollArea className="flex-1">
           {loading && items.length === 0 ? (
             <div className="space-y-3 p-6">
@@ -226,6 +253,45 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
             <QboImportPanel active={open && activeTab === "import"} projectId={projectId} projectName={projectName} />
           </TabsContent>
         ) : null}
+        <TabsContent value="history" className="m-0 flex min-h-0 flex-1 flex-col">
+          <div className="border-b bg-muted/20 px-6 py-2 text-xs text-muted-foreground">
+            Recent QuickBooks sync and import activity.
+          </div>
+          <ScrollArea className="flex-1">
+            {historyLoading && history.length === 0 ? (
+              <div className="space-y-3 p-6">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <div key={index} className="h-14 animate-pulse bg-muted/60" />
+                ))}
+              </div>
+            ) : history.length === 0 ? (
+              <div className="flex h-full min-h-80 flex-col items-center justify-center px-8 text-center">
+                <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <Check className="size-5" />
+                </div>
+                <p className="mt-4 text-sm font-medium">No QuickBooks history yet</p>
+                <p className="mt-1 max-w-xs text-sm text-muted-foreground">Synced and imported records will appear here.</p>
+              </div>
+            ) : (
+              <ul className="divide-y">
+                {history.map((item) => (
+                  <li key={item.id} className="flex items-center gap-3 px-6 py-3">
+                    <span className={cn("size-1.5 shrink-0 rounded-full", item.status === "error" ? "bg-destructive" : "bg-emerald-500")} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{item.label}</p>
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {item.entityType.replaceAll("_", " ")} · {item.direction} · {item.status}
+                        {item.qboId ? ` · QBO ${item.qboId}` : ""}
+                      </p>
+                      {item.error ? <p className="mt-0.5 truncate text-xs text-destructive">{item.error}</p> : null}
+                    </div>
+                    <span className="shrink-0 text-xs text-muted-foreground">{formatRelative(item.syncedAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </ScrollArea>
+        </TabsContent>
         </Tabs>
       </SheetContent>
     </Sheet>

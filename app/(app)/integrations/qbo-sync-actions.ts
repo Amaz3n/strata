@@ -32,6 +32,19 @@ export type QboSyncQueue = {
   items: QboSyncItem[]
 }
 
+export type QboSyncHistoryItem = {
+  id: string
+  entityType: string
+  entityId: string
+  projectId: string | null
+  label: string
+  status: string
+  direction: string
+  qboId: string | null
+  error: string | null
+  syncedAt: string | null
+}
+
 function mapStatus(value?: string | null): "pending" | "error" {
   return value === "error" ? "error" : "pending"
 }
@@ -269,4 +282,85 @@ export async function syncAllQboPendingAction(params?: { projectId?: string | nu
     }
   }
   return { synced, failed }
+}
+
+export async function listQboSyncHistoryAction(params?: { projectId?: string | null; limit?: number }): Promise<QboSyncHistoryItem[]> {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const projectId = params?.projectId ?? null
+  const limit = params?.limit ?? 50
+
+  const { data: records } = await supabase
+    .from("qbo_sync_records")
+    .select("id, entity_type, entity_id, qbo_id, last_synced_at, sync_direction, status, error_message, created_at")
+    .eq("org_id", orgId)
+    .order("last_synced_at", { ascending: false })
+    .limit(limit)
+
+  const rows = (records ?? []) as any[]
+  if (rows.length === 0) return []
+
+  const idsByType = rows.reduce<Record<string, string[]>>((acc, row) => {
+    const key = String(row.entity_type ?? "")
+    if (!acc[key]) acc[key] = []
+    acc[key].push(String(row.entity_id))
+    return acc
+  }, {})
+
+  const [invoiceRows, expenseRows, billRows, paymentRows] = await Promise.all([
+    idsByType.invoice?.length
+      ? supabase.from("invoices").select("id, project_id, invoice_number, title").eq("org_id", orgId).in("id", idsByType.invoice)
+      : Promise.resolve({ data: [] as any[] }),
+    idsByType.project_expense?.length
+      ? supabase.from("project_expenses").select("id, project_id, description, vendor_name_text").eq("org_id", orgId).in("id", idsByType.project_expense)
+      : Promise.resolve({ data: [] as any[] }),
+    idsByType.bill?.length
+      ? supabase.from("vendor_bills").select("id, project_id, bill_number").eq("org_id", orgId).in("id", idsByType.bill)
+      : Promise.resolve({ data: [] as any[] }),
+    idsByType.payment?.length || idsByType.bill_payment?.length
+      ? supabase
+          .from("payments")
+          .select("id, project_id, amount_cents")
+          .eq("org_id", orgId)
+          .in("id", [...(idsByType.payment ?? []), ...(idsByType.bill_payment ?? [])])
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+
+  const invoiceById = new Map((invoiceRows.data ?? []).map((row: any) => [row.id, row]))
+  const expenseById = new Map((expenseRows.data ?? []).map((row: any) => [row.id, row]))
+  const billById = new Map((billRows.data ?? []).map((row: any) => [row.id, row]))
+  const paymentById = new Map((paymentRows.data ?? []).map((row: any) => [row.id, row]))
+
+  return rows
+    .map((row): QboSyncHistoryItem => {
+      const entityType = String(row.entity_type ?? "")
+      const entityId = String(row.entity_id)
+      const invoice = invoiceById.get(entityId)
+      const expense = expenseById.get(entityId)
+      const bill = billById.get(entityId)
+      const payment = paymentById.get(entityId)
+      const projectIdForRow = invoice?.project_id ?? expense?.project_id ?? bill?.project_id ?? payment?.project_id ?? null
+      const label =
+        invoice?.invoice_number ??
+        invoice?.title ??
+        expense?.description ??
+        expense?.vendor_name_text ??
+        (bill?.bill_number ? `Bill ${bill.bill_number}` : null) ??
+        (payment ? "Payment" : null) ??
+        entityType.replaceAll("_", " ")
+
+      return {
+        id: row.id,
+        entityType,
+        entityId,
+        projectId: projectIdForRow,
+        label,
+        status: row.status ?? "synced",
+        direction: row.sync_direction ?? "outbound",
+        qboId: row.qbo_id ?? null,
+        error: row.error_message ?? null,
+        syncedAt: row.last_synced_at ?? row.created_at ?? null,
+      }
+    })
+    .filter((item) => !projectId || item.projectId === projectId)
 }
