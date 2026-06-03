@@ -698,7 +698,7 @@ export async function convertExecutedProspectToProject({
         property_type: projectInput.property_type || (prospect.project_type === "commercial" ? "commercial" : "residential"),
         project_type: projectInput.project_type || (prospect.project_type === "new_construction" || prospect.project_type === "remodel" || prospect.project_type === "addition" || prospect.project_type === "renovation" || prospect.project_type === "repair" ? prospect.project_type : "remodel"),
         description: projectInput.description || prospect.notes || undefined,
-        total_value: estimate.total_cents / 100,
+        total_value: Math.round(estimate.total_cents / 100),
         prospect_id: prospectId,
       },
       orgId: prospect.org_id,

@@ -167,7 +167,7 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     property_type: input.property_type,
     project_type: input.project_type,
     description: input.description,
-    total_value: input.total_value,
+    total_value: typeof input.total_value === "number" ? Math.round(input.total_value) : input.total_value,
     qbo_class_id: input.qbo_class_id?.trim() || null,
     qbo_class_name: input.qbo_class_name?.trim() || null,
     created_by: userId,
@@ -255,7 +255,7 @@ export async function updateProject({
     property_type: parsed.property_type ?? existing.data.property_type,
     project_type: parsed.project_type ?? existing.data.project_type,
     description: parsed.description ?? existing.data.description,
-    total_value: parsed.total_value ?? existing.data.total_value,
+    total_value: typeof parsed.total_value === "number" ? Math.round(parsed.total_value) : (parsed.total_value ?? existing.data.total_value),
     qbo_class_id: projectNullableValue<string>(parsed, "qbo_class_id", existing.data.qbo_class_id),
     qbo_class_name: projectNullableValue<string>(parsed, "qbo_class_name", existing.data.qbo_class_name),
   }
