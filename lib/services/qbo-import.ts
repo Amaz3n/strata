@@ -81,6 +81,25 @@ function refName(ref: { name?: string; value?: string } | null | undefined): str
   return ref.name ?? null
 }
 
+/**
+ * Map a QBO `Purchase.PaymentType` ("Cash" | "Check" | "CreditCard") to an Arc `payment_method`
+ * that satisfies the `project_expenses_payment_method_check` constraint. Anything unrecognized
+ * falls back to "other"; an empty value stays null.
+ */
+function mapQboPaymentMethod(paymentType: unknown): string | null {
+  if (paymentType == null || String(paymentType).trim() === "") return null
+  switch (String(paymentType).toLowerCase()) {
+    case "cash":
+      return "cash"
+    case "check":
+      return "check"
+    case "creditcard":
+      return "credit_card"
+    default:
+      return "other"
+  }
+}
+
 function refValue(ref: { value?: string } | null | undefined): string | null {
   if (!ref?.value) return null
   return String(ref.value)
@@ -599,7 +618,7 @@ async function importExpense(ctx: ResolvedContext, client: QBOClient, connection
       approved_by_pm_at: nowIso,
       approved_by_pm_user_id: ctx.userId,
       vendor_name_text: refName(vendorRef),
-      payment_method: qbo.PaymentType ? String(qbo.PaymentType).toLowerCase() : null,
+      payment_method: mapQboPaymentMethod(qbo.PaymentType),
       metadata: { imported_from_qbo: true, qbo_imported_at: nowIso },
       qbo_id: qboId,
       qbo_transaction_type: "purchase",
