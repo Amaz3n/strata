@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
-import { cn } from "@/lib/utils"
+import { cn, parseLocalDate, formatLocalDate, isDateExpired } from "@/lib/utils"
 
 type StatusKey = "draft" | "open" | "answered" | "closed" | string
 
@@ -55,6 +55,9 @@ const shortStatusLabel: Record<string, string> = {
 
 function formatDate(date?: string | null) {
   if (!date) return ""
+  if (date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    return formatLocalDate(date, "MMM d, yyyy")
+  }
   return format(new Date(date), "MMM d, yyyy")
 }
 
@@ -247,12 +250,12 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
             ) : (
               <ul className="divide-y">
                 {filtered.map((rfi) => {
-                  const dueDate = rfi.due_date ? new Date(rfi.due_date) : null
+                  const dueDate = rfi.due_date ? parseLocalDate(rfi.due_date) : null
                   const isOverdue = Boolean(
-                    dueDate &&
+                    rfi.due_date &&
                       rfi.status !== "answered" &&
                       rfi.status !== "closed" &&
-                      dueDate.getTime() < Date.now(),
+                      isDateExpired(rfi.due_date),
                   )
                   const assignee =
                     rfi.assigned_to
@@ -357,7 +360,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                     </TableCell>
                     <TableCell className="hidden lg:table-cell text-center">
                       <span className="text-xs text-muted-foreground">
-                        {rfi.due_date ? format(new Date(rfi.due_date), "MMM d, yyyy") : "—"}
+                        {rfi.due_date ? formatDate(rfi.due_date) : "—"}
                       </span>
                     </TableCell>
                     <TableCell className="hidden xl:table-cell text-center">

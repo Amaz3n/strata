@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { Invoice, InvoiceLine, InvoiceTotals, InvoiceView } from "@/lib/types"
 import type { InvoiceInput, InvoiceLineInput } from "@/lib/validation/invoices"
+import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
@@ -12,12 +13,13 @@ import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { markReservationUsed } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
-import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
 
 type InvoiceRow = {
   id: string
   org_id: string
   project_id?: string | null
+  file_id?: string | null
+  billing_period_id?: string | null
   token?: string | null
   invoice_number: string
   title?: string | null
@@ -120,7 +122,7 @@ export function buildApprovedCostInvoicePreview({
     title,
     issueDate: issueDate ?? new Date().toISOString().slice(0, 10),
     dueDate: dueDate ?? new Date().toISOString().slice(0, 10),
-    groupBy: "cost_code",
+    groupBy: "cost_code" as const,
     lines: lines.map((line, index) => ({
       cost_code_id: line.cost_code_id ?? null,
       description: line.description,
@@ -372,7 +374,7 @@ async function upsertRetainageForInvoice(params: {
 function shouldQueueQboSync(status?: string | null, clientVisible?: boolean | null) {
   if (clientVisible) return true
   const normalized = String(status ?? "").toLowerCase()
-  return normalized === "sent" || normalized === "partial" || normalized === "paid" || normalized === "overdue"
+  return normalized === "saved" || normalized === "sent" || normalized === "partial" || normalized === "paid" || normalized === "overdue"
 }
 
 async function assertSourceNotAlreadyBilled(params: {
@@ -466,6 +468,7 @@ async function releaseInvoiceSourceLinks(params: {
 }) {
   const { supabase, orgId, invoiceId, metadata } = params
   const sourceDrawId = typeof metadata?.source_draw_id === "string" ? metadata.source_draw_id : null
+  const sourceType = typeof metadata?.source_type === "string" ? metadata.source_type : null
 
   if (sourceDrawId) {
     const { error } = await supabase
@@ -477,6 +480,84 @@ async function releaseInvoiceSourceLinks(params: {
 
     if (error) {
       throw new Error(`Failed to release draw invoice link: ${error.message}`)
+    }
+  }
+
+  if (sourceType === "fee") {
+    const { data: feeBillings, error: feeBillingError } = await supabase
+      .from("project_fee_billings")
+      .select("id, metadata")
+      .eq("org_id", orgId)
+      .eq("invoice_id", invoiceId)
+      .neq("status", "voided")
+
+    if (feeBillingError) {
+      throw new Error(`Failed to load fee billing links: ${feeBillingError.message}`)
+    }
+
+    const now = new Date().toISOString()
+    for (const billing of feeBillings ?? []) {
+      const allocations = Array.isArray((billing.metadata as any)?.allocations)
+        ? ((billing.metadata as any).allocations as Array<{ line_id?: string; amount_cents?: number }>)
+        : []
+
+      if (allocations.length > 0) {
+        const lineIds = allocations.map((allocation) => allocation.line_id).filter((id): id is string => Boolean(id))
+        const { data: feeLines, error: feeLinesError } =
+          lineIds.length === 0
+            ? { data: [], error: null }
+            : await supabase
+                .from("project_fee_schedule_lines")
+                .select("id, scheduled_fee_cents, earned_fee_cents, billed_fee_cents")
+                .eq("org_id", orgId)
+                .in("id", lineIds)
+
+        if (feeLinesError) {
+          throw new Error(`Failed to load fee lines for void: ${feeLinesError.message}`)
+        }
+
+        const feeLineById = new Map((feeLines ?? []).map((line: any) => [line.id, line]))
+        for (const allocation of allocations) {
+          if (!allocation.line_id) continue
+          const line = feeLineById.get(allocation.line_id)
+          if (!line) continue
+          const nextBilled = Math.max(0, Number(line.billed_fee_cents ?? 0) - Number(allocation.amount_cents ?? 0))
+          const nextStatus =
+            nextBilled <= 0
+              ? Number(line.earned_fee_cents ?? 0) > 0
+                ? "earned"
+                : "unbilled"
+              : nextBilled >= Number(line.scheduled_fee_cents ?? 0)
+                ? "billed"
+                : "partially_billed"
+
+          const { error: lineUpdateError } = await supabase
+            .from("project_fee_schedule_lines")
+            .update({
+              billed_fee_cents: nextBilled,
+              invoice_id: null,
+              invoice_line_id: null,
+              billed_at: nextBilled > 0 ? undefined : null,
+              status: nextStatus,
+            })
+            .eq("org_id", orgId)
+            .eq("id", allocation.line_id)
+
+          if (lineUpdateError) {
+            throw new Error(`Failed to release fee line billing: ${lineUpdateError.message}`)
+          }
+        }
+      }
+
+      const { error: billingUpdateError } = await supabase
+        .from("project_fee_billings")
+        .update({ status: "voided", voided_at: now })
+        .eq("org_id", orgId)
+        .eq("id", billing.id)
+
+      if (billingUpdateError) {
+        throw new Error(`Failed to void fee billing link: ${billingUpdateError.message}`)
+      }
     }
   }
 
@@ -538,6 +619,8 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     id: row.id,
     org_id: row.org_id,
     project_id: row.project_id ?? undefined,
+    file_id: row.file_id ?? undefined,
+    billing_period_id: row.billing_period_id ?? undefined,
     token: row.token ?? undefined,
     invoice_number: row.invoice_number,
     title: row.title ?? `Invoice ${row.invoice_number}`,
@@ -618,7 +701,7 @@ export async function listInvoices({
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
     )
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
@@ -660,24 +743,6 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
   if (sourceType === "from_costs" && !input.project_id) {
     throw new Error("Project is required to invoice approved costs")
   }
-  if (sourceType === "from_costs" && input.project_id) {
-    const { data: contract, error: contractError } = await supabase
-      .from("contracts")
-      .select("id, contract_type, gmp_cents, open_book, requires_client_cost_approval, snapshot")
-      .eq("org_id", resolvedOrgId)
-      .eq("project_id", input.project_id)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (contractError) {
-      throw new Error(`Failed to validate project billing model: ${contractError.message}`)
-    }
-    if (!supportsApprovedCostInvoicing(contract as any)) {
-      throw new Error("Approved-cost invoicing is only available for cost-plus, cost-plus GMP, fixed-fee, or T&M projects")
-    }
-  }
   const totals = calculateNormalizedTotals(lines, input.tax_rate)
   const shouldGenerateToken = input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? randomUUID() : null
@@ -706,27 +771,27 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       totals,
     })
 
-    const { data: rpcResult, error: rpcError } = await supabase.rpc("create_invoice_from_billable_costs_atomic", {
-      p_org_id: resolvedOrgId,
-      p_project_id: input.project_id,
-      p_actor_id: userId,
-      p_invoice_number: input.invoice_number,
-      p_token: token ?? randomUUID(),
-      p_title: input.title,
-      p_issue_date: input.issue_date ?? new Date().toISOString().slice(0, 10),
-      p_due_date: input.due_date ?? new Date().toISOString().slice(0, 10),
-      p_from_date: input.issue_date ?? new Date().toISOString().slice(0, 10),
-      p_to_date: input.issue_date ?? new Date().toISOString().slice(0, 10),
-      p_group_by: "cost_code",
-      p_cost_ids: costIds,
-      p_preview: preview,
-      p_idempotency_key: null,
-      p_reservation_id: reservationId ?? null,
-      p_status: input.status ?? "saved",
-      p_client_visible: shouldGenerateToken,
-      p_notes: input.notes ?? null,
-      p_sent_to_emails: input.sent_to_emails ?? null,
-      p_metadata: {
+    const approvedCostInvoice = await createApprovedCostInvoiceFromPreview({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: input.project_id as string,
+      actorId: userId,
+      invoiceNumber: input.invoice_number,
+      token: token ?? randomUUID(),
+      title: input.title,
+      issueDate: input.issue_date ?? new Date().toISOString().slice(0, 10),
+      dueDate: input.due_date ?? new Date().toISOString().slice(0, 10),
+      fromDate: input.issue_date ?? new Date().toISOString().slice(0, 10),
+      toDate: input.issue_date ?? new Date().toISOString().slice(0, 10),
+      groupBy: "cost_code",
+      costIds,
+      preview,
+      reservationId: reservationId ?? null,
+      status: input.status ?? "saved",
+      clientVisible: shouldGenerateToken,
+      notes: input.notes ?? null,
+      sentToEmails: input.sent_to_emails ?? null,
+      metadata: {
         lines,
         totals,
         tax_rate: input.tax_rate,
@@ -743,21 +808,11 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
         org_phone: orgData?.phone ?? null,
         org_address: orgData?.address ?? null,
       },
+      auditLabel: "invoice_composer",
     })
 
-    if (rpcError) {
-      throw new Error(`Failed to create approved-cost invoice: ${rpcError.message}`)
-    }
-    const invoiceId = (rpcResult as any)?.invoiceId
-    if (!invoiceId) throw new Error("Failed to create approved-cost invoice: missing invoice id")
+    const invoiceId = approvedCostInvoice.invoiceId
 
-    await recordEvent({
-      orgId: resolvedOrgId,
-      eventType: "invoice_created",
-      entityType: "invoice",
-      entityId: invoiceId,
-      payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents, source_type: "from_costs" },
-    })
     if (shouldGenerateToken) {
       await recordEvent({
         orgId: resolvedOrgId,
@@ -768,17 +823,6 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
         channel: "notification",
       })
       await sendInvoiceEmail({ orgId: resolvedOrgId, invoiceId, totalCents: totals.total_cents, dueDate: input.due_date ?? undefined })
-    }
-    await recordAudit({
-      orgId: resolvedOrgId,
-      actorId: userId,
-      action: "insert",
-      entityType: "invoice",
-      entityId: invoiceId,
-      after: { invoice_number: input.invoice_number, project_id: input.project_id, source_type: "from_costs", billable_cost_ids: costIds, totals },
-    })
-    if (shouldQueueQboSync(input.status, shouldGenerateToken)) {
-      await enqueueInvoiceSync(invoiceId, resolvedOrgId)
     }
     const created = await getInvoiceWithLines(invoiceId, resolvedOrgId)
     if (!created) throw new Error("Approved-cost invoice was created but could not be reloaded")
@@ -862,7 +906,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     .from("invoices")
     .insert(payload)
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at",
     )
     .single()
 
@@ -888,7 +932,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
         system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
-        source_type: null,
+        source_type: sourceType === "fee" ? "fee" : null,
         billable_cost_ids: line.billable_cost_ids ?? null,
         cost_cents: line.cost_cents ?? null,
         markup_cents: line.markup_cents ?? null,
@@ -993,7 +1037,8 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
     await enqueueInvoiceSync(data.id, resolvedOrgId)
   }
 
-  return mapInvoiceRow(data as InvoiceRow)
+  const fresh = await getInvoiceWithLines(data.id, resolvedOrgId)
+  return fresh ?? mapInvoiceRow(data as InvoiceRow)
 }
 
 export async function updateInvoice({
@@ -1097,7 +1142,7 @@ export async function updateInvoice({
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
     )
     .single()
 
@@ -1200,7 +1245,8 @@ export async function updateInvoice({
     await enqueueInvoiceSync(invoiceId, resolvedOrgId)
   }
 
-  return mapInvoiceRow(data as InvoiceRow)
+  const fresh = await getInvoiceWithLines(invoiceId, resolvedOrgId)
+  return fresh ?? mapInvoiceRow(data as InvoiceRow)
 }
 
 async function assertInvoiceHasNoPayments(params: { supabase: SupabaseClient; orgId: string; invoiceId: string }) {
@@ -1263,7 +1309,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
     )
     .single()
 
@@ -1348,7 +1394,7 @@ export async function getInvoiceForPortal(invoiceId: string, orgId: string, proj
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -1366,7 +1412,7 @@ export async function getInvoiceByToken(token: string) {
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("token", token)
     .maybeSingle()
@@ -1385,7 +1431,7 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)

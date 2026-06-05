@@ -54,6 +54,12 @@ function mapCompany(row: any): Company {
       row.default_payment_terms ?? metadata.default_payment_terms ?? undefined,
     internal_notes: row.internal_notes ?? metadata.internal_notes ?? undefined,
     notes: row.notes ?? metadata.notes ?? undefined,
+    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
+    qbo_vendor_synced_at:
+      row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
+    qbo_vendor_sync_status:
+      row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
     contact_count: contactCount,
@@ -72,6 +78,12 @@ function mapContactCompany(row: any): Company {
     website: row.website ?? undefined,
     address: row.address ?? undefined,
     trade: metadata.trade ?? undefined,
+    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
+    qbo_vendor_synced_at:
+      row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
+    qbo_vendor_sync_status:
+      row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
     created_at: row.created_at ?? "",
     updated_at: row.updated_at ?? undefined,
   };
@@ -231,6 +243,7 @@ async function listCompanyPage(
       `
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
+      qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
       metadata, created_at, updated_at,
       contact_company_links(count)
     `,
@@ -272,7 +285,7 @@ async function listContactPage(
     .select(
       `
       id, org_id, full_name, email, phone, address, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
-      primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, metadata),
+      primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata),
       contact_company_links(id, org_id, contact_id, company_id, relationship, created_at)
     `,
       { count: "exact" },

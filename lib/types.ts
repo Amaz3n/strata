@@ -72,6 +72,10 @@ export interface Company {
   default_payment_terms?: string
   internal_notes?: string
   notes?: string
+  qbo_vendor_id?: string | null
+  qbo_vendor_name?: string | null
+  qbo_vendor_synced_at?: string | null
+  qbo_vendor_sync_status?: string | null
   created_at: string
   updated_at?: string
   contact_count?: number
@@ -184,9 +188,26 @@ export interface Project {
   total_contract_value_cents?: number
   qbo_class_id?: string | null
   qbo_class_name?: string | null
+  qbo_customer_id?: string | null
+  qbo_customer_name?: string | null
+  financial_settings?: ProjectFinancialSettings | null
   billing_contract?: Contract | null
   created_at: string
   updated_at: string
+}
+
+export interface ProjectFinancialSettings {
+  id: string
+  org_id: string
+  project_id: string
+  billing_model: "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
+  paid_costs_required: boolean
+  proof_required: boolean
+  client_cost_approval_required: boolean
+  open_book_required: boolean
+  cost_codes_enabled: boolean
+  setup_completed_at?: string | null
+  metadata?: Record<string, any>
 }
 
 export type ProjectStatus = "planning" | "bidding" | "active" | "on_hold" | "completed" | "cancelled"
@@ -630,6 +651,9 @@ export interface ChangeOrderLine {
   unit_cost_cents: number
   allowance_cents?: number | null
   taxable?: boolean | null
+  gmp_classification?: "inside_gmp" | "outside_gmp" | null
+  gmp_impact?: "none" | "increase_gmp" | "decrease_gmp" | "outside_gmp" | null
+  gmp_delta_cents?: number | null
 }
 
 export interface ChangeOrderTotals {
@@ -730,6 +754,8 @@ export interface Invoice {
   id: string
   org_id: string
   project_id?: string | null
+  file_id?: string | null
+  billing_period_id?: string | null
   token?: string | null
   invoice_number: string
   title: string

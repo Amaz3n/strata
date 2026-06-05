@@ -4,6 +4,7 @@ import { z } from "zod"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const budgetLineSchema = z.object({
@@ -404,23 +405,13 @@ async function getBudgetWithActualsInternal(
     "commitments",
   )
 
-  const billIds = await selectIds(
-    supabase
-      .from("vendor_bills")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .in("status", ["approved", "paid"]),
-    "vendor bills",
-  )
-
   const invoiceIds = await selectIds(
     supabase
       .from("invoices")
       .select("id")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
-      .in("status", ["sent", "paid"]),
+      .in("status", ["sent", "partial", "paid", "overdue"]),
     "invoices",
   )
 
@@ -447,18 +438,7 @@ async function getBudgetWithActualsInternal(
     throw new Error(`Failed to load commitments: ${commitmentsError.message}`)
   }
 
-  const { data: billLines, error: billLinesError } =
-    billIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("bill_lines")
-          .select("cost_code_id, unit_cost_cents, quantity")
-          .eq("org_id", orgId)
-          .in("bill_id", billIds)
-
-  if (billLinesError) {
-    throw new Error(`Failed to load bill lines: ${billLinesError.message}`)
-  }
+  const jobCostActuals = await getProjectJobCostActualsByCostCode({ projectId, orgId, supabase })
 
   const { data: invoiceLines, error: invoiceLinesError } =
     invoiceIds.length === 0
@@ -548,8 +528,8 @@ async function getBudgetWithActualsInternal(
     byCostCode.set(key, existing)
   }
 
-  for (const line of billLines ?? []) {
-    const key = line.cost_code_id ?? "uncoded"
+  for (const actual of jobCostActuals) {
+    const key = actual.cost_code_id ?? "uncoded"
     const existing =
       byCostCode.get(key) ?? {
         budget_cents: 0,
@@ -560,7 +540,7 @@ async function getBudgetWithActualsInternal(
         percent_complete: null,
         estimate_remaining_cents: null,
       }
-    existing.actual_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    existing.actual_cents += actual.actual_cents
     byCostCode.set(key, existing)
   }
 

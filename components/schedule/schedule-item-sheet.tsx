@@ -212,11 +212,32 @@ export function ScheduleItemSheet({
     }
   }, [open, activeProjectId])
 
+  // Check if they have any subcontractor companies in the Arc directory
+  const hasSubcontractorCompanies = assignableResources.some(
+    (r) => r.type === "company" && r.company_type === "subcontractor"
+  )
+
   // Group resources by type for display
   const groupedResources = {
-    users: assignableResources.filter(r => r.type === "user"),
-    contacts: assignableResources.filter(r => r.type === "contact"),
-    companies: assignableResources.filter(r => r.type === "company"),
+    users: assignableResources.filter((r) => r.type === "user"),
+    contacts: assignableResources.filter((r) => {
+      if (r.type !== "contact") return false
+      if (hasSubcontractorCompanies) {
+        // Only employees (internal) or subcontractors
+        const isEmployee = r.contact_type === "internal"
+        const isSubcontractor = r.contact_type === "subcontractor" || r.company_type === "subcontractor"
+        return isEmployee || isSubcontractor
+      }
+      return true
+    }),
+    companies: assignableResources.filter((r) => {
+      if (r.type !== "company") return false
+      if (hasSubcontractorCompanies) {
+        // Only subcontractor companies
+        return r.company_type === "subcontractor"
+      }
+      return true
+    }),
   }
 
   // Get selected resource info for display

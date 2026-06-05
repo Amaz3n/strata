@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo, useCallback } from "react"
+import { useState, useEffect, useMemo, useCallback, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { toast } from "sonner"
@@ -27,7 +27,7 @@ import {
   setPortalTokenPinAction,
   removePortalTokenPinAction,
 } from "@/app/(app)/sharing/actions"
-import { updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
+import { getProjectSettingsAction, updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
 import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
 
 import { Button } from "@/components/ui/button"
@@ -84,6 +84,10 @@ export function ProjectOverviewActions({
 }: ProjectOverviewActionsProps) {
   const router = useRouter()
 
+  // The header renders from the light `project` prop; the settings sheet needs the full project
+  // (financial_settings + billing_contract), which we lazy-load when the sheet opens.
+  const [settingsProject, setSettingsProject] = useState<Project | null>(null)
+  const [settingsLoading, startSettingsLoad] = useTransition()
   const [sharingSheetOpen, setSharingSheetOpen] = useState(false)
   const [settingsSheetOpen, setSettingsSheetOpen] = useState(false)
   const [contractSheetOpen, setContractSheetOpen] = useState(false)
@@ -253,8 +257,26 @@ export function ProjectOverviewActions({
     }
   }, [accountsInitialized, sharingInitialized, sharingSheetOpen, refreshPortalTokens])
 
+  const openSettings = () => {
+    startSettingsLoad(async () => {
+      try {
+        const full = await getProjectSettingsAction(project.id)
+        if (!full) {
+          toast.error("Could not load project settings")
+          return
+        }
+        setSettingsProject(full)
+        setSettingsSheetOpen(true)
+      } catch (error) {
+        console.error(error)
+        toast.error("Could not load project settings")
+      }
+    })
+  }
+
   const handleSaveProject = async (input: Partial<ProjectInput>) => {
-    await updateProjectSettingsAction(project.id, input)
+    const updated = await updateProjectSettingsAction(project.id, input)
+    setSettingsProject(updated)
     router.refresh()
   }
 
@@ -402,9 +424,12 @@ export function ProjectOverviewActions({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSettingsSheetOpen(true) }}>
+                <DropdownMenuItem
+                  disabled={settingsLoading}
+                  onSelect={(e) => { e.preventDefault(); openSettings() }}
+                >
                   <Settings className="mr-2 h-4 w-4" />
-                  Project settings
+                  {settingsLoading ? "Loading…" : "Project settings"}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={(e) => {
@@ -425,14 +450,16 @@ export function ProjectOverviewActions({
         </div>
       </header>
 
-      <ProjectSettingsSheet
-        project={project}
-        contract={contract}
-        contacts={contacts}
-        open={settingsSheetOpen}
-        onOpenChange={setSettingsSheetOpen}
-        onSave={handleSaveProject}
-      />
+      {settingsProject ? (
+        <ProjectSettingsSheet
+          project={settingsProject}
+          contract={contract}
+          contacts={contacts}
+          open={settingsSheetOpen}
+          onOpenChange={setSettingsSheetOpen}
+          onSave={handleSaveProject}
+        />
+      ) : null}
       <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
       <ManageTeamSheet
         projectId={project.id}

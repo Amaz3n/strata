@@ -49,7 +49,7 @@ export const invoiceInputSchema = z.object({
   lines: z.array(invoiceLineInputSchema).min(1, "Add at least one line item"),
   sent_to_emails: z.array(z.string().email()).optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),
-  source_type: z.enum(["manual", "draw", "change_order", "from_costs"]).optional(),
+  source_type: z.enum(["manual", "draw", "change_order", "from_costs", "fee"]).optional(),
   source_draw_id: z.string().uuid().optional(),
   source_change_order_id: z.string().uuid().optional(),
   qbo_income_account_id: z.string().min(1).optional().nullable(),

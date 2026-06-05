@@ -9,6 +9,7 @@ import { requireOrgContext, type OrgServiceContext } from "@/lib/services/contex
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { ensureDefaultProjectFolders } from "@/lib/services/files"
 import type { ProjectBillingModel } from "@/lib/financials/billing-model"
+import { upsertProjectFinancialSettingsFromProjectInput } from "@/lib/services/project-financial-setup"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -67,6 +68,9 @@ function mapProject(row: any): Project {
     total_value: row.total_value ?? undefined,
     qbo_class_id: row.qbo_class_id ?? null,
     qbo_class_name: row.qbo_class_name ?? null,
+    qbo_customer_id: row.qbo_customer_id ?? null,
+    qbo_customer_name: row.qbo_customer_name ?? null,
+    financial_settings: row.project_financial_settings?.[0] ?? null,
     billing_contract: billingContractRow ? mapProjectBillingContract(billingContractRow) : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -105,7 +109,8 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, qbo_class_id, qbo_class_name, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, created_at, updated_at,
+  project_financial_settings(id, org_id, project_id, billing_model, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, snapshot, created_at, updated_at)
 `
 
@@ -152,6 +157,34 @@ export async function listProjectsWithClient(supabase: SupabaseClient, orgId: st
   return (data ?? []).map(mapProject)
 }
 
+// Single-project fetch using the full PROJECT_SELECT so financial_settings and billing_contract
+// are populated (unlike the lighter `select("*")` used elsewhere). Used by the settings sheet.
+export async function getProjectWithFinancials({
+  projectId,
+  orgId,
+  context,
+}: {
+  projectId: string
+  orgId?: string
+  context?: OrgServiceContext
+}): Promise<Project | null> {
+  const { supabase, orgId: resolvedOrgId } = context || await requireOrgContext(orgId)
+
+  const { data, error } = await supabase
+    .from("projects")
+    .select(PROJECT_SELECT)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", projectId)
+    .single()
+
+  if (error || !data) {
+    if (error) console.error("Failed to fetch project with financials:", error.message)
+    return null
+  }
+
+  return mapProject(data)
+}
+
 export async function createProject({ input, orgId, context }: { input: ProjectInput; orgId?: string; context?: OrgServiceContext }) {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
@@ -170,6 +203,8 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     total_value: typeof input.total_value === "number" ? Math.round(input.total_value) : input.total_value,
     qbo_class_id: input.qbo_class_id?.trim() || null,
     qbo_class_name: input.qbo_class_name?.trim() || null,
+    qbo_customer_id: input.qbo_customer_id?.trim() || null,
+    qbo_customer_name: input.qbo_customer_name?.trim() || null,
     created_by: userId,
     prospect_id: input.prospect_id || null,
   }
@@ -258,6 +293,8 @@ export async function updateProject({
     total_value: typeof parsed.total_value === "number" ? Math.round(parsed.total_value) : (parsed.total_value ?? existing.data.total_value),
     qbo_class_id: projectNullableValue<string>(parsed, "qbo_class_id", existing.data.qbo_class_id),
     qbo_class_name: projectNullableValue<string>(parsed, "qbo_class_name", existing.data.qbo_class_name),
+    qbo_customer_id: projectNullableValue<string>(parsed, "qbo_customer_id", existing.data.qbo_customer_id),
+    qbo_customer_name: projectNullableValue<string>(parsed, "qbo_customer_name", existing.data.qbo_customer_name),
   }
 
   const { data, error } = await supabase
@@ -322,11 +359,15 @@ async function upsertProjectBillingContract({
     "billing_model",
     "markup_percent",
     "gmp_cents",
+    "fixed_fee_cents",
     "savings_split_owner_pct",
     "savings_split_builder_pct",
     "labor_burden_multiplier",
     "requires_client_cost_approval",
     "open_book",
+    "paid_costs_required",
+    "proof_required",
+    "cost_codes_enabled",
     "retainage_percent",
     "total_contract_value_cents",
   ]
@@ -377,6 +418,9 @@ async function upsertProjectBillingContract({
       ...(existing?.snapshot ?? {}),
       billing_setup_source: "project_settings",
       billing_model: billingModel,
+      fixed_fee_cents: isFixedFee ? input.fixed_fee_cents ?? existing?.snapshot?.fixed_fee_cents ?? null : null,
+      paid_costs_required: input.paid_costs_required ?? existing?.snapshot?.paid_costs_required ?? false,
+      proof_required: input.proof_required ?? existing?.snapshot?.proof_required ?? false,
     },
   }
 
@@ -392,6 +436,15 @@ async function upsertProjectBillingContract({
     if (error || !data) {
       throw new Error(`Failed to update project billing contract: ${error?.message}`)
     }
+
+    await upsertProjectFinancialSettingsFromProjectInput({
+      supabase,
+      orgId,
+      projectId,
+      userId,
+      input,
+      existingContract: data,
+    })
 
     await recordAudit({
       orgId,
@@ -409,6 +462,15 @@ async function upsertProjectBillingContract({
   if (error || !data) {
     throw new Error(`Failed to create project billing contract: ${error?.message}`)
   }
+
+  await upsertProjectFinancialSettingsFromProjectInput({
+    supabase,
+    orgId,
+    projectId,
+    userId,
+    input,
+    existingContract: data,
+  })
 
   await recordAudit({
     orgId,

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react"
 import { format } from "date-fns"
+import { formatLocalDate } from "@/lib/utils"
 import { HelpCircle } from "lucide-react"
 import type { Rfi, RfiResponse } from "@/lib/types"
 import {
@@ -150,7 +151,7 @@ export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
               <div className="flex items-center justify-between">
                 {rfi.due_date && (
                   <p className="text-xs text-muted-foreground">
-                    Due {format(new Date(rfi.due_date), "MMM d, yyyy")}
+                    Due {formatLocalDate(rfi.due_date, "MMM d, yyyy")}
                   </p>
                 )}
                 <Button

@@ -1,13 +1,15 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import {
   ChevronsUpDown,
   Loader2,
+  Search,
 } from "@/components/icons"
 import { useOptimisticNavigate, useIsNavigationPending } from "@/lib/navigation/optimistic-pathname"
 import { ProjectAvatar } from "@/components/ui/project-avatar"
+import { Input } from "@/components/ui/input"
 
 import {
   DropdownMenu,
@@ -55,12 +57,20 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
   const hydrated = useHydrated()
   const pathProjectId = getProjectIdFromPath(pathname)
   const resolvedProjectId = projectId ?? pathProjectId ?? undefined
+  const [query, setQuery] = useState("")
 
-  const sortedProjects = useMemo(() => [...projects].sort((a, b) => {
-    const activeRank = Number(isArchived(a.status)) - Number(isArchived(b.status))
-    if (activeRank !== 0) return activeRank
-    return a.name.localeCompare(b.name)
-  }), [projects])
+  const sortedProjects = useMemo(() => {
+    const term = query.trim().toLowerCase()
+    const filtered = term
+      ? projects.filter((p) => p.name.toLowerCase().includes(term))
+      : projects
+
+    return [...filtered].sort((a, b) => {
+      const activeRank = Number(isArchived(a.status)) - Number(isArchived(b.status))
+      if (activeRank !== 0) return activeRank
+      return a.name.localeCompare(b.name)
+    })
+  }, [projects, query])
 
   const currentProject = projects.find((p) => p.id === resolvedProjectId)
 
@@ -131,7 +141,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
   return (
     <SidebarMenu className="w-full">
       <SidebarMenuItem className="w-full">
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={(open) => { if (!open) setQuery("") }}>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
               className="h-10 min-w-0 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
@@ -148,6 +158,22 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
             <DropdownMenuLabel className="px-2 pb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
               Switch project
             </DropdownMenuLabel>
+
+            <div className="relative px-2 pb-2">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") return
+                    e.stopPropagation()
+                  }}
+                  placeholder="Find a project..."
+                  className="pl-8 h-8"
+                />
+              </div>
+            </div>
 
             {loadError && (
               <div className="px-2 py-3 text-xs whitespace-pre-wrap text-destructive">

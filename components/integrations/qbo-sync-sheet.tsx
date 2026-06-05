@@ -1,8 +1,9 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { formatDistanceToNow } from "date-fns"
-import { AlertCircle, ArrowUpRight, Check, RefreshCcw } from "lucide-react"
+import { AlertCircle, ArrowUpRight, Check, ExternalLink, Plug, RefreshCcw } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -33,6 +34,8 @@ type Props = {
   onOpenInvoice?: (invoiceId: string) => void
 }
 
+const SETTINGS_HREF = "/settings?tab=integrations"
+
 // Payments and bill payments are presented together under one "Payments" section.
 const SECTIONS: { key: string; label: string; types: QboSyncEntityType[] }[] = [
   { key: "invoice", label: "Invoices", types: ["invoice"] },
@@ -61,6 +64,7 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
   const [activeTab, setActiveTab] = useState<"sync" | "import" | "history">(initialTab)
   const [history, setHistory] = useState<QboSyncHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [showFailedOnly, setShowFailedOnly] = useState(false)
   const canImport = Boolean(projectId)
 
   const load = useCallback(async () => {
@@ -76,36 +80,55 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     }
   }, [projectId])
 
-  useEffect(() => {
-    if (open) void load()
-  }, [open, load])
-
-  useEffect(() => {
-    if (open) setActiveTab(canImport ? initialTab : "sync")
-  }, [canImport, initialTab, open])
-
-  useEffect(() => {
-    if (!open || activeTab !== "history") return
+  const loadHistory = useCallback(async () => {
     setHistoryLoading(true)
-    void listQboSyncHistoryAction({ projectId })
-      .then(setHistory)
-      .catch((error: any) => toast.error("Couldn't load QuickBooks history", { description: error?.message ?? "Try again." }))
-      .finally(() => setHistoryLoading(false))
-  }, [activeTab, open, projectId])
+    try {
+      setHistory(await listQboSyncHistoryAction({ projectId }))
+    } catch (error: any) {
+      toast.error("Couldn't load QuickBooks history", { description: error?.message ?? "Try again." })
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    if (open) {
+      void load()
+      void loadHistory()
+    }
+  }, [open, load, loadHistory])
+
+  useEffect(() => {
+    if (open) setActiveTab(canImport ? initialTab : initialTab === "import" ? "sync" : initialTab)
+  }, [canImport, initialTab, open])
 
   const failedCount = useMemo(() => items.filter((item) => item.status === "error").length, [items])
   const pendingCount = items.length - failedCount
-  const healthTone = failedCount > 0 ? "border-destructive/30 bg-destructive/10 text-destructive" : pendingCount > 0 ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+  const lastSyncedAt = useMemo(
+    () => history.find((entry) => entry.status !== "error" && entry.syncedAt)?.syncedAt ?? null,
+    [history],
+  )
+
+  const healthTone =
+    failedCount > 0
+      ? "border-destructive/30 bg-destructive/10 text-destructive"
+      : pendingCount > 0
+        ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
   const healthLabel = failedCount > 0 ? "Needs attention" : pendingCount > 0 ? "Waiting to sync" : "In sync"
 
+  // Failed rows float to the top within each section so problems surface first.
   const sections = useMemo(
     () =>
       SECTIONS.map((section) => {
-        const sectionItems = items.filter((item) => section.types.includes(item.entityType))
+        const sectionItems = items
+          .filter((item) => section.types.includes(item.entityType))
+          .filter((item) => !showFailedOnly || item.status === "error")
+          .sort((a, b) => Number(b.status === "error") - Number(a.status === "error"))
         const total = sectionItems.reduce((sum, item) => sum + item.amountCents, 0)
         return { ...section, items: sectionItems, total }
       }).filter((section) => section.items.length > 0),
-    [items],
+    [items, showFailedOnly],
   )
 
   const handleSyncAll = async () => {
@@ -118,9 +141,11 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
       } else {
         toast.success(result.synced > 0 ? `Synced ${result.synced} to QuickBooks` : "Nothing to sync")
       }
-      await load()
+    } catch (error: any) {
+      toast.error("Sync failed", { description: error?.message ?? "Try again." })
     } finally {
       setSyncingAll(false)
+      await Promise.all([load(), loadHistory()])
     }
   }
 
@@ -130,14 +155,15 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     try {
       await syncQboItemAction(item.entityType, item.id)
       toast.success("Synced to QuickBooks")
-      await load()
     } catch (error: any) {
       toast.error("Sync failed", { description: error?.message ?? "Try again." })
-      await load()
     } finally {
       setSyncingId(null)
+      await Promise.all([load(), loadHistory()])
     }
   }
+
+  const tabCount = canImport ? 3 : 2
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -146,155 +172,243 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
         mobileFullscreen
         className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
       >
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "sync" | "import" | "history")} className="flex min-h-0 flex-1 flex-col">
-        <SheetHeader className="space-y-3 border-b px-6 pb-5 pt-6">
-          <div className="flex items-start justify-between gap-4 pr-8">
-            <div className="space-y-1">
-              <SheetTitle className="text-lg">QuickBooks</SheetTitle>
-              <SheetDescription className="text-left">
-                {connected
-                  ? projectName
-                    ? `Manage QuickBooks sync and imports for ${projectName}.`
-                    : "Records sync to QuickBooks automatically every few minutes. Push everything now if you don't want to wait."
-                  : "Connect QuickBooks in Settings to start syncing."}
-              </SheetDescription>
-              {projectId ? (
-                <div className="inline-flex max-w-full border bg-muted/30 px-2.5 py-1 text-xs font-medium">
-                  <span className="truncate">Project: {projectName ?? projectId}</span>
-                </div>
-              ) : null}
-            </div>
-            {activeTab === "sync" ? (
-              <Button onClick={handleSyncAll} disabled={!connected || syncingAll || loading || items.length === 0} className="shrink-0">
-                {syncingAll ? <Spinner className="mr-1.5 size-4" /> : <RefreshCcw className="mr-1.5 size-4" />}
-                Sync now
-              </Button>
+        <SheetHeader className="border-b px-6 pb-4 pt-6">
+          <div className="flex items-center gap-2 pr-8">
+            <SheetTitle className="text-lg">QuickBooks</SheetTitle>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 text-xs font-medium",
+                connected ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
+              )}
+            >
+              <span className={cn("size-1.5 rounded-full", connected ? "bg-emerald-500" : "bg-muted-foreground/50")} />
+              {connected ? "Connected" : "Not connected"}
+            </span>
+            {connected && projectName ? (
+              <span className="ml-auto truncate text-xs text-muted-foreground">{projectName}</span>
             ) : null}
           </div>
-          {connected && (
-            <div className="flex flex-col gap-3">
-              {canImport ? (
-                <TabsList className="h-9 w-full justify-start rounded-none sm:w-auto">
-                  <TabsTrigger value="sync" className="rounded-none">Sync to QBO</TabsTrigger>
-                  <TabsTrigger value="import" className="rounded-none">Import from QBO</TabsTrigger>
-                  <TabsTrigger value="history" className="rounded-none">History</TabsTrigger>
-                </TabsList>
-              ) : null}
-              <div className="flex items-center gap-2 text-xs">
-                <Badge variant="secondary" className={cn("h-6 rounded-none border", healthTone)}>
-                  {healthLabel}
-                </Badge>
-                <Badge variant="secondary" className="h-6 rounded-none">
-                  {pendingCount} waiting
-                </Badge>
-                {failedCount > 0 && (
-                  <Badge variant="secondary" className="h-6 gap-1 rounded-none border-destructive/30 bg-destructive/10 text-destructive">
-                    <AlertCircle className="size-3" />
-                    {failedCount} failed
-                  </Badge>
-                )}
-              </div>
-            </div>
-          )}
+          <SheetDescription className="sr-only">
+            Sync, import, and review QuickBooks activity{projectName ? ` for ${projectName}` : ""}.
+          </SheetDescription>
         </SheetHeader>
 
-        <TabsContent value="sync" className="m-0 flex min-h-0 flex-1 flex-col">
-        <div className="border-b bg-muted/20 px-6 py-2 text-xs text-muted-foreground">
-          Send Arc invoices, expenses, bills, and payments to QuickBooks.
-        </div>
-        <ScrollArea className="flex-1">
-          {loading && items.length === 0 ? (
-            <div className="space-y-3 p-6">
-              {Array.from({ length: 4 }).map((_, index) => (
-                <div key={index} className="h-14 animate-pulse bg-muted/60" />
-              ))}
-            </div>
-          ) : items.length === 0 ? (
-            <div className="flex h-full min-h-80 flex-col items-center justify-center px-8 text-center">
-              <div className="flex size-11 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                <Check className="size-5" />
+        {!connected ? (
+          <ConnectPrompt />
+        ) : (
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as "sync" | "import" | "history")}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <TabsList
+              className={cn(
+                "h-11 w-full rounded-none border-b bg-transparent p-0",
+                tabCount === 3 ? "grid grid-cols-3" : "grid grid-cols-2",
+              )}
+            >
+              {(["sync", canImport ? "import" : null, "history"] as const)
+                .filter((value): value is "sync" | "import" | "history" => value !== null)
+                .map((value) => (
+                  <TabsTrigger
+                    key={value}
+                    value={value}
+                    className="h-full rounded-none border-0 border-b-2 border-transparent bg-transparent capitalize shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                  >
+                    {value}
+                  </TabsTrigger>
+                ))}
+            </TabsList>
+
+            <TabsContent value="sync" className="m-0 flex min-h-0 flex-1 flex-col">
+              <div className="flex items-center justify-between gap-3 border-b px-6 py-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+                  <Badge variant="secondary" className={cn("h-6 rounded-none border", healthTone)}>
+                    {healthLabel}
+                  </Badge>
+                  <Badge variant="secondary" className="h-6 rounded-none">
+                    {pendingCount} queued
+                  </Badge>
+                  {failedCount > 0 ? (
+                    <button type="button" onClick={() => setShowFailedOnly((value) => !value)}>
+                      <Badge
+                        variant="secondary"
+                        className={cn(
+                          "h-6 gap-1 rounded-none border-destructive/30 bg-destructive/10 text-destructive",
+                          showFailedOnly && "ring-1 ring-destructive/40",
+                        )}
+                      >
+                        <AlertCircle className="size-3" />
+                        {failedCount} failed
+                      </Badge>
+                    </button>
+                  ) : null}
+                  {lastSyncedAt ? (
+                    <span className="truncate text-muted-foreground">Last synced {formatRelative(lastSyncedAt)}</span>
+                  ) : null}
+                </div>
+                <Button
+                  onClick={handleSyncAll}
+                  disabled={syncingAll || loading || items.length === 0}
+                  size="sm"
+                  className="h-8 shrink-0"
+                >
+                  {syncingAll ? <Spinner className="mr-1.5 size-4" /> : <RefreshCcw className="mr-1.5 size-4" />}
+                  Sync now
+                </Button>
               </div>
-              <p className="mt-4 text-sm font-medium">Everything is in sync</p>
-              <p className="mt-1 max-w-xs text-sm text-muted-foreground">
-                New invoices, expenses, bills, and payments will appear here until QuickBooks accepts them.
-              </p>
-            </div>
-          ) : (
-            <div className="divide-y">
-              {sections.map((section) => (
-                <section key={section.key}>
-                  <div className="flex items-center justify-between gap-2 bg-muted/30 px-6 py-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{section.label}</span>
-                      <span className="text-xs text-muted-foreground">{section.items.length}</span>
-                    </div>
-                    <span className="text-xs tabular-nums text-muted-foreground">{formatMoney(section.total)}</span>
+              <ScrollArea className="flex-1">
+                {loading && items.length === 0 ? (
+                  <ListSkeleton />
+                ) : items.length === 0 ? (
+                  <CenteredState
+                    tone="success"
+                    icon={<Check className="size-5" />}
+                    title="Everything is in sync"
+                    body="New invoices, expenses, bills, and payments will appear here until QuickBooks accepts them."
+                  />
+                ) : sections.length === 0 ? (
+                  <CenteredState
+                    tone="muted"
+                    icon={<Check className="size-5" />}
+                    title="No failed items"
+                    body="Clear the filter to see everything that's still queued."
+                  />
+                ) : (
+                  <div className="divide-y">
+                    {sections.map((section) => (
+                      <section key={section.key}>
+                        <div className="flex items-center justify-between gap-2 bg-muted/30 px-6 py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">{section.label}</span>
+                            <span className="text-xs text-muted-foreground">{section.items.length}</span>
+                          </div>
+                          <span className="text-xs tabular-nums text-muted-foreground">{formatMoney(section.total)}</span>
+                        </div>
+                        <ul>
+                          {section.items.map((item) => (
+                            <SyncRow
+                              key={`${item.entityType}:${item.id}`}
+                              item={item}
+                              syncing={syncingId === item.id}
+                              disabled={Boolean(syncingId) || syncingAll}
+                              onSync={() => handleSyncOne(item)}
+                              onOpen={item.entityType === "invoice" && onOpenInvoice ? () => onOpenInvoice(item.id) : undefined}
+                            />
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
                   </div>
-                  <ul>
-                    {section.items.map((item) => (
-                      <SyncRow
-                        key={`${item.entityType}:${item.id}`}
-                        item={item}
-                        syncing={syncingId === item.id}
-                        disabled={Boolean(syncingId) || syncingAll}
-                        onSync={() => handleSyncOne(item)}
-                        onOpen={item.entityType === "invoice" && onOpenInvoice ? () => onOpenInvoice(item.id) : undefined}
-                      />
+                )}
+              </ScrollArea>
+            </TabsContent>
+
+            {canImport && projectId ? (
+              <TabsContent value="import" className="m-0 flex min-h-0 flex-1 flex-col">
+                <QboImportPanel active={open && activeTab === "import"} projectId={projectId} projectName={projectName} onCancel={() => onOpenChange(false)} />
+              </TabsContent>
+            ) : null}
+
+            <TabsContent value="history" className="m-0 flex min-h-0 flex-1 flex-col">
+              <ScrollArea className="flex-1">
+                {historyLoading && history.length === 0 ? (
+                  <ListSkeleton />
+                ) : history.length === 0 ? (
+                  <CenteredState
+                    tone="muted"
+                    icon={<Check className="size-5" />}
+                    title="No QuickBooks history yet"
+                    body="Synced and imported records will appear here."
+                  />
+                ) : (
+                  <ul className="divide-y">
+                    {history.map((item) => (
+                      <li key={item.id} className="flex items-center gap-3 px-6 py-3">
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            item.status === "error" ? "bg-destructive" : "bg-emerald-500",
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{item.label}</p>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                            {item.entityType.replaceAll("_", " ")} · {item.direction} · {item.status}
+                            {item.qboId ? ` · QBO ${item.qboId}` : ""}
+                          </p>
+                          {item.error ? <p className="mt-0.5 truncate text-xs text-destructive">{item.error}</p> : null}
+                        </div>
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatRelative(item.syncedAt)}</span>
+                      </li>
                     ))}
                   </ul>
-                </section>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
-        </TabsContent>
-        {canImport && projectId ? (
-          <TabsContent value="import" className="m-0 flex min-h-0 flex-1 flex-col">
-            <QboImportPanel active={open && activeTab === "import"} projectId={projectId} projectName={projectName} />
-          </TabsContent>
-        ) : null}
-        <TabsContent value="history" className="m-0 flex min-h-0 flex-1 flex-col">
-          <div className="border-b bg-muted/20 px-6 py-2 text-xs text-muted-foreground">
-            Recent QuickBooks sync and import activity.
-          </div>
-          <ScrollArea className="flex-1">
-            {historyLoading && history.length === 0 ? (
-              <div className="space-y-3 p-6">
-                {Array.from({ length: 4 }).map((_, index) => (
-                  <div key={index} className="h-14 animate-pulse bg-muted/60" />
-                ))}
-              </div>
-            ) : history.length === 0 ? (
-              <div className="flex h-full min-h-80 flex-col items-center justify-center px-8 text-center">
-                <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <Check className="size-5" />
-                </div>
-                <p className="mt-4 text-sm font-medium">No QuickBooks history yet</p>
-                <p className="mt-1 max-w-xs text-sm text-muted-foreground">Synced and imported records will appear here.</p>
-              </div>
-            ) : (
-              <ul className="divide-y">
-                {history.map((item) => (
-                  <li key={item.id} className="flex items-center gap-3 px-6 py-3">
-                    <span className={cn("size-1.5 shrink-0 rounded-full", item.status === "error" ? "bg-destructive" : "bg-emerald-500")} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{item.label}</p>
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                        {item.entityType.replaceAll("_", " ")} · {item.direction} · {item.status}
-                        {item.qboId ? ` · QBO ${item.qboId}` : ""}
-                      </p>
-                      {item.error ? <p className="mt-0.5 truncate text-xs text-destructive">{item.error}</p> : null}
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground">{formatRelative(item.syncedAt)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </ScrollArea>
-        </TabsContent>
-        </Tabs>
+                )}
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
+        )}
       </SheetContent>
     </Sheet>
+  )
+}
+
+function ConnectPrompt() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
+      <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
+        <Plug className="size-5" />
+      </div>
+      <p className="mt-4 text-sm font-medium">QuickBooks isn't connected</p>
+      <p className="mt-1 max-w-xs text-sm text-muted-foreground">
+        Connect QuickBooks to push records and import existing transactions into Arc.
+      </p>
+      <Button asChild className="mt-5">
+        <Link href={SETTINGS_HREF}>
+          Open QuickBooks settings
+          <ExternalLink className="ml-1.5 size-4" />
+        </Link>
+      </Button>
+    </div>
+  )
+}
+
+function ListSkeleton() {
+  return (
+    <div className="space-y-3 p-6">
+      {Array.from({ length: 5 }).map((_, index) => (
+        <div key={index} className="h-14 animate-pulse bg-muted/60" />
+      ))}
+    </div>
+  )
+}
+
+function CenteredState({
+  tone,
+  icon,
+  title,
+  body,
+}: {
+  tone: "success" | "muted"
+  icon: React.ReactNode
+  title: string
+  body: string
+}) {
+  return (
+    <div className="flex h-full min-h-80 flex-col items-center justify-center px-8 text-center">
+      <div
+        className={cn(
+          "flex size-11 items-center justify-center rounded-full",
+          tone === "success"
+            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+            : "bg-muted text-muted-foreground",
+        )}
+      >
+        {icon}
+      </div>
+      <p className="mt-4 text-sm font-medium">{title}</p>
+      <p className="mt-1 max-w-xs text-sm text-muted-foreground">{body}</p>
+    </div>
   )
 }
 

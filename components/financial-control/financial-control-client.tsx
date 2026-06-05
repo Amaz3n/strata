@@ -5,14 +5,17 @@ import { format } from "date-fns"
 
 import type { PortfolioFinancialControlData, PortfolioFinancialRow } from "@/lib/financials/portfolio-control"
 import { agingBuckets } from "@/lib/financials/portfolio-control"
+import type { PortfolioTrustCenterData, TrustCenterQueueSummary } from "@/lib/financials/trust-center-types"
+import { TRUST_CENTER_QUEUE_LABELS } from "@/lib/financials/trust-center-types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ArrowRight, AlertTriangle, CheckCircle2, Clock, Wallet } from "@/components/icons"
+import { ArrowRight, AlertTriangle, CheckCircle2, Clock, ShieldCheck } from "@/components/icons"
 
 interface FinancialControlClientProps {
   data: PortfolioFinancialControlData
+  trustCenterData?: PortfolioTrustCenterData
 }
 
 const agingLabels: Record<(typeof agingBuckets)[number], string> = {
@@ -159,23 +162,117 @@ function RowTable({ rows, emptyLabel }: { rows: PortfolioFinancialRow[]; emptyLa
   )
 }
 
-export function FinancialControlClient({ data }: FinancialControlClientProps) {
+function TrustQueueList({ queues }: { queues: TrustCenterQueueSummary[] }) {
+  if (queues.length === 0) {
+    return (
+      <div className="border-b px-4 py-6 text-sm text-muted-foreground">
+        No Trust Center queues have open exceptions.
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid border-b sm:grid-cols-2 lg:grid-cols-4">
+      {queues.map((queue) => (
+        <div key={queue.kind} className="border-r border-b bg-background p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold">{queue.label}</p>
+            {statusBadge(queue.severity)}
+          </div>
+          <p className="mt-2 text-2xl font-semibold tabular-nums">{queue.count}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{formatMoney(queue.total_cents)} exposure</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function TrustProjectTable({ trustCenterData }: { trustCenterData?: PortfolioTrustCenterData }) {
+  const projects = trustCenterData?.projects ?? []
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <TrustQueueList queues={trustCenterData?.aggregate_queues ?? []} />
+      <div className="min-h-0 flex-1 overflow-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/40 hover:bg-muted/40">
+              <TableHead className="min-w-[240px] pl-4">Project</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Critical</TableHead>
+              <TableHead className="text-right">Warnings</TableHead>
+              <TableHead className="text-right">Info</TableHead>
+              <TableHead>Top Queue</TableHead>
+              <TableHead className="text-right">Exposure</TableHead>
+              <TableHead className="w-20 pr-4 text-right">Open</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {projects.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="h-48 text-center text-muted-foreground">
+                  No project Trust Center exceptions.
+                </TableCell>
+              </TableRow>
+            ) : (
+              projects.map((project) => (
+                <TableRow key={project.project_id}>
+                  <TableCell className="pl-4 font-medium">{project.project_name}</TableCell>
+                  <TableCell>
+                    {project.total_exception_count === 0 ? (
+                      <Badge variant="outline" className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+                        Clean
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+                        {project.total_exception_count} open
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums text-destructive">{project.critical_count}</TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums text-amber-600 dark:text-amber-400">{project.warning_count}</TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums">{project.info_count}</TableCell>
+                  <TableCell>
+                    {project.top_exception ? TRUST_CENTER_QUEUE_LABELS[project.top_exception] : "-"}
+                  </TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums">{formatMoney(project.total_exception_cents)}</TableCell>
+                  <TableCell className="pr-4 text-right">
+                    <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                      <Link href={project.href}>
+                        <ArrowRight className="h-4 w-4" />
+                        <span className="sr-only">Open project Trust Center</span>
+                      </Link>
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
+export function FinancialControlClient({ data, trustCenterData }: FinancialControlClientProps) {
   const { summary } = data
   const cashFlowTone = summary.cash_flow_30_day_cents < 0 ? "danger" : "success"
+  const trustExceptionCount = trustCenterData?.total_exception_count ?? 0
 
   return (
     <div className="flex min-h-full flex-col bg-background">
-      <div className="grid border-t sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid border-t sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
         <SummaryCard label="Open AR" value={formatMoney(summary.ar_open_cents)} detail={`${formatMoney(summary.ar_overdue_cents)} overdue`} />
         <SummaryCard label="Open AP" value={formatMoney(summary.ap_open_cents)} detail={`${formatMoney(summary.ap_due_soon_cents)} due in 30 days`} />
         <SummaryCard label="Ready to Invoice" value={formatMoney(summary.ready_to_invoice_cents)} detail="Approved costs across jobs" tone="success" />
         <SummaryCard label="Blocked" value={formatMoney(summary.blocked_payment_cents)} detail="Compliance, waivers, or coding" tone={summary.blocked_payment_cents > 0 ? "danger" : "success"} />
         <SummaryCard label="QBO Exceptions" value={String(summary.qbo_exception_count)} detail="Pending or failed syncs" tone={summary.qbo_exception_count > 0 ? "danger" : "success"} />
+        <SummaryCard label="Trust Exceptions" value={String(trustExceptionCount)} detail={`${trustCenterData?.clean_project_count ?? 0}/${trustCenterData?.total_project_count ?? 0} projects clean`} tone={trustExceptionCount > 0 ? "danger" : "success"} />
         <SummaryCard label="30-Day Net" value={formatMoney(summary.cash_flow_30_day_cents)} detail="AR due minus AP due" tone={cashFlowTone} />
         <div className="border-b bg-muted/20 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Controller Focus</p>
           <div className="mt-3 flex items-center gap-2 text-sm font-medium">
-            {summary.blocked_payment_cents > 0 || summary.qbo_exception_count > 0 ? (
+            {summary.blocked_payment_cents > 0 || summary.qbo_exception_count > 0 || trustExceptionCount > 0 ? (
               <AlertTriangle className="h-4 w-4 text-destructive" />
             ) : (
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -193,9 +290,10 @@ export function FinancialControlClient({ data }: FinancialControlClientProps) {
             <TabsTrigger value="ar">AR Aging</TabsTrigger>
             <TabsTrigger value="ap">AP Aging</TabsTrigger>
             <TabsTrigger value="qbo">QBO Sync</TabsTrigger>
+            <TabsTrigger value="trust">Trust Center</TabsTrigger>
           </TabsList>
           <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground sm:mt-0">
-            <Wallet className="h-4 w-4" />
+            {trustExceptionCount > 0 ? <AlertTriangle className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
             Company-wide financial control
           </div>
         </div>
@@ -216,6 +314,9 @@ export function FinancialControlClient({ data }: FinancialControlClientProps) {
         </TabsContent>
         <TabsContent value="qbo" className="m-0 flex min-h-0 flex-1 flex-col">
           <RowTable rows={data.qboRows} emptyLabel="No QBO sync exceptions." />
+        </TabsContent>
+        <TabsContent value="trust" className="m-0 flex min-h-0 flex-1 flex-col">
+          <TrustProjectTable trustCenterData={trustCenterData} />
         </TabsContent>
       </Tabs>
     </div>

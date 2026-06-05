@@ -26,6 +26,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -36,7 +38,7 @@ import {
   rejectInboxTimeEntryAction,
   sendInboxTimeEntryClientApprovalAction,
 } from "@/app/(app)/projects/[id]/cost-inbox/actions"
-import { generateInvoiceFromCostsAction } from "@/app/(app)/projects/[id]/financials/actions"
+import { createProjectBillingPeriodAction, generateInvoiceFromCostsAction } from "@/app/(app)/projects/[id]/financials/actions"
 import { cn } from "@/lib/utils"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 
@@ -46,19 +48,29 @@ interface CostCodeOption {
   name?: string | null
 }
 
+interface BillingPeriodOption {
+  id: string
+  name: string
+  period_start: string
+  period_end: string
+  status: "open" | "reviewing" | "invoiced" | "closed" | "reopened"
+}
+
 interface ReviewQueueTableProps {
   projectId: string
   timeEntries: any[]
   expenses: any[]
   vendorBills: VendorBillSummary[]
   openCosts: any[]
+  billingPeriods?: BillingPeriodOption[]
   costCodes: CostCodeOption[]
+  costCodesEnabled?: boolean
   loadErrors?: string[]
 }
 
 type QueueState = "needs-review" | "blocked" | "awaiting-client-approval" | "ready-to-invoice" | "billed"
 type QueueKind = "time" | "expense" | "vendor_bill" | "billable_cost"
-type TabValue = "all" | "needs-review" | "blocked" | "awaiting-client-approval" | "ready-to-invoice"
+type TabValue = "all" | "needs-review" | "blocked" | "awaiting-client-approval" | "ready-to-invoice" | "billed"
 
 interface QueueItem {
   id: string
@@ -76,11 +88,19 @@ interface QueueItem {
   needsCostCode: boolean
   needsRate?: boolean
   needsReceipt?: boolean
+  proofComplete?: boolean
+  paidEligible?: boolean
+  blockingReasons: string[]
+  billingPeriodName?: string | null
+  billingPeriodStatus?: string | null
+  lateToBillingPeriodName?: string | null
+  recentInvoice?: { id: string; invoice_number?: string | null; status?: string | null } | null
   canChooseCostCode: boolean
   sourceRecord: any
 }
 
 const NO_COST_CODE = "__none__"
+const NO_BILLING_PERIOD = "__none__"
 
 export function ReviewQueueTable({
   projectId,
@@ -88,7 +108,9 @@ export function ReviewQueueTable({
   expenses,
   vendorBills,
   openCosts,
+  billingPeriods = [],
   costCodes,
+  costCodesEnabled = true,
   loadErrors = [],
 }: ReviewQueueTableProps) {
   const router = useRouter()
@@ -100,6 +122,14 @@ export function ReviewQueueTable({
   const [activeTab, setActiveTab] = useState<TabValue>("needs-review")
   const [invoicePreview, setInvoicePreview] = useState<any | null>(null)
   const [invoicePreviewCostIds, setInvoicePreviewCostIds] = useState<string[]>([])
+  const [periodDialogOpen, setPeriodDialogOpen] = useState(false)
+  const [periodName, setPeriodName] = useState("")
+  const [periodStart, setPeriodStart] = useState("")
+  const [periodEnd, setPeriodEnd] = useState("")
+  const [billingPeriodId, setBillingPeriodId] = useState<string>(() => {
+    const activePeriod = billingPeriods.find((period) => ["open", "reviewing", "reopened"].includes(period.status))
+    return activePeriod?.id ?? NO_BILLING_PERIOD
+  })
   const [isPending, startTransition] = useTransition()
 
   const costCodeNames = useMemo(() => new Map(costCodes.map((code) => [code.id, formatCostCode(code)])), [costCodes])
@@ -109,12 +139,12 @@ export function ReviewQueueTable({
 
     for (const entry of timeEntries) {
       const missingRate = Number(entry.base_rate_cents ?? 0) <= 0
-      const missingCostCode = !entry.cost_code_id
+      const missingCostCode = costCodesEnabled && !entry.cost_code_id
       rows.push({
         id: `time:${entry.id}`,
         recordId: entry.id,
         kind: "time",
-        tabState: entry.status === "pm_approved" ? "awaiting-client-approval" : missingRate || missingCostCode ? "blocked" : "needs-review",
+        tabState: entry.queue_state ?? (entry.status === "pm_approved" ? "awaiting-client-approval" : missingRate || missingCostCode ? "blocked" : "needs-review"),
         typeLabel: "Time",
         source: entry.worker_name ?? "Crew time",
         description: entry.notes || `${Number(entry.hours ?? 0).toFixed(2)} hours`,
@@ -125,20 +155,27 @@ export function ReviewQueueTable({
         initialCostCodeLabel: entry.cost_code_id ? costCodeNames.get(entry.cost_code_id) ?? "Cost code" : "Choose One",
         needsCostCode: missingCostCode,
         needsRate: missingRate,
-        needsReceipt: false,
-        canChooseCostCode: true,
+        needsReceipt: entry.proof_complete === false,
+        proofComplete: entry.proof_complete,
+        paidEligible: entry.paid_eligible,
+        blockingReasons: entry.blocking_reasons ?? [],
+        billingPeriodName: entry.billing_period_name ?? null,
+        billingPeriodStatus: entry.billing_period_status ?? null,
+        lateToBillingPeriodName: entry.late_to_billing_period_name ?? null,
+        recentInvoice: null,
+        canChooseCostCode: costCodesEnabled,
         sourceRecord: entry,
       })
     }
 
     for (const expense of expenses) {
-      const missingCostCode = !expense.cost_code_id
+      const missingCostCode = costCodesEnabled && !expense.cost_code_id
       const missingReceipt = !expense.receipt_file_id
       rows.push({
         id: `expense:${expense.id}`,
         recordId: expense.id,
         kind: "expense",
-        tabState: expense.status === "draft" || missingCostCode || missingReceipt ? "blocked" : "needs-review",
+        tabState: expense.queue_state ?? (expense.status === "draft" || missingCostCode || missingReceipt ? "blocked" : "needs-review"),
         typeLabel: "Expense",
         source: expense.vendor_company?.name ?? expense.vendor_name_text ?? "Expense",
         description: expense.description ?? "Project expense",
@@ -149,8 +186,15 @@ export function ReviewQueueTable({
         initialCostCodeLabel: expense.cost_code?.code ? `${expense.cost_code.code} ${expense.cost_code.name ?? ""}`.trim() : "Choose One",
         needsCostCode: missingCostCode,
         needsRate: false,
-        needsReceipt: missingReceipt,
-        canChooseCostCode: true,
+        needsReceipt: expense.proof_complete === false || missingReceipt,
+        proofComplete: expense.proof_complete,
+        paidEligible: expense.paid_eligible,
+        blockingReasons: expense.blocking_reasons ?? [],
+        billingPeriodName: expense.billing_period_name ?? null,
+        billingPeriodStatus: expense.billing_period_status ?? null,
+        lateToBillingPeriodName: expense.late_to_billing_period_name ?? null,
+        recentInvoice: null,
+        canChooseCostCode: costCodesEnabled,
         sourceRecord: expense,
       })
     }
@@ -159,12 +203,12 @@ export function ReviewQueueTable({
       const actualLines = bill.actual_lines ?? []
       const firstLine = actualLines[0]
       const hasMultipleLines = actualLines.length > 1
-      const isCoded = actualLines.length > 0 && actualLines.every((line) => Boolean(line.cost_code_id))
+      const isCoded = !costCodesEnabled || (actualLines.length > 0 && actualLines.every((line) => Boolean(line.cost_code_id)))
       rows.push({
         id: `vendor_bill:${bill.id}`,
         recordId: bill.id,
         kind: "vendor_bill",
-        tabState: isCoded ? "needs-review" : "blocked",
+        tabState: (bill as any).queue_state ?? (isCoded ? "needs-review" : "blocked"),
         typeLabel: "Vendor Bill",
         source: bill.company_name ?? "Vendor",
         description: bill.bill_number ?? bill.commitment_title ?? "Vendor bill",
@@ -175,8 +219,15 @@ export function ReviewQueueTable({
         initialCostCodeLabel: isCoded ? summarizeBillCostCodes(bill) : "Choose One",
         needsCostCode: !isCoded,
         needsRate: false,
-        needsReceipt: false,
-        canChooseCostCode: !hasMultipleLines,
+        needsReceipt: (bill as any).proof_complete === false,
+        proofComplete: (bill as any).proof_complete,
+        paidEligible: (bill as any).paid_eligible,
+        blockingReasons: (bill as any).blocking_reasons ?? [],
+        billingPeriodName: (bill as any).billing_period_name ?? null,
+        billingPeriodStatus: (bill as any).billing_period_status ?? null,
+        lateToBillingPeriodName: (bill as any).late_to_billing_period_name ?? null,
+        recentInvoice: null,
+        canChooseCostCode: costCodesEnabled && !hasMultipleLines,
         sourceRecord: bill,
       })
     }
@@ -186,7 +237,7 @@ export function ReviewQueueTable({
         id: `billable_cost:${cost.id}`,
         recordId: cost.id,
         kind: "billable_cost",
-        tabState: "ready-to-invoice",
+        tabState: cost.queue_state ?? (cost.status === "billed" ? "billed" : "ready-to-invoice"),
         typeLabel: "Billable Cost",
         source: formatSourceType(cost.source_type),
         description: cost.description ?? "Billable cost",
@@ -197,7 +248,14 @@ export function ReviewQueueTable({
         initialCostCodeLabel: cost.cost_code_code ? `${cost.cost_code_code} ${cost.cost_code_name ?? ""}`.trim() : "Choose One",
         needsCostCode: false,
         needsRate: false,
-        needsReceipt: false,
+        needsReceipt: cost.proof_complete === false,
+        proofComplete: cost.proof_complete,
+        paidEligible: cost.paid_eligible,
+        blockingReasons: cost.blocking_reasons ?? [],
+        billingPeriodName: cost.billing_period_name ?? null,
+        billingPeriodStatus: cost.billing_period_status ?? null,
+        lateToBillingPeriodName: cost.late_to_billing_period_name ?? null,
+        recentInvoice: cost.recent_invoice ?? null,
         canChooseCostCode: false,
         sourceRecord: cost,
       })
@@ -210,18 +268,20 @@ export function ReviewQueueTable({
         if (stateOrder !== 0) return stateOrder
         return String(b.date ?? "").localeCompare(String(a.date ?? ""))
       })
-  }, [completedIds, costCodeNames, expenses, openCosts, projectId, timeEntries, vendorBills])
+  }, [completedIds, costCodeNames, costCodesEnabled, expenses, openCosts, projectId, timeEntries, vendorBills])
 
   const needsReviewItems = items.filter((item) => item.tabState === "needs-review")
   const blockedItems = items.filter((item) => item.tabState === "blocked")
   const awaitingClientApprovalItems = items.filter((item) => item.tabState === "awaiting-client-approval")
   const readyToInvoiceItems = items.filter((item) => item.tabState === "ready-to-invoice")
+  const billedItems = items.filter((item) => item.tabState === "billed")
   const tabCounts: Record<TabValue, number> = {
     all: items.length,
     "needs-review": needsReviewItems.length,
     blocked: blockedItems.length,
     "awaiting-client-approval": awaitingClientApprovalItems.length,
     "ready-to-invoice": readyToInvoiceItems.length,
+    billed: billedItems.length,
   }
   const visibleItems =
     activeTab === "all"
@@ -232,7 +292,9 @@ export function ReviewQueueTable({
           ? blockedItems
           : activeTab === "awaiting-client-approval"
             ? awaitingClientApprovalItems
-            : readyToInvoiceItems
+            : activeTab === "ready-to-invoice"
+              ? readyToInvoiceItems
+              : billedItems
   const selectedItems = items.filter((item) => selectedIds.has(item.id))
   const selectedReadyItems = selectedItems.filter(isReady)
   const selectedRejectableItems = selectedItems.filter((item) => item.kind === "time" || item.kind === "expense")
@@ -247,6 +309,7 @@ export function ReviewQueueTable({
     missingCostCodeCount: items.filter((item) => item.needsCostCode).length,
     missingReceiptCount: items.filter((item) => item.needsReceipt).length,
     missingRateCount: items.filter((item) => item.needsRate).length,
+    lateCostCount: items.filter((item) => item.lateToBillingPeriodName).length,
   }
 
   function selectedCostCodeId(item: QueueItem) {
@@ -255,11 +318,12 @@ export function ReviewQueueTable({
 
   function isReady(item: QueueItem) {
     if (item.tabState === "ready-to-invoice" || item.tabState === "billed") return false
+    if (item.blockingReasons.length > 0) return false
     if (item.kind === "time" && item.sourceRecord.status !== "submitted") return false
     if (item.kind === "expense" && item.sourceRecord.status !== "submitted") return false
     if (item.kind === "vendor_bill" && item.sourceRecord.status !== "pending") return false
-    if (item.needsRate || item.needsReceipt) return false
-    return selectedCostCodeId(item) !== NO_COST_CODE
+    if (item.needsRate || item.needsReceipt || item.paidEligible === false) return false
+    return !costCodesEnabled || selectedCostCodeId(item) !== NO_COST_CODE
   }
 
   function toggleSelected(itemId: string, checked: boolean) {
@@ -385,6 +449,29 @@ export function ReviewQueueTable({
     toast.success(`Cost code applied to ${selectedAssignableItems.length} selected item${selectedAssignableItems.length === 1 ? "" : "s"}`)
   }
 
+  function createBillingPeriod() {
+    if (!periodStart || !periodEnd) return
+    startTransition(async () => {
+      try {
+        const period = await createProjectBillingPeriodAction({
+          projectId,
+          name: periodName.trim() || undefined,
+          periodStart,
+          periodEnd,
+        })
+        setBillingPeriodId(period.id)
+        setPeriodDialogOpen(false)
+        setPeriodName("")
+        setPeriodStart("")
+        setPeriodEnd("")
+        toast.success("Billing period created")
+        router.refresh()
+      } catch (error: any) {
+        toast.error("Could not create billing period", { description: error?.message })
+      }
+    })
+  }
+
   function createInvoiceFromSelected() {
     if (selectedInvoiceItems.length === 0) return
     startTransition(async () => {
@@ -393,7 +480,8 @@ export function ReviewQueueTable({
         const costIds = selectedInvoiceItems.map((item) => item.recordId)
         const result = await generateInvoiceFromCostsAction({
           projectId,
-          dateRange: { from: "1970-01-01", to: today },
+          billingPeriodId: billingPeriodId === NO_BILLING_PERIOD ? null : billingPeriodId,
+          dateRange: dateRangeForSelectedPeriod(billingPeriods, billingPeriodId, today),
           billableCostIds: costIds,
           groupBy: "cost_code",
           includeAllowanceVariances: false,
@@ -414,7 +502,8 @@ export function ReviewQueueTable({
         const today = new Date().toISOString().slice(0, 10)
         const result = await generateInvoiceFromCostsAction({
           projectId,
-          dateRange: { from: "1970-01-01", to: today },
+          billingPeriodId: billingPeriodId === NO_BILLING_PERIOD ? null : billingPeriodId,
+          dateRange: dateRangeForSelectedPeriod(billingPeriods, billingPeriodId, today),
           billableCostIds: invoicePreviewCostIds,
           groupBy: "cost_code",
           includeAllowanceVariances: false,
@@ -440,6 +529,12 @@ export function ReviewQueueTable({
     <div className="w-full">
       <InboxWarnings errors={loadErrors} />
       <InboxSummaryStrip summary={summary} />
+      <BillingPeriodControl
+        billingPeriods={billingPeriods}
+        billingPeriodId={billingPeriodId}
+        onBillingPeriodChange={setBillingPeriodId}
+        onCreateClick={() => setPeriodDialogOpen(true)}
+      />
       <BulkActionBar
         selectedCount={selectedItems.length}
         readyCount={selectedReadyItems.length}
@@ -447,9 +542,12 @@ export function ReviewQueueTable({
         assignableCount={selectedAssignableItems.length}
         invoiceCount={selectedInvoiceItems.length}
         invoiceTotalCents={selectedInvoiceItems.reduce((sum, item) => sum + item.amountCents, 0)}
+        billingPeriods={billingPeriods}
+        billingPeriodId={billingPeriodId}
         costCodes={costCodes}
         bulkCostCodeId={bulkCostCodeId}
         isPending={isPending}
+        onBillingPeriodChange={setBillingPeriodId}
         onBulkCostCodeChange={setBulkCostCodeId}
         onApplyBulkCostCode={applyBulkCostCode}
         onApproveSelected={approveSelected}
@@ -464,12 +562,14 @@ export function ReviewQueueTable({
           <InboxTabTrigger value="blocked" label="Blocked" count={tabCounts.blocked} />
           <InboxTabTrigger value="awaiting-client-approval" label="Client Approval" count={tabCounts["awaiting-client-approval"]} />
           <InboxTabTrigger value="ready-to-invoice" label="Ready to Invoice" count={tabCounts["ready-to-invoice"]} />
+          <InboxTabTrigger value="billed" label="Billed" count={tabCounts.billed} />
         </TabsList>
       </Tabs>
 
       <QueueTable
         items={visibleItems}
         costCodes={costCodes}
+        costCodesEnabled={costCodesEnabled}
         selectedIds={selectedIds}
         isPending={isPending}
         selectedCostCodeId={selectedCostCodeId}
@@ -487,6 +587,7 @@ export function ReviewQueueTable({
       <ReviewQueueDetailSheet
         item={detailItem}
         costCodes={costCodes}
+        costCodesEnabled={costCodesEnabled}
         selectedCostCodeId={selectedCostCodeId}
         isReady={isReady}
         isPending={isPending}
@@ -512,6 +613,38 @@ export function ReviewQueueTable({
         }}
         onConfirm={confirmInvoiceFromPreview}
       />
+      <Dialog open={periodDialogOpen} onOpenChange={setPeriodDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>New billing period</DialogTitle>
+            <DialogDescription>Create a period for approved-cost billing.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="billing-period-name">Name</Label>
+              <Input id="billing-period-name" value={periodName} onChange={(event) => setPeriodName(event.target.value)} placeholder="June 2026" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="billing-period-start">Start</Label>
+                <Input id="billing-period-start" type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="billing-period-end">End</Label>
+                <Input id="billing-period-end" type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={isPending} onClick={() => setPeriodDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={isPending || !periodStart || !periodEnd} onClick={createBillingPeriod}>
+              Create period
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -598,12 +731,13 @@ function InboxTabTrigger({ value, label, count }: { value: TabValue; label: stri
 function InboxWarnings({ errors }: { errors: string[] }) {
   if (errors.length === 0) return null
   return (
-    <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6 lg:px-8">
-      <div className="flex gap-2">
+    <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6 lg:px-8 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
+      <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <div>
-          <p className="font-medium">Some financial data could not load.</p>
-          <p className="mt-1 text-amber-800">{errors.join(" · ")}</p>
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-medium">Some financial data could not load.</span>
+          <span className="text-amber-800/40 dark:text-amber-400/30">•</span>
+          <span className="text-amber-800 dark:text-amber-300">{errors.join(" · ")}</span>
         </div>
       </div>
     </div>
@@ -622,6 +756,7 @@ function InboxSummaryStrip({
     missingCostCodeCount: number
     missingReceiptCount: number
     missingRateCount: number
+    lateCostCount: number
   }
 }) {
   return (
@@ -629,7 +764,61 @@ function InboxSummaryStrip({
       <SummaryTile label="Needs review" value={String(summary.needsReviewCount)} />
       <SummaryTile label="Blocked" value={String(summary.blockedCount)} detail={formatBlockerDetail(summary)} tone={summary.blockedCount > 0 ? "warning" : "default"} />
       <SummaryTile label="Client approval" value={String(summary.awaitingClientApprovalCount)} />
-      <SummaryTile label="Ready to invoice" value={formatCurrency(summary.readyToInvoiceCents)} detail={`${summary.readyToInvoiceCount} cost${summary.readyToInvoiceCount === 1 ? "" : "s"}`} tone={summary.readyToInvoiceCents > 0 ? "success" : "default"} />
+      <SummaryTile
+        label="Ready to invoice"
+        value={formatCurrency(summary.readyToInvoiceCents)}
+        detail={`${summary.readyToInvoiceCount} cost${summary.readyToInvoiceCount === 1 ? "" : "s"}${summary.lateCostCount > 0 ? ` · ${summary.lateCostCount} late` : ""}`}
+        tone={summary.readyToInvoiceCents > 0 ? "success" : "default"}
+      />
+    </div>
+  )
+}
+
+function BillingPeriodControl({
+  billingPeriods,
+  billingPeriodId,
+  onBillingPeriodChange,
+  onCreateClick,
+}: {
+  billingPeriods: BillingPeriodOption[]
+  billingPeriodId: string
+  onBillingPeriodChange: (value: string) => void
+  onCreateClick: () => void
+}) {
+  const selected = billingPeriods.find((period) => period.id === billingPeriodId)
+
+  return (
+    <div className="flex flex-col gap-2 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">Billing period</span>
+        {selected ? (
+          <Badge variant="outline" className="capitalize">
+            {selected.status}
+          </Badge>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={billingPeriodId} onValueChange={onBillingPeriodChange}>
+          <SelectTrigger className="h-9 w-[260px] bg-background">
+            <SelectValue placeholder="Billing period" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_BILLING_PERIOD}>No period</SelectItem>
+            {billingPeriods.map((period) => (
+              <SelectItem
+                key={period.id}
+                value={period.id}
+                disabled={period.status === "closed" || period.status === "invoiced"}
+              >
+                {period.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button variant="outline" size="sm" onClick={onCreateClick}>
+          New period
+        </Button>
+      </div>
     </div>
   )
 }
@@ -669,9 +858,12 @@ function BulkActionBar({
   assignableCount,
   invoiceCount,
   invoiceTotalCents,
+  billingPeriods,
+  billingPeriodId,
   costCodes,
   bulkCostCodeId,
   isPending,
+  onBillingPeriodChange,
   onBulkCostCodeChange,
   onApplyBulkCostCode,
   onApproveSelected,
@@ -685,9 +877,12 @@ function BulkActionBar({
   assignableCount: number
   invoiceCount: number
   invoiceTotalCents: number
+  billingPeriods: BillingPeriodOption[]
+  billingPeriodId: string
   costCodes: CostCodeOption[]
   bulkCostCodeId: string
   isPending: boolean
+  onBillingPeriodChange: (value: string) => void
   onBulkCostCodeChange: (value: string) => void
   onApplyBulkCostCode: () => void
   onApproveSelected: () => void
@@ -724,6 +919,25 @@ function BulkActionBar({
             </Button>
           </>
         ) : null}
+        {invoiceCount > 0 ? (
+          <Select value={billingPeriodId} onValueChange={onBillingPeriodChange}>
+            <SelectTrigger className="h-9 w-[240px] bg-background">
+              <SelectValue placeholder="Billing period" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_BILLING_PERIOD}>No period</SelectItem>
+              {billingPeriods.map((period) => (
+                <SelectItem
+                  key={period.id}
+                  value={period.id}
+                  disabled={period.status === "closed" || period.status === "invoiced"}
+                >
+                  {period.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
         <Button variant="outline" size="sm" disabled={isPending || readyCount === 0} onClick={onApproveSelected}>
           Approve selected
         </Button>
@@ -744,6 +958,7 @@ function BulkActionBar({
 function QueueTable({
   items,
   costCodes,
+  costCodesEnabled,
   selectedIds,
   isPending,
   selectedCostCodeId,
@@ -758,6 +973,7 @@ function QueueTable({
 }: {
   items: QueueItem[]
   costCodes: CostCodeOption[]
+  costCodesEnabled: boolean
   selectedIds: Set<string>
   isPending: boolean
   selectedCostCodeId: (item: QueueItem) => string
@@ -775,7 +991,7 @@ function QueueTable({
 
   return (
     <div className="w-full overflow-x-auto">
-      <Table className="min-w-[860px] border border-border">
+      <Table className={cn("border border-border", costCodesEnabled ? "min-w-[860px]" : "min-w-[720px]")}>
         <TableHeader>
           <TableRow className="border-b">
             <TableHead className="w-14 border-r p-0 text-center align-middle">
@@ -788,7 +1004,7 @@ function QueueTable({
               </div>
             </TableHead>
             <TableHead className="border-r">Source</TableHead>
-            <TableHead className="w-[340px] border-r">Cost code</TableHead>
+            {costCodesEnabled ? <TableHead className="w-[340px] border-r">Cost code</TableHead> : null}
             <TableHead className="w-[140px] border-r text-right">Date</TableHead>
             <TableHead className="w-[150px] border-r text-right">Amount</TableHead>
             <TableHead className="w-28 text-center" colSpan={2}>Actions</TableHead>
@@ -814,27 +1030,38 @@ function QueueTable({
                   </div>
                 </TableCell>
                 <TableCell className="border-r font-medium">
-                  {item.source}
+                  <div>{item.source}</div>
+                  <div className="mt-1 flex flex-wrap gap-1 text-xs font-normal text-muted-foreground">
+                    {item.billingPeriodName ? <span>{item.billingPeriodName}</span> : null}
+                    {item.lateToBillingPeriodName ? <span className="text-amber-700">Late to {item.lateToBillingPeriodName}</span> : null}
+                    {item.recentInvoice ? (
+                      <Link className="text-foreground underline-offset-2 hover:underline" href={`/projects/${item.sourceRecord.project_id ?? ""}/financials/receivables?invoice=${item.recentInvoice.id}`}>
+                        {item.recentInvoice.invoice_number ?? "Invoice"}
+                      </Link>
+                    ) : null}
+                  </div>
                 </TableCell>
-                <TableCell className="border-r p-0" onClick={(event) => event.stopPropagation()}>
-                  {item.canChooseCostCode ? (
-                    <Select value={selectedCostCodeId(item)} onValueChange={(value) => onCostCodeChange(item, value)}>
-                      <SelectTrigger className="h-14 w-full rounded-none border-0 bg-transparent px-3 shadow-none focus:ring-0">
-                        <SelectValue placeholder="Choose One" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NO_COST_CODE}>Choose One</SelectItem>
-                        {costCodes.map((code) => (
-                          <SelectItem key={code.id} value={code.id}>
-                            {formatCostCode(code)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <span className="flex h-14 items-center px-3 text-sm text-muted-foreground">{item.initialCostCodeLabel}</span>
-                  )}
-                </TableCell>
+                {costCodesEnabled ? (
+                  <TableCell className="border-r p-0" onClick={(event) => event.stopPropagation()}>
+                    {item.canChooseCostCode ? (
+                      <Select value={selectedCostCodeId(item)} onValueChange={(value) => onCostCodeChange(item, value)}>
+                        <SelectTrigger className="h-14 w-full rounded-none border-0 bg-transparent px-3 shadow-none focus:ring-0">
+                          <SelectValue placeholder="Choose One" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NO_COST_CODE}>Choose One</SelectItem>
+                          {costCodes.map((code) => (
+                            <SelectItem key={code.id} value={code.id}>
+                              {formatCostCode(code)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <span className="flex h-14 items-center px-3 text-sm text-muted-foreground">{item.initialCostCodeLabel}</span>
+                    )}
+                  </TableCell>
+                ) : null}
                 <TableCell className="border-r text-right tabular-nums text-muted-foreground">{formatDate(item.date)}</TableCell>
                 <TableCell className="border-r text-right font-medium tabular-nums">{formatCurrency(item.amountCents)}</TableCell>
                 <TableCell className="w-14 border-r p-0 text-center" onClick={(event) => event.stopPropagation()}>
@@ -849,7 +1076,7 @@ function QueueTable({
                           : "border-muted bg-muted text-muted-foreground opacity-70",
                       )}
                       disabled={isPending || !ready}
-                      title={ready ? "Approve" : disabledReason(item, selectedCostCodeId(item))}
+                      title={ready ? "Approve" : disabledReason(item, selectedCostCodeId(item), costCodesEnabled)}
                       onClick={() => onApprove(item)}
                     >
                       <Check className="h-4 w-4" />
@@ -910,6 +1137,7 @@ function QueueTable({
 function ReviewQueueDetailSheet({
   item,
   costCodes,
+  costCodesEnabled,
   selectedCostCodeId,
   isReady,
   isPending,
@@ -921,6 +1149,7 @@ function ReviewQueueDetailSheet({
 }: {
   item: QueueItem | null
   costCodes: CostCodeOption[]
+  costCodesEnabled: boolean
   selectedCostCodeId: (item: QueueItem) => string
   isReady: (item: QueueItem) => boolean
   isPending: boolean
@@ -952,7 +1181,7 @@ function ReviewQueueDetailSheet({
               <DetailBlock label="Amount" value={formatCurrency(item.amountCents)} alignRight />
             </div>
 
-            <div className="space-y-2">
+            {costCodesEnabled ? <div className="space-y-2">
               <p className="text-xs font-medium uppercase text-muted-foreground">Cost code</p>
               {item.canChooseCostCode ? (
                 <Select value={selectedCostCodeId(item)} onValueChange={(value) => onCostCodeChange(item, value)}>
@@ -971,16 +1200,32 @@ function ReviewQueueDetailSheet({
               ) : (
                 <p className="text-sm">{item.initialCostCodeLabel}</p>
               )}
-              {disabledReason(item, selectedCostCodeId(item)) ? (
-                <p className="text-xs text-muted-foreground">{disabledReason(item, selectedCostCodeId(item))}</p>
+              {disabledReason(item, selectedCostCodeId(item), costCodesEnabled) ? (
+                <p className="text-xs text-muted-foreground">{disabledReason(item, selectedCostCodeId(item), costCodesEnabled)}</p>
               ) : null}
-            </div>
+            </div> : null}
 
             <div className="rounded-md border">
               <DetailRow label="Queue state" value={item.tabState.replace("-", " ")} />
               <DetailRow label="Record type" value={item.typeLabel} />
+              {item.billingPeriodName ? <DetailRow label="Billing period" value={item.billingPeriodName} /> : null}
+              {item.lateToBillingPeriodName ? <DetailRow label="Late cost" value={item.lateToBillingPeriodName} /> : null}
+              <DetailRow label="Proof" value={item.proofComplete === false ? "missing" : "complete"} />
+              <DetailRow label="Paid rule" value={item.paidEligible === false ? "not eligible" : "eligible"} />
               <DetailRow label="Source record" value={item.recordId.slice(0, 8)} />
             </div>
+
+            {item.blockingReasons.length > 0 ? (
+              <div className="space-y-2 border-t pt-5">
+                <p className="text-xs font-medium uppercase text-muted-foreground">Blocked by</p>
+                {item.blockingReasons.map((reason) => (
+                  <div key={reason} className="flex gap-2 text-sm text-amber-800">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{reason}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2 border-t pt-5">
               <Button asChild variant="outline">
@@ -1050,15 +1295,17 @@ function TypeBadge({ item }: { item: QueueItem }) {
   )
 }
 
-function disabledReason(item: QueueItem, selectedCostCodeId: string) {
+function disabledReason(item: QueueItem, selectedCostCodeId: string, costCodesEnabled = true) {
+  if (item.blockingReasons.length > 0) return item.blockingReasons[0] ?? "Blocked"
   if (item.tabState === "ready-to-invoice") return "Ready to invoice"
   if (item.tabState === "billed") return "Billed"
   if (item.kind === "time" && item.sourceRecord.status !== "submitted") return "Waiting on client approval"
   if (item.kind === "expense" && item.sourceRecord.status !== "submitted") return "Submit expense before approving"
   if (item.kind === "vendor_bill" && item.sourceRecord.status !== "pending") return "Bill is not pending"
-  if (selectedCostCodeId === NO_COST_CODE) return "Choose a cost code"
+  if (costCodesEnabled && selectedCostCodeId === NO_COST_CODE) return "Choose a cost code"
   if (item.needsRate) return "Set a rate from the time entry"
   if (item.needsReceipt) return "Add a receipt before approving"
+  if (item.paidEligible === false) return "Paid-cost rule is not met"
   return ""
 }
 
@@ -1084,6 +1331,12 @@ function stateRank(state: QueueItem["tabState"]) {
   if (state === "awaiting-client-approval") return 2
   if (state === "ready-to-invoice") return 3
   return 4
+}
+
+function dateRangeForSelectedPeriod(periods: BillingPeriodOption[], billingPeriodId: string, today: string) {
+  const period = periods.find((item) => item.id === billingPeriodId)
+  if (!period) return { from: "1970-01-01", to: today }
+  return { from: period.period_start, to: period.period_end }
 }
 
 function formatBlockerDetail(summary: { missingCostCodeCount: number; missingReceiptCount: number; missingRateCount: number }) {

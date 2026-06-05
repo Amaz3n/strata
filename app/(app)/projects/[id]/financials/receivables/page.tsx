@@ -1,9 +1,11 @@
 import { Suspense } from "react"
 
 import { fetchReceivablesTabDataAction } from "@/app/(app)/projects/[id]/financials/actions"
+import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
 import { ReceivablesTab } from "@/components/financials/receivables-tab"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsReceivablesData } from "../page-data"
 
 export const dynamic = "force-dynamic"
@@ -23,7 +25,11 @@ export default async function FinancialsReceivablesPage({ params }: PageProps) {
 }
 
 async function FinancialsReceivablesData({ id }: { id: string }) {
-  const [financialsData, receivablesData] = await Promise.all([loadFinancialsReceivablesData(id), fetchReceivablesTabDataAction(id)])
+  const [financialsData, receivablesData, setupStatus] = await Promise.all([
+    loadFinancialsReceivablesData(id),
+    fetchReceivablesTabDataAction(id),
+    getProjectFinancialSetupStatusForProject(id),
+  ])
   const { project, scheduleItems, contract, draws, retainage, approvedChangeOrdersTotalCents, builderInfo } = financialsData
 
   return (
@@ -36,6 +42,7 @@ async function FinancialsReceivablesData({ id }: { id: string }) {
       ]}
       fullBleed
     >
+      <FinancialSetupStatusBanner setup={setupStatus} />
       <ReceivablesTab
         projectId={project.id}
         project={project}
@@ -44,6 +51,10 @@ async function FinancialsReceivablesData({ id }: { id: string }) {
         retainage={retainage}
         contacts={receivablesData.contacts}
         costCodes={receivablesData.costCodes}
+        costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
+        ownerBillingPackages={receivablesData.ownerBillingPackages}
+        feeSummary={receivablesData.feeSummary}
+        gmpSummary={receivablesData.gmpSummary}
         contract={contract}
         approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
         scheduleItems={scheduleItems}

@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { ChangeOrder, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
+import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import { createChangeOrderAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
@@ -59,7 +60,7 @@ const statusStyles: Record<StatusKey, string> = {
 }
 
 function formatMoneyFromCents(cents?: number | null) {
-  const value = cents ?? 0
+  const value = (cents ?? 0) / 100
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
@@ -67,6 +68,20 @@ function resolveStatusKey(status?: string | null): StatusKey {
   if (!status) return "draft"
   const allowed: StatusKey[] = ["draft", "pending", "sent", "approved", "requested_changes", "cancelled"]
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
+}
+
+function resolveGmpBadge(changeOrder: ChangeOrder) {
+  const financialImpact = changeOrder.metadata?.financial_impact
+  const firstLine = changeOrder.lines?.[0]
+  const impact = financialImpact?.gmp_impact ?? firstLine?.gmp_impact ?? "none"
+  const classification = firstLine?.gmp_classification ?? "inside_gmp"
+
+  if (impact === "increase_gmp") return { label: "GMP +", className: "bg-blue-500/15 text-blue-700 border-blue-500/30" }
+  if (impact === "decrease_gmp") return { label: "GMP -", className: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30" }
+  if (impact === "outside_gmp" || classification === "outside_gmp") {
+    return { label: "Outside GMP", className: "bg-amber-500/15 text-amber-700 border-amber-500/30" }
+  }
+  return { label: "Inside GMP", className: "bg-muted text-muted-foreground border-muted" }
 }
 
 interface ChangeOrdersClientProps {
@@ -117,6 +132,10 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
       return acc
     }, {})
   }, [projects])
+
+  const formProjectId = filterProjectId !== "all" ? filterProjectId : projects[0]?.id ?? ""
+  const formProject = formProjectId ? projectLookup[formProjectId] : null
+  const isGmpProject = formProject ? resolveProjectBillingModel(formProject) === "cost_plus_gmp" : false
 
   const filtered = useMemo(() => {
     const safeItems = items ?? []
@@ -210,6 +229,7 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                   changeOrder.days_impact != null && changeOrder.days_impact !== 0
                     ? `${changeOrder.days_impact} day${Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}`
                     : "—"
+                const gmp = resolveGmpBadge(changeOrder)
 
                 return (
                   <button
@@ -232,6 +252,11 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                               </Badge>
                             )
                           })()}
+                          {resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp" ? (
+                            <Badge variant="outline" className={`text-[10px] px-1 py-0 h-4 font-normal ${gmp.className}`}>
+                              {gmp.label}
+                            </Badge>
+                          ) : null}
                         </div>
                         <p className="font-semibold mt-1 line-clamp-2">{changeOrder.title}</p>
                         <p className="text-xs text-muted-foreground mt-1">Project: {projectName}</p>
@@ -289,6 +314,7 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                     changeOrder.days_impact != null && changeOrder.days_impact !== 0
                       ? `${changeOrder.days_impact} day${Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}`
                       : "—"
+                  const gmp = resolveGmpBadge(changeOrder)
 
                   return (
                     <TableRow
@@ -300,6 +326,11 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                         <span className="text-sm font-medium truncate block">{changeOrder.title}</span>
                         {changeOrder.summary ? (
                           <span className="text-xs text-muted-foreground truncate block mt-0.5">{changeOrder.summary}</span>
+                        ) : null}
+                        {resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp" ? (
+                          <Badge variant="outline" className={`mt-1 text-[10px] px-1 py-0 h-4 font-normal ${gmp.className}`}>
+                            {gmp.label}
+                          </Badge>
                         ) : null}
                       </TableCell>
 
@@ -409,9 +440,10 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
       <ChangeOrderForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        projectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id ?? ""}
+        projectId={formProjectId}
         onSubmit={handleCreate}
         isSubmitting={isPending}
+        isGmpProject={isGmpProject}
       />
 
       <ChangeOrderDetailSheet

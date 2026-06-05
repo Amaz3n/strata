@@ -12,6 +12,8 @@ import {
 
 import type { CostCode, Company } from "@/lib/types"
 import type { CommitmentSummary, CommitmentLine } from "@/lib/services/commitments"
+import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
+import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 
@@ -104,10 +106,13 @@ interface BudgetTabProps {
   project: any // Project
   budgetData: any | null
   costCodes: CostCode[]
+  costCodesEnabled?: boolean
   varianceAlerts: any[]
   commitments: CommitmentSummary[]
   companies: Company[]
   budgetBucketCompanies: Record<string, string[]>
+  feeSummary?: ProjectFeeBillingSummary | null
+  gmpSummary?: ProjectGmpControlSummary | null
   loadErrors?: string[]
 }
 
@@ -135,6 +140,15 @@ function formatCurrency(cents?: number | null, opts?: { compact?: boolean }) {
     currency: "USD",
     maximumFractionDigits: 0,
   })
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-md border p-3">
+      <span className="text-[11px] font-medium uppercase text-muted-foreground">{label}</span>
+      <span className="font-mono text-sm">{value}</span>
+    </div>
+  )
 }
 
 function toLineState(lines: any[] | undefined): EditableBudgetLine[] {
@@ -187,10 +201,13 @@ export function BudgetTab({
   project,
   budgetData,
   costCodes,
+  costCodesEnabled = true,
   varianceAlerts,
   commitments,
   companies,
   budgetBucketCompanies,
+  feeSummary = null,
+  gmpSummary = null,
   loadErrors = [],
 }: BudgetTabProps) {
   const router = useRouter()
@@ -218,8 +235,8 @@ export function BudgetTab({
   }, [currentBudget])
 
   const costCodeOptions = useMemo(
-    () => [...(costCodes ?? [])].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "")),
-    [costCodes],
+    () => (costCodesEnabled ? [...(costCodes ?? [])].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "")) : []),
+    [costCodes, costCodesEnabled],
   )
 
   const costCodeById = useMemo(() => {
@@ -278,7 +295,7 @@ export function BudgetTab({
     }
 
     const payloadLines = nextLines.map((line) => ({
-      cost_code_id: line.cost_code_id,
+      cost_code_id: costCodesEnabled ? line.cost_code_id : null,
       description: line.description.trim(),
       amount_cents: dollarsToCents(line.amount_dollars) ?? 0,
     }))
@@ -306,7 +323,7 @@ export function BudgetTab({
   const upsertBucket = (draft: CostBucketDraft) => {
     const nextLine: EditableBudgetLine = {
       id: draft.lineIds?.[0] ?? crypto.randomUUID(),
-      cost_code_id: draft.costCodeId,
+      cost_code_id: costCodesEnabled ? draft.costCodeId : null,
       description: draft.description.trim(),
       amount_dollars: draft.amountDollars.trim() || "0",
     }
@@ -340,7 +357,7 @@ export function BudgetTab({
               index === existingLines.length - 1 ? Math.max(0, targetCents - alreadyAllocated) : scaledCents
             return {
               ...line,
-              cost_code_id: draft.costCodeId,
+              cost_code_id: costCodesEnabled ? draft.costCodeId : null,
               description: index === 0 ? draft.description.trim() : line.description,
               amount_dollars: (nextLineCents / 100).toFixed(2),
             }
@@ -440,12 +457,13 @@ export function BudgetTab({
     >()
 
     for (const line of lines) {
-      const key = line.cost_code_id ?? "uncoded"
-      const code = line.cost_code_id ? costCodeById.get(line.cost_code_id) : null
+      const lineCostCodeId = costCodesEnabled ? line.cost_code_id : null
+      const key = lineCostCodeId ?? "uncoded"
+      const code = lineCostCodeId ? costCodeById.get(lineCostCodeId) : null
       const breakdown = breakdownByCostCode.get(key)
       const existing = grouped.get(key) ?? {
         key,
-        costCodeId: line.cost_code_id ?? null,
+        costCodeId: lineCostCodeId,
         code: code?.code,
         name: code?.name ?? "Uncoded",
         category: code?.category ?? null,
@@ -476,10 +494,11 @@ export function BudgetTab({
 
     for (const [key, breakdown] of breakdownByCostCode) {
       if (grouped.has(key)) continue
-      const code = breakdown.cost_code_id ? costCodeById.get(breakdown.cost_code_id) : null
+      const breakdownCostCodeId = costCodesEnabled ? breakdown.cost_code_id ?? null : null
+      const code = breakdownCostCodeId ? costCodeById.get(breakdownCostCodeId) : null
       grouped.set(key, {
         key,
-        costCodeId: breakdown.cost_code_id ?? null,
+        costCodeId: breakdownCostCodeId,
         code: code?.code,
         name: code?.name ?? "Uncoded",
         category: code?.category ?? null,
@@ -506,7 +525,7 @@ export function BudgetTab({
       const codeB = b.code ?? "zzz"
       return codeA.localeCompare(codeB) || a.name.localeCompare(b.name)
     })
-  }, [breakdownByCostCode, budgetBucketCompanies, costCodeById, lines])
+  }, [breakdownByCostCode, budgetBucketCompanies, costCodeById, costCodesEnabled, lines])
 
   const filteredUnifiedRows = useMemo(() => {
     const term = budgetLineSearch.trim().toLowerCase()
@@ -537,7 +556,7 @@ export function BudgetTab({
       : 0
 
     setCreateCommitmentDraft({
-      costCodeId: bucket?.costCodeId ?? costCodeOptions[0]?.id ?? null,
+      costCodeId: costCodesEnabled ? bucket?.costCodeId ?? costCodeOptions[0]?.id ?? null : null,
       defaultAmountDollars:
         remainingToBuyCents > 0 ? (remainingToBuyCents / 100).toFixed(2) : "",
       defaultScope: bucket?.lines[0]?.description?.trim() || "",
@@ -553,7 +572,7 @@ export function BudgetTab({
 
     let cancelled = false
     setActiveBucketCommitmentsLoading(true)
-    fetchBudgetBucketCommitmentsAction(projectId, activeBucket.costCodeId)
+    fetchBudgetBucketCommitmentsAction(projectId, costCodesEnabled ? activeBucket.costCodeId : null)
       .then((rows) => {
         if (!cancelled) {
           setActiveBucketCommitments(rows as Array<CommitmentSummary & { allocated_cents: number; matching_line_count: number }>)
@@ -569,7 +588,7 @@ export function BudgetTab({
     return () => {
       cancelled = true
     }
-  }, [activeBucket, projectId])
+  }, [activeBucket, costCodesEnabled, projectId])
 
   // ---------- Render ----------
   const contractValue = project?.total_contract_value_cents ?? 0
@@ -577,6 +596,7 @@ export function BudgetTab({
   const percentComplete = summary?.total_eac_cents > 0 ? (summary?.total_actual_cents ?? 0) / summary.total_eac_cents : 0
   const earnedRevenue = Math.round(contractValue * percentComplete)
   const overUnderBilling = contractBilled - earnedRevenue
+  const showFeeSummary = feeSummary?.enabled || feeSummary?.billing_model === "cost_plus_fixed_fee"
 
   return (
     <div className="-mx-4 -mt-6 -mb-4 flex flex-col bg-card">
@@ -641,6 +661,77 @@ export function BudgetTab({
             <span className="font-mono text-sm">{formatCurrency(summary?.total_eac_cents)}</span>
           </div>
         </div>
+        {showFeeSummary ? (
+          <div className="mt-4 border-t pt-4">
+            <div className="mb-3 text-sm font-semibold">Fixed Fee</div>
+            {feeSummary?.enabled ? (
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
+                <SummaryMetric label="Total fee" value={formatCurrency(feeSummary.total_fee_cents)} />
+                <SummaryMetric label="Earned fee" value={formatCurrency(feeSummary.earned_fee_cents)} />
+                <SummaryMetric label="Billed fee" value={formatCurrency(feeSummary.billed_fee_cents)} />
+                <SummaryMetric label="Billable now" value={formatCurrency(feeSummary.billable_fee_cents)} />
+                <SummaryMetric label="Remaining fee" value={formatCurrency(feeSummary.remaining_fee_cents)} />
+              </div>
+            ) : (
+              <div className="border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
+                {feeSummary?.reason ?? "Fixed-fee billing setup is incomplete."}
+              </div>
+            )}
+          </div>
+        ) : null}
+        {gmpSummary?.enabled ? (
+          <div className="mt-4 border-t pt-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold">GMP Control</div>
+              <span
+                className={cn(
+                  "rounded-sm px-2 py-1 text-[11px] font-medium uppercase",
+                  gmpSummary.status === "overrun"
+                    ? "bg-destructive/10 text-destructive"
+                    : gmpSummary.status === "watch"
+                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                      : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+                )}
+              >
+                {gmpSummary.status.replaceAll("_", " ")}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
+              <SummaryMetric label="Revised GMP" value={formatCurrency(gmpSummary.revised_gmp_cents)} />
+              <SummaryMetric label="Inside EAC" value={formatCurrency(gmpSummary.inside_gmp_eac_cents)} />
+              <SummaryMetric label="Outside EAC" value={formatCurrency(gmpSummary.outside_gmp_eac_cents)} />
+              <SummaryMetric
+                label={gmpSummary.overrun_cents > 0 ? "Overrun" : "Savings"}
+                value={formatCurrency(gmpSummary.overrun_cents > 0 ? gmpSummary.overrun_cents : gmpSummary.savings_cents)}
+              />
+              <SummaryMetric label="Owner savings" value={formatCurrency(gmpSummary.owner_savings_cents)} />
+              <SummaryMetric label="Builder savings" value={formatCurrency(gmpSummary.builder_savings_cents)} />
+            </div>
+            {gmpSummary.warnings.length > 0 ? (
+              <div className="mt-3 grid gap-2">
+                {gmpSummary.warnings.map((warning) => (
+                  <div
+                    key={warning.code}
+                    className={cn(
+                      "flex items-start gap-2 border px-3 py-2 text-sm",
+                      warning.severity === "critical"
+                        ? "border-destructive/30 bg-destructive/5 text-destructive"
+                        : warning.severity === "warning"
+                          ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+                          : "bg-muted/30 text-muted-foreground",
+                    )}
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      {warning.message}
+                      {typeof warning.amount_cents === "number" ? ` ${formatCurrency(warning.amount_cents)}.` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {/* Sticky controls bar - sits flush below the tab bar when scrolled */}
@@ -905,6 +996,7 @@ export function BudgetTab({
         }}
         draft={editingBucketDraft}
         costCodes={costCodeOptions}
+        costCodesEnabled={costCodesEnabled}
         existingBucketKeys={unifiedRows.map((row) => row.costCodeId).filter(Boolean) as string[]}
         onSave={upsertBucket}
         onRemove={
@@ -937,6 +1029,7 @@ export function BudgetTab({
         projectId={projectId}
         companies={companyOptions}
         costCodes={costCodeOptions}
+        costCodesEnabled={costCodesEnabled}
         draft={createCommitmentDraft}
       />
       <CommitmentEditDialog
@@ -947,6 +1040,7 @@ export function BudgetTab({
       <CommitmentLinesDialog
         commitment={linesCommitment}
         onClose={() => setLinesCommitment(null)}
+        costCodesEnabled={costCodesEnabled}
       />
       <CommitmentFilesDialog
         commitment={filesCommitment}
@@ -959,12 +1053,13 @@ export function BudgetTab({
 
 function FinancialLoadWarning({ errors }: { errors: string[] }) {
   return (
-    <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-900">
-      <div className="flex gap-2">
+    <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
+      <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <div>
-          <p className="font-medium">Some financial data could not load.</p>
-          <p className="mt-1 text-amber-800">{errors.join(" · ")}</p>
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-medium">Some financial data could not load.</span>
+          <span className="text-amber-800/40 dark:text-amber-400/30">•</span>
+          <span className="text-amber-800 dark:text-amber-300">{errors.join(" · ")}</span>
         </div>
       </div>
     </div>
@@ -1273,6 +1368,7 @@ function CostBucketEditorSheet({
   onOpenChange,
   draft,
   costCodes,
+  costCodesEnabled,
   existingBucketKeys,
   onSave,
   onRemove,
@@ -1281,6 +1377,7 @@ function CostBucketEditorSheet({
   onOpenChange: (open: boolean) => void
   draft: CostBucketDraft | null
   costCodes: CostCode[]
+  costCodesEnabled: boolean
   existingBucketKeys: string[]
   onSave: (draft: CostBucketDraft) => void
   onRemove?: () => void
@@ -1301,7 +1398,7 @@ function CostBucketEditorSheet({
     description.trim().length > 0 &&
     amountCents !== null &&
     amountCents >= 0 &&
-    (costCodeId === "__uncoded__" || !existingBucketKeys.includes(costCodeId) || draft?.costCodeId === costCodeId)
+    (!costCodesEnabled || costCodeId === "__uncoded__" || !existingBucketKeys.includes(costCodeId) || draft?.costCodeId === costCodeId)
 
   const selectedCode = costCodeId === "__uncoded__" ? null : costCodes.find((code) => code.id === costCodeId)
 
@@ -1309,7 +1406,7 @@ function CostBucketEditorSheet({
     if (!canSave) return
     onSave({
       key: draft?.key ?? null,
-      costCodeId: costCodeId === "__uncoded__" ? null : costCodeId,
+      costCodeId: costCodesEnabled && costCodeId !== "__uncoded__" ? costCodeId : null,
       description: description.trim(),
       amountDollars: amountDollars.trim() || "0",
       lineIds: draft?.lineIds ?? [],
@@ -1333,33 +1430,35 @@ function CostBucketEditorSheet({
               {draft?.key ? "Edit cost bucket" : "Add cost bucket"}
             </SheetTitle>
             <SheetDescription className="text-sm text-muted-foreground">
-              Set the budget amount and scope note for one cost code bucket.
+              Set the budget amount and scope note for this project budget.
             </SheetDescription>
           </div>
 
           <div className="space-y-5 pb-6">
-            <div className="space-y-2">
-            <Label>Cost code</Label>
-            <Select value={costCodeId} onValueChange={setCostCodeId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select cost code" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__uncoded__">Uncoded</SelectItem>
-                {costCodes.map((code) => (
-                  <SelectItem key={code.id} value={code.id}>
-                    {code.code ? `${code.code} — ${code.name}` : code.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              {selectedCode ? selectedCode.name : "Use uncoded only while roughing in the budget."}
-            </p>
-            {costCodeId !== "__uncoded__" && existingBucketKeys.includes(costCodeId) && draft?.costCodeId !== costCodeId ? (
-              <p className="text-xs text-destructive">That cost code already has a bucket in this budget.</p>
+            {costCodesEnabled ? (
+              <div className="space-y-2">
+                <Label>Cost code</Label>
+                <Select value={costCodeId} onValueChange={setCostCodeId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select cost code" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__uncoded__">Uncoded</SelectItem>
+                    {costCodes.map((code) => (
+                      <SelectItem key={code.id} value={code.id}>
+                        {code.code ? `${code.code} — ${code.name}` : code.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {selectedCode ? selectedCode.name : "Use uncoded only while roughing in the budget."}
+                </p>
+                {costCodeId !== "__uncoded__" && existingBucketKeys.includes(costCodeId) && draft?.costCodeId !== costCodeId ? (
+                  <p className="text-xs text-destructive">That cost code already has a bucket in this budget.</p>
+                ) : null}
+              </div>
             ) : null}
-            </div>
 
             <div className="space-y-2">
               <Label>Scope note</Label>
@@ -1426,6 +1525,7 @@ function CommitmentCreateDialog({
   projectId,
   companies,
   costCodes,
+  costCodesEnabled,
   draft,
 }: {
   open: boolean
@@ -1433,6 +1533,7 @@ function CommitmentCreateDialog({
   projectId: string
   companies: Company[]
   costCodes: CostCode[]
+  costCodesEnabled: boolean
   draft: CommitmentCreateDraft | null
 }) {
   const { toast } = useToast()
@@ -1449,20 +1550,20 @@ function CommitmentCreateDialog({
   useEffect(() => {
     if (open) {
       setCompanyId(companies[0]?.id ?? "")
-      setCostCodeId(draft?.costCodeId ?? costCodes[0]?.id ?? "")
+      setCostCodeId(costCodesEnabled ? draft?.costCodeId ?? costCodes[0]?.id ?? "" : "")
       setTitle("")
       setScope(draft?.defaultScope ?? "")
       setAmountDollars(draft?.defaultAmountDollars ?? "")
       setStatus("draft")
     }
-  }, [open, companies, costCodes, draft])
+  }, [open, companies, costCodes, costCodesEnabled, draft])
 
   const submit = () => {
     if (!companyId) {
       toast({ title: "Company required" })
       return
     }
-    if (!costCodeId) {
+    if (costCodesEnabled && !costCodeId) {
       toast({ title: "Cost code required" })
       return
     }
@@ -1490,7 +1591,7 @@ function CommitmentCreateDialog({
           status,
         })
         await createCommitmentLineAction(commitment.id, {
-          cost_code_id: costCodeId,
+          cost_code_id: costCodesEnabled ? costCodeId : null,
           description: scope.trim(),
           quantity: 1,
           unit: "LS",
@@ -1514,7 +1615,7 @@ function CommitmentCreateDialog({
         <DialogHeader>
           <DialogTitle>New commitment</DialogTitle>
           <DialogDescription>
-            Create a subcontract or PO and allocate it to a cost code now.
+            Create a subcontract or PO and allocate it to this project budget.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -1534,21 +1635,23 @@ function CommitmentCreateDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>Cost code</Label>
-              <Select value={costCodeId} onValueChange={setCostCodeId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select cost code" />
-                </SelectTrigger>
-                <SelectContent>
-                  {costCodes.map((code) => (
-                    <SelectItem key={code.id} value={code.id}>
-                      {code.code ? `${code.code} — ${code.name}` : code.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {costCodesEnabled ? (
+              <div className="space-y-1.5">
+                <Label>Cost code</Label>
+                <Select value={costCodeId} onValueChange={setCostCodeId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select cost code" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {costCodes.map((code) => (
+                      <SelectItem key={code.id} value={code.id}>
+                        {code.code ? `${code.code} — ${code.name}` : code.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label>Title</Label>
@@ -1717,9 +1820,11 @@ function CommitmentEditDialog({
 function CommitmentLinesDialog({
   commitment,
   onClose,
+  costCodesEnabled,
 }: {
   commitment: CommitmentSummary | null
   onClose: () => void
+  costCodesEnabled: boolean
 }) {
   const { toast } = useToast()
   const [lines, setLines] = useState<CommitmentLine[]>([])
@@ -1735,7 +1840,7 @@ function CommitmentLinesDialog({
     }
     let cancelled = false
     setLoading(true)
-    Promise.all([listCommitmentLinesAction(commitment.id), listCostCodesAction()])
+    Promise.all([listCommitmentLinesAction(commitment.id), costCodesEnabled ? listCostCodesAction() : Promise.resolve([])])
       .then(([l, c]) => {
         if (cancelled) return
         setLines(l)
@@ -1752,7 +1857,7 @@ function CommitmentLinesDialog({
     return () => {
       cancelled = true
     }
-  }, [commitment, toast])
+  }, [commitment, costCodesEnabled, toast])
 
   const reload = async () => {
     if (!commitment) return
@@ -1768,7 +1873,7 @@ function CommitmentLinesDialog({
         <DialogHeader>
           <DialogTitle>{commitment?.title ?? "Commitment lines"}</DialogTitle>
           <DialogDescription>
-            Line items with cost codes, quantities, and unit costs.
+            Line items with quantities and unit costs.
           </DialogDescription>
         </DialogHeader>
 
@@ -1795,7 +1900,7 @@ function CommitmentLinesDialog({
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/40">
-                    <TableHead className="px-3">Cost code</TableHead>
+                    {costCodesEnabled ? <TableHead className="px-3">Cost code</TableHead> : null}
                     <TableHead className="px-3">Description</TableHead>
                     <TableHead className="px-3 text-right">Qty</TableHead>
                     <TableHead className="px-3">Unit</TableHead>
@@ -1807,9 +1912,11 @@ function CommitmentLinesDialog({
                 <TableBody>
                   {lines.map((line) => (
                     <TableRow key={line.id}>
-                      <TableCell className="px-3 font-mono text-xs">
-                        {line.cost_code_code ?? "—"}
-                      </TableCell>
+                      {costCodesEnabled ? (
+                        <TableCell className="px-3 font-mono text-xs">
+                          {line.cost_code_code ?? "—"}
+                        </TableCell>
+                      ) : null}
                       <TableCell className="px-3">{line.description}</TableCell>
                       <TableCell className="px-3 text-right tabular-nums">
                         {line.quantity}
@@ -1834,7 +1941,7 @@ function CommitmentLinesDialog({
                     </TableRow>
                   ))}
                   <TableRow className="bg-muted/30 font-medium">
-                    <TableCell colSpan={5} className="px-3 text-right text-xs uppercase tracking-wide text-muted-foreground">
+                    <TableCell colSpan={costCodesEnabled ? 5 : 4} className="px-3 text-right text-xs uppercase tracking-wide text-muted-foreground">
                       Total
                     </TableCell>
                     <TableCell className="px-3 text-right tabular-nums">
@@ -1859,6 +1966,7 @@ function CommitmentLinesDialog({
           commitmentId={commitment?.id ?? ""}
           line={editingLine}
           costCodes={codes}
+          costCodesEnabled={costCodesEnabled}
           onSaved={async () => {
             setCreating(false)
             setEditingLine(null)
@@ -1876,6 +1984,7 @@ function CommitmentLineDialog({
   commitmentId,
   line,
   costCodes,
+  costCodesEnabled,
   onSaved,
 }: {
   open: boolean
@@ -1883,6 +1992,7 @@ function CommitmentLineDialog({
   commitmentId: string
   line: CommitmentLine | null
   costCodes: CostCode[]
+  costCodesEnabled: boolean
   onSaved: () => void
 }) {
   const { toast } = useToast()
@@ -1908,7 +2018,7 @@ function CommitmentLineDialog({
   const total = (Number(quantity) || 0) * (Number(unitCost) || 0)
 
   const submit = () => {
-    if (!costCodeId) {
+    if (costCodesEnabled && !costCodeId) {
       toast({ title: "Cost code required" })
       return
     }
@@ -1934,7 +2044,7 @@ function CommitmentLineDialog({
     startTransition(async () => {
       try {
         const payload = {
-          cost_code_id: costCodeId,
+          cost_code_id: costCodesEnabled ? costCodeId : null,
           description: description.trim(),
           quantity: qty,
           unit: unit.trim(),
@@ -1982,21 +2092,23 @@ function CommitmentLineDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2 space-y-1.5">
-            <Label>Cost code</Label>
-            <Select value={costCodeId} onValueChange={setCostCodeId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select cost code" />
-              </SelectTrigger>
-              <SelectContent>
-                {costCodes.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.code} — {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {costCodesEnabled ? (
+            <div className="col-span-2 space-y-1.5">
+              <Label>Cost code</Label>
+              <Select value={costCodeId} onValueChange={setCostCodeId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select cost code" />
+                </SelectTrigger>
+                <SelectContent>
+                  {costCodes.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.code} — {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
           <div className="col-span-2 space-y-1.5">
             <Label>Description</Label>
             <Input

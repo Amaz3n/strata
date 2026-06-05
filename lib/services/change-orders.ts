@@ -7,6 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
+import { calculateGmpDeltaCents, normalizeGmpImpact } from "@/lib/services/gmp-control"
 import { requireAuthorization } from "@/lib/services/authorization"
 
 type ChangeOrderRow = {
@@ -38,6 +39,8 @@ function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
     unit_cost_cents: Math.round(line.unit_cost * 100),
     allowance_cents: Math.round((line.allowance ?? 0) * 100),
     taxable: line.taxable ?? true,
+    gmp_classification: line.gmp_classification ?? "inside_gmp",
+    gmp_impact: line.gmp_impact ?? "none",
   }))
 }
 
@@ -79,6 +82,10 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
     return {
       budget_revision_cents: changeOrder.total_cents ?? 0,
       allowance_draw_cents: 0,
+      inside_gmp_cents: 0,
+      outside_gmp_cents: 0,
+      gmp_delta_cents: 0,
+      gmp_impact: "none",
       budget_distributions: [],
       billing_status: "tracking_only",
       posting_skipped_reason: "No cost-coded line items were provided.",
@@ -92,6 +99,10 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
     return {
       budget_revision_cents: changeOrder.total_cents ?? lines.reduce((sum, line) => sum + calculateLineBudgetRevisionCents(line), 0),
       allowance_draw_cents: lines.reduce((sum, line) => sum + (line.allowance_cents ?? 0), 0),
+      inside_gmp_cents: 0,
+      outside_gmp_cents: 0,
+      gmp_delta_cents: 0,
+      gmp_impact: "none",
       budget_distributions: [],
       billing_status: "tracking_only",
       posting_skipped_reason: "Budget posting skipped because one or more lines are not assigned to a cost code.",
@@ -102,21 +113,37 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
 
   const budgetDistributions = lines.map((line, index) => {
     const budgetRevisionCents = calculateLineBudgetRevisionCents(line)
+    const gmpImpact = normalizeGmpImpact(line.gmp_impact)
+    const gmpDeltaCents = calculateGmpDeltaCents(budgetRevisionCents, gmpImpact)
     return {
       cost_code_id: line.cost_code_id,
       description: line.description,
       budget_revision_cents: budgetRevisionCents,
       allowance_draw_cents: line.allowance_cents ?? 0,
+      gmp_classification: line.gmp_classification ?? "inside_gmp",
+      gmp_impact: gmpImpact,
+      gmp_delta_cents: gmpDeltaCents,
       source_line_index: index,
     }
   })
 
   const budgetRevisionCents = budgetDistributions.reduce((sum, line) => sum + line.budget_revision_cents, 0)
   const allowanceDrawCents = budgetDistributions.reduce((sum, line) => sum + line.allowance_draw_cents, 0)
+  const insideGmpCents = budgetDistributions
+    .filter((line) => line.gmp_classification !== "outside_gmp")
+    .reduce((sum, line) => sum + line.budget_revision_cents, 0)
+  const outsideGmpCents = budgetDistributions
+    .filter((line) => line.gmp_classification === "outside_gmp")
+    .reduce((sum, line) => sum + line.budget_revision_cents, 0)
+  const gmpDeltaCents = budgetDistributions.reduce((sum, line) => sum + line.gmp_delta_cents, 0)
 
   return {
     budget_revision_cents: budgetRevisionCents,
     allowance_draw_cents: allowanceDrawCents,
+    inside_gmp_cents: insideGmpCents,
+    outside_gmp_cents: outsideGmpCents,
+    gmp_delta_cents: gmpDeltaCents,
+    gmp_impact: gmpDeltaCents > 0 ? "increase_gmp" : gmpDeltaCents < 0 ? "decrease_gmp" : outsideGmpCents > 0 ? "outside_gmp" : "none",
     budget_distributions: budgetDistributions,
     billing_status: "ready_to_bill",
     posted_at: new Date().toISOString(),
@@ -154,6 +181,10 @@ async function postBudgetRevisionForChangeOrder({
         metadata: {
           allowance_draw_cents: financialImpact.allowance_draw_cents,
           billing_status: financialImpact.billing_status,
+          inside_gmp_cents: financialImpact.inside_gmp_cents,
+          outside_gmp_cents: financialImpact.outside_gmp_cents,
+          gmp_delta_cents: financialImpact.gmp_delta_cents,
+          gmp_impact: financialImpact.gmp_impact,
         },
       },
       { onConflict: "org_id,change_order_id" },
@@ -182,8 +213,16 @@ async function postBudgetRevisionForChangeOrder({
     description: line.description,
     amount_cents: line.budget_revision_cents,
     allowance_draw_cents: line.allowance_draw_cents,
+    gmp_classification: line.gmp_classification,
+    gmp_impact: line.gmp_impact,
+    gmp_delta_cents: line.gmp_delta_cents,
     sort_order: index,
-    metadata: { source_line_index: line.source_line_index },
+    metadata: {
+      source_line_index: line.source_line_index,
+      gmp_classification: line.gmp_classification,
+      gmp_impact: line.gmp_impact,
+      gmp_delta_cents: line.gmp_delta_cents,
+    },
   }))
 
   if (lineRows.length > 0) {
@@ -418,6 +457,9 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     quantity: line.quantity,
     unit: line.unit ?? "unit",
     unit_cost_cents: line.unit_cost_cents,
+    gmp_classification: line.gmp_classification ?? "inside_gmp",
+    gmp_impact: line.gmp_impact ?? "none",
+    gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
     sort_order: idx,
     metadata: {
       allowance_cents: line.allowance_cents ?? 0,
@@ -425,6 +467,9 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
       budget_revision_cents: calculateLineBudgetRevisionCents(line),
       financial_impact_type: line.allowance_cents && line.allowance_cents > 0 ? "allowance_plus_budget_revision" : "budget_revision",
       taxable: line.taxable ?? true,
+      gmp_classification: line.gmp_classification ?? "inside_gmp",
+      gmp_impact: line.gmp_impact ?? "none",
+      gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
     },
   }))
 
@@ -768,7 +813,7 @@ async function applyChangeOrderFinancialImpact({
 }) {
   const { data: contract, error: contractError } = await supabase
     .from("contracts")
-    .select("id, total_cents, snapshot")
+    .select("id, total_cents, gmp_cents, snapshot")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "active")
@@ -783,7 +828,7 @@ async function applyChangeOrderFinancialImpact({
 
   const { data: approvedOrders, error: approvedError } = await supabase
     .from("change_orders")
-    .select("total_cents")
+    .select("total_cents, metadata")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "approved")
@@ -793,9 +838,15 @@ async function applyChangeOrderFinancialImpact({
   }
 
   const approvedTotal = (approvedOrders ?? []).reduce((sum, row: any) => sum + (row.total_cents ?? 0), 0)
+  const approvedGmpDelta = (approvedOrders ?? []).reduce(
+    (sum, row: any) => sum + (row.metadata?.financial_impact?.gmp_delta_cents ?? 0),
+    0,
+  )
   const snapshot = contract.snapshot ?? {}
   const baseTotal = snapshot.base_total_cents ?? contract.total_cents ?? 0
   const revisedTotal = baseTotal + approvedTotal
+  const baseGmp = snapshot.base_gmp_cents ?? contract.gmp_cents ?? 0
+  const revisedGmp = Math.max(0, baseGmp + approvedGmpDelta)
 
   const { error: updateContractError } = await supabase
     .from("contracts")
@@ -806,6 +857,9 @@ async function applyChangeOrderFinancialImpact({
         base_total_cents: snapshot.base_total_cents ?? baseTotal,
         approved_change_orders_cents: approvedTotal,
         revised_total_cents: revisedTotal,
+        base_gmp_cents: snapshot.base_gmp_cents ?? baseGmp,
+        approved_gmp_change_orders_cents: approvedGmpDelta,
+        revised_gmp_cents: revisedGmp,
       },
     })
     .eq("id", contract.id)

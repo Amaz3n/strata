@@ -1,0 +1,421 @@
+"use client"
+
+import { type ReactNode } from "react"
+import { CheckCircle2, ClipboardCheck, FileCheck2, FileText, ListTree, ReceiptText } from "lucide-react"
+
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
+import type { ProjectBillingModel } from "@/lib/financials/billing-model"
+import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
+import type { Contract, Project } from "@/lib/types"
+import type { ProjectInput } from "@/lib/validation/projects"
+import { cn } from "@/lib/utils"
+
+// Shared financial-setup form used as step 2 of the project create/edit sheets.
+// Captures full parity with the legacy financial setup wizard: billing model,
+// contract terms, and the four billing rules.
+export type FinancialSetupValue = {
+  billingModel: ProjectBillingModel
+  totalContractValue: string
+  retainagePercent: string
+  markupPercent: string
+  fixedFee: string
+  gmp: string
+  savingsSplitOwnerPct: string
+  savingsSplitBuilderPct: string
+  laborBurdenMultiplier: string
+  paidCostsRequired: boolean
+  proofRequired: boolean
+  clientCostApprovalRequired: boolean
+  openBookRequired: boolean
+  costCodesEnabled: boolean
+}
+
+export const billingModelOptions: Array<{ id: ProjectBillingModel; title: string; note: string }> = [
+  { id: "fixed_price", title: "Fixed price", note: "Contract value, retainage, draw billing." },
+  { id: "cost_plus_percent", title: "Cost plus %", note: "Approved costs plus markup." },
+  { id: "cost_plus_fixed_fee", title: "Cost plus fixed fee", note: "Approved costs plus a fee amount." },
+  { id: "cost_plus_gmp", title: "Cost plus GMP", note: "Approved costs under a guaranteed maximum." },
+  { id: "time_and_materials", title: "Time & materials", note: "Labor, materials, and markup controls." },
+]
+
+export function isCostDrivenModel(model: ProjectBillingModel) {
+  return model !== "fixed_price"
+}
+
+export function modelLabel(model: ProjectBillingModel) {
+  return billingModelOptions.find((option) => option.id === model)?.title ?? model.replaceAll("_", " ")
+}
+
+function centsToMoney(value?: number | null) {
+  if (value == null) return ""
+  return (value / 100).toFixed(2)
+}
+
+function numberToField(value?: number | null, fallback = "") {
+  if (value == null) return fallback
+  return String(value)
+}
+
+function moneyToCents(value: string) {
+  const cleaned = value.replace(/[$,\s]/g, "")
+  if (!cleaned) return null
+  const amount = Number(cleaned)
+  if (!Number.isFinite(amount) || amount < 0) return null
+  return Math.round(amount * 100)
+}
+
+function fieldToNumber(value: string, fallback: number | null = null) {
+  const cleaned = value.trim()
+  if (!cleaned) return fallback
+  const amount = Number(cleaned)
+  return Number.isFinite(amount) ? amount : fallback
+}
+
+// Strip a typed money string down to digits + a single decimal point.
+function sanitizeMoneyInput(raw: string) {
+  const cleaned = raw.replace(/[^\d.]/g, "")
+  const firstDot = cleaned.indexOf(".")
+  if (firstDot === -1) return cleaned
+  return cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
+}
+
+// Display the stored raw money string with thousands separators (decimals preserved while typing).
+function displayMoneyInput(raw: string) {
+  if (!raw) return ""
+  const [intPart, ...rest] = raw.split(".")
+  const groupedInt = (intPart || "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  return rest.length > 0 ? `${groupedInt}.${rest.join("")}` : groupedInt
+}
+
+export function emptyFinancialSetup(model: ProjectBillingModel = "fixed_price"): FinancialSetupValue {
+  const costDriven = isCostDrivenModel(model)
+  return {
+    billingModel: model,
+    totalContractValue: "",
+    retainagePercent: "0",
+    markupPercent: costDriven ? "0" : "",
+    fixedFee: "",
+    gmp: "",
+    savingsSplitOwnerPct: "0",
+    savingsSplitBuilderPct: "0",
+    laborBurdenMultiplier: "1",
+    paidCostsRequired: false,
+    proofRequired: false,
+    clientCostApprovalRequired: false,
+    openBookRequired: costDriven,
+    costCodesEnabled: true,
+  }
+}
+
+export function financialSetupFromProject(project: Project, contract?: Contract | null): FinancialSetupValue {
+  const billingContract = contract ?? project.billing_contract ?? null
+  const snapshot = (billingContract?.snapshot ?? {}) as Record<string, any>
+  const billingModel = resolveProjectBillingModel(project, billingContract)
+  const costDriven = isCostDrivenModel(billingModel)
+  const totalCents =
+    billingContract?.total_cents ??
+    (typeof project.total_contract_value_cents === "number" ? project.total_contract_value_cents : null) ??
+    (typeof project.total_value === "number" ? Math.round(project.total_value * 100) : null)
+
+  return {
+    billingModel,
+    totalContractValue: centsToMoney(totalCents),
+    retainagePercent: numberToField(billingContract?.retainage_percent ?? project.retainage_percent, "0"),
+    markupPercent: numberToField(billingContract?.markup_percent, costDriven ? "0" : ""),
+    fixedFee: centsToMoney(typeof snapshot.fixed_fee_cents === "number" ? snapshot.fixed_fee_cents : null),
+    gmp: centsToMoney(billingContract?.gmp_cents),
+    savingsSplitOwnerPct: numberToField(billingContract?.savings_split_owner_pct, "0"),
+    savingsSplitBuilderPct: numberToField(billingContract?.savings_split_builder_pct, "0"),
+    laborBurdenMultiplier: numberToField(billingContract?.labor_burden_multiplier, "1"),
+    paidCostsRequired: Boolean(snapshot.paid_costs_required ?? false),
+    proofRequired: Boolean(snapshot.proof_required ?? false),
+    clientCostApprovalRequired: Boolean(billingContract?.requires_client_cost_approval ?? false),
+    openBookRequired: billingContract?.open_book ?? costDriven,
+    costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? true,
+  }
+}
+
+// Side effects when the billing model changes (markup default, open-book default).
+export function applyBillingModel(value: FinancialSetupValue, model: ProjectBillingModel): FinancialSetupValue {
+  const costDriven = isCostDrivenModel(model)
+  return {
+    ...value,
+    billingModel: model,
+    markupPercent: costDriven && !value.markupPercent ? "0" : value.markupPercent,
+    openBookRequired: costDriven ? true : false,
+  }
+}
+
+export function validateFinancialSetup(value: FinancialSetupValue): { blocking: string[]; warnings: string[] } {
+  const blocking: string[] = []
+  const warnings: string[] = []
+  const retainage = fieldToNumber(value.retainagePercent)
+  const markup = fieldToNumber(value.markupPercent)
+  const ownerSplit = fieldToNumber(value.savingsSplitOwnerPct, 0) ?? 0
+  const builderSplit = fieldToNumber(value.savingsSplitBuilderPct, 0) ?? 0
+  const laborBurden = fieldToNumber(value.laborBurdenMultiplier)
+
+  if (value.totalContractValue.trim() && moneyToCents(value.totalContractValue) == null) {
+    blocking.push("Contract value must be a valid non-negative amount.")
+  }
+  if (retainage == null || retainage < 0 || retainage > 100) {
+    blocking.push("Retainage must be between 0% and 100%.")
+  }
+  if (isCostDrivenModel(value.billingModel) && (markup == null || markup < 0 || markup > 200)) {
+    blocking.push("Markup must be between 0% and 200%.")
+  }
+  if (value.billingModel === "fixed_price" && !moneyToCents(value.totalContractValue)) {
+    warnings.push("Fixed-price projects should carry a contract value for draw billing and WIP.")
+  }
+  if (value.billingModel === "cost_plus_gmp" && !moneyToCents(value.gmp)) {
+    blocking.push("Cost-plus GMP requires a GMP amount.")
+  }
+  if (value.billingModel === "cost_plus_fixed_fee" && !moneyToCents(value.fixedFee)) {
+    blocking.push("Cost-plus fixed fee requires a fixed fee amount.")
+  }
+  if (ownerSplit + builderSplit > 100) {
+    blocking.push("Savings split percentages cannot exceed 100%.")
+  }
+  if (laborBurden == null || laborBurden < 1) {
+    blocking.push("Labor burden multiplier must be 1.0 or higher.")
+  }
+  if (isCostDrivenModel(value.billingModel) && !value.openBookRequired) {
+    warnings.push("Cost-driven billing is most trustworthy when open-book billing is enabled.")
+  }
+
+  return { blocking, warnings }
+}
+
+// Merge financial setup into the ProjectInput payload the create/update actions expect.
+export function financialSetupToProjectInput(value: FinancialSetupValue): Partial<ProjectInput> {
+  const costDriven = isCostDrivenModel(value.billingModel)
+  const isGmp = value.billingModel === "cost_plus_gmp"
+  const isFixedFee = value.billingModel === "cost_plus_fixed_fee"
+  const usesMarkup =
+    value.billingModel === "cost_plus_percent" || isGmp || value.billingModel === "time_and_materials"
+
+  return {
+    billing_model: value.billingModel,
+    contract_type:
+      value.billingModel === "time_and_materials" ? "time_materials" : costDriven ? "cost_plus" : "fixed",
+    total_contract_value_cents: moneyToCents(value.totalContractValue),
+    retainage_percent: fieldToNumber(value.retainagePercent, 0) ?? 0,
+    markup_percent: usesMarkup ? fieldToNumber(value.markupPercent, 0) : null,
+    gmp_cents: isGmp ? moneyToCents(value.gmp) : null,
+    fixed_fee_cents: isFixedFee ? moneyToCents(value.fixedFee) : null,
+    savings_split_owner_pct: isGmp ? fieldToNumber(value.savingsSplitOwnerPct, 0) : 0,
+    savings_split_builder_pct: isGmp ? fieldToNumber(value.savingsSplitBuilderPct, 0) : 0,
+    labor_burden_multiplier: fieldToNumber(value.laborBurdenMultiplier, 1) ?? 1,
+    open_book: value.openBookRequired,
+    requires_client_cost_approval: value.clientCostApprovalRequired,
+    paid_costs_required: value.paidCostsRequired,
+    proof_required: value.proofRequired,
+    cost_codes_enabled: value.costCodesEnabled,
+  }
+}
+
+export function ProjectFinancialSetupFields({
+  value,
+  onChange,
+}: {
+  value: FinancialSetupValue
+  onChange: (value: FinancialSetupValue) => void
+}) {
+  const costDriven = isCostDrivenModel(value.billingModel)
+  const isGmp = value.billingModel === "cost_plus_gmp"
+  const isFixedFee = value.billingModel === "cost_plus_fixed_fee"
+  const usesMarkup =
+    value.billingModel === "cost_plus_percent" || isGmp || value.billingModel === "time_and_materials"
+
+  function update<K extends keyof FinancialSetupValue>(key: K, next: FinancialSetupValue[K]) {
+    onChange({ ...value, [key]: next })
+  }
+
+  const rules = [
+    { id: "openBookRequired" as const, title: "Open book", detail: "Expose approved cost detail for cost-driven billing.", icon: FileText },
+    { id: "clientCostApprovalRequired" as const, title: "Client cost approval", detail: "Require owner approval before approved-cost invoicing.", icon: ClipboardCheck },
+    { id: "paidCostsRequired" as const, title: "Paid costs only", detail: "Block billing unpaid vendor bill costs.", icon: ReceiptText },
+    { id: "proofRequired" as const, title: "Proof required", detail: "Require receipts, bills, or time attachments before billing.", icon: FileCheck2 },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Billing model</h3>
+          <p className="text-xs text-muted-foreground">Drives invoicing, WIP, contract terms, and guardrails.</p>
+        </div>
+        <div className="grid gap-2">
+          {billingModelOptions.map((option) => {
+            const active = option.id === value.billingModel
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => onChange(applyBillingModel(value, option.id))}
+                className={cn(
+                  "flex items-start justify-between gap-3 rounded-md border p-3 text-left transition-colors",
+                  active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
+                )}
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{option.title}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">{option.note}</span>
+                </span>
+                {active ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" /> : null}
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold">Contract terms</h3>
+          <p className="text-xs text-muted-foreground">Stored on the active contract used by financial pages.</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={costDriven ? "Contract value or cap" : "Contract value"} htmlFor="fin-contract-value">
+            <MoneyInput id="fin-contract-value" value={value.totalContractValue} onChange={(next) => update("totalContractValue", next)} />
+          </Field>
+          <Field label="Retainage %" htmlFor="fin-retainage">
+            <PercentInput id="fin-retainage" value={value.retainagePercent} onChange={(next) => update("retainagePercent", next)} />
+          </Field>
+          {usesMarkup ? (
+            <Field label="Default markup %" htmlFor="fin-markup">
+              <PercentInput id="fin-markup" value={value.markupPercent} onChange={(next) => update("markupPercent", next)} />
+            </Field>
+          ) : null}
+          {costDriven ? (
+            <Field label="Labor burden multiplier" htmlFor="fin-labor-burden">
+              <Input
+                id="fin-labor-burden"
+                inputMode="decimal"
+                value={value.laborBurdenMultiplier}
+                onChange={(event) => update("laborBurdenMultiplier", event.target.value)}
+                placeholder="1"
+              />
+            </Field>
+          ) : null}
+          {isFixedFee ? (
+            <Field label="Fixed fee" htmlFor="fin-fixed-fee">
+              <MoneyInput id="fin-fixed-fee" value={value.fixedFee} onChange={(next) => update("fixedFee", next)} />
+            </Field>
+          ) : null}
+          {isGmp ? (
+            <>
+              <Field label="GMP amount" htmlFor="fin-gmp">
+                <MoneyInput id="fin-gmp" value={value.gmp} onChange={(next) => update("gmp", next)} />
+              </Field>
+              <Field label="Owner savings split %" htmlFor="fin-owner-split">
+                <PercentInput id="fin-owner-split" value={value.savingsSplitOwnerPct} onChange={(next) => update("savingsSplitOwnerPct", next)} />
+              </Field>
+              <Field label="Builder savings split %" htmlFor="fin-builder-split">
+                <PercentInput id="fin-builder-split" value={value.savingsSplitBuilderPct} onChange={(next) => update("savingsSplitBuilderPct", next)} />
+              </Field>
+            </>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Cost structure</h3>
+          <p className="text-xs text-muted-foreground">Controls whether this project uses cost code coding on financial pages.</p>
+        </div>
+        <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <ListTree className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0">
+              <Label htmlFor="costCodesEnabled" className="text-sm font-medium">
+                Use cost codes
+              </Label>
+              <p className="mt-0.5 text-xs text-muted-foreground">Show cost code columns and require coding before cost review.</p>
+            </div>
+          </div>
+          <Switch
+            id="costCodesEnabled"
+            checked={value.costCodesEnabled}
+            onCheckedChange={(checked) => update("costCodesEnabled", checked)}
+          />
+        </div>
+      </section>
+
+      {costDriven ? (
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold">Billing rules</h3>
+            <p className="text-xs text-muted-foreground">These controls gate approved-cost invoicing and contract behavior.</p>
+          </div>
+          <div className="divide-y rounded-md border">
+            {rules.map((rule) => {
+              const Icon = rule.icon
+              return (
+                <div key={rule.id} className="flex items-center justify-between gap-4 p-3">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <Label htmlFor={rule.id} className="text-sm font-medium">
+                        {rule.title}
+                      </Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{rule.detail}</p>
+                    </div>
+                  </div>
+                  <Switch
+                    id={rule.id}
+                    checked={Boolean(value[rule.id])}
+                    onCheckedChange={(checked) => update(rule.id, checked)}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      {children}
+    </div>
+  )
+}
+
+function MoneyInput({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="relative">
+      <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-muted-foreground">$</span>
+      <Input
+        id={id}
+        inputMode="decimal"
+        className="pl-7"
+        value={displayMoneyInput(value)}
+        onChange={(event) => onChange(sanitizeMoneyInput(event.target.value))}
+        placeholder="0.00"
+      />
+    </div>
+  )
+}
+
+function PercentInput({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        inputMode="decimal"
+        className="pr-7"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="0"
+      />
+      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-sm text-muted-foreground">%</span>
+    </div>
+  )
+}

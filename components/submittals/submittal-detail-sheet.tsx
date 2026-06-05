@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import { formatLocalDate } from "@/lib/utils"
 
 import type { Submittal, Project } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
@@ -142,6 +143,9 @@ export function SubmittalDetailSheet({
 
   const formatDate = (date?: string | null) => {
     if (!date) return null
+    if (date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      return formatLocalDate(date, "MMM d, yyyy")
+    }
     return format(new Date(date), "MMM d, yyyy")
   }
 

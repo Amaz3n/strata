@@ -5,6 +5,7 @@ import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { createPaymentIntent } from "@/lib/services/payments"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listOpenBookCostDetailsForInvoice } from "@/lib/services/cost-plus"
+import { listSharedInvoiceBackupPackagesForPortal } from "@/lib/services/owner-billing-packages"
 import { InvoicePortalClient } from "./portal-invoice-client"
 
 interface Params {
@@ -61,27 +62,35 @@ export default async function InvoicePortalPage({ params }: Params) {
     }
   }
 
-  const [receiptsResult, costDetailsResult] = await Promise.allSettled([
+  const [receiptsResult, costDetailsResult, backupPackagesResult] = await Promise.allSettled([
     listReceiptsForInvoice({ orgId: access.org_id, invoiceId: invoice.id }),
     listOpenBookCostDetailsForInvoice({
       invoiceId: invoice.id,
       orgId: access.org_id,
       projectId: access.project_id,
     }),
+    listSharedInvoiceBackupPackagesForPortal({
+      orgId: access.org_id,
+      projectId: access.project_id,
+      invoiceId: invoice.id,
+    }),
   ])
 
   const proofErrors = [
     receiptsResult.status === "rejected" ? `Receipts: ${receiptsResult.reason?.message ?? String(receiptsResult.reason)}` : null,
     costDetailsResult.status === "rejected" ? `Cost detail: ${costDetailsResult.reason?.message ?? String(costDetailsResult.reason)}` : null,
+    backupPackagesResult.status === "rejected" ? `Backup package: ${backupPackagesResult.reason?.message ?? String(backupPackagesResult.reason)}` : null,
   ].filter(Boolean) as string[]
 
   return (
     <InvoicePortalClient
+      token={token}
       invoice={invoice}
       portalType="client"
       payment={paymentProps}
       receipts={receiptsResult.status === "fulfilled" ? receiptsResult.value : []}
       costDetails={costDetailsResult.status === "fulfilled" ? costDetailsResult.value : []}
+      backupPackages={backupPackagesResult.status === "fulfilled" ? backupPackagesResult.value : []}
       proofErrors={proofErrors}
     />
   )

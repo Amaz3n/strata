@@ -4,10 +4,12 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ReviewQueueTable } from "@/components/cost-inbox/review-queue-table"
+import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
 import { QboImportLauncher } from "@/components/integrations/qbo-import-launcher"
 import { getProjectAction, getProjectContractAction } from "@/app/(app)/projects/[id]/actions"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { loadFinancialsReviewQueueData } from "@/lib/services/financials-review-queue"
+import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 
 export const dynamic = "force-dynamic"
 
@@ -52,7 +54,10 @@ async function InboxContent({ id }: { id: string }) {
     redirect(`/projects/${project.id}/financials/${featureConfig.landingPage}`)
   }
 
-  const reviewQueue = await loadFinancialsReviewQueueData(id)
+  const [reviewQueue, setupStatus] = await Promise.all([
+    loadFinancialsReviewQueueData(id),
+    getProjectFinancialSetupStatusForProject(id),
+  ])
 
   return (
     <PageLayout
@@ -64,6 +69,7 @@ async function InboxContent({ id }: { id: string }) {
       ]}
       fullBleed
     >
+      <FinancialSetupStatusBanner setup={setupStatus} />
       <div className="flex items-center justify-end border-b bg-muted/20 px-4 py-2 sm:px-6 lg:px-8">
         <QboImportLauncher projectId={project.id} projectName={project.name} />
       </div>
@@ -73,7 +79,9 @@ async function InboxContent({ id }: { id: string }) {
         expenses={reviewQueue.expenses}
         vendorBills={reviewQueue.vendorBills}
         openCosts={reviewQueue.openCosts}
+        billingPeriods={reviewQueue.billingPeriods}
         costCodes={reviewQueue.costCodes as any}
+        costCodesEnabled={reviewQueue.costCodesEnabled}
         loadErrors={reviewQueue.errors}
       />
     </PageLayout>

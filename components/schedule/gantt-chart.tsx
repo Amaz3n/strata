@@ -349,6 +349,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   const [sidebarWidth, setSidebarWidth] = useState<number>(GANTT_SIDEBAR_WIDTH)
   const [sidebarSearch, setSidebarSearch] = useState("")
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const scrollDuringSelectionRef = useRef(false)
 
   const handleSidebarResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -731,6 +732,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
       sidebarRef.current.scrollTop = target.scrollTop
     }
     setScrollLeft(target.scrollLeft)
+    scrollDuringSelectionRef.current = true
   }, [])
 
   // Sync main ← sidebar so wheel events over the task list also drive the timeline
@@ -753,12 +755,24 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     const target = e.target as HTMLElement
     if (target.closest('[data-bar]')) return // Clicked on a bar
 
+    // Ignore clicks directly on the scroll container (which handles scrollbars and boundaries)
+    if (e.target === e.currentTarget) return
+
     const rect = e.currentTarget.getBoundingClientRect()
-    const x = e.clientX - rect.left + scrollLeft
+    const clickX = e.clientX - rect.left
+    const clickY = e.clientY - rect.top
+
+    // Check if the click was on the horizontal or vertical scrollbars
+    if (clickX > e.currentTarget.clientWidth || clickY > e.currentTarget.clientHeight) {
+      return
+    }
+
+    const x = clickX + scrollLeft
     const dayIndex = Math.floor(x / columnWidth)
     
     if (dayIndex >= 0 && dayIndex < columns.length) {
       const clickedDate = columns[dayIndex].date
+      scrollDuringSelectionRef.current = false
       setDateSelection({
         startDate: clickedDate,
         endDate: clickedDate,
@@ -794,7 +808,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   }, [dateSelection, columns, columnWidth, scrollLeft])
 
   const handleTimelineMouseUp = useCallback(() => {
-    if (dateSelection?.isDragging && onQuickAdd) {
+    if (dateSelection?.isDragging && onQuickAdd && !scrollDuringSelectionRef.current) {
       // Ensure start is before end
       const start = dateSelection.startDate < dateSelection.endDate ? dateSelection.startDate : dateSelection.endDate
       const end = dateSelection.startDate < dateSelection.endDate ? dateSelection.endDate : dateSelection.startDate
@@ -1143,7 +1157,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
               className="relative"
               style={{
                 width: totalWidth,
-                minWidth: totalWidth,
+                minWidth: `max(100%, ${totalWidth}px)`,
                 height: timelineHeight,
                 minHeight: timelineHeight,
               }}

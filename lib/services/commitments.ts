@@ -32,7 +32,7 @@ export interface CommitmentLine {
   id: string
   org_id: string
   commitment_id: string
-  cost_code_id: string
+  cost_code_id: string | null
   cost_code_code?: string
   cost_code_name?: string
   description: string

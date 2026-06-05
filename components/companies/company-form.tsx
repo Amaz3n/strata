@@ -1,11 +1,15 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import { Check, ChevronsUpDown, Loader2, PlusCircle } from "lucide-react"
 
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -16,7 +20,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { Company } from "@/lib/types"
-import { createCompanyAction, updateCompanyAction } from "@/app/(app)/companies/actions"
+import {
+  createCompanyAction,
+  createQboVendorForCompanyAction,
+  getCompanyQboVendorContextAction,
+  linkCompanyQboVendorAction,
+  updateCompanyAction,
+} from "@/app/(app)/companies/actions"
 import { useToast } from "@/hooks/use-toast"
 
 const COMPANY_TYPES: { label: string; value: Company["company_type"] }[] = [
@@ -59,6 +69,7 @@ interface CompanyFormProps {
 
 export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps) {
   const [isPending, startTransition] = useTransition()
+  const [isAccountingPending, startAccountingTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
   const allowedTypes = new Set(COMPANY_TYPES.map((type) => type.value))
@@ -77,6 +88,10 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     default_payment_terms: company?.default_payment_terms ?? "",
     internal_notes: company?.internal_notes ?? "",
     notes: company?.notes ?? "",
+    qbo_vendor_id: company?.qbo_vendor_id ?? "",
+    qbo_vendor_name: company?.qbo_vendor_name ?? "",
+    qbo_vendor_synced_at: company?.qbo_vendor_synced_at ?? "",
+    qbo_vendor_sync_status: company?.qbo_vendor_sync_status ?? "",
     address: {
       street1: company?.address?.street1 ?? "",
       street2: company?.address?.street2 ?? "",
@@ -85,6 +100,25 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       postal_code: company?.address?.postal_code ?? "",
     },
   })
+  const [accountingEnabled, setAccountingEnabled] = useState(false)
+  const [qboVendors, setQboVendors] = useState<Array<{ id: string; name: string }>>([])
+  const [qboVendorOpen, setQboVendorOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    getCompanyQboVendorContextAction()
+      .then((context) => {
+        if (cancelled) return
+        setAccountingEnabled(Boolean(context.enabled))
+        setQboVendors(context.vendors ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setAccountingEnabled(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -104,6 +138,14 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       default_payment_terms: formState.default_payment_terms || undefined,
       internal_notes: formState.internal_notes || undefined,
       notes: formState.notes || undefined,
+      qbo_vendor_id: formState.qbo_vendor_id || undefined,
+      qbo_vendor_name: formState.qbo_vendor_name || undefined,
+      qbo_vendor_synced_at: formState.qbo_vendor_id
+        ? formState.qbo_vendor_synced_at || company?.qbo_vendor_synced_at || new Date().toISOString()
+        : undefined,
+      qbo_vendor_sync_status: formState.qbo_vendor_id
+        ? (formState.qbo_vendor_sync_status as "linked" | "created" | "needs_review" | "error") || "linked"
+        : undefined,
       address: {
         street1: formState.address.street1 || undefined,
         street2: formState.address.street2 || undefined,
@@ -140,6 +182,54 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
 
   const setAddressField = (key: string, value: string) => {
     setFormState((prev) => ({ ...prev, address: { ...prev.address, [key]: value } }))
+  }
+
+  const setQboVendor = (vendorId: string) => {
+    const vendor = qboVendors.find((option) => option.id === vendorId)
+    setFormState((prev) => ({
+      ...prev,
+      qbo_vendor_id: vendorId,
+      qbo_vendor_name: vendor?.name ?? prev.qbo_vendor_name,
+      qbo_vendor_sync_status: "linked",
+      qbo_vendor_synced_at: new Date().toISOString(),
+    }))
+    if (!company || !vendor) return
+    startAccountingTransition(async () => {
+      try {
+        await linkCompanyQboVendorAction(company.id, vendor)
+        setQboVendorOpen(false)
+        router.refresh()
+        toast({ title: "QuickBooks vendor linked" })
+      } catch (error) {
+        toast({ title: "Unable to link QuickBooks vendor", description: (error as Error).message })
+      }
+    })
+  }
+
+  const createQboVendor = () => {
+    if (!company) return
+    startAccountingTransition(async () => {
+      try {
+        const updated = await createQboVendorForCompanyAction(company.id)
+        setFormState((prev) => ({
+          ...prev,
+          qbo_vendor_id: updated.qbo_vendor_id ?? "",
+          qbo_vendor_name: updated.qbo_vendor_name ?? "",
+          qbo_vendor_synced_at: updated.qbo_vendor_synced_at ?? "",
+          qbo_vendor_sync_status: updated.qbo_vendor_sync_status ?? "created",
+        }))
+        setQboVendors((prev) => {
+          if (!updated.qbo_vendor_id || prev.some((vendor) => vendor.id === updated.qbo_vendor_id)) return prev
+          return [...prev, { id: updated.qbo_vendor_id, name: updated.qbo_vendor_name ?? updated.name }]
+            .sort((a, b) => a.name.localeCompare(b.name))
+        })
+        router.refresh()
+        setQboVendorOpen(false)
+        toast({ title: "QuickBooks vendor created" })
+      } catch (error) {
+        toast({ title: "Unable to create QuickBooks vendor", description: (error as Error).message })
+      }
+    })
   }
 
   return (
@@ -237,6 +327,99 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
           />
         </div>
       </div>
+
+      {accountingEnabled ? (
+        <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">QuickBooks vendor</div>
+              <div className="text-xs text-muted-foreground">
+                Link this Arc company to the vendor record used for bills and payments.
+              </div>
+            </div>
+            {formState.qbo_vendor_id ? (
+              <div className="shrink-0 rounded-md border bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground">
+                Linked
+              </div>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Popover open={qboVendorOpen} onOpenChange={setQboVendorOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={qboVendorOpen}
+                  disabled={isAccountingPending}
+                  className="h-10 w-full justify-between px-3 text-left"
+                >
+                  <span className={cn("truncate", !formState.qbo_vendor_name && "text-muted-foreground")}>
+                    {formState.qbo_vendor_name || (company ? "Link or create QuickBooks vendor" : "Link existing QuickBooks vendor")}
+                  </span>
+                  <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                <Command>
+                  <CommandInput placeholder="Search QuickBooks vendors..." />
+                  <CommandList className="max-h-72 overflow-y-auto">
+                    {company ? (
+                      <CommandGroup>
+                        <CommandItem
+                          value={`create ${formState.name}`}
+                          disabled={!formState.name.trim() || isAccountingPending}
+                          onSelect={createQboVendor}
+                          className="m-1 border border-primary/20 bg-primary/5 text-primary hover:bg-primary/10 data-[selected=true]:bg-primary/10"
+                        >
+                          {isAccountingPending ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <PlusCircle className="size-4 text-primary" />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">
+                              Create "{formState.name.trim() || "this vendor"}" in QuickBooks
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              Uses this Arc vendor name and profile details
+                            </span>
+                          </span>
+                        </CommandItem>
+                      </CommandGroup>
+                    ) : null}
+                    <CommandEmpty>No QuickBooks vendors found.</CommandEmpty>
+                    <CommandGroup heading="Existing QuickBooks vendors">
+                      {qboVendors.map((vendor) => {
+                        const selected = vendor.id === formState.qbo_vendor_id
+                        return (
+                          <CommandItem key={vendor.id} value={vendor.name} onSelect={() => setQboVendor(vendor.id)}>
+                            <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
+                            <span className="truncate">{vendor.name}</span>
+                          </CommandItem>
+                        )
+                      })}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            {isAccountingPending ? (
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Updating QuickBooks vendor link...
+              </p>
+            ) : null}
+          </div>
+          {formState.qbo_vendor_name ? (
+            <p className="text-xs text-muted-foreground">Current link: {formState.qbo_vendor_name}</p>
+          ) : company ? (
+            <p className="text-xs text-muted-foreground">No QuickBooks vendor linked yet.</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">Create the company first to create a new QuickBooks vendor from this record.</p>
+          )}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="flex items-center gap-3 rounded-lg border p-3">

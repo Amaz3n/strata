@@ -26,13 +26,35 @@ export async function listSubmittals(orgId?: string, projectId?: string): Promis
   return data ?? []
 }
 
+async function resolveNextSubmittalNumber(supabase: any, projectId: string): Promise<number> {
+  const { data: nextFromRpc, error: rpcError } = await supabase.rpc("next_submittal_number", {
+    p_project_id: projectId,
+  })
+
+  if (!rpcError && typeof nextFromRpc === "number" && nextFromRpc > 0) {
+    return nextFromRpc
+  }
+
+  const { data: last } = await supabase
+    .from("submittals")
+    .select("submittal_number")
+    .eq("project_id", projectId)
+    .order("submittal_number", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  return (last?.submittal_number ?? 0) + 1
+}
+
 export async function createSubmittal({ input, orgId }: { input: SubmittalInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const submittalNumber = input.submittal_number ?? await resolveNextSubmittalNumber(supabase, input.project_id)
 
   const payload = {
     org_id: resolvedOrgId,
     project_id: input.project_id,
-    submittal_number: input.submittal_number,
+    submittal_number: submittalNumber,
     title: input.title,
     description: input.description ?? null,
     status: input.status ?? "submitted",

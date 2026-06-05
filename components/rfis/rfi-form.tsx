@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 
 import type { Company, Contact, Project } from "@/lib/types"
 import { rfiInputSchema, type RfiInput } from "@/lib/validation/rfis"
-import { cn } from "@/lib/utils"
+import { cn, parseLocalDate, formatLocalDate } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -228,14 +228,14 @@ export function RfiForm({
                               className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
                             >
                               <Calendar className="mr-2 h-4 w-4" />
-                              {field.value ? format(new Date(field.value), "PPP") : "Pick a date"}
+                              {field.value ? formatLocalDate(field.value, "PPP") : "Pick a date"}
                             </Button>
                           </FormControl>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start">
                           <CalendarPicker
                             mode="single"
-                            selected={field.value ? new Date(field.value) : undefined}
+                            selected={field.value ? parseLocalDate(field.value) ?? undefined : undefined}
                             onSelect={(date) => field.onChange(date ? format(date, "yyyy-MM-dd") : "")}
                             initialFocus
                           />
@@ -259,7 +259,7 @@ export function RfiForm({
                           const next = value === "__none__" ? "" : value
                           field.onChange(next)
                           const currentContactId = form.getValues("notify_contact_id") ?? ""
-                          if (currentContactId) {
+                          if (currentContactId && next !== "") {
                             const selectedContact = externalContacts.find((c) => c.id === currentContactId)
                             if (!selectedContact || !contactBelongsToCompany(selectedContact, next)) {
                               form.setValue("notify_contact_id", "")
@@ -304,14 +304,6 @@ export function RfiForm({
                         onValueChange={(value) => {
                           const next = value === "__none__" ? "" : value
                           field.onChange(next)
-                          if (!next) return
-                          const selectedContact = externalContacts.find((contact) => contact.id === next)
-                          const linkedCompanyId =
-                            selectedContact?.primary_company_id ??
-                            selectedContact?.companies?.[0]?.company_id
-                          if (linkedCompanyId) {
-                            form.setValue("assigned_company_id", linkedCompanyId)
-                          }
                         }}
                         value={field.value || "__none__"}
                       >

@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
-import { cn } from "@/lib/utils"
+import { cn, parseLocalDate, formatLocalDate, isDateExpired } from "@/lib/utils"
 
 type StatusKey = "draft" | "submitted" | "in_review" | "approved" | "rejected" | string
 
@@ -66,6 +66,9 @@ const shortStatusLabel: Record<string, string> = {
 
 function formatDate(date?: string | null) {
   if (!date) return ""
+  if (date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    return formatLocalDate(date, "MMM d, yyyy")
+  }
   return format(new Date(date), "MMM d, yyyy")
 }
 
@@ -234,12 +237,12 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
             ) : (
               <ul className="divide-y">
                 {filtered.map((submittal) => {
-                  const dueDate = submittal.due_date ? new Date(submittal.due_date) : null
+                  const dueDate = submittal.due_date ? parseLocalDate(submittal.due_date) : null
                   const isOverdue = Boolean(
-                    dueDate &&
+                    submittal.due_date &&
                       submittal.status !== "approved" &&
                       submittal.status !== "rejected" &&
-                      dueDate.getTime() < Date.now(),
+                      isDateExpired(submittal.due_date),
                   )
                   const subtitleParts = [
                     `#${submittal.submittal_number}`,
@@ -331,7 +334,7 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
                 </TableCell>
                 <TableCell className="hidden lg:table-cell text-center">
                   <span className="text-xs text-muted-foreground">
-                    {submittal.due_date ? format(new Date(submittal.due_date), "MMM d, yyyy") : "—"}
+                    {submittal.due_date ? formatDate(submittal.due_date) : "—"}
                   </span>
                 </TableCell>
                 <TableCell className="hidden xl:table-cell text-center">

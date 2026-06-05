@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react"
 import { format } from "date-fns"
+import { formatLocalDate } from "@/lib/utils"
 
 import type { Rfi, RfiResponse } from "@/lib/types"
 import {
@@ -123,7 +124,7 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
                   <p className="text-sm text-muted-foreground">{rfi.question}</p>
                   {rfi.due_date && (
                     <p className="text-xs text-muted-foreground">
-                      Due {format(new Date(rfi.due_date), "MMM d, yyyy")}
+                      Due {formatLocalDate(rfi.due_date, "MMM d, yyyy")}
                     </p>
                   )}
                 </div>

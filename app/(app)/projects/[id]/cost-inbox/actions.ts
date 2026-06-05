@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
+import { assertProjectBillingDateEditable } from "@/lib/services/billing-periods"
 import { requireOrgContext } from "@/lib/services/context"
 import {
   approveProjectExpense,
@@ -12,6 +13,7 @@ import {
   updateTimeEntry,
 } from "@/lib/services/cost-plus"
 import { updateVendorBillStatus } from "@/lib/services/vendor-bills"
+import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 
 function revalidateProjectMoney(projectId: string) {
   revalidatePath(`/projects/${projectId}`)
@@ -32,11 +34,32 @@ export interface CategorizeTimeEntryInput {
   isOvertime?: boolean
 }
 
+async function assertInboxTimeEntryEditable(projectId: string, entryId: string) {
+  const { supabase, orgId } = await requireOrgContext()
+  const { data: entry, error } = await supabase
+    .from("time_entries")
+    .select("work_date")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", entryId)
+    .maybeSingle()
+
+  if (error) throw new Error(`Failed to validate billing period: ${error.message}`)
+  await assertProjectBillingDateEditable({
+    supabase,
+    orgId,
+    projectId,
+    date: entry?.work_date ?? null,
+    actionLabel: "This time entry",
+  })
+}
+
 export async function categorizeInboxTimeEntryAction(
   projectId: string,
   entryId: string,
   input: CategorizeTimeEntryInput,
 ) {
+  await assertInboxTimeEntryEditable(projectId, entryId)
   await updateTimeEntry(entryId, {
     costCodeId: input.costCodeId ?? null,
     baseRateCents:
@@ -54,6 +77,7 @@ export async function categorizeAndApproveInboxTimeEntryAction(
   entryId: string,
   input: CategorizeTimeEntryInput,
 ) {
+  await assertInboxTimeEntryEditable(projectId, entryId)
   await updateTimeEntry(entryId, {
     costCodeId: input.costCodeId ?? null,
     baseRateCents:
@@ -68,6 +92,8 @@ export async function categorizeAndApproveInboxTimeEntryAction(
 }
 
 export async function approveInboxTimeEntryAction(projectId: string, entryId: string, input?: CategorizeTimeEntryInput) {
+  await assertInboxTimeEntryEditable(projectId, entryId)
+
   if (input) {
     await updateTimeEntry(entryId, {
       costCodeId: input.costCodeId ?? null,
@@ -96,6 +122,23 @@ export async function sendInboxTimeEntryClientApprovalAction(projectId: string, 
 
 export async function categorizeInboxExpenseAction(projectId: string, expenseId: string, costCodeId: string | null) {
   const { supabase, orgId } = await requireOrgContext()
+  const { data: expense, error: expenseError } = await supabase
+    .from("project_expenses")
+    .select("expense_date")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", expenseId)
+    .maybeSingle()
+
+  if (expenseError) throw new Error(`Failed to validate billing period: ${expenseError.message}`)
+  await assertProjectBillingDateEditable({
+    supabase,
+    orgId,
+    projectId,
+    date: expense?.expense_date ?? null,
+    actionLabel: "This expense",
+  })
+
   const { error } = await supabase
     .from("project_expenses")
     .update({ cost_code_id: costCodeId })
@@ -122,6 +165,25 @@ export async function rejectInboxExpenseAction(projectId: string, expenseId: str
 
 export async function approveInboxVendorBillAction(projectId: string, billId: string, input?: { costCodeId?: string | null }) {
   const { supabase, orgId } = await requireOrgContext()
+  const { data: bill, error: billError } = await supabase
+    .from("vendor_bills")
+    .select("bill_date, due_date")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", billId)
+    .maybeSingle()
+
+  if (billError) throw new Error(`Failed to validate billing period: ${billError.message}`)
+  const settings = await getProjectFinancialSettings({ supabase, orgId, projectId })
+  const costCodesEnabled = settings?.cost_codes_enabled ?? true
+  await assertProjectBillingDateEditable({
+    supabase,
+    orgId,
+    projectId,
+    date: bill?.bill_date ?? bill?.due_date ?? null,
+    actionLabel: "This vendor bill",
+  })
+
   const { data: billLines, error: billLinesError } = await supabase
     .from("bill_lines")
     .select("id, cost_code_id")
@@ -129,10 +191,10 @@ export async function approveInboxVendorBillAction(projectId: string, billId: st
     .eq("bill_id", billId)
 
   if (billLinesError) throw new Error(`Failed to validate bill coding: ${billLinesError.message}`)
-  if ((billLines ?? []).length > 1 && input?.costCodeId) {
+  if (costCodesEnabled && (billLines ?? []).length > 1 && input?.costCodeId) {
     throw new Error("Multi-line vendor bills must be coded line-by-line from Payables before approval")
   }
-  if ((billLines ?? []).length > 1 && (billLines ?? []).some((line) => !line.cost_code_id)) {
+  if (costCodesEnabled && (billLines ?? []).length > 1 && (billLines ?? []).some((line) => !line.cost_code_id)) {
     throw new Error("Every vendor bill line needs a cost code before approval")
   }
   await updateVendorBillStatus({

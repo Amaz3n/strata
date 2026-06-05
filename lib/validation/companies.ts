@@ -41,6 +41,10 @@ export const companyInputSchema = z.object({
   default_payment_terms: z.string().max(200).optional(),
   internal_notes: z.string().max(5000).optional(),
   notes: z.string().max(1000).optional(),
+  qbo_vendor_id: z.string().optional(),
+  qbo_vendor_name: z.string().optional(),
+  qbo_vendor_synced_at: z.string().optional(),
+  qbo_vendor_sync_status: z.enum(["linked", "created", "needs_review", "error"]).optional(),
 })
 
 export const companyUpdateSchema = companyInputSchema.partial()
@@ -56,7 +60,6 @@ export const companyFiltersSchema = z
 export type CompanyInput = z.infer<typeof companyInputSchema>
 export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
-
 
 
 

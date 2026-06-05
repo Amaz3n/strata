@@ -343,6 +343,24 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
         .catch(() => [])
     : []
 
+  // The project's default QBO customer (set in project settings) — used to pre-select the composer's
+  // "bill to" picker so invoices and payables attribute to the same customer by default.
+  let defaultQboCustomer: { id: string; name: string } | null = null
+  if (projectId) {
+    const { data: projectRow } = await supabase
+      .from("projects")
+      .select("qbo_customer_id, qbo_customer_name")
+      .eq("org_id", orgId)
+      .eq("id", projectId)
+      .maybeSingle()
+    if (projectRow?.qbo_customer_id) {
+      defaultQboCustomer = {
+        id: String(projectRow.qbo_customer_id),
+        name: String(projectRow.qbo_customer_name ?? ""),
+      }
+    }
+  }
+
   const { data: orgSettingsRow } = await supabase.from("org_settings").select("settings").eq("org_id", orgId).maybeSingle()
   const settings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
 
@@ -394,6 +412,7 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
       status: String(draw.status ?? "pending"),
     })),
     changeOrders,
+    defaultQboCustomer,
     qboConnected,
     qboIncomeAccounts,
     qboDefaultIncomeAccountId,
@@ -431,13 +450,27 @@ export async function searchQboCustomersAction(term: string) {
  * Create a customer directly in QuickBooks from the composer, so new customers are born in the source
  * of truth instead of an Arc-only base that drifts. Returns the new QBO customer to bill against.
  */
-export async function createQboCustomerAction(input: { name: string; email?: string | null; address?: string | null }) {
+export async function createQboCustomerAction(input: {
+  name: string
+  email?: string | null
+  line1?: string | null
+  city?: string | null
+  state?: string | null
+  postalCode?: string | null
+}) {
   const { orgId } = await requireOrgContext()
   const name = input.name?.trim()
   if (!name) throw new Error("Customer name is required")
   const qboClient = await QBOClient.forOrg(orgId)
   if (!qboClient) throw new Error("QuickBooks is not connected")
-  return qboClient.createCustomerOption({ name, email: input.email ?? null, address: input.address ?? null })
+  return qboClient.createCustomerOption({
+    name,
+    email: input.email ?? null,
+    line1: input.line1 ?? null,
+    city: input.city ?? null,
+    state: input.state ?? null,
+    postalCode: input.postalCode ?? null,
+  })
 }
 
 /**

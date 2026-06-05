@@ -60,6 +60,23 @@ function formatMoney(cents?: number | null) {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
+function formatGmpClassification(value?: string | null) {
+  return value === "outside_gmp" ? "Outside GMP" : "Inside GMP"
+}
+
+function formatGmpImpact(value?: string | null) {
+  switch (value) {
+    case "increase_gmp":
+      return "Increases GMP"
+    case "decrease_gmp":
+      return "Decreases GMP"
+    case "outside_gmp":
+      return "Outside GMP only"
+    default:
+      return "No GMP change"
+  }
+}
+
 export function ChangeOrderDetailSheet({
   changeOrder,
   open,
@@ -149,11 +166,14 @@ export function ChangeOrderDetailSheet({
     | {
         budget_revision_cents?: number
         allowance_draw_cents?: number
+        gmp_delta_cents?: number
+        outside_gmp_cents?: number
         billing_status?: string
         budget_distributions?: Array<{
           description?: string
           budget_revision_cents?: number
           allowance_draw_cents?: number
+          gmp_classification?: string
         }>
       }
     | undefined
@@ -256,6 +276,16 @@ export function ChangeOrderDetailSheet({
                             {line.taxable && (
                               <Badge variant="outline" className="text-xs">Taxable</Badge>
                             )}
+                            {line.gmp_classification || line.gmp_impact ? (
+                              <Badge variant="outline" className="text-xs">
+                                {formatGmpClassification(line.gmp_classification)}
+                              </Badge>
+                            ) : null}
+                            {line.gmp_impact && line.gmp_impact !== "none" ? (
+                              <Badge variant="outline" className="text-xs">
+                                {formatGmpImpact(line.gmp_impact)}
+                              </Badge>
+                            ) : null}
                           </div>
                         </div>
                         <span className="font-semibold text-sm">
@@ -322,13 +352,22 @@ export function ChangeOrderDetailSheet({
                     <p className="text-xs text-muted-foreground">Allowance draw</p>
                     <p className="font-semibold">{formatMoney(financialImpact.allowance_draw_cents)}</p>
                   </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">GMP delta</p>
+                    <p className="font-semibold">{formatMoney(financialImpact.gmp_delta_cents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Outside GMP</p>
+                    <p className="font-semibold">{formatMoney(financialImpact.outside_gmp_cents)}</p>
+                  </div>
                 </div>
                 <Separator />
                 <div className="space-y-2">
                   {(financialImpact.budget_distributions ?? []).map((line, index) => (
-                    <div key={`${line.description ?? "line"}-${index}`} className="flex justify-between gap-3 text-xs">
-                      <span className="line-clamp-1 text-muted-foreground">{line.description ?? `Line ${index + 1}`}</span>
-                      <span className="font-medium">{formatMoney(line.budget_revision_cents)}</span>
+                    <div key={`${line.description ?? "line"}-${index}`} className="flex items-center justify-between gap-3 text-xs">
+                      <span className="min-w-0 line-clamp-1 text-muted-foreground">{line.description ?? `Line ${index + 1}`}</span>
+                      <span className="shrink-0 text-muted-foreground">{formatGmpClassification(line.gmp_classification)}</span>
+                      <span className="shrink-0 font-medium">{formatMoney(line.budget_revision_cents)}</span>
                     </div>
                   ))}
                 </div>

@@ -1,9 +1,11 @@
 import { Suspense } from "react"
 
 import { fetchPayablesTabDataAction } from "@/app/(app)/projects/[id]/financials/actions"
+import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
 import { PayablesTab } from "@/components/financials/payables-tab"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
 
 export const dynamic = "force-dynamic"
@@ -23,9 +25,10 @@ export default async function FinancialsPayablesPage({ params }: PageProps) {
 }
 
 async function FinancialsPayablesData({ id }: { id: string }) {
-  const [{ project }, data] = await Promise.all([
+  const [{ project }, data, setupStatus] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchPayablesTabDataAction(id),
+    getProjectFinancialSetupStatusForProject(id),
   ])
 
   return (
@@ -38,10 +41,12 @@ async function FinancialsPayablesData({ id }: { id: string }) {
       ]}
       fullBleed
     >
+      <FinancialSetupStatusBanner setup={setupStatus} />
       <PayablesTab
         projectId={project.id}
         vendorBills={data.vendorBills}
         costCodes={data.costCodes}
+        costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
         complianceRules={data.complianceRules}
         complianceStatusByCompanyId={data.complianceStatusByCompanyId}
         loadErrors={data.errors}
