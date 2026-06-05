@@ -5,12 +5,12 @@
       "schedule": "0 2 * * *"
     },
     {
-      "path": "/api/qbo/process-webhooks",
-      "schedule": "5 2 * * *"
+      "path": "/api/qbo/process-cdc",
+      "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/qbo/process-cdc",
-      "schedule": "10 2 * * *"
+      "path": "/api/qbo/process-webhooks",
+      "schedule": "5-59/15 * * * *"
     },
     {
       "path": "/api/jobs/process-outbox",
