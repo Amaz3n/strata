@@ -8,6 +8,13 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/process-outbox",
   "/api/jobs/rbac-evidence",
   "/api/webhooks/stripe",
+  // QBO infra routes — no user session; they self-authenticate via CRON_SECRET
+  // (crons) or Intuit webhook signature (payment-webhook). Without these, the
+  // proxy redirects them to /auth/signin (307) and they never run.
+  "/api/qbo/process-cdc",
+  "/api/qbo/process-webhooks",
+  "/api/qbo/process-outbox",
+  "/api/qbo/payment-webhook",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",
