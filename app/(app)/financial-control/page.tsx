@@ -1,9 +1,13 @@
 import { PageLayout } from "@/components/layout/page-layout"
 import { FinancialControlClient } from "@/components/financial-control/financial-control-client"
 import { getPortfolioFinancialControlData } from "@/lib/services/portfolio-financials"
+import { getPortfolioTrustCenterData } from "@/lib/services/trust-center"
 
 export default async function FinancialControlPage() {
-  const data = await getPortfolioFinancialControlData()
+  const [data, trustCenterData] = await Promise.all([
+    getPortfolioFinancialControlData(),
+    getPortfolioTrustCenterData(),
+  ])
 
   return (
     <>
@@ -12,7 +16,7 @@ export default async function FinancialControlPage() {
         breadcrumbs={[{ label: "Company" }, { label: "Financial Control" }]}
         fullBleed
       />
-      <FinancialControlClient data={data} />
+      <FinancialControlClient data={data} trustCenterData={trustCenterData} />
     </>
   )
 }

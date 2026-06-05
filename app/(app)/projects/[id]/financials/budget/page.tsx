@@ -2,8 +2,10 @@ import { Suspense } from "react"
 
 import { fetchBudgetTabDataAction } from "@/app/(app)/projects/[id]/financials/actions"
 import { BudgetTab } from "@/components/financials/budget-tab"
+import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
 
 export const dynamic = "force-dynamic"
@@ -23,9 +25,10 @@ export default async function FinancialsBudgetPage({ params }: PageProps) {
 }
 
 async function FinancialsBudgetData({ id }: { id: string }) {
-  const [{ project }, data] = await Promise.all([
+  const [{ project }, data, setupStatus] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchBudgetTabDataAction(id),
+    getProjectFinancialSetupStatusForProject(id),
   ])
 
   return (
@@ -37,15 +40,19 @@ async function FinancialsBudgetData({ id }: { id: string }) {
         { label: "Budget" },
       ]}
     >
+      <FinancialSetupStatusBanner setup={setupStatus} />
       <BudgetTab
         projectId={project.id}
         project={project}
         budgetData={data.budgetData}
         costCodes={data.costCodes}
+        costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
         varianceAlerts={data.varianceAlerts}
         commitments={data.commitments}
         companies={data.companies}
         budgetBucketCompanies={data.budgetBucketCompanies}
+        feeSummary={data.feeSummary}
+        gmpSummary={data.gmpSummary}
         loadErrors={data.errors}
       />
     </PageLayout>

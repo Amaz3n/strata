@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { format } from "date-fns"
+import { formatLocalDate } from "@/lib/utils"
 
 import type { Submittal } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -52,7 +53,7 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
                   )}
                   {sub.due_date && (
                     <p className="text-xs text-muted-foreground">
-                      Due {format(new Date(sub.due_date), "MMM d, yyyy")}
+                      Due {formatLocalDate(sub.due_date, "MMM d, yyyy")}
                     </p>
                   )}
                 </div>
@@ -88,7 +89,7 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
               )}
               {selected?.due_date && (
                 <p>
-                  <span className="font-medium">Due:</span> {format(new Date(selected.due_date), "MMM d, yyyy")}
+                  <span className="font-medium">Due:</span> {formatLocalDate(selected.due_date, "MMM d, yyyy")}
                 </p>
               )}
               <p>

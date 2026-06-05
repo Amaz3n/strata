@@ -20,14 +20,20 @@ export const projectInputSchema = z.object({
     .optional(),
   markup_percent: z.number().min(0).max(200).optional().nullable(),
   gmp_cents: z.number().int().nonnegative().optional().nullable(),
+  fixed_fee_cents: z.number().int().nonnegative().optional().nullable(),
   savings_split_owner_pct: z.number().min(0).max(100).optional().nullable(),
   savings_split_builder_pct: z.number().min(0).max(100).optional().nullable(),
   labor_burden_multiplier: z.number().min(1).optional().nullable(),
   requires_client_cost_approval: z.boolean().optional(),
   open_book: z.boolean().optional(),
+  paid_costs_required: z.boolean().optional(),
+  proof_required: z.boolean().optional(),
+  cost_codes_enabled: z.boolean().optional(),
   prospect_id: z.string().uuid().optional().nullable(),
   qbo_class_id: z.string().optional().nullable(),
   qbo_class_name: z.string().optional().nullable(),
+  qbo_customer_id: z.string().optional().nullable(),
+  qbo_customer_name: z.string().optional().nullable(),
 })
 
 export const projectUpdateSchema = projectInputSchema.partial()

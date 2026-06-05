@@ -107,11 +107,11 @@ const qboStatusStyles: Record<string, string> = {
 }
 
 const qboStatusLabels: Record<string, string> = {
-  pending: "QBO pending",
-  synced: "QBO synced",
-  error: "QBO error",
-  needs_review: "Needs QBO info",
-  skipped: "QBO skipped",
+  pending: "Pending Sync",
+  synced: "Synced to QuickBooks",
+  error: "Sync Error",
+  needs_review: "Requires Review",
+  skipped: "Sync Disabled",
 }
 
 const AUTO_QBO_VENDOR = "__auto_qbo_vendor__"
@@ -468,6 +468,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const [savingMemoExpenseId, setSavingMemoExpenseId] = useState<string | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null)
+  const costCodesEnabled = accountingContext?.costCodesEnabled ?? true
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const dragDepthRef = useRef(0)
   const [isPending, startTransition] = useTransition()
@@ -485,8 +486,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
       return [
         vendorOf(expense),
         expense.description ?? "",
-        expense.cost_code?.code ?? "",
-        expense.cost_code?.name ?? "",
+        costCodesEnabled ? expense.cost_code?.code ?? "" : "",
+        costCodesEnabled ? expense.cost_code?.name ?? "" : "",
         expense.qbo_expense_account_name ?? "",
         expense.qbo_payment_account_name ?? "",
         expense.qbo_ap_account_name ?? "",
@@ -539,7 +540,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
 
   useEffect(() => {
     let cancelled = false
-    void getExpenseAccountingContextAction()
+    void getExpenseAccountingContextAction(projectId)
       .then((context) => {
         if (!cancelled) setAccountingContext(context)
       })
@@ -549,7 +550,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [projectId])
 
   async function handleCreate(payload: CreateMyExpenseInput, receipt: File | null) {
     const formData = new FormData()
@@ -1196,7 +1197,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                       </div>
                       <p className="font-semibold mt-1 truncate">{vendorOf(expense)}</p>
                       <p className="text-xs text-muted-foreground mt-1 tabular-nums">{formatCurrency((expense.amount_cents ?? 0) + (expense.tax_cents ?? 0))}</p>
-                      {expense.cost_code?.code ? (
+                      {costCodesEnabled && expense.cost_code?.code ? (
                         <p className="text-xs text-muted-foreground mt-1 truncate">
                           {expense.cost_code.code} {expense.cost_code.name}
                         </p>
@@ -1239,7 +1240,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto">
-            <Table className="min-w-[1480px]">
+            <Table className={costCodesEnabled ? "min-w-[1480px]" : "min-w-[1300px]"}>
               <TableHeader>
                 <TableRow className="divide-x">
                   <TableHead className="relative w-[72px] min-w-[72px] py-3 text-center">
@@ -1254,7 +1255,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                   <TableHead className="w-[96px] px-4 py-3 text-center">Receipt</TableHead>
                   <TableHead className="min-w-[220px] px-4 py-3">Memo</TableHead>
                   <TableHead className="min-w-[280px] px-4 py-3">QBO Vendor</TableHead>
-                  <TableHead className="min-w-[180px] px-4 py-3">Cost Code</TableHead>
+                  {costCodesEnabled ? <TableHead className="min-w-[180px] px-4 py-3">Cost Code</TableHead> : null}
                   <TableHead className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-3 text-center shadow-[-2px_0_0_hsl(var(--border))]">
                     <span className="sr-only">Approve</span>
                   </TableHead>
@@ -1342,17 +1343,19 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           onSelect={(vendorId) => void saveExpenseVendor(expense, vendorId)}
                         />
                       </TableCell>
-                      <TableCell className="p-0">
-                        <CostCodeCombobox
-                          expense={expense}
-                          context={accountingContext}
-                          open={openCostCodeExpenseId === expense.id}
-                          disabled={savingCostCodeExpenseId === expense.id}
-                          saving={savingCostCodeExpenseId === expense.id}
-                          onOpenChange={(open) => setOpenCostCodeExpenseId(open ? expense.id : null)}
-                          onSelect={(costCodeId) => void saveExpenseCostCode(expense, costCodeId)}
-                        />
-                      </TableCell>
+                      {costCodesEnabled ? (
+                        <TableCell className="p-0">
+                          <CostCodeCombobox
+                            expense={expense}
+                            context={accountingContext}
+                            open={openCostCodeExpenseId === expense.id}
+                            disabled={savingCostCodeExpenseId === expense.id}
+                            saving={savingCostCodeExpenseId === expense.id}
+                            onOpenChange={(open) => setOpenCostCodeExpenseId(open ? expense.id : null)}
+                            onSelect={(costCodeId) => void saveExpenseCostCode(expense, costCodeId)}
+                          />
+                        </TableCell>
+                      ) : null}
                       <TableCell className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-2 text-center shadow-[-2px_0_0_hsl(var(--border))]" onClick={(event) => event.stopPropagation()}>
                         <div className="flex items-center justify-center">{rowApproveAction(expense)}</div>
                       </TableCell>
@@ -1364,7 +1367,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                 })}
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={11} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                    <TableCell colSpan={costCodesEnabled ? 11 : 10} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                       <div className="flex flex-col items-center gap-3">
                         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                           <Receipt className="h-6 w-6" />

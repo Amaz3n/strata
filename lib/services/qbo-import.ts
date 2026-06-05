@@ -707,6 +707,61 @@ async function importBill(ctx: ResolvedContext, client: QBOClient, connectionId:
 
   if (billError || !billRow) throw new Error(billError?.message ?? "Failed to create bill")
 
+  // Persist the bill's expense lines, allocating each to the Arc project that maps to the
+  // line's QBO customer (so a bill job-costed across multiple projects in QBO keeps that
+  // split in Arc). Lines without a resolvable customer fall back to the import target project.
+  const expenseLines = (qbo.Line ?? []).filter((line: any) => line?.AccountBasedExpenseLineDetail)
+  if (expenseLines.length > 0) {
+    const customerIds = Array.from(
+      new Set(
+        expenseLines
+          .map((line: any) => refValue(line.AccountBasedExpenseLineDetail?.CustomerRef))
+          .filter((value: string | null): value is string => Boolean(value)),
+      ),
+    )
+    const projectByCustomer = new Map<string, string>()
+    if (customerIds.length > 0) {
+      const { data: projectRows } = await supabase
+        .from("projects")
+        .select("id, qbo_customer_id")
+        .eq("org_id", orgId)
+        .in("qbo_customer_id", customerIds)
+      for (const projectRow of projectRows ?? []) {
+        if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
+      }
+    }
+
+    const lineRows = expenseLines.map((line: any, index: number) => {
+      const detail = line.AccountBasedExpenseLineDetail
+      const customerId = refValue(detail?.CustomerRef)
+      const lineProjectId = (customerId && projectByCustomer.get(customerId)) || projectId
+      return {
+        org_id: orgId,
+        bill_id: billRow.id,
+        project_id: lineProjectId,
+        cost_code_id: null,
+        description: String(line.Description ?? refName(detail?.AccountRef) ?? "Imported QuickBooks line"),
+        quantity: 1,
+        unit: "LS",
+        unit_cost_cents: toCents(line.Amount),
+        sort_order: index,
+        metadata: {
+          source: "qbo_import",
+          qbo_expense_account_id: refValue(detail?.AccountRef),
+          qbo_expense_account_name: refName(detail?.AccountRef),
+          qbo_class_id: refValue(detail?.ClassRef),
+          qbo_class_name: refName(detail?.ClassRef),
+        },
+      }
+    })
+
+    const { error: linesError } = await supabase.from("bill_lines").insert(lineRows)
+    if (linesError) {
+      await supabase.from("vendor_bills").delete().eq("org_id", orgId).eq("id", billRow.id)
+      throw new Error(`Failed to create bill lines: ${linesError.message}`)
+    }
+  }
+
   await linkSyncRecord({ supabase, orgId, connectionId, entityType: "bill", entityId: billRow.id, qboId })
   await markEventsResolved(supabase, qboId)
   await recordEvent({

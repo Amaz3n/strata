@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { uploadCostPlusFile } from "@/lib/services/cost-plus-files"
 import { extractExpenseReceiptFromFile, type ExtractedExpenseReceipt } from "@/lib/services/receipt-extraction"
 import {
@@ -146,7 +147,7 @@ export async function listProjectExpensesAction(projectId: string) {
   return data.expenses ?? []
 }
 
-export async function getExpenseAccountingContextAction() {
+export async function getExpenseAccountingContextAction(projectId?: string) {
   const { supabase, orgId } = await requireOrgContext()
   const { data: connection } = await supabase
     .from("qbo_connections")
@@ -155,12 +156,16 @@ export async function getExpenseAccountingContextAction() {
     .eq("status", "active")
     .maybeSingle()
   const settings = (connection?.settings as Record<string, any> | null) ?? {}
-  const { data: costCodes } = await supabase
-    .from("cost_codes")
-    .select("id, code, name, division, category")
-    .eq("org_id", orgId)
-    .eq("is_active", true)
-    .order("code")
+  const projectSettings = projectId ? await getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null) : null
+  const costCodesEnabled = projectSettings?.cost_codes_enabled ?? true
+  const { data: costCodes } = costCodesEnabled
+    ? await supabase
+        .from("cost_codes")
+        .select("id, code, name, division, category")
+        .eq("org_id", orgId)
+        .eq("is_active", true)
+        .order("code")
+    : { data: [] }
   const client = await QBOClient.forOrg(orgId)
   if (!client) {
     return {
@@ -169,7 +174,8 @@ export async function getExpenseAccountingContextAction() {
       paymentAccounts: [],
       apAccounts: [],
       vendors: [],
-      costCodes: costCodes ?? [],
+      costCodes: costCodesEnabled ? costCodes ?? [] : [],
+      costCodesEnabled,
       defaults: {},
       warning: null,
     }
@@ -189,7 +195,8 @@ export async function getExpenseAccountingContextAction() {
       paymentAccounts,
       apAccounts,
       vendors,
-      costCodes: costCodes ?? [],
+      costCodes: costCodesEnabled ? costCodes ?? [] : [],
+      costCodesEnabled,
       defaults: {
         expenseAccountId: typeof settings.default_expense_account_id === "string" ? settings.default_expense_account_id : "",
         paymentAccountId: typeof settings.default_payment_account_id === "string" ? settings.default_payment_account_id : "",
@@ -205,7 +212,8 @@ export async function getExpenseAccountingContextAction() {
       paymentAccounts: [],
       apAccounts: [],
       vendors: [],
-      costCodes: costCodes ?? [],
+      costCodes: costCodesEnabled ? costCodes ?? [] : [],
+      costCodesEnabled,
       defaults: {},
       warning: error?.message ?? "Unable to load QuickBooks accounting categories.",
     }

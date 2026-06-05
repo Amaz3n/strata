@@ -2,9 +2,24 @@ import { getBudgetWithActuals } from "@/lib/services/budgets"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createHash, randomBytes, randomUUID } from "crypto"
 
+import { assertCostSourceCanEnterBillableLedger } from "@/lib/financials/billable-ledger-rules"
+import { shouldExposeOpenBookCostDetail } from "@/lib/financials/billing-model"
 import { recordAudit } from "@/lib/services/audit"
+import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
+import {
+  assertBillingPeriodCanInvoice,
+  getProjectBillingPeriod,
+  linkInvoiceToBillingPeriod,
+} from "@/lib/services/billing-periods"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import {
+  calculateTimeEntryCostCents,
+  postJobCostEntryFromProjectExpense,
+  postJobCostEntryFromTimeEntry,
+  postJobCostEntryFromBillLine,
+  voidJobCostEntryForSource,
+} from "@/lib/services/job-cost-actuals"
 import { sendEmail, getOrgSenderEmail, renderStandardEmailLayout } from "@/lib/services/mailer"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { enqueueProjectExpenseSync } from "@/lib/services/qbo-sync"
@@ -48,6 +63,8 @@ export interface BillableCost {
   is_billable: boolean
   invoice_id?: string | null
   invoice_line_id?: string | null
+  billing_period_id?: string | null
+  late_to_billing_period_id?: string | null
   billed_at?: string | null
   status: "open" | "locked" | "billed" | "excluded" | "voided"
   metadata?: Record<string, any>
@@ -162,6 +179,8 @@ function mapBillableCost(row: any): BillableCost {
     is_billable: row.is_billable !== false,
     invoice_id: row.invoice_id ?? null,
     invoice_line_id: row.invoice_line_id ?? null,
+    billing_period_id: row.billing_period_id ?? null,
+    late_to_billing_period_id: row.late_to_billing_period_id ?? null,
     billed_at: row.billed_at ?? null,
     status: row.status ?? "open",
     metadata: row.metadata ?? {},
@@ -558,6 +577,11 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
 
   const contract = await getProjectCostContract(supabase, resolvedOrgId, bill.project_id)
   if (!isCostPlusContract(contract)) throw new Error("Project contract is not cost-plus or T&M")
+  assertCostSourceCanEnterBillableLedger({
+    billingModel: contract.contract_type === "time_materials" ? "time_and_materials" : contract.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent",
+    sourceType: "vendor_bill_line",
+    sourceStatus: String(bill.status),
+  })
 
   const costCents = Math.round(Number(line.unit_cost_cents ?? 0) * Number(line.quantity ?? 1))
   const markup = await resolveMarkupPercent({
@@ -607,6 +631,11 @@ export async function upsertBillableCostFromExpense(args: { expenseId: string; o
 
   const contract = await getProjectCostContract(supabase, resolvedOrgId, expense.project_id)
   if (!isCostPlusContract(contract)) throw new Error("Project contract is not cost-plus or T&M")
+  assertCostSourceCanEnterBillableLedger({
+    billingModel: contract.contract_type === "time_materials" ? "time_and_materials" : contract.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent",
+    sourceType: "project_expense",
+    sourceStatus: String(expense.status),
+  })
 
   const costCents = Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0)
   const markup = await resolveMarkupPercent({
@@ -659,10 +688,14 @@ export async function upsertBillableCostFromTimeEntry(args: { timeEntryId: strin
   const contract = await getProjectCostContract(supabase, resolvedOrgId, entry.project_id)
   if (!isCostPlusContract(contract)) throw new Error("Project contract is not cost-plus or T&M")
 
-  const requiredStatus = contract.requires_client_cost_approval ? "client_approved" : "pm_approved"
-  if (entry.status !== requiredStatus) throw new Error("Time entry is not approved for billing")
+  assertCostSourceCanEnterBillableLedger({
+    billingModel: contract.contract_type === "time_materials" ? "time_and_materials" : contract.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent",
+    sourceType: "time_entry",
+    sourceStatus: String(entry.status),
+    clientCostApprovalRequired: contract.requires_client_cost_approval,
+  })
 
-  const costCents = Number(entry.cost_cents ?? 0)
+  const costCents = calculateTimeEntryCostCents(entry)
   const markup = await resolveMarkupPercent({
     supabase,
     orgId: resolvedOrgId,
@@ -713,6 +746,17 @@ export async function propagateApprovalToLedger(args: {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
 
   if (args.source === "vendor_bill") {
+    const { data: bill, error: billError } = await supabase
+      .from("vendor_bills")
+      .select("id, project_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", args.sourceId)
+      .maybeSingle()
+
+    if (billError || !bill) throw new Error("Vendor bill not found")
+    const contract = await getProjectCostContract(supabase, resolvedOrgId, bill.project_id)
+    const shouldPostBillableCosts = isCostPlusContract(contract)
+
     const { data: lines, error } = await supabase
       .from("bill_lines")
       .select("id")
@@ -721,17 +765,44 @@ export async function propagateApprovalToLedger(args: {
 
     if (error) throw new Error(`Failed to load bill lines: ${error.message}`)
     for (const line of lines ?? []) {
-      await upsertBillableCostFromBillLine({ billLineId: line.id, orgId: resolvedOrgId })
+      if (shouldPostBillableCosts) {
+        await upsertBillableCostFromBillLine({ billLineId: line.id, orgId: resolvedOrgId })
+      }
+      await postJobCostEntryFromBillLine({ billLineId: line.id, orgId: resolvedOrgId })
     }
     return
   }
 
   if (args.source === "project_expense") {
-    await upsertBillableCostFromExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
+    const { data: expense, error } = await supabase
+      .from("project_expenses")
+      .select("id, project_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", args.sourceId)
+      .maybeSingle()
+
+    if (error || !expense) throw new Error("Expense not found")
+    const contract = await getProjectCostContract(supabase, resolvedOrgId, expense.project_id)
+    if (isCostPlusContract(contract)) {
+      await upsertBillableCostFromExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
+    }
+    await postJobCostEntryFromProjectExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
     return
   }
 
-  await upsertBillableCostFromTimeEntry({ timeEntryId: args.sourceId, orgId: resolvedOrgId })
+  const { data: entry, error } = await supabase
+    .from("time_entries")
+    .select("id, project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", args.sourceId)
+    .maybeSingle()
+
+  if (error || !entry) throw new Error("Time entry not found")
+  const contract = await getProjectCostContract(supabase, resolvedOrgId, entry.project_id)
+  if (isCostPlusContract(contract)) {
+    await upsertBillableCostFromTimeEntry({ timeEntryId: args.sourceId, orgId: resolvedOrgId })
+  }
+  await postJobCostEntryFromTimeEntry({ timeEntryId: args.sourceId, orgId: resolvedOrgId })
 }
 
 export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
@@ -894,6 +965,9 @@ export async function rejectTimeEntry(timeEntryId: string, input: { rejectionRea
   if (error || !data) throw new Error(`Failed to reject time entry: ${error?.message}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "time_entry", entityId: data.id, before, after: data })
   await recordEvent({ orgId: resolvedOrgId, eventType: "time_entry_rejected", entityType: "time_entry", entityId: data.id, payload: { project_id: data.project_id } })
+  if (["pm_approved", "client_approved", "locked"].includes(String(before.status))) {
+    await voidJobCostEntryForSource({ sourceType: "time_entry", sourceId: data.id, orgId: resolvedOrgId })
+  }
   return data
 }
 
@@ -1152,6 +1226,9 @@ export async function rejectProjectExpense(expenseId: string, input: { rejection
   if (error || !data) throw new Error(`Failed to reject expense: ${error?.message}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "project_expense", entityId: data.id, before, after: data })
   await recordEvent({ orgId: resolvedOrgId, eventType: "expense_rejected", entityType: "project_expense", entityId: data.id, payload: { project_id: data.project_id } })
+  if (["approved", "locked"].includes(String(before.status))) {
+    await voidJobCostEntryForSource({ sourceType: "project_expense", sourceId: data.id, orgId: resolvedOrgId })
+  }
   return data
 }
 
@@ -1267,7 +1344,7 @@ export async function listOpenBookCostDetailsForInvoice({
 }) {
   const supabase = createServiceSupabaseClient()
   const contract = await getProjectCostContract(supabase, orgId, projectId)
-  if (contract?.open_book === false) return []
+  if (!shouldExposeOpenBookCostDetail(contract?.open_book)) return []
 
   const { data, error } = await supabase
     .from("billable_costs")
@@ -1454,8 +1531,19 @@ export async function generateInvoiceFromCosts(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: parsed.projectId, permission: "invoice.write" })
 
-  const from = toDateOnly(parsed.dateRange.from)
-  const to = toDateOnly(parsed.dateRange.to)
+  const billingPeriod = parsed.billingPeriodId
+    ? await getProjectBillingPeriod({
+        supabase,
+        orgId: resolvedOrgId,
+        projectId: parsed.projectId,
+        billingPeriodId: parsed.billingPeriodId,
+      })
+    : null
+  if (parsed.billingPeriodId && !billingPeriod) throw new Error("Billing period not found")
+  if (billingPeriod) assertBillingPeriodCanInvoice(billingPeriod)
+
+  const from = billingPeriod?.period_start ?? toDateOnly(parsed.dateRange.from)
+  const to = billingPeriod?.period_end ?? toDateOnly(parsed.dateRange.to)
   const today = toDateOnly(new Date())
   if (to > today) throw new Error("Cannot generate an invoice for a future date range")
   if (from > to) throw new Error("Date range start must be before the end date")
@@ -1505,12 +1593,14 @@ export async function generateInvoiceFromCosts(
     .eq("project_id", parsed.projectId)
     .eq("status", "open")
     .eq("is_billable", true)
-    .gte("occurred_on", from)
-    .lte("occurred_on", to)
     .order("occurred_on", { ascending: true })
 
   if (parsed.costCodeIds?.length) query = query.in("cost_code_id", parsed.costCodeIds)
-  if (parsed.billableCostIds?.length) query = query.in("id", parsed.billableCostIds)
+  if (parsed.billableCostIds?.length) {
+    query = query.in("id", parsed.billableCostIds)
+  } else {
+    query = query.gte("occurred_on", from).lte("occurred_on", to)
+  }
 
   const { data: rawCosts, error } = await query
   if (error) throw new Error(`Failed to load billable costs: ${error.message}`)
@@ -1561,35 +1651,47 @@ export async function generateInvoiceFromCosts(
   const costIds = refreshedCosts.map((cost) => cost.id)
   const invoiceNumber = await getNextInvoiceNumber(resolvedOrgId)
   const token = randomUUID()
-  const previewForRpc = {
-    ...preview,
-    lines: preview.lines.map((line, index) => ({ ...line, sort_order: index })),
-  }
-
-  const { data: rpcResult, error: rpcError } = await supabase.rpc("create_invoice_from_billable_costs_atomic", {
-    p_org_id: resolvedOrgId,
-    p_project_id: parsed.projectId,
-    p_actor_id: userId,
-    p_invoice_number: invoiceNumber.number,
-    p_token: token,
-    p_title: `Cost-plus billing ${from} to ${to}`,
-    p_issue_date: preview.issueDate,
-    p_due_date: preview.dueDate,
-    p_from_date: from,
-    p_to_date: to,
-    p_group_by: parsed.groupBy,
-    p_cost_ids: costIds,
-    p_preview: previewForRpc,
-    p_idempotency_key: parsed.idempotencyKey ?? null,
-    p_reservation_id: invoiceNumber.reservation_id ?? null,
+  const approvedCostInvoice = await createApprovedCostInvoiceFromPreview({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: parsed.projectId,
+    actorId: userId,
+    invoiceNumber: invoiceNumber.number,
+    token,
+    title: `Cost-plus billing ${from} to ${to}`,
+    issueDate: preview.issueDate,
+    dueDate: preview.dueDate,
+    fromDate: from,
+    toDate: to,
+    groupBy: parsed.groupBy,
+    costIds,
+    preview,
+    idempotencyKey: parsed.idempotencyKey ?? null,
+    reservationId: invoiceNumber.reservation_id ?? null,
+    status: "saved",
+    clientVisible: false,
+    metadata: {
+      source_type: "from_costs",
+      created_by: userId,
+      billing_period_id: billingPeriod?.id ?? null,
+      billing_period_name: billingPeriod?.name ?? null,
+      billing_period_start: billingPeriod?.period_start ?? null,
+      billing_period_end: billingPeriod?.period_end ?? null,
+    },
+    auditLabel: "cost_inbox",
   })
 
-  if (rpcError) {
-    throw new Error(`Failed to create invoice from costs: ${rpcError.message}`)
+  const invoiceId = approvedCostInvoice.invoiceId
+  if (billingPeriod) {
+    await linkInvoiceToBillingPeriod({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: parsed.projectId,
+      billingPeriodId: billingPeriod.id,
+      invoiceId,
+      costIds,
+    })
   }
-
-  const invoiceId = (rpcResult as any)?.invoiceId
-  if (!invoiceId) throw new Error("Failed to create invoice from costs: missing invoice id")
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -1602,6 +1704,7 @@ export async function generateInvoiceFromCosts(
       total_cents: preview.totals.billable_cents,
       group_by: parsed.groupBy,
       billable_cost_ids: costIds,
+      billing_period_id: billingPeriod?.id ?? null,
     },
   })
   await recordAudit({

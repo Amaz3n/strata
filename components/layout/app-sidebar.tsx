@@ -111,6 +111,7 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/change-orders")) return "change-orders"
   if (pathname.includes("/invoices")) return "invoices"
   if (pathname.includes("/financials/receivables")) return "receivables"
+  if (pathname.includes("/financials/trust-center")) return "trust-center"
   if (pathname.includes("/budget")) return "budget"
   if (pathname.includes("/commitments")) return "commitments"
   if (pathname.includes("/payables")) return "payables"
@@ -223,9 +224,7 @@ function buildFinancialSubs(projectId: string, section: string, project?: Projec
     config?.showTime === false
       ? null
       : { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
-    config?.showExpenses === false
-      ? null
-      : { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
+    { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
     { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
   ].filter(Boolean) as SidebarNavSubItem[]
 }
@@ -233,7 +232,7 @@ function buildFinancialSubs(projectId: string, section: string, project?: Projec
 function buildProjectGroups(projectId: string, section: string, project?: Project): SidebarNavGroup[] {
   const base = `/projects/${projectId}`
   const url = (suffix = "") => `${base}${suffix}`
-  const financialSections = ["financials", "budget", "commitments", "payables", "receivables", "invoices", "reports", "time", "expenses", "change-orders", "cost-inbox"]
+  const financialSections = ["financials", "budget", "commitments", "payables", "receivables", "invoices", "reports", "time", "expenses", "change-orders", "cost-inbox", "trust-center"]
 
   const planSubs: SidebarNavSubItem[] = [
     { title: "Documents", url: url("/documents"), isActive: section === "documents", requiredAny: ["docs.read"] },

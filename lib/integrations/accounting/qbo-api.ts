@@ -122,6 +122,13 @@ interface QBOVendor {
   Id?: string
   SyncToken?: string
   DisplayName: string
+  PrimaryEmailAddr?: { Address?: string }
+  BillAddr?: {
+    Line1?: string
+    City?: string
+    CountrySubDivisionCode?: string
+    PostalCode?: string
+  }
 }
 
 interface QBOInvoiceLineSnapshot {
@@ -318,10 +325,24 @@ export class QBOClient {
       .map((customer) => mapCustomerOption(customer))
   }
 
-  async createCustomerOption(input: { name: string; email?: string | null; address?: string | null }): Promise<QBOCustomerOption> {
+  async createCustomerOption(input: {
+    name: string
+    email?: string | null
+    line1?: string | null
+    city?: string | null
+    state?: string | null
+    postalCode?: string | null
+  }): Promise<QBOCustomerOption> {
     const payload: Omit<QBOCustomer, "Id" | "SyncToken"> = { DisplayName: input.name.trim() }
     const email = input.email?.trim()
     if (email) payload.PrimaryEmailAddr = { Address: email }
+    const billAddr = {
+      Line1: input.line1?.trim() || undefined,
+      City: input.city?.trim() || undefined,
+      CountrySubDivisionCode: input.state?.trim() || undefined,
+      PostalCode: input.postalCode?.trim() || undefined,
+    }
+    if (Object.values(billAddr).some(Boolean)) payload.BillAddr = billAddr
     const created = await this.createCustomer(payload)
     return mapCustomerOption(created)
   }
@@ -338,6 +359,28 @@ export class QBOClient {
   async createVendor(vendor: Omit<QBOVendor, "Id" | "SyncToken">): Promise<QBOVendor> {
     const result = await this.request<{ Vendor: QBOVendor }>("POST", "vendor", vendor)
     return result.Vendor
+  }
+
+  async createVendorOption(input: {
+    name: string
+    email?: string | null
+    line1?: string | null
+    city?: string | null
+    state?: string | null
+    postalCode?: string | null
+  }): Promise<QBOVendorOption> {
+    const payload: Omit<QBOVendor, "Id" | "SyncToken"> = { DisplayName: input.name.trim() || "Unknown Vendor" }
+    const email = input.email?.trim()
+    if (email) payload.PrimaryEmailAddr = { Address: email }
+    const billAddr = {
+      Line1: input.line1?.trim() || undefined,
+      City: input.city?.trim() || undefined,
+      CountrySubDivisionCode: input.state?.trim() || undefined,
+      PostalCode: input.postalCode?.trim() || undefined,
+    }
+    if (Object.values(billAddr).some(Boolean)) payload.BillAddr = billAddr
+    const created = await this.createVendor(payload)
+    return { id: String(created.Id), name: String(created.DisplayName) }
   }
 
   async getOrCreateVendor(displayName: string): Promise<QBOVendor> {

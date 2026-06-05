@@ -129,13 +129,19 @@ export function ProjectSwitcher({ currentProjectId, currentProjectLabel }: Proje
           Switch project
         </DropdownMenuLabel>
         <div className="relative px-2 pb-2">
-          <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find a project..."
-            className="pl-9 h-8"
-          />
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") return
+                e.stopPropagation()
+              }}
+              placeholder="Find a project..."
+              className="pl-8 h-8"
+            />
+          </div>
         </div>
         <div className="max-h-72 overflow-auto px-2">
           {activeProjects.length > 0 && (

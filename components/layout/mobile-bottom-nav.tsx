@@ -76,6 +76,7 @@ function getProjectSection(pathname: string): string {
   if (pathname.includes("/change-orders")) return "change-orders"
   if (pathname.includes("/invoices")) return "invoices"
   if (pathname.includes("/financials/receivables")) return "receivables"
+  if (pathname.includes("/financials/trust-center")) return "trust-center"
   if (pathname.includes("/budget")) return "budget"
   if (pathname.includes("/commitments")) return "commitments"
   if (pathname.includes("/payables")) return "payables"
@@ -111,6 +112,7 @@ const FINANCIAL_SECTIONS = new Set([
   "expenses",
   "change-orders",
   "cost-inbox",
+  "trust-center",
 ])
 const BUILD_SECTIONS = new Set(["schedule", "daily-logs", "punch", "rfis", "submittals", "decisions"])
 const PLAN_SECTIONS = new Set(["documents", "drawings", "bids", "signatures"])
@@ -135,12 +137,11 @@ function buildFinancialSubItems(projectId: string, section: string, project?: Pr
     { title: "Budget", url: `${base}/financials/budget`, isActive: section === "budget" || section === "commitments", requiredAny: ["budget.read", "commitment.read"] },
     { title: "Receivables", url: `${base}/financials/receivables`, isActive: section === "receivables" || section === "invoices", requiredAny: ["invoice.read", "payment.read", "draw.read"] },
     { title: "Payables", url: `${base}/financials/payables`, isActive: section === "payables", requiredAny: ["bill.read", "commitment.read"] },
+    { title: "Trust Center", url: `${base}/financials/trust-center`, isActive: section === "trust-center", requiredAny: ["invoice.read", "bill.read", "budget.read"] },
     config?.showTime === false
       ? null
       : { title: "Time", url: `${base}/time`, isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
-    config?.showExpenses === false
-      ? null
-      : { title: "Expenses", url: `${base}/expenses`, isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
+    { title: "Expenses", url: `${base}/expenses`, isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
     { title: "Change Orders", url: `${base}/change-orders`, isActive: section === "change-orders", requiredAny: ["change_order.read"] },
   ].filter(Boolean) as NavSubItem[]
 }

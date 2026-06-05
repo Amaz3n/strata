@@ -66,6 +66,7 @@ export const markupRuleInputSchema = z.object({
 
 export const generateInvoiceFromCostsInputSchema = z.object({
   projectId: z.string().uuid(),
+  billingPeriodId: z.string().uuid().optional().nullable(),
   dateRange: z.object({
     from: dateInput,
     to: dateInput,

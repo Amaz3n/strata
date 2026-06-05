@@ -10,6 +10,8 @@ export const changeOrderLineInputSchema = z.object({
   unit_cost: z.number({ invalid_type_error: "Unit cost is required" }).min(0, "Unit cost must be positive"),
   allowance: z.number().min(0).default(0),
   taxable: z.boolean().default(true),
+  gmp_classification: z.enum(["inside_gmp", "outside_gmp"]).default("inside_gmp"),
+  gmp_impact: z.enum(["none", "increase_gmp", "decrease_gmp", "outside_gmp"]).default("none"),
 })
 
 export const changeOrderInputSchema = z.object({
@@ -32,7 +34,6 @@ export const changeOrderInputSchema = z.object({
 
 export type ChangeOrderLineInput = z.infer<typeof changeOrderLineInputSchema>
 export type ChangeOrderInput = z.infer<typeof changeOrderInputSchema>
-
 
 
 

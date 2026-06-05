@@ -25,7 +25,7 @@ import { taskInputSchema } from "@/lib/validation/tasks"
 import { dailyLogInputSchema } from "@/lib/validation/daily-logs"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import type { ProjectInput } from "@/lib/validation/projects"
-import { updateProject } from "@/lib/services/projects"
+import { getProjectWithFinancials, updateProject } from "@/lib/services/projects"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { addProjectVendor, listProjectVendors, removeProjectVendor, updateProjectVendor } from "@/lib/services/project-vendors"
 import { createContact } from "@/lib/services/contacts"
@@ -177,10 +177,19 @@ export async function getProjectAction(projectId: string): Promise<Project | nul
   return mapProject(data)
 }
 
+// Loads the full project (financial_settings + billing_contract joins) for the project settings
+// sheet. Kept separate from getProjectAction so the ~20 lighter project pages aren't burdened.
+export async function getProjectSettingsAction(projectId: string): Promise<Project | null> {
+  const { orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "project.read")
+  return getProjectWithFinancials({ projectId, orgId })
+}
+
 export async function updateProjectSettingsAction(projectId: string, input: Partial<ProjectInput>) {
   const { orgId } = await requireOrgContext()
-  await updateProject({ projectId, input, orgId })
+  const project = await updateProject({ projectId, input, orgId })
   revalidatePath(`/projects/${projectId}`)
+  return project
 }
 
 export async function getClientContactsAction(): Promise<Contact[]> {
@@ -899,15 +908,16 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
       reservation_id: next.reservation_id,
       issue_date: issueDate,
       orgId,
-      create_draw_summary: true,
+      create_draw_summary: false,
     })
 
     revalidatePath(`/projects/${projectId}`)
-    revalidatePath(`/projects/${projectId}/invoices`)
+    revalidatePath(`/projects/${projectId}/financials/receivables`)
 
     return {
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
+      invoice,
       draw: updatedDraw,
       draw_summary_file_id,
     }
@@ -931,7 +941,7 @@ export async function releaseProjectRetainageAction(
   // 1. Get current held retainage
   const { data: heldRows, error: heldError } = await supabase
     .from("retainage")
-    .select("id, amount_cents")
+    .select("id, org_id, project_id, contract_id, invoice_id, amount_cents, held_at, metadata")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "held")
@@ -981,7 +991,7 @@ export async function releaseProjectRetainageAction(
     const isFullRelease = releaseFromThisRow === row.amount_cents
     
     if (isFullRelease) {
-      await supabase
+      const { error: releaseError } = await supabase
         .from("retainage")
         .update({
           status: "invoiced",
@@ -989,16 +999,57 @@ export async function releaseProjectRetainageAction(
           release_invoice_id: invoice.id,
         })
         .eq("id", row.id)
+        .eq("org_id", orgId)
+
+      if (releaseError) {
+        throw new Error(`Failed to release retainage: ${releaseError.message}`)
+      }
     } else {
-      // Partial release of a specific row - mark it invoiced since it's now tied to a release event.
-      await supabase
+      const remainingHeldCents = row.amount_cents - releaseFromThisRow
+      const releasedAt = new Date().toISOString()
+      const { data: releasedRow, error: insertReleaseError } = await supabase
+        .from("retainage")
+        .insert({
+          org_id: orgId,
+          project_id: row.project_id,
+          contract_id: row.contract_id,
+          invoice_id: row.invoice_id,
+          amount_cents: releaseFromThisRow,
+          status: "invoiced",
+          held_at: row.held_at,
+          released_at: releasedAt,
+          release_invoice_id: invoice.id,
+          metadata: {
+            ...(row.metadata ?? {}),
+            source_retainage_id: row.id,
+            partial_release: true,
+          },
+        })
+        .select("id")
+        .single()
+
+      if (insertReleaseError || !releasedRow) {
+        throw new Error(`Failed to record partial retainage release: ${insertReleaseError?.message}`)
+      }
+
+      const { error: updateHeldError } = await supabase
         .from("retainage")
         .update({
-          status: "invoiced",
-          released_at: new Date().toISOString(),
-          release_invoice_id: invoice.id,
+          amount_cents: remainingHeldCents,
+          metadata: {
+            ...(row.metadata ?? {}),
+            partially_released_cents: ((row.metadata as any)?.partially_released_cents ?? 0) + releaseFromThisRow,
+            last_partial_release_invoice_id: invoice.id,
+            last_partial_release_at: releasedAt,
+          },
         })
         .eq("id", row.id)
+        .eq("org_id", orgId)
+
+      if (updateHeldError) {
+        await supabase.from("retainage").delete().eq("org_id", orgId).eq("id", releasedRow.id)
+        throw new Error(`Failed to update held retainage balance: ${updateHeldError.message}`)
+      }
     }
     
     remainingToRelease -= releaseFromThisRow
@@ -3634,6 +3685,8 @@ export interface AssignableResource {
   avatar_url?: string
   company_name?: string
   role?: string
+  contact_type?: string
+  company_type?: string
 }
 
 export async function getProjectAssignableResourcesAction(projectId: string): Promise<AssignableResource[]> {
@@ -3708,7 +3761,7 @@ export async function getProjectAssignableResourcesAction(projectId: string): Pr
       role,
       contact_type,
       primary_company_id,
-      companies!contacts_primary_company_id_fkey(name)
+      companies!contacts_primary_company_id_fkey(name, company_type)
     `)
     .eq("org_id", orgId)
 
@@ -3722,6 +3775,8 @@ export async function getProjectAssignableResourcesAction(projectId: string): Pr
         email: contact.email ?? undefined,
         company_name: company?.name,
         role: contact.role ?? contact.contact_type,
+        contact_type: contact.contact_type ?? undefined,
+        company_type: company?.company_type ?? undefined,
       })
     }
   }
@@ -3740,6 +3795,7 @@ export async function getProjectAssignableResourcesAction(projectId: string): Pr
         type: "company",
         email: company.email ?? undefined,
         role: company.company_type,
+        company_type: company.company_type ?? undefined,
       })
     }
   }

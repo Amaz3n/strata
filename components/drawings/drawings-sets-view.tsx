@@ -93,6 +93,10 @@ import {
   listDrawingSheetsAction,
   retryProcessingAction,
   updateDrawingSheetAction,
+  listDrawingRevisionsAction,
+  listSheetVersionsAction,
+  createDrawingRevisionAction,
+  createSheetVersionAction,
 } from "@/app/(app)/drawings/actions"
 import type {
   DrawingMarkup,
@@ -100,7 +104,10 @@ import type {
   DrawingSet,
   DrawingSheet,
   UploadReviewSheet,
+  DrawingRevision,
+  DrawingSheetVersion,
 } from "@/app/(app)/drawings/actions"
+import { uploadFileAction } from "@/app/(app)/documents/actions"
 import { DrawingViewer } from "./drawing-viewer"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 
@@ -340,6 +347,16 @@ export function DrawingsSetsView({
   const [renameSheetNumber, setRenameSheetNumber] = useState("")
   const [renameSheetTitle, setRenameSheetTitle] = useState("")
   const [isRenamingSheet, setIsRenamingSheet] = useState(false)
+
+  // Upload sheet revision state
+  const [revisionTargetSheet, setRevisionTargetSheet] = useState<DrawingSheet | null>(null)
+  const [revisionFile, setRevisionFile] = useState<File | null>(null)
+  const [sheetRevisionLabel, setSheetRevisionLabel] = useState("")
+  const [sheetRevisionNotes, setSheetRevisionNotes] = useState("")
+  const [savingSheetRevision, setSavingSheetRevision] = useState(false)
+  const [loadingRevisionMeta, setLoadingRevisionMeta] = useState(false)
+  const [knownRevisions, setKnownRevisions] = useState<DrawingRevision[]>([])
+  const [knownVersionCount, setKnownVersionCount] = useState(0)
 
   // Viewer state
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -869,6 +886,106 @@ export function DrawingsSetsView({
       toast.error("Failed to restart processing")
     }
   }
+
+  const openUploadRevisionDialog = useCallback(
+    async (sheet: DrawingSheet) => {
+      const targetSetId = sheet.drawing_set_id || selectedSetId
+      if (!targetSetId || !selectedProjectId) return
+      setRevisionTargetSheet(sheet)
+      setRevisionFile(null)
+      setSheetRevisionNotes("")
+      setSheetRevisionLabel("")
+      setKnownRevisions([])
+      setKnownVersionCount(0)
+      setLoadingRevisionMeta(true)
+      try {
+        const [revisions, versions] = await Promise.all([
+          listDrawingRevisionsAction({
+            project_id: selectedProjectId,
+            drawing_set_id: targetSetId,
+            limit: 100,
+          }),
+          listSheetVersionsAction(sheet.id),
+        ])
+        setKnownRevisions(revisions)
+        setKnownVersionCount(versions.length)
+        setSheetRevisionLabel(`Rev ${revisions.length + 1}`)
+      } catch (error) {
+        console.error("Failed to load version metadata:", error)
+        setSheetRevisionLabel("Rev 1")
+      } finally {
+        setLoadingRevisionMeta(false)
+      }
+    },
+    [selectedProjectId, selectedSetId],
+  )
+
+  const handleUploadSheetRevision = useCallback(async () => {
+    const targetSetId = revisionTargetSheet?.drawing_set_id || selectedSetId
+    if (!revisionTargetSheet || !targetSetId || !selectedProjectId) return
+    if (!revisionFile) {
+      toast.error("Choose a version file")
+      return
+    }
+    const cleanRevisionLabel = sheetRevisionLabel.trim()
+    if (!cleanRevisionLabel) {
+      toast.error("Revision label is required")
+      return
+    }
+    setSavingSheetRevision(true)
+    try {
+      const formData = new FormData()
+      formData.append("file", revisionFile)
+      formData.append("projectId", selectedProjectId)
+      formData.append("category", "plans")
+      formData.append("folderPath", `/drawings/versions/${targetSetId}`)
+      formData.append(
+        "description",
+        `Drawing version for ${revisionTargetSheet.sheet_number}`,
+      )
+
+      const uploaded = await uploadFileAction(formData)
+      const revision = await createDrawingRevisionAction({
+        project_id: selectedProjectId,
+        drawing_set_id: targetSetId,
+        revision_label: cleanRevisionLabel,
+        issued_date: new Date().toISOString().slice(0, 10),
+        notes: sheetRevisionNotes.trim() || undefined,
+      })
+      await createSheetVersionAction({
+        drawing_sheet_id: revisionTargetSheet.id,
+        drawing_revision_id: revision.id,
+        file_id: uploaded.id,
+        extracted_metadata: {
+          source: "drawings-sheet-version",
+          original_file_name: revisionFile.name,
+        },
+      })
+      await updateDrawingSheetAction(revisionTargetSheet.id, {
+        current_revision_id: revision.id,
+      })
+
+      // Refresh sheets list
+      await loadProjectSheets()
+
+      toast.success("New sheet version added")
+      setRevisionTargetSheet(null)
+      setRevisionFile(null)
+    } catch (error) {
+      console.error("Failed to add sheet version:", error)
+      toast.error("Failed to add sheet version")
+    } finally {
+      setSavingSheetRevision(false)
+    }
+  }, [
+    loadProjectSheets,
+    selectedProjectId,
+    selectedSetId,
+    sheetRevisionLabel,
+    sheetRevisionNotes,
+    revisionFile,
+    revisionTargetSheet,
+  ])
 
   const handleDisciplineChange = useCallback(
     async (sheetId: string, discipline: DrawingDiscipline) => {
@@ -1448,6 +1565,7 @@ export function DrawingsSetsView({
                     setRenameSheetTitle(sheet.sheet_title ?? "")
                   }}
                   onDeleteSheet={(s) => setSheetToDelete(s)}
+                  onUploadRevisionSheet={openUploadRevisionDialog}
                   highlight={search.trim().toLowerCase()}
                 />
               ))}
@@ -1559,7 +1677,7 @@ export function DrawingsSetsView({
                       ) : (
                         uploadedReviewSheets.map((sheet) => (
                           <TableRow key={sheet.id}>
-                            <TableCell>
+                            <TableCell className="whitespace-normal break-words">
                               <div className="flex flex-col">
                                 <span className="font-medium">
                                   {sheet.sheet_number}
@@ -1867,6 +1985,95 @@ export function DrawingsSetsView({
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={Boolean(revisionTargetSheet)}
+        onOpenChange={(open) => !open && setRevisionTargetSheet(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Submit sheet revision</DialogTitle>
+            <DialogDescription>
+              Upload a revised file and create a new version for this page.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+              <p className="font-medium">
+                {revisionTargetSheet?.sheet_number}{" "}
+                {revisionTargetSheet?.sheet_title ?? ""}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Current versions: {knownVersionCount}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sheet-revision-label">Revision label</Label>
+              <Input
+                id="sheet-revision-label"
+                value={sheetRevisionLabel}
+                onChange={(e) => setSheetRevisionLabel(e.target.value)}
+                disabled={savingSheetRevision || loadingRevisionMeta}
+                placeholder="e.g., Rev B"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sheet-revision-notes">Notes</Label>
+              <Input
+                id="sheet-revision-notes"
+                value={sheetRevisionNotes}
+                onChange={(e) => setSheetRevisionNotes(e.target.value)}
+                disabled={savingSheetRevision || loadingRevisionMeta}
+                placeholder="Optional notes"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sheet-revision-file">Version file</Label>
+              <Input
+                id="sheet-revision-file"
+                type="file"
+                accept=".pdf,image/*"
+                disabled={savingSheetRevision || loadingRevisionMeta}
+                onChange={(e) => setRevisionFile(e.target.files?.[0] ?? null)}
+              />
+            </div>
+            {loadingRevisionMeta && (
+              <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground flex items-center gap-2">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                Loading revision details...
+              </div>
+            )}
+            {knownRevisions.length > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                Existing set revisions:{" "}
+                {knownRevisions.map((rev) => rev.revision_label).join(", ")}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRevisionTargetSheet(null)}
+              disabled={savingSheetRevision}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUploadSheetRevision}
+              disabled={savingSheetRevision || loadingRevisionMeta || !revisionFile}
+            >
+              {savingSheetRevision ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Upload version"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {viewerOpen && viewerSheet && (
         <DrawingViewer
           sheet={viewerSheet}
@@ -1931,6 +2138,7 @@ function DisciplineRows({
   onDisciplineChange,
   onRenameSheet,
   onDeleteSheet,
+  onUploadRevisionSheet,
   highlight,
 }: {
   code: string
@@ -1944,6 +2152,7 @@ function DisciplineRows({
   onDisciplineChange: (sheetId: string, d: DrawingDiscipline) => void
   onRenameSheet: (sheet: DrawingSheet) => void
   onDeleteSheet: (sheet: DrawingSheet) => void
+  onUploadRevisionSheet: (sheet: DrawingSheet) => void
   highlight: string
 }) {
   const Icon = disciplineIcon(code)
@@ -2051,6 +2260,7 @@ function DisciplineRows({
             onDisciplineChange={(d) => onDisciplineChange(sheet.id, d)}
             onRename={() => onRenameSheet(sheet)}
             onDelete={() => onDeleteSheet(sheet)}
+            onUploadRevision={() => onUploadRevisionSheet(sheet)}
             highlight={highlight}
           />
         ))}
@@ -2064,6 +2274,7 @@ function SheetRow({
   onDisciplineChange,
   onRename,
   onDelete,
+  onUploadRevision,
   highlight,
 }: {
   sheet: DrawingSheet
@@ -2071,6 +2282,7 @@ function SheetRow({
   onDisciplineChange: (d: DrawingDiscipline) => void
   onRename: () => void
   onDelete: () => void
+  onUploadRevision: () => void
   highlight: string
 }) {
   const currentDiscipline = (sheet.discipline as DrawingDiscipline) ?? "X"
@@ -2124,6 +2336,10 @@ function SheetRow({
               <DropdownMenuItem onClick={onRename}>
                 <Pencil className="mr-2 h-4 w-4" />
                 Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onUploadRevision}>
+                <Upload className="mr-2 h-4 w-4" />
+                Submit revision
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={async () => {

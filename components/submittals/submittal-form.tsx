@@ -27,7 +27,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
 import { format } from "date-fns"
-import { cn } from "@/lib/utils"
+import { cn, parseLocalDate, formatLocalDate } from "@/lib/utils"
 import { FileText, Calendar } from "@/components/icons"
 
 interface SubmittalFormProps {
@@ -165,14 +165,14 @@ export function SubmittalForm({
                               className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
                             >
                               <Calendar className="mr-2 h-4 w-4" />
-                              {field.value ? format(new Date(field.value), "PPP") : "Pick a date"}
+                              {field.value ? formatLocalDate(field.value, "PPP") : "Pick a date"}
                             </Button>
                           </FormControl>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start">
                           <CalendarPicker
                             mode="single"
-                            selected={field.value ? new Date(field.value) : undefined}
+                            selected={field.value ? parseLocalDate(field.value) ?? undefined : undefined}
                             onSelect={(date) => field.onChange(date ? format(date, "yyyy-MM-dd") : "")}
                             initialFocus
                           />

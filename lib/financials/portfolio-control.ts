@@ -41,3 +41,24 @@ export interface PortfolioFinancialControlData {
     ap: Record<AgingBucket, number>
   }
 }
+
+export type QBOSyncAttentionStatus = "error" | "failed" | "pending" | "needs_review"
+
+export function qboSyncStatusNeedsAttention(status?: string | null): status is QBOSyncAttentionStatus {
+  return status === "error" || status === "failed" || status === "pending" || status === "needs_review"
+}
+
+export function resolveLocalFinancialTruthAmount(params: {
+  balance_due_cents?: number | null
+  total_cents?: number | null
+  paid_cents?: number | null
+}) {
+  if (params.balance_due_cents != null) return Math.max(0, Number(params.balance_due_cents))
+  return Math.max(0, Number(params.total_cents ?? 0) - Number(params.paid_cents ?? 0))
+}
+
+export function qboSyncAttentionReason(status?: string | null, entityLabel = "Sync") {
+  if (status === "pending") return `${entityLabel} sync pending`
+  if (status === "needs_review") return `${entityLabel} needs accounting review`
+  return `${entityLabel} sync failed`
+}

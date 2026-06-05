@@ -28,23 +28,42 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Plus, Search, MoreHorizontal, FolderOpen, X, SlidersHorizontal, Edit, Trash2 } from "@/components/icons"
+import { Plus, Search, MoreHorizontal, FolderOpen, X, SlidersHorizontal, Edit, Trash2, Check } from "@/components/icons"
+import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command"
+import { Spinner } from "@/components/ui/spinner"
 import { toast } from "sonner"
 import { useForm, type UseFormReturn } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import type { Contact, Project, ProjectStatus } from "@/lib/types"
-import { createProjectAction, updateProjectAction, deleteProjectAction, listProjectQboClassesAction } from "./actions"
+import {
+  createProjectAction,
+  updateProjectAction,
+  deleteProjectAction,
+  listProjectQboClassesAction,
+  searchProjectQboCustomersAction,
+  createProjectQboCustomerAction,
+} from "./actions"
 import { projectInputSchema } from "@/lib/validation/projects"
 import type { ProjectInput } from "@/lib/validation/projects"
-import type { QBOClassOption } from "@/lib/integrations/accounting/qbo-api"
+import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo-api"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
 import type { DateRange } from "react-day-picker"
-import { Separator } from "@/components/ui/separator"
-import { Switch } from "@/components/ui/switch"
-import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
+import {
+  ProjectFinancialSetupFields,
+  emptyFinancialSetup,
+  financialSetupFromProject,
+  financialSetupToProjectInput,
+  modelLabel,
+  validateFinancialSetup,
+  type FinancialSetupValue,
+} from "@/components/projects/project-financial-setup-fields"
+import { ArrowLeft, ArrowRight } from "@/components/icons"
+import { cn } from "@/lib/utils"
 
 const statusColors: Record<ProjectStatus, string> = {
   planning: "bg-chart-3/20 text-chart-3 border-chart-3/30",
@@ -79,34 +98,6 @@ const filterStatusOptions: { value: ProjectStatus | "all"; label: string }[] = [
   { value: "cancelled", label: "Canceled" },
 ]
 
-const billingModeOptions = [
-  {
-    value: "fixed_price",
-    label: "Fixed price",
-    description: "Invoice against one agreed contract amount.",
-  },
-  {
-    value: "cost_plus_percent",
-    label: "Cost plus %",
-    description: "Bill actual costs with a percentage markup.",
-  },
-  {
-    value: "cost_plus_fixed_fee",
-    label: "Cost plus fixed fee",
-    description: "Bill actual costs with a fixed builder fee.",
-  },
-  {
-    value: "cost_plus_gmp",
-    label: "Cost plus GMP",
-    description: "Bill actual costs with a guaranteed maximum price.",
-  },
-  {
-    value: "time_and_materials",
-    label: "Time & materials",
-    description: "Bill labor and material costs as they are incurred.",
-  },
-] as const
-
 interface ProjectsClientProps {
   projects: Project[]
   clientContacts: Contact[]
@@ -116,11 +107,8 @@ function toOperationalProjectStatus(status: ProjectStatus): ProjectStatus {
   return status === "planning" || status === "bidding" ? "active" : status
 }
 
+// Step 1 detail fields only; billing/financial setup is captured separately via FinancialSetupValue.
 function projectToFormValues(project: Project): ProjectInput {
-  const contractValueCents =
-    project.billing_contract?.total_cents ??
-    (typeof project.total_value === "number" ? Math.round(project.total_value * 100) : undefined)
-
   return {
     name: project.name,
     status: toOperationalProjectStatus(project.status),
@@ -132,18 +120,10 @@ function projectToFormValues(project: Project): ProjectInput {
     property_type: project.property_type ?? undefined,
     project_type: project.project_type ?? undefined,
     description: project.description ?? "",
-    contract_type: project.billing_contract?.contract_type === "cost_plus" || project.billing_contract?.contract_type === "time_materials" ? project.billing_contract.contract_type : "fixed",
-    billing_model: resolveProjectBillingModel(project, project.billing_contract),
-    markup_percent: project.billing_contract?.markup_percent ?? undefined,
-    gmp_cents: project.billing_contract?.gmp_cents ?? undefined,
-    savings_split_owner_pct: project.billing_contract?.savings_split_owner_pct ?? undefined,
-    savings_split_builder_pct: project.billing_contract?.savings_split_builder_pct ?? undefined,
-    labor_burden_multiplier: project.billing_contract?.labor_burden_multiplier ?? 1,
-    requires_client_cost_approval: project.billing_contract?.requires_client_cost_approval ?? false,
-    open_book: project.billing_contract?.open_book ?? true,
-    total_contract_value_cents: contractValueCents,
     qbo_class_id: project.qbo_class_id ?? null,
     qbo_class_name: project.qbo_class_name ?? null,
+    qbo_customer_id: project.qbo_customer_id ?? null,
+    qbo_customer_name: project.qbo_customer_name ?? null,
   }
 }
 
@@ -166,12 +146,14 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
   const [createSheetOpen, setCreateSheetOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [createDateRange, setCreateDateRange] = useState<DateRange | undefined>()
+  const [createFinancialSetup, setCreateFinancialSetup] = useState<FinancialSetupValue>(() => emptyFinancialSetup())
 
   // Edit sheet
   const [editSheetOpen, setEditSheetOpen] = useState(false)
   const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [isUpdating, setIsUpdating] = useState(false)
   const [editDateRange, setEditDateRange] = useState<DateRange | undefined>()
+  const [editFinancialSetup, setEditFinancialSetup] = useState<FinancialSetupValue>(() => emptyFinancialSetup())
 
   // Delete dialog
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -208,6 +190,8 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
       total_contract_value_cents: undefined,
       qbo_class_id: null,
       qbo_class_name: null,
+      qbo_customer_id: null,
+      qbo_customer_name: null,
     },
   })
 
@@ -236,6 +220,8 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
       total_contract_value_cents: undefined,
       qbo_class_id: null,
       qbo_class_name: null,
+      qbo_customer_id: null,
+      qbo_customer_name: null,
     },
   })
 
@@ -269,6 +255,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
     setEditingProject(project)
     const values = projectToFormValues(project)
     editForm.reset(values)
+    setEditFinancialSetup(financialSetupFromProject(project))
     setEditDateRange(
       project.start_date
         ? {
@@ -288,7 +275,8 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
   async function handleCreate(values: ProjectInput) {
     setIsCreating(true)
     try {
-      const created = await createProjectAction(normalizeProjectInput(values))
+      const payload = normalizeProjectInput({ ...values, ...financialSetupToProjectInput(createFinancialSetup) })
+      const created = await createProjectAction(payload)
       setProjectsState((prev) => [created, ...prev])
       createForm.reset({
         name: "",
@@ -301,19 +289,12 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         property_type: undefined,
         project_type: undefined,
         description: "",
-        contract_type: "fixed",
-        billing_model: "fixed_price",
-        markup_percent: undefined,
-        gmp_cents: undefined,
-        savings_split_owner_pct: undefined,
-        savings_split_builder_pct: undefined,
-        labor_burden_multiplier: 1,
-        requires_client_cost_approval: false,
-        open_book: true,
-        total_contract_value_cents: undefined,
         qbo_class_id: null,
         qbo_class_name: null,
+        qbo_customer_id: null,
+        qbo_customer_name: null,
       })
+      setCreateFinancialSetup(emptyFinancialSetup())
       setCreateDateRange(undefined)
       toast.success("Project created", { description: created.name })
       setCreateSheetOpen(false)
@@ -329,7 +310,8 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
     if (!editingProject) return
     setIsUpdating(true)
     try {
-      const updated = await updateProjectAction(editingProject.id, normalizeProjectInput(values))
+      const payload = normalizeProjectInput({ ...values, ...financialSetupToProjectInput(editFinancialSetup) })
+      const updated = await updateProjectAction(editingProject.id, payload)
       setProjectsState((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
       toast.success("Project updated", { description: updated.name })
       setEditSheetOpen(false)
@@ -557,8 +539,11 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         onSubmit={handleCreate}
         clientContacts={clientContacts}
         qboClasses={qboClasses}
+        financialSetup={createFinancialSetup}
+        onFinancialSetupChange={setCreateFinancialSetup}
         onClose={() => {
           createForm.reset()
+          setCreateFinancialSetup(emptyFinancialSetup())
           setCreateDateRange(undefined)
           setCreateSheetOpen(false)
         }}
@@ -576,6 +561,8 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         onSubmit={handleUpdate}
         clientContacts={clientContacts}
         qboClasses={qboClasses}
+        financialSetup={editFinancialSetup}
+        onFinancialSetupChange={setEditFinancialSetup}
         onClose={() => {
           setEditSheetOpen(false)
           setEditingProject(null)
@@ -655,6 +642,8 @@ interface ProjectFormSheetProps {
   onSubmit: (values: ProjectInput) => Promise<void>
   clientContacts: Contact[]
   qboClasses: QBOClassOption[]
+  financialSetup: FinancialSetupValue
+  onFinancialSetupChange: (value: FinancialSetupValue) => void
   onClose: () => void
 }
 
@@ -669,15 +658,113 @@ function ProjectFormSheet({
   onSubmit,
   clientContacts,
   qboClasses,
+  financialSetup,
+  onFinancialSetupChange,
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
-  const billingMode = form.watch("billing_model") ?? "fixed_price"
-  const isCostBilling = billingMode !== "fixed_price"
-  const isGmpBilling = billingMode === "cost_plus_gmp"
-  const usesMarkup = billingMode === "cost_plus_percent" || billingMode === "cost_plus_gmp" || billingMode === "time_and_materials"
-  const contractValueLabel = isCostBilling ? "Contract value or cap" : "Contract value"
-  const selectedBillingMode = billingModeOptions.find((option) => option.value === billingMode) ?? billingModeOptions[0]
+  const [step, setStep] = useState<"details" | "financials">("details")
+  const financialMessages = validateFinancialSetup(financialSetup)
+  const canSubmit = financialMessages.blocking.length === 0 && !isSubmitting
+
+  // Default QBO customer — drives cost attribution and pre-fills new invoices. Stored on the form (qbo_customer_id/name).
+  const qboCustomerId = form.watch("qbo_customer_id")
+  const qboCustomerName = form.watch("qbo_customer_name")
+  const clientId = form.watch("client_id")
+  // The contact backing the unified "Client" field — also the auto QBO customer name when none is set explicitly.
+  const selectedClientContact = clientId ? clientContacts.find((contact) => contact.id === clientId) ?? null : null
+  const [qboConnected, setQboConnected] = useState(false)
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false)
+  const [customerQuery, setCustomerQuery] = useState("")
+  const [customerResults, setCustomerResults] = useState<QBOCustomerOption[]>([])
+  const [customerSearchLoading, setCustomerSearchLoading] = useState(false)
+  const [createCustomerOpen, setCreateCustomerOpen] = useState(false)
+  const [newCustomer, setNewCustomer] = useState({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
+  const [creatingCustomer, setCreatingCustomer] = useState(false)
+
+  // Always start at step 1 when the sheet opens.
+  useEffect(() => {
+    if (open) setStep("details")
+  }, [open])
+
+  // Probe QBO connection (and seed initial customer results) so the customer picker only renders when connected.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setCustomerQuery("")
+    setCreateCustomerOpen(false)
+    setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
+    searchProjectQboCustomersAction("")
+      .then((result) => {
+        if (cancelled) return
+        setQboConnected(Boolean(result.connected))
+        setCustomerResults(result.customers ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setQboConnected(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  // Live QBO customer typeahead — QBO is the source of truth, so we query it directly while the picker is open.
+  useEffect(() => {
+    if (!open || !qboConnected || !customerPickerOpen) return
+    let cancelled = false
+    setCustomerSearchLoading(true)
+    const handle = setTimeout(() => {
+      searchProjectQboCustomersAction(customerQuery)
+        .then((result) => {
+          if (!cancelled) setCustomerResults(result.customers ?? [])
+        })
+        .catch(() => {
+          if (!cancelled) setCustomerResults([])
+        })
+        .finally(() => {
+          if (!cancelled) setCustomerSearchLoading(false)
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [open, qboConnected, customerPickerOpen, customerQuery])
+
+  function selectQboCustomer(customer: QBOCustomerOption) {
+    form.setValue("qbo_customer_id", customer.id)
+    form.setValue("qbo_customer_name", customer.name)
+    setCustomerPickerOpen(false)
+    setCreateCustomerOpen(false)
+  }
+
+  async function handleCreateQboCustomer() {
+    const name = newCustomer.name.trim()
+    if (!name || creatingCustomer) return
+    setCreatingCustomer(true)
+    try {
+      const created = await createProjectQboCustomerAction({
+        name,
+        email: newCustomer.email.trim() || null,
+        line1: newCustomer.line1.trim() || null,
+        city: newCustomer.city.trim() || null,
+        state: newCustomer.state.trim() || null,
+        postalCode: newCustomer.postalCode.trim() || null,
+      })
+      selectQboCustomer(created)
+      setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
+      toast.success(`Created "${created.name}" in QuickBooks`)
+    } catch (error: any) {
+      toast.error("Couldn't create customer in QuickBooks", { description: error?.message ?? "Try again." })
+    } finally {
+      setCreatingCustomer(false)
+    }
+  }
+
+  async function goToFinancials() {
+    const valid = await form.trigger("name")
+    if (valid) setStep("financials")
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -693,14 +780,19 @@ function ProjectFormSheet({
               {isEdit ? "Edit project" : "New project"}
             </SheetTitle>
             <SheetDescription className="text-sm text-muted-foreground">
-              {isEdit
-                ? "Update the project details below."
-                : "Set up a new construction project to get started."}
+              {step === "details"
+                ? "Step 1 of 2 · Project details"
+                : "Step 2 of 2 · Financial setup"}
             </SheetDescription>
+            <div className="mt-3 flex gap-1.5">
+              <span className={cn("h-1 flex-1 rounded-full", step === "details" ? "bg-primary" : "bg-primary/30")} />
+              <span className={cn("h-1 flex-1 rounded-full", step === "financials" ? "bg-primary" : "bg-muted")} />
+            </div>
           </div>
 
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <form onSubmit={(event) => event.preventDefault()} className="space-y-4">
+              <div className={cn("space-y-4", step === "details" ? "block" : "hidden")}>
               <FormField
                 control={form.control}
                 name="name"
@@ -779,12 +871,14 @@ function ProjectFormSheet({
                   </FormItem>
                 )}
               />
+              {/* Client — one field. The contact drives portal invites & signatures; */}
+              {/* the QuickBooks customer (the sync target) is shown beneath as an overridable detail. */}
               <FormField
                 control={form.control}
                 name="client_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Primary client contact</FormLabel>
+                    <FormLabel>Client</FormLabel>
                     <Select
                       value={field.value ?? "none"}
                       onValueChange={(value) => field.onChange(value === "none" ? null : value)}
@@ -804,6 +898,192 @@ function ProjectFormSheet({
                         ))}
                       </SelectContent>
                     </Select>
+
+                    {qboConnected ? (
+                      <Popover
+                        open={customerPickerOpen}
+                        onOpenChange={(next) => {
+                          setCustomerPickerOpen(next)
+                          if (!next) setCreateCustomerOpen(false)
+                        }}
+                        modal
+                      >
+                        <div className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2">
+                          {qboCustomerId ? (
+                            <>
+                              <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                                <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                                <span className="truncate">
+                                  Billed in QuickBooks as{" "}
+                                  <span className="font-medium text-foreground">{qboCustomerName || "selected customer"}</span>
+                                </span>
+                              </span>
+                              <div className="flex shrink-0 items-center gap-3">
+                                <PopoverTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                                  >
+                                    Change
+                                  </button>
+                                </PopoverTrigger>
+                                <button
+                                  type="button"
+                                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                                  onClick={() => {
+                                    form.setValue("qbo_customer_id", null)
+                                    form.setValue("qbo_customer_name", null)
+                                  }}
+                                >
+                                  Clear
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <span className="min-w-0 truncate text-xs text-muted-foreground">
+                                {selectedClientContact?.full_name ? (
+                                  <>
+                                    Will sync to QuickBooks as{" "}
+                                    <span className="font-medium text-foreground">&ldquo;{selectedClientContact.full_name}&rdquo;</span>
+                                  </>
+                                ) : (
+                                  "Choose the QuickBooks customer to bill"
+                                )}
+                              </span>
+                              <PopoverTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-xs font-medium text-primary transition-colors hover:text-primary/80"
+                                >
+                                  {selectedClientContact?.full_name ? "Change" : "Set customer"}
+                                </button>
+                              </PopoverTrigger>
+                            </>
+                          )}
+                        </div>
+                        <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[320px] p-0" align="start">
+                          {createCustomerOpen ? (
+                            <div className="space-y-3 p-3">
+                              <div className="space-y-1.5">
+                                <Label className="text-xs">Name</Label>
+                                <Input
+                                  value={newCustomer.name}
+                                  onChange={(e) => setNewCustomer((s) => ({ ...s, name: e.target.value }))}
+                                  placeholder="Customer name"
+                                />
+                              </div>
+                              <div className="space-y-1.5">
+                                <Label className="text-xs">Email</Label>
+                                <Input
+                                  type="email"
+                                  value={newCustomer.email}
+                                  onChange={(e) => setNewCustomer((s) => ({ ...s, email: e.target.value }))}
+                                  placeholder="email@customer.com"
+                                />
+                              </div>
+                              <div className="space-y-1.5">
+                                <Label className="text-xs">Street</Label>
+                                <Input
+                                  value={newCustomer.line1}
+                                  onChange={(e) => setNewCustomer((s) => ({ ...s, line1: e.target.value }))}
+                                  placeholder="123 Main St"
+                                />
+                              </div>
+                              <div className="grid grid-cols-3 gap-2">
+                                <div className="space-y-1.5">
+                                  <Label className="text-xs">City</Label>
+                                  <Input
+                                    value={newCustomer.city}
+                                    onChange={(e) => setNewCustomer((s) => ({ ...s, city: e.target.value }))}
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <Label className="text-xs">State</Label>
+                                  <Input
+                                    value={newCustomer.state}
+                                    onChange={(e) => setNewCustomer((s) => ({ ...s, state: e.target.value }))}
+                                    placeholder="FL"
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <Label className="text-xs">ZIP</Label>
+                                  <Input
+                                    value={newCustomer.postalCode}
+                                    onChange={(e) => setNewCustomer((s) => ({ ...s, postalCode: e.target.value }))}
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex gap-2 pt-1">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="flex-1"
+                                  onClick={() => setCreateCustomerOpen(false)}
+                                  disabled={creatingCustomer}
+                                >
+                                  Back
+                                </Button>
+                                <Button
+                                  type="button"
+                                  className="flex-1"
+                                  onClick={handleCreateQboCustomer}
+                                  disabled={creatingCustomer || !newCustomer.name.trim()}
+                                >
+                                  {creatingCustomer ? <Spinner className="h-3.5 w-3.5" /> : "Create"}
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Command shouldFilter={false}>
+                              <CommandInput
+                                placeholder="Search QuickBooks customers…"
+                                value={customerQuery}
+                                onValueChange={setCustomerQuery}
+                              />
+                              <CommandList>
+                                {customerSearchLoading && (
+                                  <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
+                                    <Spinner className="h-3.5 w-3.5" /> Searching…
+                                  </div>
+                                )}
+                                {!customerSearchLoading && customerResults.length === 0 && (
+                                  <CommandEmpty>No QuickBooks customers found.</CommandEmpty>
+                                )}
+                                {customerResults.length > 0 && (
+                                  <CommandGroup>
+                                    {customerResults.map((customer) => (
+                                      <CommandItem key={customer.id} value={customer.id} onSelect={() => selectQboCustomer(customer)}>
+                                        <span className="flex min-w-0 flex-col">
+                                          <span className="truncate">{customer.name}</span>
+                                          {customer.email && <span className="text-xs text-muted-foreground">{customer.email}</span>}
+                                        </span>
+                                      </CommandItem>
+                                    ))}
+                                  </CommandGroup>
+                                )}
+                                <CommandSeparator />
+                                <CommandGroup>
+                                  <CommandItem
+                                    value="__create_new"
+                                    onSelect={() => {
+                                      setNewCustomer((s) => ({ ...s, name: customerQuery.trim() || selectedClientContact?.full_name?.trim() || "" }))
+                                      setCreateCustomerOpen(true)
+                                    }}
+                                  >
+                                    <Plus className="mr-2 h-3.5 w-3.5" /> Create new customer…
+                                  </CommandItem>
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          )}
+                        </PopoverContent>
+                      </Popover>
+                    ) : null}
+
+                    <p className="text-sm text-muted-foreground">
+                      Used as the default client for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -907,66 +1187,19 @@ function ProjectFormSheet({
                   </FormItem>
                 )}
               />
-              <Separator />
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold">Contract and billing</h3>
-                  <p className="text-xs text-muted-foreground">Set the project value once, then choose how costs should flow into billing.</p>
-                </div>
-                <FormField
-                  control={form.control}
-                  name="total_contract_value_cents"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{contractValueLabel}</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="text"
-                          placeholder="$500,000"
-                          className="font-mono"
-                          value={typeof field.value === "number" ? `$${(field.value / 100).toLocaleString()}` : ""}
-                          onChange={(e) => {
-                            const raw = e.target.value.replace(/[^\d.]/g, "")
-                            field.onChange(raw ? Math.round(Number(raw) * 100) : undefined)
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="billing_model"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Billing mode</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value ?? "fixed_price"}>
-                        <FormControl>
-                          <SelectTrigger className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {billingModeOptions.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">{selectedBillingMode.description}</p>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                {isCostBilling ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {usesMarkup ? <NumberField form={form} name="markup_percent" label="Default markup %" suffix="%" /> : null}
-                    {isGmpBilling ? <MoneyCentsField form={form} name="gmp_cents" label="GMP" /> : null}
-                    {isGmpBilling ? <NumberField form={form} name="savings_split_owner_pct" label="Owner savings %" suffix="%" /> : null}
-                    {isGmpBilling ? <NumberField form={form} name="savings_split_builder_pct" label="Builder savings %" suffix="%" /> : null}
-                  </div>
+              </div>
+
+              <div className={cn(step === "financials" ? "block" : "hidden")}>
+                <ProjectFinancialSetupFields value={financialSetup} onChange={onFinancialSetupChange} />
+                {financialMessages.blocking[0] || financialMessages.warnings[0] ? (
+                  <p
+                    className={cn(
+                      "mt-4 text-xs",
+                      financialMessages.blocking[0] ? "text-destructive" : "text-muted-foreground",
+                    )}
+                  >
+                    {financialMessages.blocking[0] ?? financialMessages.warnings[0]}
+                  </p>
                 ) : null}
               </div>
             </form>
@@ -975,106 +1208,30 @@ function ProjectFormSheet({
 
         <div className="flex-shrink-0 border-t bg-background p-4">
           <div className="flex gap-2">
-            <Button type="button" variant="outline" onClick={onClose} className="flex-1">
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={isSubmitting}
-              className="flex-1"
-              onClick={form.handleSubmit(onSubmit)}
-            >
-              {isSubmitting
-                ? isEdit ? "Saving..." : "Creating..."
-                : isEdit ? "Save changes" : "Create project"}
-            </Button>
+            {step === "details" ? (
+              <>
+                <Button type="button" variant="outline" onClick={onClose} className="flex-1">
+                  Cancel
+                </Button>
+                <Button type="button" className="flex-1" onClick={goToFinancials}>
+                  Next: {modelLabel(financialSetup.billingModel)}
+                  <ArrowRight className="ml-1.5 h-4 w-4" />
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={() => setStep("details")} className="flex-1">
+                  <ArrowLeft className="mr-1.5 h-4 w-4" />
+                  Back
+                </Button>
+                <Button type="button" disabled={!canSubmit} className="flex-1" onClick={form.handleSubmit(onSubmit)}>
+                  {isSubmitting ? (isEdit ? "Saving..." : "Creating...") : isEdit ? "Save changes" : "Create project"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </SheetContent>
     </Sheet>
-  )
-}
-
-function NumberField({
-  form,
-  name,
-  label,
-  suffix,
-  step = "1",
-}: {
-  form: UseFormReturn<ProjectInput>
-  name: keyof ProjectInput
-  label: string
-  suffix?: string
-  step?: string
-}) {
-  return (
-    <FormField
-      control={form.control}
-      name={name as any}
-      render={({ field }) => (
-        <FormItem>
-          <FormLabel>{label}</FormLabel>
-          <FormControl>
-            <div className="relative">
-              <Input
-                type="number"
-                step={step}
-                min="0"
-                value={field.value ?? ""}
-                onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-                className={suffix ? "pr-8" : undefined}
-              />
-              {suffix ? <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">{suffix}</span> : null}
-            </div>
-          </FormControl>
-          <FormMessage />
-        </FormItem>
-      )}
-    />
-  )
-}
-
-function MoneyCentsField({ form, name, label }: { form: UseFormReturn<ProjectInput>; name: keyof ProjectInput; label: string }) {
-  return (
-    <FormField
-      control={form.control}
-      name={name as any}
-      render={({ field }) => (
-        <FormItem>
-          <FormLabel>{label}</FormLabel>
-          <FormControl>
-            <Input
-              type="text"
-              placeholder="$0"
-              className="font-mono"
-              value={typeof field.value === "number" ? `$${(field.value / 100).toLocaleString()}` : ""}
-              onChange={(e) => {
-                const raw = e.target.value.replace(/[^\d.]/g, "")
-                field.onChange(raw ? Math.round(Number(raw) * 100) : undefined)
-              }}
-            />
-          </FormControl>
-          <FormMessage />
-        </FormItem>
-      )}
-    />
-  )
-}
-
-function BooleanField({ form, name, label }: { form: UseFormReturn<ProjectInput>; name: keyof ProjectInput; label: string }) {
-  return (
-    <FormField
-      control={form.control}
-      name={name as any}
-      render={({ field }) => (
-        <FormItem className="flex items-center justify-between gap-3">
-          <FormLabel className="text-sm font-normal">{label}</FormLabel>
-          <FormControl>
-            <Switch checked={Boolean(field.value)} onCheckedChange={field.onChange} />
-          </FormControl>
-        </FormItem>
-      )}
-    />
   )
 }

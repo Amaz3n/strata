@@ -24,7 +24,26 @@ export interface ProjectFinancialFeatureConfig {
   ownerBillingBasis: OwnerBillingBasis
 }
 
-type BillingSource = Pick<Project, "status" | "billing_contract"> | Contract | null | undefined
+type BillingSource = Pick<Project, "status" | "billing_contract" | "financial_settings"> | Contract | null | undefined
+
+export function isCostDrivenBillingModel(model: ProjectBillingModel) {
+  return (
+    model === "cost_plus_percent" ||
+    model === "cost_plus_fixed_fee" ||
+    model === "cost_plus_gmp" ||
+    model === "time_and_materials"
+  )
+}
+
+export function assertApprovedCostInvoiceBillingModelAllowed(model: ProjectBillingModel) {
+  if (!isCostDrivenBillingModel(model)) {
+    throw new Error("Fixed-price projects cannot create approved-cost invoices. Use draw or contract billing instead.")
+  }
+}
+
+export function shouldExposeOpenBookCostDetail(openBook?: boolean | null) {
+  return openBook !== false
+}
 
 function getContract(source: BillingSource, explicitContract?: Contract | null) {
   if (explicitContract) return explicitContract
@@ -35,6 +54,15 @@ function getContract(source: BillingSource, explicitContract?: Contract | null) 
 }
 
 export function resolveProjectBillingModel(source: BillingSource, explicitContract?: Contract | null): ProjectBillingModel {
+  if (source && "financial_settings" in source) {
+    const explicitModel = source.financial_settings?.billing_model
+    if (explicitModel === "cost_plus_fixed_fee") return "cost_plus_fixed_fee"
+    if (explicitModel === "cost_plus_gmp") return "cost_plus_gmp"
+    if (explicitModel === "cost_plus_percent") return "cost_plus_percent"
+    if (explicitModel === "time_and_materials") return "time_and_materials"
+    if (explicitModel === "fixed_price") return "fixed_price"
+  }
+
   const contract = getContract(source, explicitContract)
   const rawType = contract?.contract_type
   const snapshotModel = typeof contract?.snapshot?.billing_model === "string" ? contract.snapshot.billing_model : null
@@ -61,7 +89,7 @@ export function getProjectFinancialFeatureConfig(
   const billingModel = resolveProjectBillingModel(source, contract)
   const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
   const isTimeAndMaterials = billingModel === "time_and_materials"
-  const isCostDriven = isCostPlus || isTimeAndMaterials
+  const isCostDriven = isCostDrivenBillingModel(billingModel)
 
   if (billingModel === "fixed_price") {
     return {
@@ -87,7 +115,7 @@ export function getProjectFinancialFeatureConfig(
       showTime: true,
       showExpenses: true,
       showGenerateFromCosts: true,
-      showOpenBook: contract?.open_book !== false,
+      showOpenBook: shouldExposeOpenBookCostDetail(contract?.open_book),
       showDraws: false,
       showGmpForecast: false,
       requireCostApproval: contract?.requires_client_cost_approval === true,
@@ -103,7 +131,7 @@ export function getProjectFinancialFeatureConfig(
       showTime: true,
       showExpenses: true,
       showGenerateFromCosts: true,
-      showOpenBook: contract?.open_book !== false,
+      showOpenBook: shouldExposeOpenBookCostDetail(contract?.open_book),
       showDraws: false,
       showGmpForecast: true,
       requireCostApproval: contract?.requires_client_cost_approval === true,
@@ -118,7 +146,7 @@ export function getProjectFinancialFeatureConfig(
     showTime: true,
     showExpenses: true,
     showGenerateFromCosts: isCostDriven,
-    showOpenBook: isCostPlus ? contract?.open_book !== false : false,
+    showOpenBook: isCostPlus ? shouldExposeOpenBookCostDetail(contract?.open_book) : false,
     showDraws: false,
     showGmpForecast: false,
     requireCostApproval: contract?.requires_client_cost_approval === true,

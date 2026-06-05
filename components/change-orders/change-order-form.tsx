@@ -7,6 +7,7 @@ import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -18,6 +19,7 @@ interface ChangeOrderFormProps {
   projectId: string
   onSubmit: (values: ChangeOrderInput, publish: boolean) => Promise<void>
   isSubmitting?: boolean
+  isGmpProject?: boolean
 }
 
 function parseAmountToCents(value: string) {
@@ -38,11 +40,18 @@ export function ChangeOrderForm({
   projectId,
   onSubmit,
   isSubmitting,
+  isGmpProject = false,
 }: ChangeOrderFormProps) {
   const [title, setTitle] = useState("")
   const [amount, setAmount] = useState("")
   const [daysImpact, setDaysImpact] = useState("")
   const [notes, setNotes] = useState("")
+  const [gmpClassification, setGmpClassification] = useState<"inside_gmp" | "outside_gmp">("inside_gmp")
+  const [gmpImpact, setGmpImpact] = useState<"none" | "increase_gmp" | "decrease_gmp" | "outside_gmp">("none")
+
+  const [titleError, setTitleError] = useState<string | null>(null)
+  const [daysImpactError, setDaysImpactError] = useState<string | null>(null)
+  const [notesError, setNotesError] = useState<string | null>(null)
 
   const amountCents = useMemo(() => parseAmountToCents(amount), [amount])
   const canSubmit = Boolean(projectId && title.trim() && amountCents >= 0)
@@ -52,16 +61,43 @@ export function ChangeOrderForm({
     setAmount("")
     setDaysImpact("")
     setNotes("")
+    setGmpClassification("inside_gmp")
+    setGmpImpact("none")
+    setTitleError(null)
+    setDaysImpactError(null)
+    setNotesError(null)
   }
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!canSubmit) return
 
+    setTitleError(null)
+    setDaysImpactError(null)
+    setNotesError(null)
+
+    let hasError = false
     const cleanTitle = title.trim()
+    if (cleanTitle.length < 3) {
+      setTitleError("Title must be at least 3 characters")
+      hasError = true
+    }
+
     const cleanNotes = notes.trim()
-    const impact = daysImpact.trim() === "" ? null : Math.max(0, Number(daysImpact) || 0)
+    if (cleanNotes.length > 0 && cleanNotes.length < 3) {
+      setNotesError("Notes must be at least 3 characters")
+      hasError = true
+    }
+
+    const impact = daysImpact.trim() === "" ? null : Number(daysImpact)
+    if (impact !== null && (isNaN(impact) || impact < 0 || impact > 365)) {
+      setDaysImpactError("Schedule impact must be between 0 and 365 days")
+      hasError = true
+    }
+
+    if (hasError || !canSubmit) return
+
     const amountDollars = amountCents / 100
+    const resolvedGmpImpact = gmpClassification === "outside_gmp" ? "outside_gmp" : gmpImpact
 
     const payload: ChangeOrderInput = {
       project_id: projectId,
@@ -82,6 +118,8 @@ export function ChangeOrderForm({
           unit_cost: amountDollars,
           allowance: 0,
           taxable: false,
+          gmp_classification: gmpClassification,
+          gmp_impact: isGmpProject ? resolvedGmpImpact : "none",
         },
       ],
     }
@@ -118,12 +156,19 @@ export function ChangeOrderForm({
           <ScrollArea className="flex-1 min-h-0">
             <div className="space-y-5 px-6 py-4">
               <div className="space-y-2">
-                <Label>Title</Label>
+                <Label className={titleError ? "text-destructive" : ""}>Title</Label>
                 <Input
                   value={title}
-                  onChange={(event) => setTitle(event.target.value)}
+                  onChange={(event) => {
+                    setTitle(event.target.value)
+                    if (titleError) setTitleError(null)
+                  }}
                   placeholder="e.g., Add recessed lighting"
+                  className={titleError ? "border-destructive focus-visible:ring-destructive" : ""}
                 />
+                {titleError && (
+                  <p className="text-xs text-destructive mt-1">{titleError}</p>
+                )}
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
@@ -146,16 +191,21 @@ export function ChangeOrderForm({
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Schedule impact</Label>
+                  <Label className={daysImpactError ? "text-destructive" : ""}>Schedule impact</Label>
                   <Input
                     value={daysImpact}
                     onChange={(event) => {
                       if (!/^\d*$/.test(event.target.value)) return
                       setDaysImpact(event.target.value)
+                      if (daysImpactError) setDaysImpactError(null)
                     }}
                     inputMode="numeric"
                     placeholder="Days"
+                    className={daysImpactError ? "border-destructive focus-visible:ring-destructive" : ""}
                   />
+                  {daysImpactError && (
+                    <p className="text-xs text-destructive mt-1">{daysImpactError}</p>
+                  )}
                 </div>
               </div>
 
@@ -166,14 +216,67 @@ export function ChangeOrderForm({
                 </div>
               </div>
 
+              {isGmpProject ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>GMP classification</Label>
+                    <Select
+                      value={gmpClassification}
+                      onValueChange={(value) => {
+                        const next = value as "inside_gmp" | "outside_gmp"
+                        setGmpClassification(next)
+                        if (next === "outside_gmp") setGmpImpact("outside_gmp")
+                        if (next === "inside_gmp" && gmpImpact === "outside_gmp") setGmpImpact("none")
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inside_gmp">Inside GMP</SelectItem>
+                        <SelectItem value="outside_gmp">Outside GMP</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>GMP impact</Label>
+                    <Select
+                      value={gmpClassification === "outside_gmp" ? "outside_gmp" : gmpImpact}
+                      onValueChange={(value) => setGmpImpact(value as "none" | "increase_gmp" | "decrease_gmp" | "outside_gmp")}
+                      disabled={gmpClassification === "outside_gmp"}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No GMP change</SelectItem>
+                        <SelectItem value="increase_gmp">Increase GMP</SelectItem>
+                        <SelectItem value="decrease_gmp">Decrease GMP</SelectItem>
+                        {gmpClassification === "outside_gmp" ? (
+                          <SelectItem value="outside_gmp">Outside GMP only</SelectItem>
+                        ) : null}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="space-y-2">
-                <Label>Notes</Label>
+                <Label className={notesError ? "text-destructive" : ""}>Notes</Label>
                 <Textarea
                   value={notes}
-                  onChange={(event) => setNotes(event.target.value)}
+                  onChange={(event) => {
+                    setNotes(event.target.value)
+                    if (notesError) setNotesError(null)
+                  }}
                   rows={5}
                   placeholder="Internal notes, reason for the change, or context for your team."
+                  className={notesError ? "border-destructive focus-visible:ring-destructive" : ""}
                 />
+                {notesError && (
+                  <p className="text-xs text-destructive mt-1">{notesError}</p>
+                )}
               </div>
             </div>
           </ScrollArea>

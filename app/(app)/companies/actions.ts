@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache"
 
 import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, updateCompany } from "@/lib/services/companies"
+import { requireOrgContext } from "@/lib/services/context"
+import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import {
   getCompanyComplianceStatus,
   getCompanyRequirements,
@@ -56,6 +58,63 @@ export async function getCompanyAction(companyId: string) {
   return { company, projects }
 }
 
+export async function getCompanyQboVendorContextAction() {
+  const { orgId } = await requireOrgContext()
+  const client = await QBOClient.forOrg(orgId)
+  if (!client) {
+    return { enabled: false, vendors: [] }
+  }
+  return {
+    enabled: true,
+    vendors: await client.listVendors().catch(() => []),
+  }
+}
+
+export async function linkCompanyQboVendorAction(companyId: string, vendor: { id: string; name: string }) {
+  const company = await updateCompany({
+    companyId,
+    input: {
+      qbo_vendor_id: vendor.id,
+      qbo_vendor_name: vendor.name,
+      qbo_vendor_synced_at: new Date().toISOString(),
+      qbo_vendor_sync_status: "linked",
+    },
+  })
+  revalidatePath("/companies")
+  revalidatePath(`/companies/${companyId}`)
+  revalidatePath("/directory")
+  return company
+}
+
+export async function createQboVendorForCompanyAction(companyId: string) {
+  const { orgId } = await requireOrgContext()
+  const [company, client] = await Promise.all([getCompany(companyId), QBOClient.forOrg(orgId)])
+  if (!client) {
+    throw new Error("QuickBooks is not connected")
+  }
+  const vendor = await client.createVendorOption({
+    name: company.name,
+    email: company.email,
+    line1: company.address?.street1 ?? company.address?.formatted,
+    city: company.address?.city,
+    state: company.address?.state,
+    postalCode: company.address?.postal_code,
+  })
+  const updated = await updateCompany({
+    companyId,
+    input: {
+      qbo_vendor_id: vendor.id,
+      qbo_vendor_name: vendor.name,
+      qbo_vendor_synced_at: new Date().toISOString(),
+      qbo_vendor_sync_status: "created",
+    },
+  })
+  revalidatePath("/companies")
+  revalidatePath(`/companies/${companyId}`)
+  revalidatePath("/directory")
+  return updated
+}
+
 // Compliance Document Actions
 
 export async function listComplianceDocumentTypesAction() {
@@ -107,7 +166,6 @@ export async function reviewComplianceDocumentAction(
   revalidatePath(`/companies`)
   return result
 }
-
 
 
 

@@ -64,6 +64,7 @@ interface VendorBillForSync {
   org_id: string
   project_id: string
   commitment_id?: string | null
+  company_id?: string | null
   bill_number?: string | null
   bill_date?: string | null
   due_date?: string | null
@@ -83,15 +84,38 @@ interface VendorBillForSync {
   project?: { name?: string | null; qbo_class_id?: string | null; qbo_class_name?: string | null } | null
   commitment?: {
     title?: string | null
-    company?: { name?: string | null } | null
+    company?: {
+      id?: string | null
+      name?: string | null
+      qbo_vendor_id?: string | null
+      qbo_vendor_name?: string | null
+    } | null
+  } | null
+  company?: {
+    id?: string | null
+    name?: string | null
+    qbo_vendor_id?: string | null
+    qbo_vendor_name?: string | null
   } | null
   bill_lines?: Array<{
     id?: string | null
+    project_id?: string | null
     description?: string | null
     quantity?: number | null
     unit_cost_cents?: number | null
     metadata?: Record<string, any> | null
+    project?: { name?: string | null; qbo_class_id?: string | null; qbo_class_name?: string | null } | null
   }>
+}
+
+function vendorBillHasQboExpenseCoding(bill: Pick<VendorBillForSync, "qbo_expense_account_id" | "bill_lines">) {
+  if (bill.qbo_expense_account_id) return true
+  const lines = bill.bill_lines ?? []
+  if (lines.length === 0) return false
+  return lines.every((line) => {
+    const metadata = (line.metadata as Record<string, any> | null) ?? {}
+    return typeof metadata.qbo_expense_account_id === "string" && metadata.qbo_expense_account_id.trim().length > 0
+  })
 }
 
 export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
@@ -166,14 +190,9 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       .eq("entity_id", invoiceId)
       .maybeSingle()
 
-    if (typedInvoice.project_id && customer.Id) {
-      await upsertSyncRecord({
-        orgId,
-        entityId: typedInvoice.project_id,
-        qboId: customer.Id,
-        entityType: "customer",
-      })
-    }
+    // Note: we intentionally do NOT write this invoice's customer to the project's customer map. The
+    // project default is owned by project settings (and the client-contact fallback in
+    // getOrCreateProjectCustomer) so a one-off invoice can't silently re-point every future payable.
 
     const qboLines = await Promise.all(
       (typedInvoice.lines ?? []).map(async (line) => {
@@ -724,11 +743,12 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, bill_date, due_date, total_cents, currency, file_id, metadata,
+      id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, total_cents, currency, file_id, metadata,
       qbo_id, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name, qbo_class_id, qbo_class_name,
       project:projects(name, qbo_class_id, qbo_class_name),
-      commitment:commitments(title, company:companies(name)),
-      bill_lines(id, description, quantity, unit_cost_cents, metadata)
+      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
+      commitment:commitments(title, company:companies(id, name, qbo_vendor_id, qbo_vendor_name)),
+      bill_lines(id, project_id, description, quantity, unit_cost_cents, metadata, project:projects(id, name, qbo_class_id, qbo_class_name))
     `,
     )
     .eq("id", billId)
@@ -740,24 +760,19 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
   }
 
   const typedBill = bill as VendorBillForSync
-  if (!typedBill.qbo_expense_account_id) {
+  if (!vendorBillHasQboExpenseCoding(typedBill)) {
     await markVendorBillNeedsReview(orgId, billId, "Choose a QuickBooks expense/category account before syncing this payable.")
     return { success: false, error: "Missing QuickBooks expense account" }
   }
 
   try {
     const vendorName = resolveVendorBillVendorName(typedBill)
-    const vendor = typedBill.qbo_vendor_id
-      ? { Id: typedBill.qbo_vendor_id, DisplayName: typedBill.qbo_vendor_name ?? vendorName }
+    const billCompany = typedBill.company ?? typedBill.commitment?.company ?? null
+    const linkedVendorId = billCompany?.qbo_vendor_id ?? typedBill.qbo_vendor_id ?? null
+    const linkedVendorName = billCompany?.qbo_vendor_name ?? typedBill.qbo_vendor_name ?? null
+    const vendor = linkedVendorId
+      ? { Id: linkedVendorId, DisplayName: linkedVendorName ?? vendorName }
       : await client.getOrCreateVendor(vendorName)
-    const customer = await getOrCreateProjectCustomer({
-      client,
-      supabase,
-      orgId,
-      projectId: typedBill.project_id,
-      projectName: typedBill.project?.name ?? null,
-    })
-
     const sourceLines =
       typedBill.bill_lines && typedBill.bill_lines.length > 0
         ? typedBill.bill_lines
@@ -767,16 +782,45 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
               quantity: 1,
               unit_cost_cents: typedBill.total_cents ?? 0,
               metadata: {},
+              project_id: typedBill.project_id,
+              project: typedBill.project ?? null,
             },
           ]
+
+    // A bill's lines may be allocated to different projects. Resolve (and persist) a QBO
+    // customer per distinct project so each line is job-costed to the right customer —
+    // producing one QBO bill with multiple lines and a single payment, mirroring QBO.
+    const projectInfoById = new Map<string, { name?: string | null; qbo_class_id?: string | null; qbo_class_name?: string | null }>()
+    projectInfoById.set(typedBill.project_id, typedBill.project ?? {})
+    for (const line of sourceLines) {
+      const pid = line.project_id ?? typedBill.project_id
+      if (pid && line.project) projectInfoById.set(pid, line.project)
+    }
+    const customerByProject = new Map<string, { Id?: string; DisplayName?: string } | null>()
+    for (const pid of new Set(sourceLines.map((line) => line.project_id ?? typedBill.project_id))) {
+      if (!pid || customerByProject.has(pid)) continue
+      customerByProject.set(
+        pid,
+        await getOrCreateProjectCustomer({
+          client,
+          supabase,
+          orgId,
+          projectId: pid,
+          projectName: projectInfoById.get(pid)?.name ?? null,
+        }),
+      )
+    }
 
     const qboLines = sourceLines.map((line) => {
       const amount = ((line.unit_cost_cents ?? 0) * (line.quantity ?? 1)) / 100
       const metadata = (line.metadata as Record<string, any> | null) ?? {}
+      const lineProjectId = line.project_id ?? typedBill.project_id
+      const lineCustomer = lineProjectId ? customerByProject.get(lineProjectId) : null
+      const lineProject = (lineProjectId ? projectInfoById.get(lineProjectId) : null) ?? typedBill.project
       const lineAccountId =
         typeof metadata.qbo_expense_account_id === "string" && metadata.qbo_expense_account_id
           ? metadata.qbo_expense_account_id
-          : typedBill.qbo_expense_account_id!
+          : typedBill.qbo_expense_account_id ?? ""
       const lineAccountName =
         typeof metadata.qbo_expense_account_name === "string" && metadata.qbo_expense_account_name
           ? metadata.qbo_expense_account_name
@@ -784,10 +828,10 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       const classRef = resolveQBOClassRef(
         {
           ...metadata,
-          qbo_class_id: metadata.qbo_class_id ?? typedBill.qbo_class_id,
-          qbo_class_name: metadata.qbo_class_name ?? typedBill.qbo_class_name,
+          qbo_class_id: metadata.qbo_class_id ?? lineProject?.qbo_class_id ?? typedBill.qbo_class_id,
+          qbo_class_name: metadata.qbo_class_name ?? lineProject?.qbo_class_name ?? typedBill.qbo_class_name,
         },
-        typedBill.project,
+        lineProject,
       )
 
       return {
@@ -799,10 +843,10 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
             value: lineAccountId,
             name: lineAccountName,
           },
-          CustomerRef: customer?.Id
+          CustomerRef: lineCustomer?.Id
             ? {
-                value: customer.Id,
-                name: customer.DisplayName,
+                value: lineCustomer.Id,
+                name: lineCustomer.DisplayName,
               }
             : undefined,
           BillableStatus: "Billable",
@@ -861,6 +905,19 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       })
       .eq("org_id", orgId)
       .eq("id", billId)
+
+    if (billCompany?.id && vendor.Id) {
+      await supabase
+        .from("companies")
+        .update({
+          qbo_vendor_id: vendor.Id,
+          qbo_vendor_name: vendor.DisplayName,
+          qbo_vendor_synced_at: new Date().toISOString(),
+          qbo_vendor_sync_status: billCompany.qbo_vendor_id ? "linked" : "created",
+        })
+        .eq("org_id", orgId)
+        .eq("id", billCompany.id)
+    }
 
     await syncVendorBillAttachmentToQBO({
       client,
@@ -1069,6 +1126,24 @@ export async function enqueueProjectExpenseSync(expenseId: string, orgId: string
     return
   }
 
+  const { data: expense } = await supabase
+    .from("project_expenses")
+    .select("qbo_transaction_type, payment_method, qbo_expense_account_id, qbo_payment_account_id")
+    .eq("id", expenseId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+
+  if (!expense?.qbo_expense_account_id) {
+    await markProjectExpenseNeedsReview(orgId, expenseId, "Choose a QuickBooks account before syncing.")
+    return
+  }
+
+  const transactionType = resolveProjectExpenseQBOTransactionType(expense as ProjectExpenseForSync)
+  if (transactionType === "purchase" && !expense.qbo_payment_account_id) {
+    await markProjectExpenseNeedsReview(orgId, expenseId, "Choose the QuickBooks bank or credit card account used for this paid expense.")
+    return
+  }
+
   await supabase.from("project_expenses").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", expenseId).eq("org_id", orgId)
 
   await enqueueOutboxJob({
@@ -1091,6 +1166,25 @@ export async function enqueueVendorBillSync(billId: string, orgId: string) {
 
   if (!connection?.settings?.auto_sync) {
     await supabase.from("vendor_bills").update({ qbo_sync_status: "skipped" }).eq("id", billId).eq("org_id", orgId)
+    return
+  }
+
+  const { data: bill } = await supabase
+    .from("vendor_bills")
+    .select("qbo_expense_account_id, bill_lines(metadata)")
+    .eq("id", billId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+
+  if (!bill || !vendorBillHasQboExpenseCoding(bill as VendorBillForSync)) {
+    await supabase
+      .from("vendor_bills")
+      .update({
+        qbo_sync_status: "needs_review",
+        qbo_sync_error: "Choose a QuickBooks expense/category account before syncing this payable.",
+      })
+      .eq("id", billId)
+      .eq("org_id", orgId)
     return
   }
 
@@ -1568,6 +1662,8 @@ function resolveExpenseVendorName(expense: ProjectExpenseForSync) {
 }
 
 function resolveVendorBillVendorName(bill: VendorBillForSync) {
+  const directCompanyName = bill.company?.name
+  if (directCompanyName && directCompanyName.trim()) return directCompanyName.trim()
   const companyName = bill.commitment?.company?.name
   if (companyName && companyName.trim()) return companyName.trim()
   const metadataVendor = (bill.metadata as any)?.vendor_name
@@ -1594,6 +1690,13 @@ function resolvePurchasePaymentType(paymentMethod?: string | null) {
   return "Cash"
 }
 
+// Resolves the QBO customer that project costs (payables/expenses) are attributed to, in priority order:
+//   1. the project's explicit default (set in project settings) — the source of truth;
+//   2. the project's current client contact — find/create the matching QBO customer and lock it in
+//      (this self-corrects stale "first sync wins" maps);
+//   3. a legacy qbo_sync_records map from before the explicit field existed;
+//   4. the project name as a last resort.
+// Whatever is resolved in 2–4 is persisted back onto the project so it becomes sticky and visible.
 async function getOrCreateProjectCustomer(params: {
   client: QBOClient
   supabase: ReturnType<typeof createServiceSupabaseClient>
@@ -1602,29 +1705,62 @@ async function getOrCreateProjectCustomer(params: {
   projectName?: string | null
 }) {
   if (!params.projectId) return null
+  const { client, supabase, orgId, projectId } = params
 
-  const { data: existing } = await params.supabase
-    .from("qbo_sync_records")
-    .select("qbo_id")
-    .eq("org_id", params.orgId)
-    .eq("entity_type", "customer")
-    .eq("entity_id", params.projectId)
+  const { data: project } = await supabase
+    .from("projects")
+    .select("qbo_customer_id, qbo_customer_name, client_id")
+    .eq("org_id", orgId)
+    .eq("id", projectId)
     .maybeSingle()
 
+  // 1. Explicit project default.
+  if (project?.qbo_customer_id) {
+    return { Id: project.qbo_customer_id, DisplayName: project.qbo_customer_name ?? params.projectName ?? "Customer" }
+  }
+
+  const persist = async (customer: { Id?: string; DisplayName?: string }) => {
+    if (!customer?.Id) return
+    await supabase
+      .from("projects")
+      .update({ qbo_customer_id: customer.Id, qbo_customer_name: customer.DisplayName ?? null })
+      .eq("org_id", orgId)
+      .eq("id", projectId)
+    await upsertSyncRecord({ orgId, entityId: projectId, qboId: customer.Id, entityType: "customer" })
+  }
+
+  // 2. Current client contact.
+  if (project?.client_id) {
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("full_name")
+      .eq("org_id", orgId)
+      .eq("id", project.client_id)
+      .maybeSingle()
+    const contactName = contact?.full_name?.trim()
+    if (contactName) {
+      const customer = await client.getOrCreateCustomer(contactName)
+      await persist(customer)
+      return customer
+    }
+  }
+
+  // 3. Legacy mapping.
+  const { data: existing } = await supabase
+    .from("qbo_sync_records")
+    .select("qbo_id")
+    .eq("org_id", orgId)
+    .eq("entity_type", "customer")
+    .eq("entity_id", projectId)
+    .maybeSingle()
   if (existing?.qbo_id) {
     return { Id: existing.qbo_id, DisplayName: params.projectName ?? "Project" }
   }
 
-  const displayName = params.projectName?.trim() || `Project ${params.projectId}`
-  const customer = await params.client.getOrCreateCustomer(displayName)
-  if (customer.Id) {
-    await upsertSyncRecord({
-      orgId: params.orgId,
-      entityId: params.projectId,
-      qboId: customer.Id,
-      entityType: "customer",
-    })
-  }
+  // 4. Project name fallback.
+  const displayName = params.projectName?.trim() || `Project ${projectId}`
+  const customer = await client.getOrCreateCustomer(displayName)
+  await persist(customer)
   return customer
 }
 

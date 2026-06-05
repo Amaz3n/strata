@@ -1,5 +1,7 @@
 "use server"
 
+import { revalidatePath } from "next/cache"
+
 import { getBudgetWithActuals, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listCommitmentLines, listProjectCommitments } from "@/lib/services/commitments"
@@ -13,6 +15,22 @@ import {
   generateInvoiceFromCosts,
 } from "@/lib/services/cost-plus"
 import { generateInvoiceFromCostsInputSchema } from "@/lib/validation/cost-plus"
+import { createProjectBillingPeriod, type CreateBillingPeriodInput } from "@/lib/services/billing-periods"
+import {
+  generateInvoiceBackupPackage,
+  listProjectOwnerBillingPackageSummaries,
+  shareInvoiceBackupPackage,
+  summarizeOwnerBillingPackage,
+} from "@/lib/services/owner-billing-packages"
+import {
+  createProjectFeeInvoice,
+  getProjectFeeBillingSummary,
+  updateProjectFeeProgress,
+  type CreateFeeInvoiceInput,
+  type UpdateFeeProgressInput,
+} from "@/lib/services/fee-billing"
+import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
+import { saveProjectFinancialSetup, type FinancialSetupInput } from "@/lib/services/project-financial-setup"
 
 function messageForError(error: unknown) {
   return error instanceof Error ? error.message : String(error ?? "Unknown error")
@@ -32,12 +50,14 @@ function resultError(label: string, result: PromiseSettledResult<unknown>) {
  * - Companies (for commitment vendor selection)
  */
 export async function fetchBudgetTabDataAction(projectId: string) {
-  const [budgetDataResult, costCodesResult, varianceAlertsResult, commitmentsResult, companiesResult] = await Promise.allSettled([
+  const [budgetDataResult, costCodesResult, varianceAlertsResult, commitmentsResult, companiesResult, feeSummaryResult, gmpSummaryResult] = await Promise.allSettled([
     getBudgetWithActuals(projectId),
     listCostCodes(),
     listVarianceAlertsForProject(projectId),
     listProjectCommitments(projectId),
     listCompanies(),
+    getProjectFeeBillingSummary(projectId),
+    getProjectGmpControlSummary(projectId),
   ])
 
   const budgetData = budgetDataResult.status === "fulfilled" ? budgetDataResult.value : null
@@ -51,6 +71,8 @@ export async function fetchBudgetTabDataAction(projectId: string) {
     resultError("Variance alerts", varianceAlertsResult),
     resultError("Commitments", commitmentsResult),
     resultError("Companies", companiesResult),
+    resultError("Fee billing", feeSummaryResult),
+    resultError("GMP control", gmpSummaryResult),
   ].filter(Boolean) as string[]
   const budgetBucketCompanies = await buildBudgetBucketCompanies(commitments)
 
@@ -61,6 +83,8 @@ export async function fetchBudgetTabDataAction(projectId: string) {
     commitments,
     companies,
     budgetBucketCompanies,
+    feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
+    gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
     errors,
   }
 }
@@ -103,20 +127,29 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  * - Cost codes for invoice line items
  */
 export async function fetchReceivablesTabDataAction(projectId: string) {
-  const [invoicesResult, contactsResult, costCodesResult] = await Promise.allSettled([
+  const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, gmpSummaryResult] = await Promise.allSettled([
     listInvoices({ projectId }),
     listContacts(),
     listCostCodes(),
+    listProjectOwnerBillingPackageSummaries(projectId),
+    getProjectFeeBillingSummary(projectId),
+    getProjectGmpControlSummary(projectId),
   ])
 
   return {
     invoices: invoicesResult.status === "fulfilled" ? invoicesResult.value : [],
     contacts: contactsResult.status === "fulfilled" ? contactsResult.value : [],
     costCodes: costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
+    ownerBillingPackages: ownerPackagesResult.status === "fulfilled" ? ownerPackagesResult.value : [],
+    feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
+    gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
     errors: [
       resultError("Invoices", invoicesResult),
       resultError("Contacts", contactsResult),
       resultError("Cost codes", costCodesResult),
+      resultError("Owner billing packages", ownerPackagesResult),
+      resultError("Fee billing", feeSummaryResult),
+      resultError("GMP control", gmpSummaryResult),
     ].filter(Boolean) as string[],
   }
 }
@@ -164,6 +197,59 @@ export async function fetchPayablesTabDataAction(projectId: string) {
 export async function generateInvoiceFromCostsAction(input: unknown) {
   const parsed = generateInvoiceFromCostsInputSchema.parse(input)
   return generateInvoiceFromCosts(parsed)
+}
+
+export async function saveProjectFinancialSetupAction(input: FinancialSetupInput) {
+  const result = await saveProjectFinancialSetup(input)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/budget`)
+  revalidatePath(`/projects/${input.projectId}/financials/payables`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return result
+}
+
+export async function createProjectBillingPeriodAction(input: CreateBillingPeriodInput) {
+  const period = await createProjectBillingPeriod(input)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return period
+}
+
+export async function generateOwnerBillingPackageAction(input: { projectId: string; invoiceId: string }) {
+  const pkg = await generateInvoiceBackupPackage(input)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return summarizeOwnerBillingPackage(pkg)
+}
+
+export async function shareOwnerBillingPackageAction(input: { projectId: string; packageId: string }) {
+  const pkg = await shareInvoiceBackupPackage(input)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return summarizeOwnerBillingPackage(pkg)
+}
+
+export async function updateProjectFeeProgressAction(input: UpdateFeeProgressInput) {
+  const summary = await updateProjectFeeProgress(input)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/budget`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return summary
+}
+
+export async function createProjectFeeInvoiceAction(input: CreateFeeInvoiceInput) {
+  const invoice = await createProjectFeeInvoice(input)
+  const feeSummary = await getProjectFeeBillingSummary(input.projectId)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/budget`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return { invoice, feeSummary }
 }
 
 /**

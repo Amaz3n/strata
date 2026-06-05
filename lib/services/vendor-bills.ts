@@ -15,6 +15,7 @@ import {
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
+import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
 import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qbo-sync"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
@@ -63,23 +64,54 @@ export interface VendorBillSummary {
   qbo_ap_account_name?: string
   qbo_vendor_id?: string
   qbo_vendor_name?: string
+  company_qbo_vendor_id?: string | null
+  company_qbo_vendor_name?: string | null
   actual_lines?: VendorBillActualLine[]
+  /** This bill's portion attributed to the viewing project (multi-project bills). Defaults to total_cents. */
+  project_amount_cents?: number
+  /** True when the bill's lines span more than one project. */
+  is_shared?: boolean
+  /** Every project this bill touches (incl. the viewing one), with that project's share. */
+  shared_projects?: VendorBillProjectShare[]
+}
+
+export interface VendorBillProjectShare {
+  id: string
+  name?: string
+  amount_cents: number
 }
 
 export interface VendorBillActualLine {
   id?: string
-  cost_code_id: string
+  cost_code_id: string | null
   cost_code_code?: string
   cost_code_name?: string
   description?: string
   amount_cents: number
+  project_id?: string | null
+  project_name?: string
   qbo_expense_account_id?: string
   qbo_expense_account_name?: string
+  qbo_ap_account_id?: string
+  qbo_ap_account_name?: string
+  qbo_vendor_id?: string
+  qbo_vendor_name?: string
 }
 
-export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
+function linesHaveQboExpenseCoding(lines: Array<{ qbo_expense_account_id?: string | null }>) {
+  return lines.length > 0 && lines.every((line) => Boolean(line.qbo_expense_account_id))
+}
+
+// Returns the single value shared by every line, or undefined when the lines disagree
+// (or none have a value). Used to surface per-line QBO coding as a bill-level chip.
+function pickSharedLineValue(values: Array<string | null | undefined>): string | undefined {
+  const distinct = new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))
+  return distinct.size === 1 ? [...distinct][0] : undefined
+}
+
+export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: string): VendorBillSummary {
   const metadata = row?.metadata ?? {}
-  const company = row?.commitment?.company ?? row?.company ?? {}
+  const company = row?.company ?? row?.commitment?.company ?? {}
   const lines = Array.isArray(billLines) ? billLines : []
   const actualLines = lines.map((line) => ({
     id: line.id ?? undefined,
@@ -88,10 +120,53 @@ export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
     cost_code_name: line.cost_code?.name ?? undefined,
     description: line.description ?? undefined,
     amount_cents: (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
+    project_id: line.project_id ?? null,
+    project_name: line.project?.name ?? undefined,
     qbo_expense_account_id: line.metadata?.qbo_expense_account_id ?? undefined,
     qbo_expense_account_name: line.metadata?.qbo_expense_account_name ?? undefined,
+    qbo_ap_account_id: line.metadata?.qbo_ap_account_id ?? undefined,
+    qbo_ap_account_name: line.metadata?.qbo_ap_account_name ?? undefined,
+    qbo_vendor_id: line.metadata?.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: line.metadata?.qbo_vendor_name ?? undefined,
   }))
   const firstActualLine = actualLines[0]
+
+  // For split bills the QBO coding lives on the lines, not the bill (the bill-level
+  // qbo_*_account_id columns stay null). When the bill is being shown for a specific
+  // project, derive the displayed account chips from that project's line(s) so the list
+  // reflects the coding the user actually set and synced — instead of "Choose account".
+  const viewLines = viewProjectId
+    ? actualLines.filter((line) => (line.project_id ?? row.project_id) === viewProjectId)
+    : actualLines
+  const lineExpenseAccountId = pickSharedLineValue(viewLines.map((line) => line.qbo_expense_account_id))
+  const lineExpenseAccountName = pickSharedLineValue(viewLines.map((line) => line.qbo_expense_account_name))
+  const lineApAccountId = pickSharedLineValue(viewLines.map((line) => line.qbo_ap_account_id))
+  const lineApAccountName = pickSharedLineValue(viewLines.map((line) => line.qbo_ap_account_name))
+
+  // Group the bill's value by the project each line is allocated to (a line's
+  // effective project is its own project_id, falling back to the bill's primary).
+  // With no coded lines the whole bill belongs to the primary project.
+  const shareByProject = new Map<string, { amount_cents: number; name?: string }>()
+  if (actualLines.length > 0) {
+    for (const line of actualLines) {
+      const pid = line.project_id ?? row.project_id
+      if (!pid) continue
+      const existing = shareByProject.get(pid) ?? { amount_cents: 0, name: undefined }
+      existing.amount_cents += line.amount_cents
+      if (!existing.name) existing.name = line.project_id ? line.project_name : row.project?.name ?? undefined
+      shareByProject.set(pid, existing)
+    }
+  } else if (row.project_id) {
+    shareByProject.set(row.project_id, { amount_cents: row.total_cents ?? 0, name: row.project?.name ?? undefined })
+  }
+  const sharedProjects: VendorBillProjectShare[] = Array.from(shareByProject.entries()).map(([id, share]) => ({
+    id,
+    name: share.name,
+    amount_cents: share.amount_cents,
+  }))
+  const isShared = sharedProjects.length > 1
+  const viewProjectShare = viewProjectId ? shareByProject.get(viewProjectId)?.amount_cents : undefined
+  const projectAmountCents = viewProjectShare ?? row.total_cents ?? undefined
   const paidCents =
     typeof row.paid_cents === "number"
       ? row.paid_cents
@@ -136,13 +211,18 @@ export function mapVendorBill(row: any, billLines?: any[]): VendorBillSummary {
     qbo_synced_at: row.qbo_synced_at ?? undefined,
     qbo_sync_status: row.qbo_sync_status ?? undefined,
     qbo_sync_error: row.qbo_sync_error ?? undefined,
-    qbo_expense_account_id: row.qbo_expense_account_id ?? metadata.qbo_expense_account_id ?? undefined,
-    qbo_expense_account_name: row.qbo_expense_account_name ?? metadata.qbo_expense_account_name ?? undefined,
-    qbo_ap_account_id: row.qbo_ap_account_id ?? metadata.qbo_ap_account_id ?? undefined,
-    qbo_ap_account_name: row.qbo_ap_account_name ?? metadata.qbo_ap_account_name ?? undefined,
-    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
-    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
+    qbo_expense_account_id: row.qbo_expense_account_id ?? metadata.qbo_expense_account_id ?? lineExpenseAccountId ?? undefined,
+    qbo_expense_account_name: row.qbo_expense_account_name ?? metadata.qbo_expense_account_name ?? lineExpenseAccountName ?? undefined,
+    qbo_ap_account_id: row.qbo_ap_account_id ?? metadata.qbo_ap_account_id ?? lineApAccountId ?? undefined,
+    qbo_ap_account_name: row.qbo_ap_account_name ?? metadata.qbo_ap_account_name ?? lineApAccountName ?? undefined,
+    qbo_vendor_id: company.qbo_vendor_id ?? row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: company.qbo_vendor_name ?? row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
+    company_qbo_vendor_id: company.qbo_vendor_id ?? undefined,
+    company_qbo_vendor_name: company.qbo_vendor_name ?? undefined,
     actual_lines: actualLines,
+    project_amount_cents: projectAmountCents,
+    is_shared: isShared,
+    shared_projects: sharedProjects,
   }
 }
 
@@ -159,8 +239,13 @@ async function replaceBillLineCoding(
       cost_code_id: string | null
       description: string
       amount_cents: number
+      project_id?: string | null
       qbo_expense_account_id?: string
       qbo_expense_account_name?: string
+      qbo_ap_account_id?: string
+      qbo_ap_account_name?: string
+      qbo_vendor_id?: string
+      qbo_vendor_name?: string
     }>
   },
 ) {
@@ -196,6 +281,7 @@ async function replaceBillLineCoding(
     org_id: orgId,
     bill_id: billId,
     cost_code_id: line.cost_code_id,
+    project_id: line.project_id ?? null,
     description: line.description,
     quantity: 1,
     unit: "LS",
@@ -203,8 +289,12 @@ async function replaceBillLineCoding(
     sort_order: index,
     metadata: {
       source: "ap_review",
-      qbo_expense_account_id: line.qbo_expense_account_id ?? null,
-      qbo_expense_account_name: line.qbo_expense_account_name ?? null,
+      qbo_expense_account_id: line.qbo_expense_account_id,
+      qbo_expense_account_name: line.qbo_expense_account_name,
+      qbo_ap_account_id: line.qbo_ap_account_id,
+      qbo_ap_account_name: line.qbo_ap_account_name,
+      qbo_vendor_id: line.qbo_vendor_id,
+      qbo_vendor_name: line.qbo_vendor_name,
     },
   }))
 
@@ -244,9 +334,10 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name))
+      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
+      commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
     `,
     )
     .eq("org_id", resolvedOrgId)
@@ -273,17 +364,40 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     resourceId: projectId,
   })
 
-  const { data, error } = await supabase
+  // Multi-project bills: include bills whose primary project is elsewhere but
+  // which have at least one line allocated to this project.
+  const { data: allocatedRows, error: allocatedError } = await supabase
+    .from("bill_lines")
+    .select("bill_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+
+  if (allocatedError) {
+    throw new Error(`Failed to resolve allocated bills: ${allocatedError.message}`)
+  }
+
+  const allocatedBillIds = Array.from(
+    new Set((allocatedRows ?? []).map((row: any) => row.bill_id).filter(Boolean)),
+  )
+
+  const baseSelect = supabase
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name))
+      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
+      commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
     `,
     )
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
+
+  const scoped =
+    allocatedBillIds.length > 0
+      ? baseSelect.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`)
+      : baseSelect.eq("project_id", projectId)
+
+  const { data, error } = await scoped
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
 
@@ -299,7 +413,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
       ? { data: [], error: null }
       : await supabase
           .from("bill_lines")
-          .select("id, bill_id, cost_code_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name)")
+          .select("id, bill_id, project_id, cost_code_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name), project:projects(id, name)")
           .eq("org_id", resolvedOrgId)
           .in("bill_id", billIds)
           .order("sort_order", { ascending: true })
@@ -315,7 +429,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     linesByBillId.set(line.bill_id, current)
   }
 
-  return bills.map((bill: any) => mapVendorBill(bill, linesByBillId.get(bill.id)))
+  return bills.map((bill: any) => mapVendorBill(bill, linesByBillId.get(bill.id), projectId))
 }
 
 export async function updateVendorBillStatus({
@@ -332,7 +446,7 @@ export async function updateVendorBillStatus({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, commitment_id, bill_number, status, total_cents, currency, metadata, approved_at, paid_at, paid_cents, lien_waiver_status, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
+    .select("id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, metadata, approved_at, approved_by, paid_at, paid_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -408,6 +522,15 @@ export async function updateVendorBillStatus({
 
   // Build update object with column values.
   const updateData: any = { status: parsed.status }
+  if (parsed.bill_number !== undefined) {
+    updateData.bill_number = parsed.bill_number
+  }
+  if (parsed.bill_date !== undefined) {
+    updateData.bill_date = parsed.bill_date
+  }
+  if (parsed.due_date !== undefined) {
+    updateData.due_date = parsed.due_date
+  }
   const totalCents = existing.total_cents ?? 0
   const existingPaid = typeof existing.paid_cents === "number" ? existing.paid_cents : 0
   const remainingCents = Math.max(0, totalCents - existingPaid)
@@ -438,6 +561,28 @@ export async function updateVendorBillStatus({
     }
   }
 
+  if (parsed.company_id !== undefined) {
+    updateData.company_id = parsed.company_id
+    if (parsed.company_id) {
+      const { data: comp } = await supabase
+        .from("companies")
+        .select("qbo_vendor_id, qbo_vendor_name, name")
+        .eq("id", parsed.company_id)
+        .maybeSingle()
+      if (comp) {
+        updateData.qbo_vendor_id = comp.qbo_vendor_id ?? null
+        updateData.qbo_vendor_name = comp.qbo_vendor_name ?? comp.name ?? null
+      }
+    } else {
+      updateData.qbo_vendor_id = null
+      updateData.qbo_vendor_name = null
+    }
+    if (existing.company_id !== parsed.company_id) {
+      updateData.qbo_sync_status = "pending"
+      updateData.qbo_sync_error = null
+    }
+  }
+
   if (parsed.qbo_vendor_id !== undefined) {
     updateData.qbo_vendor_id = parsed.qbo_vendor_id || null
     updateData.qbo_vendor_name = parsed.qbo_vendor_name || null
@@ -452,45 +597,56 @@ export async function updateVendorBillStatus({
     updateData.approved_by = userId
   }
 
-  let actualLines =
-    parsed.actual_lines && parsed.actual_lines.length > 0
-      ? parsed.actual_lines.map((line) => ({
-          cost_code_id: line.cost_code_id ?? null,
-          description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
-          amount_cents: line.amount_cents,
-          qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
-          qbo_expense_account_name: line.qbo_expense_account_name ?? parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
-        }))
-      : parsed.cost_code_id
-        ? [
-            {
-              cost_code_id: parsed.cost_code_id,
-              description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
-              amount_cents: totalCents,
-              qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
-              qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
-            },
-          ]
-        : []
+  const explicitLines = parsed.actual_lines && parsed.actual_lines.length > 0 ? parsed.actual_lines : null
+
+  let actualLines = explicitLines
+    ? explicitLines.map((line) => ({
+        cost_code_id: line.cost_code_id ?? null,
+        description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
+        amount_cents: line.amount_cents,
+        project_id: line.project_id ?? existing.project_id ?? null,
+        qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
+        qbo_expense_account_name: line.qbo_expense_account_name ?? parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
+        qbo_ap_account_id: line.qbo_ap_account_id ?? parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
+        qbo_ap_account_name: line.qbo_ap_account_name ?? parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
+        qbo_vendor_id: line.qbo_vendor_id ?? parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
+        qbo_vendor_name: line.qbo_vendor_name ?? parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
+      }))
+    : []
 
   const targetStatus = parsed.status ?? existing.status
   const isApprovedOrReleased = ["approved", "partial", "paid"].includes(targetStatus)
 
-  if (actualLines.length === 0 && isApprovedOrReleased) {
+  // When no explicit per-line coding is supplied we may still need to synthesize a single
+  // full-total line — e.g. a quick approve from the list, or assigning one cost code to an
+  // uncoded bill. Crucially, we must NOT do this when the bill is already split across
+  // multiple lines, or we'd silently collapse the split back onto the bill's primary project.
+  if (!explicitLines && (parsed.cost_code_id || isApprovedOrReleased)) {
     const { data: currentLines } = await supabase
       .from("bill_lines")
       .select("id")
       .eq("org_id", resolvedOrgId)
       .eq("bill_id", billId)
 
-    if (!currentLines || currentLines.length === 0) {
+    const existingLineCount = currentLines?.length ?? 0
+    // Only (re)build a single line when the bill isn't already split: an uncoded bill (0 lines),
+    // or recoding the lone line when an explicit cost code is being assigned.
+    const shouldSynthesizeSingleLine =
+      existingLineCount === 0 || (existingLineCount === 1 && Boolean(parsed.cost_code_id))
+
+    if (shouldSynthesizeSingleLine) {
       actualLines = [
         {
-          cost_code_id: null,
+          cost_code_id: parsed.cost_code_id ?? null,
           description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
           amount_cents: totalCents,
+          project_id: existing.project_id ?? null,
           qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
           qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
+          qbo_ap_account_id: parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
+          qbo_ap_account_name: parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
+          qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
+          qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
         },
       ]
     }
@@ -500,6 +656,11 @@ export async function updateVendorBillStatus({
     const actualTotal = actualLines.reduce((sum, line) => sum + line.amount_cents, 0)
     if (actualTotal !== totalCents) {
       throw new Error("Bill coding must equal the bill amount")
+    }
+
+    if (isApprovedOrReleased && !updateData.qbo_expense_account_id && linesHaveQboExpenseCoding(actualLines)) {
+      updateData.qbo_sync_status = "pending"
+      updateData.qbo_sync_error = null
     }
 
     await replaceBillLineCoding(supabase, {
@@ -580,15 +741,50 @@ export async function updateVendorBillStatus({
     .eq("id", billId)
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name))
+      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
+      commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
     `,
     )
     .single()
 
   if (error || !data) {
     throw new Error(`Failed to update vendor bill: ${error?.message}`)
+  }
+
+  const finalStatus = updateData.status ?? parsed.status
+
+  try {
+    if (["approved", "partial", "paid"].includes(String(finalStatus))) {
+      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
+    }
+
+    if (["approved", "partial", "paid"].includes(String(existing.status)) && finalStatus === "pending") {
+      await voidBillableCostsForVendorBill({ billId, orgId: resolvedOrgId })
+      await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
+    }
+  } catch (error) {
+    await supabase
+      .from("vendor_bills")
+      .update({
+        status: existing.status,
+        approved_at: existing.approved_at ?? null,
+        approved_by: existing.approved_by ?? null,
+        paid_at: existing.paid_at ?? null,
+        paid_cents: existing.paid_cents ?? null,
+        qbo_sync_status: existing.qbo_sync_status ?? null,
+        qbo_sync_error: existing.qbo_sync_error ?? null,
+      })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", billId)
+
+    const message = error instanceof Error ? error.message : String(error ?? "Unknown error")
+    throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
+  }
+
+  if (["approved", "partial", "paid"].includes(String(finalStatus))) {
+    await enqueueVendorBillSync(billId, resolvedOrgId)
   }
 
   await recordAudit({
@@ -600,8 +796,6 @@ export async function updateVendorBillStatus({
     before: existing,
     after: data,
   })
-
-  const finalStatus = updateData.status ?? parsed.status
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -622,19 +816,6 @@ export async function updateVendorBillStatus({
       qbo_vendor_id: parsed.qbo_vendor_id,
     },
   })
-
-  if (finalStatus === "approved") {
-    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId }).catch((error) => {
-      console.warn("Failed to propagate approved vendor bill to cost ledger", error)
-    })
-    await enqueueVendorBillSync(billId, resolvedOrgId)
-  }
-
-  if (existing.status === "approved" && finalStatus === "pending") {
-    await voidBillableCostsForVendorBill({ billId, orgId: resolvedOrgId }).catch((error) => {
-      console.warn("Failed to void vendor bill ledger costs", error)
-    })
-  }
 
   return mapVendorBill(data)
 }
@@ -761,3 +942,144 @@ export async function createVendorBillFromPortal({
 
   return mapVendorBill(data)
 }
+
+export async function deleteVendorBill({
+  billId,
+  orgId,
+}: {
+  billId: string
+  orgId?: string
+}): Promise<{ projectId: string | null }> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  // 1. Fetch the existing bill
+  const { data: existing, error: existingError } = await supabase
+    .from("vendor_bills")
+    .select("id, org_id, project_id, bill_number, status, qbo_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Vendor bill not found")
+  }
+
+  // 2. Authorization check (bill.write)
+  await requireAuthorization({
+    permission: "bill.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id ?? undefined,
+    supabase,
+    logDecision: true,
+    resourceType: "vendor_bill",
+    resourceId: billId,
+  })
+
+  // 3. Restriction checks
+  if (existing.qbo_id) {
+    throw new Error("Bills synced to QuickBooks cannot be deleted. Disconnect or delete them in QuickBooks first.")
+  }
+
+  // Fetch related billable costs
+  const { data: costs, error: costsError } = await supabase
+    .from("billable_costs")
+    .select("status")
+    .eq("org_id", resolvedOrgId)
+    .eq("source_type", "vendor_bill_line")
+    .eq("metadata->>bill_id", billId)
+
+  if (costsError) {
+    throw new Error(`Failed to load billable costs: ${costsError.message}`)
+  }
+
+  const hasBilledOrLockedCosts = (costs ?? []).some(
+    (cost) => cost.status === "billed" || cost.status === "locked"
+  )
+  if (hasBilledOrLockedCosts) {
+    throw new Error("This bill cannot be deleted because its costs have already been billed or locked.")
+  }
+
+  // 4. Cleanup related polymorphic records
+  // Fetch line IDs
+  const { data: lines, error: linesError } = await supabase
+    .from("bill_lines")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("bill_id", billId)
+
+  if (linesError) {
+    throw new Error(`Failed to load bill lines: ${linesError.message}`)
+  }
+
+  const lineIds = (lines ?? []).map((line) => line.id).filter(Boolean)
+
+  if (lineIds.length > 0) {
+    // Delete open/voided billable costs
+    const { error: deleteCostsError } = await supabase
+      .from("billable_costs")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("source_type", "vendor_bill_line")
+      .in("source_id", lineIds)
+
+    if (deleteCostsError) {
+      throw new Error(`Failed to delete billable costs: ${deleteCostsError.message}`)
+    }
+
+    // Delete job cost entries
+    const { error: deleteJobCostsError } = await supabase
+      .from("job_cost_entries")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("source_type", "vendor_bill_line")
+      .in("source_id", lineIds)
+
+    if (deleteJobCostsError) {
+      throw new Error(`Failed to delete job cost entries: ${deleteJobCostsError.message}`)
+    }
+  }
+
+  // Delete file links
+  await supabase
+    .from("file_links")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("entity_type", "vendor_bill")
+    .eq("entity_id", billId)
+
+  // 5. Delete the vendor bill (bill_lines will be deleted automatically due to cascade constraint)
+  const { error: deleteBillError } = await supabase
+    .from("vendor_bills")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+
+  if (deleteBillError) {
+    throw new Error(`Failed to delete vendor bill: ${deleteBillError.message}`)
+  }
+
+  // 6. Record activity event & audit log
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "vendor_bill_deleted",
+    entityType: "vendor_bill",
+    entityId: billId,
+    payload: {
+      bill_number: existing.bill_number,
+      project_id: existing.project_id,
+    },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "vendor_bill",
+    entityId: billId,
+    before: existing,
+  })
+
+  return { projectId: existing.project_id }
+}
+

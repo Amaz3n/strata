@@ -483,6 +483,12 @@ export function InvoiceComposerSheet({
   const [customerResults, setCustomerResults] = useState<QBOCustomerOption[]>([])
   const [customerSearchLoading, setCustomerSearchLoading] = useState(false)
   const [creatingQboCustomer, setCreatingQboCustomer] = useState(false)
+  // Tracks the QBO customer id we auto-applied from the project's default, so switching projects can
+  // re-apply the new default without clobbering a customer the user picked by hand.
+  const autoPickedCustomerRef = useRef<string | null>(invoice?.metadata?.qbo_customer_id ? String(invoice.metadata.qbo_customer_id) : null)
+  // True once the user explicitly picks a customer for this invoice, so the project-default auto-pick
+  // won't clobber their choice. Reset when the project changes (the new project's default re-applies).
+  const customerManuallyChosenRef = useRef(false)
   const [customerDetails, setCustomerDetails] = useState(
     buildPartyDetailsBlock({
       name: invoice?.customer_name ?? String(invoice?.metadata?.customer_name ?? ""),
@@ -807,6 +813,11 @@ export function InvoiceComposerSheet({
     }
   }, [open, mode, title, selectedProjectName])
 
+  // Switching projects re-arms the auto-pick so the new project's default customer applies.
+  useEffect(() => {
+    customerManuallyChosenRef.current = false
+  }, [projectId])
+
   useEffect(() => {
     if (!open) return
     let cancelled = false
@@ -820,6 +831,22 @@ export function InvoiceComposerSheet({
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
+        // Pre-select the project's default QBO customer unless the user has hand-picked a customer for
+        // this invoice (tracked via customerManuallyChosenRef, which resets on project change).
+        if (mode === "create" && result.qboConnected && !customerManuallyChosenRef.current) {
+          const def = (result as any).defaultQboCustomer as { id: string; name: string } | null | undefined
+          if (def?.id) {
+            setSelectedQboCustomer({ id: def.id, name: def.name, email: null })
+            setCustomerId("none")
+            setCustomerDetails(buildPartyDetailsBlock({ name: def.name, email: "", address: "" }))
+            autoPickedCustomerRef.current = def.id
+          } else if (autoPickedCustomerRef.current) {
+            // New project has no default and the current selection was only auto-applied — clear it.
+            setSelectedQboCustomer(null)
+            setCustomerDetails("")
+            autoPickedCustomerRef.current = null
+          }
+        }
         const defaults = {
           defaultPaymentTermsDays: Number(result.settings?.defaultPaymentTermsDays ?? 15),
           defaultInvoiceNote: String(result.settings?.defaultInvoiceNote ?? ""),
@@ -918,6 +945,7 @@ export function InvoiceComposerSheet({
 
   // Fallback only (QBO disconnected): bill an Arc contact.
   const selectContact = (contactId: string) => {
+    customerManuallyChosenRef.current = true
     setCustomerId(contactId)
     setSelectedQboCustomer(null)
     const contact = financialContacts.find((item) => item.id === contactId)
@@ -933,6 +961,7 @@ export function InvoiceComposerSheet({
   }
 
   const selectQboCustomer = (customer: QBOCustomerOption) => {
+    customerManuallyChosenRef.current = true
     setCustomerId("none")
     setSelectedQboCustomer(customer)
     setCustomerPickerOpen(false)
@@ -1758,6 +1787,7 @@ export function InvoiceComposerSheet({
         open={costPickerOpen}
         onOpenChange={setCostPickerOpen}
         projectId={projectId}
+        costCodesEnabled={showCostCodeColumn}
         onConfirm={handleCostSelection}
       />
     </Sheet>

@@ -2,28 +2,24 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
-import type { LucideIcon } from "lucide-react"
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
-  BadgeDollarSign,
   Calendar as CalendarIcon,
-  CheckCircle2,
-  Clock3,
-  FileCheck2,
   FileText,
+  Loader2,
   LockKeyhole,
   MoreHorizontal,
   Plus,
   ReceiptText,
   Search,
   Trash2,
-  Wallet,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
 
-import type { Contract, DrawSchedule, ScheduleItem, CostCode } from "@/lib/types"
+import type { Contract, DrawSchedule, ScheduleItem, CostCode, Invoice, InvoiceView } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -31,19 +27,21 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter, SheetDescrip
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
+import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 
 import {
   createProjectDrawAction,
   deleteProjectDrawAction,
   generateInvoiceFromDrawAction,
+  listProjectDrawsAction,
   reorderProjectDrawsAction,
   updateProjectDrawAction,
 } from "@/app/(app)/projects/[id]/actions"
+import { getInvoiceDetailAction, manualResyncInvoiceAction } from "@/app/(app)/invoices/actions"
 
 const statusMap: Record<string, { label: string; tone: string }> = {
   pending: { label: "Pending", tone: "bg-amber-100 text-amber-700" },
@@ -82,6 +80,9 @@ export function DrawScheduleManager({
   scheduleItems,
   costCodes,
   compact = false,
+  onInvoiceGenerationStart,
+  onInvoiceGenerated,
+  onInvoiceGenerationFailed,
 }: {
   projectId: string
   initialDraws: DrawSchedule[]
@@ -90,12 +91,25 @@ export function DrawScheduleManager({
   scheduleItems?: ScheduleItem[]
   costCodes?: CostCode[]
   compact?: boolean
+  onInvoiceGenerationStart?: (draw: DrawSchedule) => void
+  onInvoiceGenerated?: (result: { invoice: Invoice; invoice_id: string; invoice_number: string; draw: DrawSchedule }) => void
+  onInvoiceGenerationFailed?: () => void
 }) {
   const [draws, setDraws] = useState<DrawSchedule[]>(initialDraws)
   const [saving, startSaving] = useTransition()
-  const [invoicingId, startInvoicing] = useTransition()
+  const [generatingInvoiceDrawId, setGeneratingInvoiceDrawId] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editing, setEditing] = useState<DrawSchedule | null>(null)
+  const [selectedDraw, setSelectedDraw] = useState<DrawSchedule | null>(null)
+  const [invoiceDetailOpen, setInvoiceDetailOpen] = useState(false)
+  const [linkedInvoiceLoading, setLinkedInvoiceLoading] = useState(false)
+  const [linkedInvoice, setLinkedInvoice] = useState<Invoice | null>(null)
+  const [linkedInvoiceLink, setLinkedInvoiceLink] = useState<string | undefined>()
+  const [linkedInvoiceViews, setLinkedInvoiceViews] = useState<InvoiceView[] | undefined>()
+  const [linkedInvoiceSyncHistory, setLinkedInvoiceSyncHistory] = useState<
+    Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
+  >()
+  const [invoiceResyncing, setInvoiceResyncing] = useState(false)
   const [search, setSearch] = useState("")
 
   const milestonesById = useMemo(() => {
@@ -121,27 +135,7 @@ export function DrawScheduleManager({
     return draw.amount_cents ?? 0
   }, [revisedContractCents])
 
-  const totals = useMemo(() => {
-    const total = draws.reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
-    const billed = draws
-      .filter((d) => d.status === "invoiced" || d.status === "partial" || d.status === "paid")
-      .reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
-    const collected = draws.filter((d) => d.status === "paid").reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
-    const pending = draws.filter((d) => d.status === "pending").reduce((sum, draw) => sum + effectiveAmountCents(draw), 0)
-    const open = billed - collected
-    return { total, billed, collected, pending, open }
-  }, [draws, effectiveAmountCents])
-
-  const billingProgress = totals.total > 0 ? Math.round((totals.billed / totals.total) * 100) : 0
-  const collectionProgress = totals.total > 0 ? Math.round((totals.collected / totals.total) * 100) : 0
-  const scheduledCoverage = revisedContractCents > 0 ? Math.round((totals.total / revisedContractCents) * 100) : 0
-  const overContract = revisedContractCents > 0 && totals.total > revisedContractCents
-  const unallocatedCents = revisedContractCents > 0 ? revisedContractCents - totals.total : 0
-  const varianceLabel = unallocatedCents === 0 ? "Balanced" : overContract ? "Over scheduled" : "Unscheduled"
   const nextActionDraw = draws.find((draw) => draw.status === "pending" && !draw.invoice_id)
-  const contractBasisLabel = revisedContractCents > 0
-    ? `${formatCurrency(contract?.total_cents ?? 0)} contract${approvedChangeOrdersTotalCents ? ` + ${formatCurrency(approvedChangeOrdersTotalCents)} approved COs` : ""}`
-    : "No active contract basis"
 
   function openCreate() {
     setEditing(null)
@@ -149,8 +143,62 @@ export function DrawScheduleManager({
   }
 
   function openEdit(draw: DrawSchedule) {
+    setSelectedDraw(null)
     setEditing(draw)
     setIsDialogOpen(true)
+  }
+
+  const loadLinkedInvoice = useCallback(async (invoiceId: string) => {
+    setLinkedInvoiceLoading(true)
+    try {
+      const result = await getInvoiceDetailAction(invoiceId)
+      setLinkedInvoice(result.invoice)
+      setLinkedInvoiceLink(result.link)
+      setLinkedInvoiceViews(result.views as InvoiceView[])
+      setLinkedInvoiceSyncHistory(result.syncHistory as any)
+      return result.invoice
+    } catch (err: any) {
+      toast.error("Could not load linked invoice", { description: err?.message ?? "Please try again." })
+      setLinkedInvoice(null)
+      setLinkedInvoiceLink(undefined)
+      setLinkedInvoiceViews(undefined)
+      setLinkedInvoiceSyncHistory(undefined)
+      return null
+    } finally {
+      setLinkedInvoiceLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!selectedDraw?.invoice_id) {
+      setLinkedInvoice(null)
+      setLinkedInvoiceLink(undefined)
+      setLinkedInvoiceViews(undefined)
+      setLinkedInvoiceSyncHistory(undefined)
+      return
+    }
+
+    void loadLinkedInvoice(selectedDraw.invoice_id)
+  }, [loadLinkedInvoice, selectedDraw?.invoice_id])
+
+  async function refreshDrawsAndLinkedInvoice(invoiceId?: string | null) {
+    const freshDraws = await listProjectDrawsAction(projectId)
+    setDraws(freshDraws)
+    setSelectedDraw((current) => {
+      if (!current) return current
+      return freshDraws.find((draw) => draw.id === current.id) ?? current
+    })
+    if (invoiceId) {
+      await loadLinkedInvoice(invoiceId)
+    }
+  }
+
+  async function openLinkedInvoiceDetail() {
+    if (!selectedDraw?.invoice_id) return
+    setInvoiceDetailOpen(true)
+    if (!linkedInvoice || linkedInvoice.id !== selectedDraw.invoice_id) {
+      await loadLinkedInvoice(selectedDraw.invoice_id)
+    }
   }
 
   async function handleSave(input: {
@@ -189,6 +237,7 @@ export function DrawScheduleManager({
         if (editing) {
           const updated = await updateProjectDrawAction(projectId, editing.id, payload)
           setDraws((prev) => prev.map((d) => (d.id === updated.id ? updated : d)).sort((a, b) => a.draw_number - b.draw_number))
+          setSelectedDraw((current) => (current?.id === updated.id ? updated : current))
           toast.success("Draw updated")
         } else {
           const created = await createProjectDrawAction(projectId, payload)
@@ -209,6 +258,7 @@ export function DrawScheduleManager({
       try {
         await deleteProjectDrawAction(projectId, draw.id)
         setDraws((prev) => prev.filter((d) => d.id !== draw.id))
+        setSelectedDraw((current) => (current?.id === draw.id ? null : current))
         toast.success("Draw deleted")
       } catch (err: any) {
         toast.error("Could not delete draw", { description: err?.message ?? "Please try again." })
@@ -237,16 +287,25 @@ export function DrawScheduleManager({
   }
 
   async function handleGenerateInvoice(draw: DrawSchedule) {
-    startInvoicing(async () => {
-      try {
-        const result = await generateInvoiceFromDrawAction(projectId, draw.id)
-        setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? result.draw : d)))
-        toast.success("Invoice created", { description: `Invoice #${result.invoice_number}` })
-        window.location.href = `/projects/${projectId}/invoices?open=${result.invoice_id}`
-      } catch (err: any) {
-        toast.error("Could not generate invoice", { description: err?.message ?? "Please try again." })
-      }
-    })
+    setGeneratingInvoiceDrawId(draw.id)
+    onInvoiceGenerationStart?.(draw)
+    try {
+      const result = await generateInvoiceFromDrawAction(projectId, draw.id)
+      setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? result.draw : d)))
+      setSelectedDraw(result.draw)
+      onInvoiceGenerated?.({
+        invoice: result.invoice as Invoice,
+        invoice_id: result.invoice_id,
+        invoice_number: result.invoice_number,
+        draw: result.draw,
+      })
+      toast.success("Invoice created", { description: `Invoice #${result.invoice_number}` })
+    } catch (err: any) {
+      onInvoiceGenerationFailed?.()
+      toast.error("Could not generate invoice", { description: err?.message ?? "Please try again." })
+    } finally {
+      setGeneratingInvoiceDrawId(null)
+    }
   }
 
   const filteredDraws = useMemo(() => {
@@ -255,87 +314,37 @@ export function DrawScheduleManager({
     return draws.filter((d) => d.title?.toLowerCase().includes(s) || d.description?.toLowerCase().includes(s))
   }, [draws, search])
 
+  function drawDueLabel(draw: DrawSchedule) {
+    const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
+    if (draw.due_trigger === "milestone") {
+      if (!milestone) return "Milestone"
+      const projectedDate = milestone.end_date ? format(new Date(milestone.end_date), "MMM d, yyyy") : ""
+      return `${milestone.name}${projectedDate ? ` · ${projectedDate}` : ""}`
+    }
+    if (draw.due_date) return format(new Date(draw.due_date), "MMM d, yyyy")
+    if ((draw.metadata as any)?.due_trigger_label) return (draw.metadata as any).due_trigger_label
+    return "No trigger"
+  }
+
+  function drawBasisLabel(draw: DrawSchedule) {
+    if (typeof draw.percent_of_contract === "number") {
+      return `${draw.percent_of_contract}%`
+    }
+    if (revisedContractCents > 0) {
+      const amount = effectiveAmountCents(draw)
+      return `${Math.round((amount / revisedContractCents) * 1000) / 10}%`
+    }
+    return "Fixed"
+  }
+
   return (
     <div className="w-full bg-background">
-      <div className="border-b bg-muted/20 px-4 py-5 sm:px-6 lg:px-8">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-semibold tracking-tight">Draw Schedule</h2>
-              <Badge variant="outline" className="rounded-sm bg-background text-[11px]">
-                {draws.length} draws
-              </Badge>
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "rounded-sm text-[11px]",
-                  unallocatedCents === 0
-                    ? "bg-emerald-100 text-emerald-700"
-                    : overContract
-                      ? "bg-destructive/10 text-destructive"
-                      : "bg-amber-100 text-amber-700",
-                )}
-              >
-                {varianceLabel}
-              </Badge>
-            </div>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Built from the revised contract value so invoicing, collection, and retainage stay tied to one project billing basis.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {nextActionDraw ? (
-              <Button variant="outline" size="sm" onClick={() => handleGenerateInvoice(nextActionDraw)} disabled={saving || invoicingId}>
-                <ReceiptText className="mr-2 h-4 w-4" />
-                Invoice next draw
-              </Button>
-            ) : null}
-            <Button onClick={openCreate} size="sm">
-              <Plus className="mr-2 h-4 w-4" />
-              Add draw
-            </Button>
-          </div>
-        </div>
-
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <DrawMetric icon={BadgeDollarSign} label="Revised contract" value={formatCurrency(revisedContractCents)} detail={contractBasisLabel} />
-          <DrawMetric
-            icon={FileCheck2}
-            label="Scheduled"
-            value={formatCurrency(totals.total)}
-            detail={`${scheduledCoverage}% of revised contract`}
-            tone={overContract ? "danger" : unallocatedCents > 0 ? "warn" : "good"}
-          />
-          <DrawMetric icon={ReceiptText} label="Billed" value={formatCurrency(totals.billed)} detail={`${billingProgress}% of schedule`} />
-          <DrawMetric icon={Wallet} label="Collected" value={formatCurrency(totals.collected)} detail={`${collectionProgress}% collected`} tone="good" />
-        </div>
-
-        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="rounded-md border bg-background p-3">
-            <div className="mb-2 flex items-center justify-between text-xs">
-              <span className="font-medium text-muted-foreground">Billing progress</span>
-              <span className="font-semibold tabular-nums">{formatCurrency(totals.billed)} / {formatCurrency(totals.total)}</span>
-            </div>
-            <Progress value={billingProgress} className="h-2" />
-          </div>
-          <div className="rounded-md border bg-background p-3">
-            <div className="mb-2 flex items-center justify-between text-xs">
-              <span className="font-medium text-muted-foreground">{varianceLabel}</span>
-              <span className={cn("font-semibold tabular-nums", overContract ? "text-destructive" : unallocatedCents > 0 ? "text-amber-700" : "text-emerald-700")}>
-                {formatCurrency(Math.abs(unallocatedCents))}
-              </span>
-            </div>
-            <Progress value={Math.min(100, scheduledCoverage)} className="h-2" />
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-3 border-b px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
-        <div className="relative w-full lg:max-w-md">
+      <div className="flex flex-col gap-3 border-b bg-background px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+        <div className="relative w-full lg:max-w-lg">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search draws"
-            className="h-9 rounded-md border-muted-foreground/20 bg-background pl-9 pr-9"
+            className="h-9 rounded-md border-muted-foreground/20 bg-muted/20 pl-9 pr-9"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -345,16 +354,23 @@ export function DrawScheduleManager({
             </Button>
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-          <StatusPill icon={Clock3} label={`${formatCurrency(totals.pending)} pending`} />
-          <StatusPill icon={ReceiptText} label={`${formatCurrency(totals.open)} open AR`} />
-          <StatusPill icon={CheckCircle2} label={`${formatCurrency(totals.collected)} collected`} />
+        <div className="flex flex-wrap items-center gap-2">
+          {nextActionDraw ? (
+            <Button variant="outline" size="sm" onClick={() => handleGenerateInvoice(nextActionDraw)} disabled={saving || Boolean(generatingInvoiceDrawId)}>
+              {generatingInvoiceDrawId === nextActionDraw.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
+              {generatingInvoiceDrawId === nextActionDraw.id ? "Creating invoice" : "Invoice next draw"}
+            </Button>
+          ) : null}
+          <Button onClick={openCreate} size="sm">
+            <Plus className="mr-2 h-4 w-4" />
+            Add draw
+          </Button>
         </div>
       </div>
 
-      <div className="px-4 py-4 sm:px-6 lg:px-8">
+      <div>
         {filteredDraws.length === 0 ? (
-          <div className="flex min-h-48 flex-col items-center justify-center rounded-md border border-dashed bg-muted/10 text-center">
+          <div className="mx-4 my-4 flex min-h-48 flex-col items-center justify-center rounded-md border border-dashed bg-muted/10 text-center sm:mx-6 lg:mx-8">
             <p className="text-sm font-medium">{search ? "No draws match your search." : "No draws scheduled yet."}</p>
             <p className="mt-1 text-xs text-muted-foreground">Create a contract-based draw schedule to start controlling project cash-in.</p>
             {!search ? (
@@ -365,57 +381,43 @@ export function DrawScheduleManager({
             ) : null}
           </div>
         ) : (
-          <div className="overflow-hidden rounded-md border bg-background">
-            <div className="hidden grid-cols-[72px_minmax(240px,1.3fr)_minmax(160px,.8fr)_minmax(160px,.8fr)_140px_112px] border-b bg-muted/40 px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground lg:grid">
+          <div className="bg-background">
+            <div className="hidden grid-cols-[72px_minmax(180px,1fr)_minmax(220px,1.15fr)_minmax(150px,.75fr)_112px_120px_132px] border-b bg-muted/30 px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground sm:px-6 lg:grid lg:px-8">
               <div>Draw</div>
               <div>Scope</div>
+              <div>Description</div>
               <div>Trigger</div>
               <div>Status</div>
               <div className="text-right">Amount</div>
-              <div className="text-right">Actions</div>
+              <div className="text-right" />
             </div>
 
             {filteredDraws.map((draw, index) => {
               const status = statusMap[draw.status] ?? statusMap.pending
               const amount = effectiveAmountCents(draw)
-              const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
-              const allocations = ((draw.metadata as any)?.allocations ?? []) as { cost_code_id: string; amount_cents: number; description?: string }[]
-
-              let dueLabel = "No trigger"
-              if (draw.due_trigger === "milestone") {
-                if (milestone) {
-                  const projectedDate = milestone.end_date ? format(new Date(milestone.end_date), "MMM d, yyyy") : ""
-                  dueLabel = `${milestone.name}${projectedDate ? ` · ${projectedDate}` : ""}`
-                } else {
-                  dueLabel = "Milestone"
-                }
-              } else if (draw.due_date) {
-                dueLabel = format(new Date(draw.due_date), "MMM d, yyyy")
-              } else if ((draw.metadata as any)?.due_trigger_label) {
-                dueLabel = (draw.metadata as any).due_trigger_label
-              }
+              const dueLabel = drawDueLabel(draw)
 
               const hasInvoice = !!draw.invoice_id
               const canInvoice = draw.status === "pending" && !hasInvoice
               const canDelete = draw.status === "pending" && !hasInvoice
               const locked = hasInvoice || draw.status !== "pending"
-              const readinessLabel = draw.status === "paid"
-                ? "Collected"
-                : draw.status === "partial"
-                  ? "Partially collected"
-                  : draw.status === "invoiced"
-                    ? "Invoice out"
-                    : canInvoice
-                      ? "Ready to invoice"
-                      : "Pending"
 
               return (
                 <div
                   key={draw.id}
-                  className="grid gap-3 border-b px-4 py-4 last:border-b-0 lg:grid-cols-[72px_minmax(240px,1.3fr)_minmax(160px,.8fr)_minmax(160px,.8fr)_140px_112px] lg:items-center"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedDraw(draw)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault()
+                      setSelectedDraw(draw)
+                    }
+                  }}
+                  className="grid cursor-pointer gap-2 border-b px-4 py-3 transition-colors last:border-b-0 hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-6 lg:grid-cols-[72px_minmax(180px,1fr)_minmax(220px,1.15fr)_minmax(150px,.75fr)_112px_120px_132px] lg:items-center lg:px-8"
                 >
                   <div className="flex items-center gap-3 lg:block">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-md border bg-muted/40 text-sm font-semibold tabular-nums">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md border bg-muted/40 text-sm font-semibold tabular-nums">
                       {draw.draw_number}
                     </div>
                     <Badge className={cn("lg:hidden", status.tone)} variant="secondary">
@@ -433,53 +435,34 @@ export function DrawScheduleManager({
                         </span>
                       ) : null}
                     </div>
-                    {draw.description ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{draw.description}</p> : null}
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {typeof draw.percent_of_contract === "number" ? (
-                        <Badge variant="outline" className="rounded-sm text-[11px]">
-                          {draw.percent_of_contract}% of revised contract
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="rounded-sm text-[11px]">Fixed amount</Badge>
-                      )}
-                      {allocations.length > 0 ? (
-                        <Badge variant="outline" className="rounded-sm text-[11px]">
-                          {allocations.length} cost codes
-                        </Badge>
-                      ) : null}
-                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground lg:hidden">{draw.description || "No description"}</p>
+                  </div>
+
+                  <div className="hidden min-w-0 text-xs text-muted-foreground lg:block">
+                    <p className="line-clamp-2">{draw.description || "No description"}</p>
                   </div>
 
                   <div className="text-xs">
                     <p className="font-medium text-foreground">{dueLabel}</p>
-                    <p className="mt-1 text-muted-foreground capitalize">{draw.due_trigger ?? "manual"} basis</p>
+                    <p className="mt-1 text-muted-foreground capitalize">{draw.due_trigger ?? "manual"}</p>
                   </div>
 
-                  <div className="space-y-1">
-                    <Badge className={cn("hidden w-fit rounded-sm lg:inline-flex", status.tone)} variant="secondary">
+                  <div>
+                    <Badge className={cn("w-fit rounded-sm", status.tone)} variant="secondary">
                       {status.label}
                     </Badge>
-                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      {draw.status === "paid" ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : hasInvoice ? <ReceiptText className="h-3.5 w-3.5 text-blue-600" /> : <Clock3 className="h-3.5 w-3.5" />}
-                      {readinessLabel}
-                    </p>
                   </div>
 
                   <div className="text-left lg:text-right">
-                    <p className="text-base font-semibold tabular-nums">{formatCurrency(amount)}</p>
-                    {revisedContractCents > 0 ? (
-                      <p className="text-xs text-muted-foreground">{Math.round((amount / revisedContractCents) * 1000) / 10}% basis</p>
-                    ) : null}
+                    <p className="text-sm font-semibold tabular-nums">{formatCurrency(amount)}</p>
+                    <p className="text-xs text-muted-foreground">{drawBasisLabel(draw)}</p>
                   </div>
 
-                  <div className="flex items-center justify-start gap-2 lg:justify-end">
+                  <div className="flex items-center justify-start gap-2 lg:justify-end" onClick={(event) => event.stopPropagation()}>
                     {canInvoice ? (
-                      <Button size="sm" className="h-8" onClick={() => handleGenerateInvoice(draw)} disabled={saving || invoicingId}>
-                        Invoice
-                      </Button>
-                    ) : hasInvoice ? (
-                      <Button variant="outline" size="sm" className="h-8" asChild>
-                        <a href={`/projects/${projectId}/invoices?open=${draw.invoice_id}`}>Open</a>
+                      <Button size="sm" className="h-8" onClick={() => handleGenerateInvoice(draw)} disabled={saving || Boolean(generatingInvoiceDrawId)}>
+                        {generatingInvoiceDrawId === draw.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        {generatingInvoiceDrawId === draw.id ? "Creating" : "Invoice"}
                       </Button>
                     ) : null}
                     <DropdownMenu>
@@ -490,7 +473,7 @@ export function DrawScheduleManager({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
-                        <DropdownMenuItem onClick={() => openEdit(draw)} disabled={saving || invoicingId || locked}>
+                        <DropdownMenuItem onClick={() => openEdit(draw)} disabled={saving || Boolean(generatingInvoiceDrawId) || locked}>
                           <FileText className="mr-2 h-4 w-4" />
                           Edit draw
                         </DropdownMenuItem>
@@ -503,18 +486,10 @@ export function DrawScheduleManager({
                           Move down
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => handleGenerateInvoice(draw)} disabled={saving || invoicingId || !canInvoice}>
-                          <ReceiptText className="mr-2 h-4 w-4" />
-                          Generate invoice
+                        <DropdownMenuItem onClick={() => handleGenerateInvoice(draw)} disabled={saving || Boolean(generatingInvoiceDrawId) || !canInvoice}>
+                          {generatingInvoiceDrawId === draw.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
+                          {generatingInvoiceDrawId === draw.id ? "Creating invoice" : "Generate invoice"}
                         </DropdownMenuItem>
-                        {hasInvoice ? (
-                          <DropdownMenuItem asChild>
-                            <a href={`/projects/${projectId}/invoices?open=${draw.invoice_id}`}>
-                              <ExternalLink className="mr-2 h-4 w-4" />
-                              Open invoice
-                            </a>
-                          </DropdownMenuItem>
-                        ) : null}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDelete(draw)} disabled={saving || !canDelete}>
                           <Trash2 className="mr-2 h-4 w-4" />
@@ -529,29 +504,60 @@ export function DrawScheduleManager({
           </div>
         )}
 
-        {!search && revisedContractCents > 0 && unallocatedCents !== 0 ? (
-          <div
-            className={cn(
-              "mt-4 flex flex-col gap-3 rounded-md border px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
-              overContract ? "border-destructive/30 bg-destructive/5" : "border-amber-200 bg-amber-50 text-amber-950",
-            )}
-          >
-            <div>
-              <p className="text-sm font-semibold">{varianceLabel}: {formatCurrency(Math.abs(unallocatedCents))}</p>
-              <p className="mt-1 text-xs opacity-80">
-                {overContract
-                  ? "Scheduled draws exceed the revised contract basis. Adjust percentages or approved change order handling before invoicing."
-                  : "There is contract value not assigned to a draw yet."}
-              </p>
-            </div>
-            {!overContract ? (
-              <Button variant="outline" size="sm" onClick={openCreate} disabled={saving} className="bg-background">
-                Add balancing draw
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
       </div>
+
+      <DrawDetailSheet
+        draw={selectedDraw}
+        status={selectedDraw ? statusMap[selectedDraw.status] ?? statusMap.pending : statusMap.pending}
+        amount={selectedDraw ? effectiveAmountCents(selectedDraw) : 0}
+        basis={selectedDraw ? drawBasisLabel(selectedDraw) : ""}
+        dueLabel={selectedDraw ? drawDueLabel(selectedDraw) : ""}
+        costCodes={costCodes ?? []}
+        linkedInvoice={linkedInvoice}
+        linkedInvoiceLoading={linkedInvoiceLoading}
+        saving={saving || Boolean(generatingInvoiceDrawId)}
+        generatingInvoice={selectedDraw ? generatingInvoiceDrawId === selectedDraw.id : false}
+        onOpenChange={(open) => {
+          if (!open) setSelectedDraw(null)
+        }}
+        onEdit={(draw) => openEdit(draw)}
+        onInvoice={(draw) => handleGenerateInvoice(draw)}
+        onDelete={(draw) => handleDelete(draw)}
+        onOpenInvoice={openLinkedInvoiceDetail}
+      />
+
+      <InvoiceDetailSheet
+        open={invoiceDetailOpen}
+        onOpenChange={setInvoiceDetailOpen}
+        invoice={linkedInvoice}
+        link={linkedInvoiceLink}
+        views={linkedInvoiceViews}
+        syncHistory={linkedInvoiceSyncHistory}
+        loading={linkedInvoiceLoading}
+        manualResyncing={invoiceResyncing}
+        onCopyLink={async () => {
+          if (linkedInvoiceLink && typeof navigator !== "undefined" && navigator.clipboard) {
+            await navigator.clipboard.writeText(linkedInvoiceLink)
+            toast.success("Link copied")
+          }
+        }}
+        onManualResync={async () => {
+          if (!linkedInvoice) return
+          setInvoiceResyncing(true)
+          try {
+            await manualResyncInvoiceAction(linkedInvoice.id)
+            toast.success("Resync enqueued")
+            await loadLinkedInvoice(linkedInvoice.id)
+          } catch (err: any) {
+            toast.error("Failed to resync", { description: err?.message ?? "Please try again." })
+          } finally {
+            setInvoiceResyncing(false)
+          }
+        }}
+        onPaymentRecorded={async () => {
+          await refreshDrawsAndLinkedInvoice(linkedInvoice?.id)
+        }}
+      />
 
       <DrawDialog
         open={isDialogOpen}
@@ -570,48 +576,186 @@ export function DrawScheduleManager({
   )
 }
 
-function DrawMetric({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  tone = "neutral",
+function DrawDetailSheet({
+  draw,
+  status,
+  amount,
+  basis,
+  dueLabel,
+  costCodes,
+  linkedInvoice,
+  linkedInvoiceLoading,
+  saving,
+  generatingInvoice,
+  onOpenChange,
+  onEdit,
+  onInvoice,
+  onDelete,
+  onOpenInvoice,
 }: {
-  icon: LucideIcon
-  label: string
-  value: string
-  detail: string
-  tone?: "neutral" | "good" | "warn" | "danger"
+  draw: DrawSchedule | null
+  status: { label: string; tone: string }
+  amount: number
+  basis: string
+  dueLabel: string
+  costCodes: CostCode[]
+  linkedInvoice?: Invoice | null
+  linkedInvoiceLoading?: boolean
+  saving: boolean
+  generatingInvoice: boolean
+  onOpenChange: (open: boolean) => void
+  onEdit: (draw: DrawSchedule) => void
+  onInvoice: (draw: DrawSchedule) => void
+  onDelete: (draw: DrawSchedule) => void
+  onOpenInvoice: () => void
 }) {
+  const allocations = ((draw?.metadata as any)?.allocations ?? []) as { cost_code_id: string; amount_cents: number; description?: string }[]
+  const costCodeById = useMemo(() => new Map(costCodes.map((code) => [code.id, code])), [costCodes])
+  const hasInvoice = Boolean(draw?.invoice_id)
+  const canInvoice = draw?.status === "pending" && !hasInvoice
+  const canDelete = draw?.status === "pending" && !hasInvoice
+  const locked = Boolean(draw && (hasInvoice || draw.status !== "pending"))
+  const linkedInvoiceTotal = linkedInvoice?.total_cents ?? linkedInvoice?.totals?.total_cents ?? 0
+  const linkedInvoiceBalance =
+    linkedInvoice?.balance_due_cents ?? linkedInvoice?.totals?.balance_due_cents ?? linkedInvoiceTotal
+
   return (
-    <div
-      className={cn(
-        "rounded-md border bg-background p-4",
-        tone === "good" && "border-emerald-200 bg-emerald-50/60",
-        tone === "warn" && "border-amber-200 bg-amber-50/70",
-        tone === "danger" && "border-destructive/30 bg-destructive/5",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium text-muted-foreground">{label}</p>
-          <p className="mt-1 text-xl font-semibold tracking-tight tabular-nums">{value}</p>
-        </div>
-        <div className="flex h-9 w-9 items-center justify-center rounded-md border bg-background/80">
-          <Icon className="h-4 w-4 text-muted-foreground" />
-        </div>
-      </div>
-      <p className="mt-3 line-clamp-2 text-xs text-muted-foreground">{detail}</p>
-    </div>
+    <Sheet open={!!draw} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="flex w-full flex-col overflow-hidden p-0 shadow-2xl sm:max-w-xl">
+        {draw ? (
+          <>
+            <SheetHeader className="border-b bg-muted/20 px-6 py-5 text-left">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-md border bg-background font-semibold tabular-nums">
+                      {draw.draw_number}
+                    </span>
+                    <Badge className={cn("rounded-sm", status.tone)} variant="secondary">
+                      {status.label}
+                    </Badge>
+                    {locked ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                        <LockKeyhole className="h-3 w-3" />
+                        Locked
+                      </span>
+                    ) : null}
+                  </div>
+                  <SheetTitle className="truncate text-xl">{draw.title}</SheetTitle>
+                  <SheetDescription className="mt-1 line-clamp-2">
+                    {draw.description || "No description provided."}
+                  </SheetDescription>
+                </div>
+              </div>
+            </SheetHeader>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid grid-cols-2 gap-3">
+                <DetailStat label="Amount" value={formatCurrency(amount)} />
+                <DetailStat label="Basis" value={basis} />
+                <DetailStat label="Trigger" value={dueLabel} />
+                <DetailStat label="Mode" value={String(draw.due_trigger ?? "manual").replaceAll("_", " ")} />
+              </div>
+
+              <div className="mt-6 border-t pt-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">Cost code allocation</h3>
+                  <span className="text-xs text-muted-foreground">{allocations.length || "No"} line{allocations.length === 1 ? "" : "s"}</span>
+                </div>
+                {allocations.length > 0 ? (
+                  <div className="overflow-hidden rounded-md border">
+                    {allocations.map((allocation, index) => {
+                      const code = costCodeById.get(allocation.cost_code_id)
+                      return (
+                        <div key={`${allocation.cost_code_id}-${index}`} className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b px-3 py-3 last:border-b-0">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">
+                              {code ? `${code.code} ${code.name ?? ""}`.trim() : "Uncoded"}
+                            </p>
+                            {allocation.description ? (
+                              <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{allocation.description}</p>
+                            ) : null}
+                          </div>
+                          <p className="text-right text-sm font-semibold tabular-nums">{formatCurrency(allocation.amount_cents)}</p>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-sm text-muted-foreground">
+                    This draw is not split across cost codes.
+                  </div>
+                )}
+              </div>
+
+              {hasInvoice ? (
+                <div className="mt-6 rounded-md border bg-muted/10 px-4 py-3">
+                  {linkedInvoiceLoading ? (
+                    <div className="space-y-2">
+                      <div className="h-4 w-28 animate-pulse rounded bg-muted" />
+                      <div className="h-3 w-44 animate-pulse rounded bg-muted" />
+                    </div>
+                  ) : linkedInvoice ? (
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <ReceiptText className="h-4 w-4 text-muted-foreground" />
+                          <span className="truncate">Invoice {linkedInvoice.invoice_number}</span>
+                          <Badge variant="secondary" className="rounded-sm capitalize">
+                            {linkedInvoice.status}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {formatCurrency(linkedInvoiceTotal)} total · {formatCurrency(linkedInvoiceBalance)} balance
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" onClick={onOpenInvoice}>
+                        View invoice
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <ReceiptText className="h-4 w-4 text-muted-foreground" />
+                          Invoice linked
+                        </div>
+                        <p className="mt-1 break-all text-xs text-muted-foreground">Invoice ID: {draw.invoice_id}</p>
+                      </div>
+                      <Button size="sm" variant="outline" onClick={onOpenInvoice}>
+                        Open
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <SheetFooter className="grid grid-cols-2 gap-3 border-t bg-muted/10 p-6 sm:grid-cols-3">
+              <Button variant="outline" onClick={() => onEdit(draw)} disabled={saving || locked}>
+                Edit
+              </Button>
+              <Button onClick={() => onInvoice(draw)} disabled={saving || !canInvoice}>
+                {generatingInvoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {generatingInvoice ? "Creating" : "Invoice"}
+              </Button>
+              <Button variant="destructive" onClick={() => onDelete(draw)} disabled={saving || !canDelete}>
+                Delete
+              </Button>
+            </SheetFooter>
+          </>
+        ) : null}
+      </SheetContent>
+    </Sheet>
   )
 }
 
-function StatusPill({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+function DetailStat({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 font-medium">
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </span>
+    <div className="rounded-md border bg-background px-3 py-2.5">
+      <p className="text-[11px] font-medium uppercase text-muted-foreground">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold capitalize tabular-nums">{value}</p>
+    </div>
   )
 }
 
@@ -1022,47 +1166,5 @@ function DrawDialog({
         </SheetFooter>
       </SheetContent>
     </Sheet>
-  )
-}
-
-function AlertCircle({ className }: { className?: string }) {
-  return (
-    <svg 
-      xmlns="http://www.w3.org/2000/svg" 
-      width="24" 
-      height="24" 
-      viewBox="0 0 24 24" 
-      fill="none" 
-      stroke="currentColor" 
-      strokeWidth="2" 
-      strokeLinecap="round" 
-      strokeLinejoin="round" 
-      className={className}
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="8" x2="12" y2="12" />
-      <line x1="12" y1="16" x2="12.01" y2="16" />
-    </svg>
-  )
-}
-
-function ExternalLink({ className }: { className?: string }) {
-  return (
-    <svg 
-      xmlns="http://www.w3.org/2000/svg" 
-      width="24" 
-      height="24" 
-      viewBox="0 0 24 24" 
-      fill="none" 
-      stroke="currentColor" 
-      strokeWidth="2" 
-      strokeLinecap="round" 
-      strokeLinejoin="round" 
-      className={className}
-    >
-      <path d="M15 3h6v6" />
-      <path d="M10 14 21 3" />
-      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-    </svg>
   )
 }

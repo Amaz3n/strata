@@ -30,6 +30,10 @@ function mapCompany(row: any): Company {
     default_payment_terms: row.default_payment_terms ?? metadata.default_payment_terms ?? undefined,
     internal_notes: row.internal_notes ?? metadata.internal_notes ?? undefined,
     notes: row.notes ?? metadata.notes ?? undefined,
+    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
+    qbo_vendor_synced_at: row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
+    qbo_vendor_sync_status: row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
     contact_count: contactCount,
@@ -95,6 +99,7 @@ export async function listCompaniesWithClient(
       `
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
+      qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
       metadata, created_at, updated_at,
       contact_company_links(count)
     `,
@@ -135,6 +140,7 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
       `
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
+      qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
       metadata, created_at, updated_at,
       contact_company_links (
         id, relationship, created_at,
@@ -204,6 +210,10 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     default_payment_terms: input.default_payment_terms ?? null,
     internal_notes: input.internal_notes ?? null,
     notes: input.notes ?? null,
+    qbo_vendor_id: input.qbo_vendor_id ?? null,
+    qbo_vendor_name: input.qbo_vendor_name ?? null,
+    qbo_vendor_synced_at: input.qbo_vendor_synced_at ?? null,
+    qbo_vendor_sync_status: input.qbo_vendor_sync_status ?? (input.qbo_vendor_id ? "linked" : null),
     metadata: {
       trade: input.trade,
       license_number: input.license_number,
@@ -213,6 +223,10 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
       default_payment_terms: input.default_payment_terms,
       internal_notes: input.internal_notes,
       notes: input.notes,
+      qbo_vendor_id: input.qbo_vendor_id,
+      qbo_vendor_name: input.qbo_vendor_name,
+      qbo_vendor_synced_at: input.qbo_vendor_synced_at,
+      qbo_vendor_sync_status: input.qbo_vendor_sync_status ?? (input.qbo_vendor_id ? "linked" : undefined),
     },
   }
 }
@@ -226,7 +240,7 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     .from("companies")
     .insert(buildCompanyInsert(parsed, resolvedOrgId))
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .single()
 
@@ -291,7 +305,7 @@ export async function updateCompany({
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
-    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at")
+    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -310,6 +324,10 @@ export async function updateCompany({
     default_payment_terms: parsed.default_payment_terms ?? existing.metadata?.default_payment_terms,
     internal_notes: parsed.internal_notes ?? existing.metadata?.internal_notes,
     notes: parsed.notes ?? existing.metadata?.notes,
+    qbo_vendor_id: parsed.qbo_vendor_id ?? existing.metadata?.qbo_vendor_id,
+    qbo_vendor_name: parsed.qbo_vendor_name ?? existing.metadata?.qbo_vendor_name,
+    qbo_vendor_synced_at: parsed.qbo_vendor_synced_at ?? existing.metadata?.qbo_vendor_synced_at,
+    qbo_vendor_sync_status: parsed.qbo_vendor_sync_status ?? existing.metadata?.qbo_vendor_sync_status,
   }
 
   if (typeof parsed.prequalified === "boolean" && parsed.prequalified && !existing.metadata?.prequalified && !parsed.prequalified_at) {
@@ -332,12 +350,16 @@ export async function updateCompany({
       default_payment_terms: parsed.default_payment_terms ?? existing.default_payment_terms,
       internal_notes: parsed.internal_notes ?? existing.internal_notes,
       notes: parsed.notes ?? existing.notes,
+      qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id,
+      qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name,
+      qbo_vendor_synced_at: parsed.qbo_vendor_synced_at ?? existing.qbo_vendor_synced_at,
+      qbo_vendor_sync_status: parsed.qbo_vendor_sync_status ?? existing.qbo_vendor_sync_status,
       metadata,
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .maybeSingle()
 

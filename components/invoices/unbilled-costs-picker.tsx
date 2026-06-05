@@ -44,10 +44,12 @@ type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
   projectId: string | undefined
+  costCodesEnabled?: boolean
   onConfirm: (selection: CostSelection) => Promise<void> | void
 }
 
-const COLS = "grid-cols-[28px_92px_88px_minmax(0,1fr)_96px_96px_104px]"
+const COLS_WITH_CODES = "grid-cols-[28px_92px_88px_minmax(0,1fr)_96px_96px_104px]"
+const COLS_WITHOUT_CODES = "grid-cols-[28px_92px_minmax(0,1fr)_96px_96px_104px]"
 
 function formatMoney(cents: number) {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
@@ -68,14 +70,18 @@ function sourceLabel(sourceType: string) {
   }
 }
 
-export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }: Props) {
+export function UnbilledCostsPicker({ open, onOpenChange, projectId, costCodesEnabled = true, onConfirm }: Props) {
   const [costs, setCosts] = useState<UnbilledCost[]>([])
   const [loading, setLoading] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [groupBy, setGroupBy] = useState<"cost_code" | "detail">("cost_code")
+  const [groupBy, setGroupBy] = useState<"cost_code" | "detail">(costCodesEnabled ? "cost_code" : "detail")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
+
+  useEffect(() => {
+    if (!costCodesEnabled) setGroupBy("detail")
+  }, [costCodesEnabled])
 
   useEffect(() => {
     if (!open || !projectId) return
@@ -157,7 +163,7 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }
       const today = format(new Date(), "yyyy-MM-dd")
       await onConfirm({
         billableCostIds: [...selectedIds],
-        groupBy,
+        groupBy: costCodesEnabled ? groupBy : "detail",
         dateRange: { from: dateFrom || "1970-01-01", to: dateTo || today },
       })
       onOpenChange(false)
@@ -196,7 +202,7 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }
               className="h-8 w-[140px] text-sm"
             />
           </div>
-          <div className="ml-auto inline-flex border border-input">
+          {costCodesEnabled ? <div className="ml-auto inline-flex border border-input">
             <button
               type="button"
               onClick={() => setGroupBy("cost_code")}
@@ -217,14 +223,14 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }
             >
               Detailed
             </button>
-          </div>
+          </div> : null}
         </div>
 
         {/* Column headers */}
         <div
           className={cn(
             "grid items-center gap-x-2 border-b bg-muted/30 px-5 py-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70",
-            COLS,
+            costCodesEnabled ? COLS_WITH_CODES : COLS_WITHOUT_CODES,
           )}
         >
           <Checkbox
@@ -235,7 +241,7 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }
             className="size-4 rounded-[2px]"
           />
           <span>Date</span>
-          <span>Cost code</span>
+          {costCodesEnabled ? <span>Cost code</span> : null}
           <span>Description</span>
           <span className="text-right">Cost</span>
           <span className="text-right">Markup</span>
@@ -262,7 +268,7 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }
                     key={cost.id}
                     className={cn(
                       "grid cursor-pointer items-center gap-x-2 px-5 py-2 text-sm transition-colors hover:bg-muted/30",
-                      COLS,
+                      costCodesEnabled ? COLS_WITH_CODES : COLS_WITHOUT_CODES,
                       checked && "bg-muted/40",
                     )}
                   >
@@ -275,7 +281,7 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, onConfirm }
                     <span className="tabular-nums text-muted-foreground">
                       {cost.occurredOn ? format(new Date(cost.occurredOn), "MMM d") : "—"}
                     </span>
-                    <span className="truncate text-muted-foreground">{cost.costCode ?? "—"}</span>
+                    {costCodesEnabled ? <span className="truncate text-muted-foreground">{cost.costCode ?? "—"}</span> : null}
                     <span className="flex min-w-0 items-center gap-2">
                       <span className="truncate">{cost.description || sourceLabel(cost.sourceType)}</span>
                       <span className="shrink-0 rounded-none border border-border/60 px-1 text-[9px] uppercase tracking-wide text-muted-foreground/70">

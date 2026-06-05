@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { format } from "date-fns"
+import { formatLocalDate } from "@/lib/utils"
 import { Package } from "lucide-react"
 import type { Submittal } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -77,7 +78,7 @@ export function SubSubmittalsTab({ submittals, token }: SubSubmittalsTabProps) {
               <div className="flex items-center justify-between">
                 {sub.due_date && (
                   <p className="text-xs text-muted-foreground">
-                    Due {format(new Date(sub.due_date), "MMM d, yyyy")}
+                    Due {formatLocalDate(sub.due_date, "MMM d, yyyy")}
                   </p>
                 )}
                 <Button

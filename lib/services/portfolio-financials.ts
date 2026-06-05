@@ -6,6 +6,11 @@ import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 import type { ComplianceStatusSummary } from "@/lib/types"
 import type { AgingBucket, PortfolioFinancialControlData, PortfolioFinancialRow } from "@/lib/financials/portfolio-control"
+import {
+  qboSyncAttentionReason,
+  qboSyncStatusNeedsAttention,
+  resolveLocalFinancialTruthAmount,
+} from "@/lib/financials/portfolio-control"
 
 function emptyAging(): Record<AgingBucket, number> {
   return {
@@ -105,6 +110,24 @@ export async function getPortfolioFinancialControlData(): Promise<PortfolioFinan
   if (qboRecordsResult.error) throw new Error(`Failed to load QBO exceptions: ${qboRecordsResult.error.message}`)
 
   const vendorBills = vendorBillsResult.data ?? []
+  const readyCostProjectIds = Array.from(
+    new Set((readyCostsResult.data ?? []).map((cost: any) => cost.project_id).filter(Boolean)),
+  ) as string[]
+  const { data: financialSettings, error: financialSettingsError } =
+    readyCostProjectIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("project_financial_settings")
+          .select("project_id, cost_codes_enabled")
+          .eq("org_id", orgId)
+          .in("project_id", readyCostProjectIds)
+
+  if (financialSettingsError) {
+    throw new Error(`Failed to load project financial settings: ${financialSettingsError.message}`)
+  }
+  const costCodesEnabledByProjectId = new Map(
+    (financialSettings ?? []).map((row: any) => [row.project_id, row.cost_codes_enabled !== false]),
+  )
   const companyIds = Array.from(
     new Set(
       vendorBills
@@ -235,6 +258,7 @@ export async function getPortfolioFinancialControlData(): Promise<PortfolioFinan
   }
 
   for (const cost of readyCostsResult.data ?? []) {
+    if (costCodesEnabledByProjectId.get((cost as any).project_id) === false) continue
     if ((cost as any).cost_code_id) continue
     blockedRows.push({
       id: `cost-${(cost as any).id}`,
@@ -252,7 +276,7 @@ export async function getPortfolioFinancialControlData(): Promise<PortfolioFinan
   }
 
   const invoiceQboRows = (invoicesResult.data ?? [])
-    .filter((invoice: any) => ["error", "pending"].includes(invoice.qbo_sync_status))
+    .filter((invoice: any) => qboSyncStatusNeedsAttention(invoice.qbo_sync_status))
     .map((invoice: any): PortfolioFinancialRow => ({
       id: `invoice-${invoice.id}`,
       kind: "qbo",
@@ -261,10 +285,10 @@ export async function getPortfolioFinancialControlData(): Promise<PortfolioFinan
       counterparty: invoice.metadata?.customer_name ?? "Client",
       reference: invoice.invoice_number ? `Invoice ${invoice.invoice_number}` : invoice.title ?? "Invoice",
       status: invoice.qbo_sync_status,
-      amount_cents: invoice.balance_due_cents ?? invoice.total_cents ?? 0,
+      amount_cents: resolveLocalFinancialTruthAmount(invoice),
       due_date: invoice.due_date,
       age_days: null,
-      reason: invoice.qbo_sync_status === "error" ? "Invoice sync failed" : "Invoice sync pending",
+      reason: qboSyncAttentionReason(invoice.qbo_sync_status, "Invoice"),
       href: projectFinancialHref(invoice.project_id, `/receivables?invoice=${invoice.id}`),
     }))
 

@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
 
 import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/types"
+import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
   createInvoiceAction,
@@ -18,6 +19,10 @@ import {
   updateInvoiceAction,
   voidInvoiceAction,
 } from "@/app/(app)/invoices/actions"
+import {
+  generateOwnerBillingPackageAction,
+  shareOwnerBillingPackageAction,
+} from "@/app/(app)/projects/[id]/financials/actions"
 import { InvoiceComposerSheet } from "@/components/invoices/invoice-composer-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -92,10 +97,64 @@ function resolveStatusKey(status?: string | null): StatusKey {
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
 }
 
+function BackupPackageBadge({
+  summary,
+  busy,
+}: {
+  summary?: OwnerBillingPackageSummary
+  busy?: "generate" | "share" | null
+}) {
+  if (busy) {
+    return (
+      <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
+        {busy === "generate" ? "Generating" : "Sharing"}
+      </Badge>
+    )
+  }
+
+  if (!summary) {
+    return (
+      <Badge variant="outline" className="border-dashed text-muted-foreground">
+        Missing
+      </Badge>
+    )
+  }
+
+  const labels: Record<string, string> = {
+    generated: "Generated",
+    shared: "Shared",
+    downloaded: "Downloaded",
+    accepted: "Accepted",
+    draft: "Draft",
+    voided: "Voided",
+  }
+  const styles: Record<string, string> = {
+    generated: "border-amber-500/30 bg-amber-500/10 text-amber-700",
+    shared: "border-blue-500/30 bg-blue-500/10 text-blue-700",
+    downloaded: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
+    accepted: "border-success/30 bg-success/15 text-success",
+    draft: "border-muted bg-muted/40 text-muted-foreground",
+    voided: "border-muted bg-muted/40 text-muted-foreground",
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <Badge variant="outline" className={styles[summary.status] ?? styles.draft}>
+        {labels[summary.status] ?? summary.status}
+      </Badge>
+      <span className="text-[10px] text-muted-foreground">
+        {summary.cost_count} costs · {summary.proof_count} proofs
+      </span>
+    </div>
+  )
+}
+
 interface InvoicesClientProps {
   invoices: Invoice[]
   projects: Project[]
   initialOpenInvoiceId?: string
+  onInitialOpenInvoiceHandled?: () => void
+  pendingOpenInvoiceLabel?: string
   builderInfo?: {
     name?: string | null
     email?: string | null
@@ -103,6 +162,7 @@ interface InvoicesClientProps {
   }
   contacts?: Contact[]
   costCodes?: CostCode[]
+  ownerBillingPackages?: OwnerBillingPackageSummary[]
   enableApprovedCostsSource?: boolean
   toolbarLeading?: ReactNode
   fullBleed?: boolean
@@ -113,15 +173,19 @@ export function InvoicesClient({
   invoices,
   projects,
   initialOpenInvoiceId,
+  onInitialOpenInvoiceHandled,
+  pendingOpenInvoiceLabel,
   builderInfo,
   contacts,
   costCodes,
+  ownerBillingPackages = [],
   enableApprovedCostsSource,
   toolbarLeading,
   fullBleed = false,
   projectScoped = false,
 }: InvoicesClientProps) {
   const [items, setItems] = useState<Invoice[]>(invoices)
+  const [packageSummaries, setPackageSummaries] = useState<OwnerBillingPackageSummary[]>(ownerBillingPackages)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
@@ -153,13 +217,41 @@ export function InvoicesClient({
   const [voidingInvoice, setVoidingInvoice] = useState<Invoice | null>(null)
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | null>(null)
   const [destructiveActionLoading, setDestructiveActionLoading] = useState(false)
-  const didAutoOpen = useRef(false)
+  const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
+  const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
+  const lastAutoOpenedInvoiceId = useRef<string | undefined>(undefined)
 
   useEffect(() => {
-    if (!initialOpenInvoiceId || didAutoOpen.current) return
-    didAutoOpen.current = true
+    setItems(invoices)
+  }, [invoices])
+
+  useEffect(() => {
+    setPackageSummaries(ownerBillingPackages)
+  }, [ownerBillingPackages])
+
+  useEffect(() => {
+    if (!initialOpenInvoiceId || lastAutoOpenedInvoiceId.current === initialOpenInvoiceId) return
+    lastAutoOpenedInvoiceId.current = initialOpenInvoiceId
     void handleOpenDetail(initialOpenInvoiceId)
-  }, [initialOpenInvoiceId])
+    onInitialOpenInvoiceHandled?.()
+  }, [initialOpenInvoiceId, onInitialOpenInvoiceHandled])
+
+  useEffect(() => {
+    if (pendingOpenInvoiceLabel && !initialOpenInvoiceId) {
+      setDetailOpen(true)
+      setDetailLoading(true)
+      setDetailInvoice(null)
+      setDetailLink(undefined)
+      setDetailViews(undefined)
+      setDetailSyncHistory(undefined)
+      return
+    }
+
+    if (!pendingOpenInvoiceLabel && !initialOpenInvoiceId && detailLoading && !detailInvoice) {
+      setDetailLoading(false)
+      setDetailOpen(false)
+    }
+  }, [detailInvoice, detailLoading, initialOpenInvoiceId, pendingOpenInvoiceLabel])
 
   const projectLookup = useMemo(() => {
     return projects.reduce<Record<string, Project>>((acc, project) => {
@@ -207,6 +299,9 @@ export function InvoicesClient({
   const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id)) && !allVisibleSelected
   const qboPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
   const qboErrorCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "error").length, [items])
+  const packageByInvoiceId = useMemo(() => {
+    return new Map(packageSummaries.map((summary) => [summary.invoice_id, summary]))
+  }, [packageSummaries])
   const isProjectScoped = projectScoped
   const scopedProject = isProjectScoped && projects.length === 1 ? projects[0] : null
 
@@ -309,6 +404,56 @@ export function InvoicesClient({
       })
     } finally {
       setSendingReminderId(null)
+    }
+  }
+
+  async function handleGenerateBackupPackage(invoice: Invoice) {
+    if (!invoice.project_id) {
+      toast.error("Project is required to generate a backup package")
+      return
+    }
+    setPackageActionInvoiceId(invoice.id)
+    setPackageActionKind("generate")
+    try {
+      const summary = await generateOwnerBillingPackageAction({ projectId: invoice.project_id, invoiceId: invoice.id })
+      setPackageSummaries((prev) => [summary, ...prev.filter((item) => item.invoice_id !== invoice.id)])
+      toast.success("Backup package generated", {
+        description: `${summary.cost_count} costs and ${summary.proof_count} proof files captured.`,
+      })
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not generate backup package", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setPackageActionInvoiceId(null)
+      setPackageActionKind(null)
+    }
+  }
+
+  async function handleShareBackupPackage(invoice: Invoice) {
+    const summary = packageByInvoiceId.get(invoice.id)
+    if (!invoice.project_id || !summary) {
+      toast.error("Generate a backup package first")
+      return
+    }
+    setPackageActionInvoiceId(invoice.id)
+    setPackageActionKind("share")
+    try {
+      const shared = await shareOwnerBillingPackageAction({ projectId: invoice.project_id, packageId: summary.package_id })
+      setPackageSummaries((prev) => [shared, ...prev.filter((item) => item.invoice_id !== invoice.id)])
+      setItems((prev) => prev.map((item) => (item.id === invoice.id ? { ...item, client_visible: true } : item)))
+      toast.success("Backup package shared", {
+        description: "The client portal invoice now includes the owner backup manifest.",
+      })
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not share backup package", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setPackageActionInvoiceId(null)
+      setPackageActionKind(null)
     }
   }
 
@@ -561,6 +706,7 @@ export function InvoicesClient({
                 <TableHead className="px-4 py-4 text-center">Due date</TableHead>
                 <TableHead className="text-right px-4 py-4">Amount</TableHead>
                 {isProjectScoped && <TableHead className="text-right px-4 py-4">Balance</TableHead>}
+                <TableHead className="px-4 py-4 text-center">Backup</TableHead>
                 <TableHead className="px-4 py-4 text-center">Status</TableHead>
                 <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
               </TableRow>
@@ -571,6 +717,8 @@ export function InvoicesClient({
                 const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
                 const balance = formatMoneyFromCents(invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? invoice.total_cents ?? invoice.totals?.total_cents)
                 const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
+                const backupPackage = packageByInvoiceId.get(invoice.id)
+                const packageBusy = packageActionInvoiceId === invoice.id
                 return (
                   <TableRow key={invoice.id} className="align-top divide-x">
                     <TableCell className="w-12 text-center align-middle py-4 relative">
@@ -609,6 +757,9 @@ export function InvoicesClient({
                         <div className="font-semibold">{balance}</div>
                       </TableCell>
                     )}
+                    <TableCell className="px-4 py-4 text-center">
+                      <BackupPackageBadge summary={backupPackage} busy={packageBusy ? packageActionKind : null} />
+                    </TableCell>
                     <TableCell className="px-4 py-4 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}>
@@ -688,6 +839,25 @@ export function InvoicesClient({
                             >
                               {sendingReminderId === invoice.id ? "Sending…" : "Send reminder"}
                             </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              disabled={!invoice.project_id || packageBusy}
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                void handleGenerateBackupPackage(invoice)
+                              }}
+                            >
+                              {packageBusy && packageActionKind === "generate" ? "Generating…" : backupPackage ? "Regenerate backup package" : "Generate backup package"}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={!invoice.project_id || !backupPackage || packageBusy || ["shared", "downloaded", "accepted"].includes(backupPackage.status)}
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                void handleShareBackupPackage(invoice)
+                              }}
+                            >
+                              {packageBusy && packageActionKind === "share" ? "Sharing…" : "Share backup to portal"}
+                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -697,7 +867,7 @@ export function InvoicesClient({
               })}
               {filtered.length === 0 && !isCreating && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={isProjectScoped ? 8 : 8} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                     <div className="flex flex-col items-center gap-4">
                       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                         <FolderOpen className="h-6 w-6" />
@@ -716,7 +886,7 @@ export function InvoicesClient({
               )}
               {isCreating && filtered.length === 0 && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={isProjectScoped ? 8 : 8}>
+                  <TableCell colSpan={9}>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {[...Array(3)].map((_, idx) => (
                         <Skeleton key={idx} className="h-24 w-full rounded-md" />

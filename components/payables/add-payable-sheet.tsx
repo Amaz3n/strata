@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useTransition, useEffect } from "react"
+import { type DragEvent, useState, useTransition, useEffect, useRef } from "react"
 import { toast } from "sonner"
 import { format } from "date-fns"
 import {
   Check,
   ChevronsUpDown,
+  Loader2,
   Receipt, 
   Upload, 
   X, 
@@ -22,16 +23,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Calendar } from "@/components/ui/calendar"
+import { CompanyForm } from "@/components/companies/company-form"
+import { createCompanyAction, listCompaniesAction } from "@/app/(app)/companies/actions"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
 import {
   createProjectVendorBillAction,
   extractPayableInvoiceAction,
-  getPayablesAccountingContextAction,
   listProjectCommitmentsForPayablesAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
 import type { CommitmentSummary } from "@/lib/services/commitments"
-
-type QBOVendorOption = { id: string; name: string }
+import type { Company } from "@/lib/types"
 
 const NO_COMMITMENT = "__no_commitment__"
 
@@ -54,69 +55,110 @@ export function AddPayableSheet({
 }: AddPayableSheetProps) {
   const [isPending, startTransition] = useTransition()
   const [commitments, setCommitments] = useState<CommitmentSummary[]>([])
+  const [companies, setCompanies] = useState<Company[]>([])
   const [loadingCommitments, setLoadingCommitments] = useState(false)
-  const [qboVendors, setQboVendors] = useState<QBOVendorOption[]>([])
-  const [qboEnabled, setQboEnabled] = useState(false)
-  const [loadingQboVendors, setLoadingQboVendors] = useState(false)
+  const [loadingCompanies, setLoadingCompanies] = useState(false)
+  const [isCreatingVendor, startCreateVendorTransition] = useTransition()
 
   // Form state
   const [commitmentId, setCommitmentId] = useState(NO_COMMITMENT)
+  const [companyId, setCompanyId] = useState("")
   const [vendorName, setVendorName] = useState("")
-  const [qboVendorId, setQboVendorId] = useState("")
   const [vendorPickerOpen, setVendorPickerOpen] = useState(false)
+  const [vendorEditorOpen, setVendorEditorOpen] = useState(false)
+  const [vendorEditorCompany, setVendorEditorCompany] = useState<Company | null>(null)
   const [billNumber, setBillNumber] = useState("")
   const [amountDollars, setAmountDollars] = useState("")
   const [billDate, setBillDate] = useState<Date>(new Date())
   const [dueDate, setDueDate] = useState<Date | undefined>()
   const [description, setDescription] = useState("")
   const [file, setFile] = useState<File | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
 
   useEffect(() => {
     if (open) {
       setLoadingCommitments(true)
-      setLoadingQboVendors(true)
+      setLoadingCompanies(true)
       listProjectCommitmentsForPayablesAction(projectId)
         .then(setCommitments)
         .catch(() => toast.error("Failed to load commitments"))
         .finally(() => setLoadingCommitments(false))
-      getPayablesAccountingContextAction()
-        .then((context) => {
-          setQboEnabled(Boolean(context.enabled))
-          setQboVendors(context.vendors ?? [])
-        })
-        .catch(() => {
-          setQboEnabled(false)
-          setQboVendors([])
-        })
-        .finally(() => setLoadingQboVendors(false))
+      listCompaniesAction()
+        .then((rows) => setCompanies(rows.filter((company) => company.company_type === "subcontractor" || company.company_type === "supplier" || company.company_type === "other")))
+        .catch(() => toast.error("Failed to load vendors"))
+        .finally(() => setLoadingCompanies(false))
     }
   }, [open, projectId])
 
   const amountCents = Math.round((Number.parseFloat(amountDollars) || 0) * 100)
-  const isValid = billNumber && amountCents > 0 && billDate && (vendorName.trim() || commitmentId !== NO_COMMITMENT)
-  const selectedVendor = qboVendorId ? qboVendors.find((vendor) => vendor.id === qboVendorId) : null
-  const visibleVendors = qboVendors.filter(
-    (vendor) => !vendorName.trim() || normalizeName(vendor.name).includes(normalizeName(vendorName)),
+  const selectedCompany = companyId ? companies.find((company) => company.id === companyId) ?? vendorEditorCompany : null
+  const visibleCompanies = companies.filter(
+    (company) => !vendorName.trim() || normalizeName(company.name).includes(normalizeName(vendorName)),
   )
+  const exactCompany = vendorName.trim()
+    ? companies.find((company) => normalizeName(company.name) === normalizeName(vendorName))
+    : null
+  const canCreateVendor = vendorName.trim().length >= 2 && !exactCompany
+  const isValid = billNumber && amountCents > 0 && billDate && (companyId || commitmentId !== NO_COMMITMENT)
 
   function applyVendor(value: string) {
     setVendorName(value)
-    const exact = qboVendors.find((vendor) => normalizeName(vendor.name) === normalizeName(value))
-    setQboVendorId(exact?.id ?? "")
+    const exact = companies.find((company) => normalizeName(company.name) === normalizeName(value))
+    setCompanyId(exact?.id ?? "")
     if (value.trim()) {
       const matchingCommitment = commitments.find(
         (commitment) => commitment.company_name && normalizeName(commitment.company_name) === normalizeName(value),
       )
-      if (matchingCommitment) setCommitmentId(matchingCommitment.id)
+      if (matchingCommitment) {
+        setCommitmentId(matchingCommitment.id)
+        setCompanyId(matchingCommitment.company_id ?? exact?.id ?? "")
+      }
     }
   }
 
-  function selectVendor(vendor: QBOVendorOption) {
-    applyVendor(vendor.name)
-    setQboVendorId(vendor.id)
+  function selectCompany(company: Company) {
+    setCompanyId(company.id)
+    setVendorName(company.name)
+    const matchingCommitment = commitments.find((commitment) => commitment.company_id === company.id)
+    if (matchingCommitment) setCommitmentId(matchingCommitment.id)
     setVendorPickerOpen(false)
+  }
+
+  function handleCommitmentChange(value: string) {
+    setCommitmentId(value)
+    if (value === NO_COMMITMENT) return
+    const commitment = commitments.find((item) => item.id === value)
+    if (!commitment) return
+    setCompanyId(commitment.company_id ?? "")
+    setVendorName(commitment.company_name ?? vendorName)
+  }
+
+  function createArcVendor() {
+    const name = vendorName.trim()
+    if (!name) return
+    startCreateVendorTransition(async () => {
+      try {
+        const company = await createCompanyAction({
+          name,
+          company_type: "supplier",
+        })
+        setCompanies((prev) => {
+          if (prev.some((item) => item.id === company.id)) return prev
+          return [...prev, company].sort((a, b) => a.name.localeCompare(b.name))
+        })
+        setCompanyId(company.id)
+        setVendorName(company.name)
+        setVendorEditorCompany(company)
+        setVendorEditorOpen(true)
+        setVendorPickerOpen(false)
+        toast.success("Arc vendor created")
+      } catch (error) {
+        toast.error((error as Error).message)
+      }
+    })
   }
 
   async function handleFileSelected(nextFile: File | null) {
@@ -146,6 +188,26 @@ export function AddPayableSheet({
     }
   }
 
+  function handleFileDrag(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.type === "dragenter" || event.type === "dragover") {
+      setIsDraggingFile(true)
+    } else if (event.type === "dragleave") {
+      setIsDraggingFile(false)
+    }
+  }
+
+  function handleFileDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    setIsDraggingFile(false)
+
+    const droppedFile = event.dataTransfer.files?.[0] ?? null
+    if (!droppedFile) return
+    void handleFileSelected(droppedFile)
+  }
+
   const handleSubmit = () => {
     startTransition(async () => {
       try {
@@ -163,9 +225,8 @@ export function AddPayableSheet({
 
         await createProjectVendorBillAction(projectId, {
           commitment_id: commitmentId === NO_COMMITMENT ? null : commitmentId,
-          vendor_name: vendorName.trim() || undefined,
-          qbo_vendor_id: qboVendorId || undefined,
-          qbo_vendor_name: selectedVendor?.name ?? (vendorName.trim() || undefined),
+          company_id: companyId || undefined,
+          vendor_name: selectedCompany?.name ?? (vendorName.trim() || undefined),
           bill_number: billNumber,
           total_cents: amountCents,
           bill_date: format(billDate, "yyyy-MM-dd"),
@@ -187,8 +248,10 @@ export function AddPayableSheet({
 
   const resetForm = () => {
     setCommitmentId(NO_COMMITMENT)
+    setCompanyId("")
     setVendorName("")
-    setQboVendorId("")
+    setVendorEditorCompany(null)
+    setVendorEditorOpen(false)
     setBillNumber("")
     setAmountDollars("")
     setBillDate(new Date())
@@ -232,15 +295,23 @@ export function AddPayableSheet({
               </div>
             ) : (
               <div 
-                className="border-2 border-dashed rounded-xl py-8 flex flex-col items-center justify-center bg-muted/5 hover:bg-muted/10 transition-colors cursor-pointer group"
-                onClick={() => document.getElementById("payable-file-upload")?.click()}
+                className={cn(
+                  "border-2 border-dashed rounded-xl py-8 flex flex-col items-center justify-center bg-muted/5 hover:bg-muted/10 transition-colors cursor-pointer group",
+                  isDraggingFile && "border-primary bg-primary/5",
+                )}
+                onClick={() => fileInputRef.current?.click()}
+                onDragEnter={handleFileDrag}
+                onDragOver={handleFileDrag}
+                onDragLeave={handleFileDrag}
+                onDrop={handleFileDrop}
               >
                 <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
                   <Upload className="h-6 w-6 text-muted-foreground" />
                 </div>
-                <p className="text-sm font-medium">Click to upload invoice PDF</p>
+                <p className="text-sm font-medium">{isDraggingFile ? "Drop invoice here" : "Drop or click to upload invoice PDF"}</p>
                 <p className="text-[10px] text-muted-foreground mt-1 uppercase font-bold">Max size 20MB</p>
                 <input 
+                  ref={fileInputRef}
                   id="payable-file-upload" 
                   type="file" 
                   className="hidden" 
@@ -254,41 +325,57 @@ export function AddPayableSheet({
           {/* Details Section */}
           <div className="space-y-6">
             <div className="space-y-2">
-              <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Vendor</Label>
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Arc vendor</Label>
               <Popover open={vendorPickerOpen} onOpenChange={setVendorPickerOpen}>
                 <PopoverTrigger asChild>
                   <Button type="button" variant="outline" role="combobox" className="h-11 w-full justify-between px-3 text-left">
-                    <span className={cn("truncate", !vendorName && "text-muted-foreground")}>
-                      {selectedVendor?.name ?? (vendorName || "Select or type vendor")}
+                    <span className={cn("truncate", !selectedCompany && "text-muted-foreground")}>
+                      {selectedCompany?.name ?? (vendorName || "Select Arc vendor")}
                     </span>
-                    <ChevronsUpDown data-icon="inline-end" />
+                    <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
                   <Command shouldFilter={false}>
-                    <CommandInput value={vendorName} onValueChange={applyVendor} placeholder="Search or type vendor..." />
+                    <CommandInput value={vendorName} onValueChange={applyVendor} placeholder="Search Arc vendors..." />
                     <CommandList className="max-h-72 overflow-y-auto">
-                      <CommandEmpty>{loadingQboVendors ? "Loading QBO vendors..." : "No matching QBO vendors."}</CommandEmpty>
-                      <CommandGroup heading={qboEnabled ? "QuickBooks vendors" : "Vendor"}>
-                        {visibleVendors.map((vendor) => {
-                          const selected = vendor.id === qboVendorId || normalizeName(vendor.name) === normalizeName(vendorName)
+                      <CommandEmpty>{loadingCompanies ? "Loading vendors..." : "No matching Arc vendors."}</CommandEmpty>
+                      <CommandGroup heading="Arc vendors">
+                        {visibleCompanies.map((company) => {
+                          const selected = company.id === companyId
                           return (
-                            <CommandItem key={vendor.id} value={vendor.name} onSelect={() => selectVendor(vendor)}>
+                            <CommandItem key={company.id} value={company.name} onSelect={() => selectCompany(company)}>
                               <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
-                              <span className="truncate">{vendor.name}</span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{company.name}</span>
+                                <span className="block truncate text-xs text-muted-foreground">
+                                  {company.qbo_vendor_id ? `QBO: ${company.qbo_vendor_name ?? "Linked"}` : "No QBO vendor linked"}
+                                </span>
+                              </span>
                             </CommandItem>
                           )
                         })}
                       </CommandGroup>
+                      {canCreateVendor ? (
+                        <CommandGroup heading="New vendor">
+                          <CommandItem value={`Create ${vendorName}`} onSelect={createArcVendor}>
+                            {isCreatingVendor ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4 opacity-0" />}
+                            <span>Create Arc vendor “{vendorName.trim()}”</span>
+                          </CommandItem>
+                        </CommandGroup>
+                      ) : null}
                     </CommandList>
                   </Command>
                 </PopoverContent>
               </Popover>
+              <p className="text-xs text-muted-foreground">
+                Pick an Arc vendor first. New vendors can be created here, then linked to QuickBooks from their profile.
+              </p>
             </div>
 
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Source Commitment</Label>
-              <Select value={commitmentId} onValueChange={setCommitmentId}>
+              <Select value={commitmentId} onValueChange={handleCommitmentChange}>
                 <SelectTrigger className="h-11">
                   <SelectValue placeholder={loadingCommitments ? "Loading..." : "Select commitment or contract"} />
                 </SelectTrigger>
@@ -389,6 +476,30 @@ export function AddPayableSheet({
           </Button>
         </SheetFooter>
       </SheetContent>
+      <Sheet open={vendorEditorOpen} onOpenChange={setVendorEditorOpen}>
+        <SheetContent side="right" mobileFullscreen className="flex flex-col p-0 sm:max-w-xl">
+          <SheetHeader className="border-b bg-muted/30 px-6 py-5">
+            <SheetTitle>Vendor details</SheetTitle>
+            <SheetDescription>
+              Link this Arc vendor to QuickBooks before saving payables for it.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            {vendorEditorCompany ? (
+              <CompanyForm
+                company={vendorEditorCompany}
+                onSubmitted={() => {
+                  setVendorEditorOpen(false)
+                  listCompaniesAction()
+                    .then((rows) => setCompanies(rows.filter((company) => company.company_type === "subcontractor" || company.company_type === "supplier" || company.company_type === "other")))
+                    .catch(() => {})
+                }}
+                onCancel={() => setVendorEditorOpen(false)}
+              />
+            ) : null}
+          </div>
+        </SheetContent>
+      </Sheet>
     </Sheet>
   )
 }

@@ -8,11 +8,13 @@ import { AlertTriangle, CheckCircle2, ChevronDown, Download, Link2, Loader2, Loc
 
 import type { Invoice, Receipt } from "@/lib/types"
 import type { BillableCost } from "@/lib/services/cost-plus"
+import type { InvoiceBackupPackage } from "@/lib/services/owner-billing-packages"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 
 interface Props {
+  token: string
   invoice: Invoice
   portalType?: "client" | "sub"
   payment?: {
@@ -23,6 +25,7 @@ interface Props {
   } | null
   receipts?: Receipt[] | null
   costDetails?: Array<BillableCost & { source_company_name?: string | null; source_status?: string | null; proof_file_id?: string | null }> | null
+  backupPackages?: InvoiceBackupPackage[] | null
   proofErrors?: string[]
 }
 
@@ -267,7 +270,7 @@ function PaymentSection({
   )
 }
 
-export function InvoicePortalClient({ invoice, portalType = "client", payment, receipts, costDetails, proofErrors = [] }: Props) {
+export function InvoicePortalClient({ token, invoice, portalType = "client", payment, receipts, costDetails, backupPackages, proofErrors = [] }: Props) {
   const [copied, setCopied] = useState(false)
   const paymentRef = useRef<HTMLDivElement>(null)
 
@@ -278,6 +281,7 @@ export function InvoicePortalClient({ invoice, portalType = "client", payment, r
   const isPaid = balanceDue <= 0 || invoice.status === "paid" || invoice.status === "void"
   const receiptList = receipts ?? []
   const openBookCosts = costDetails ?? []
+  const packageList = backupPackages ?? []
 
   // Match container width (600px content + 48px padding)
   const containerMaxWidth = 648
@@ -369,6 +373,44 @@ export function InvoicePortalClient({ invoice, portalType = "client", payment, r
             )}
           </div>
         </div>
+
+        {packageList.length > 0 ? (
+          <div className="mb-6 border bg-card p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-sm font-medium text-muted-foreground">Owner backup package</h2>
+                <p className="mt-2 text-sm">
+                  This invoice includes a stored backup manifest with billed costs, proof references, totals, and package audit details.
+                </p>
+              </div>
+              <Badge variant="outline" className="w-fit capitalize">
+                {packageList[0].status}
+              </Badge>
+            </div>
+            <div className="mt-4 space-y-3">
+              {packageList.map((pkg) => (
+                <div key={pkg.id} className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-medium">{pkg.name}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {pkg.proof_file_ids.length} proof files · {Array.isArray(pkg.manifest?.costs) ? pkg.manifest.costs.length : 0} billed costs
+                      {pkg.shared_at ? ` · Shared ${format(new Date(pkg.shared_at), "MMM d, yyyy")}` : ""}
+                    </p>
+                    {pkg.manifest_hash ? (
+                      <p className="mt-1 font-mono text-[10px] text-muted-foreground">Hash {pkg.manifest_hash.slice(0, 16)}</p>
+                    ) : null}
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={`/p/${token}/invoices/${invoice.id}/backup/${pkg.id}`} target="_blank" rel="noreferrer">
+                      <Download className="size-4" />
+                      Download manifest
+                    </a>
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {/* Invoice Details */}
         <div className="border bg-card">

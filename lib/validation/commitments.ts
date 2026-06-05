@@ -17,7 +17,7 @@ export const commitmentInputSchema = z.object({
 export const commitmentUpdateSchema = commitmentInputSchema.partial().omit({ project_id: true, company_id: true })
 
 export const commitmentLineInputSchema = z.object({
-  cost_code_id: z.string().uuid(),
+  cost_code_id: z.string().uuid().nullable().optional(),
   description: z.string().min(1, "Description is required"),
   quantity: z.number().min(0),
   unit: z.string().min(1, "Unit is required"),

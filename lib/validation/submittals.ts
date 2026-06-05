@@ -2,7 +2,7 @@ import { z } from "zod"
 
 export const submittalInputSchema = z.object({
   project_id: z.string().uuid("Project is required"),
-  submittal_number: z.coerce.number().positive("Submittal number is required"),
+  submittal_number: z.coerce.number().positive("Submittal number must be positive").optional(),
   title: z.string().min(3, "Title is required"),
   description: z.string().optional(),
   status: z
