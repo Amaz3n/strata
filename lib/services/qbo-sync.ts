@@ -880,10 +880,26 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       Line: qboLines,
     }
 
-    const result =
-      existingQboId
+    let result: any
+    try {
+      result = existingQboId
         ? await client.updateBill(qboBill as any)
         : await client.createBill(qboBill as any)
+    } catch (syncErr: any) {
+      // QBO uses optimistic concurrency: if the bill was edited directly in
+      // QuickBooks since we last synced, our stored SyncToken is stale (fault
+      // 5010). Refresh the token from QBO and retry the update once.
+      if (syncErr instanceof QBOError && isStaleObjectError(syncErr) && existingQboId) {
+        const latestBill = await client.getBillById(existingQboId)
+        if (!latestBill?.SyncToken) {
+          throw new Error("Unable to refresh QuickBooks bill sync token")
+        }
+        result = await client.updateBill({ ...qboBill, SyncToken: latestBill.SyncToken } as any)
+        logQBO("warn", "vendor_bill_sync_stale_token_retried", { orgId, billId, qboId: result.Id })
+      } else {
+        throw syncErr
+      }
+    }
 
     await upsertSyncRecord({
       orgId,
