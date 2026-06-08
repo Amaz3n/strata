@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { FileText, Check, Users, Building2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { SheetStatusDots } from "./sheet-status-dots"
-import type { DrawingSheet, SheetStatusCounts } from "@/app/(app)/drawings/actions"
+import type { DrawingSheet, SheetStatusCounts } from "@/app/(app)/drawings/types"
 
 interface SheetCardProps {
   sheet: DrawingSheet

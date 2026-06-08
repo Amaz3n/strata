@@ -60,7 +60,7 @@ import type {
   DrawingRevision,
   DrawingSet,
   DrawingSheet,
-} from "@/app/(app)/drawings/actions";
+} from "@/app/(app)/drawings/types";
 import {
   DISCIPLINE_LABELS,
   DRAWING_SET_TYPE_LABELS,

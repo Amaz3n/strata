@@ -38,8 +38,8 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer"
-import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/actions"
-import type { DrawingSheet } from "@/app/(app)/drawings/actions"
+import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/types"
+import type { DrawingSheet } from "@/app/(app)/drawings/types"
 import { useDocuments, buildFolderTree } from "./documents-context"
 import { FilePropertiesPanel } from "./file-properties-panel"
 import { SheetsContent } from "./sheets-content"

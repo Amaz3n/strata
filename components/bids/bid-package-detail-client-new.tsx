@@ -65,7 +65,7 @@ import {
   listAttachmentsAction,
   uploadFileAction,
 } from "@/app/(app)/documents/actions"
-import type { FileWithUrls } from "@/app/(app)/documents/actions"
+import type { FileWithUrls } from "@/app/(app)/documents/types"
 import {
   createBidAddendumAction,
   bulkCreateBidInvitesAction,

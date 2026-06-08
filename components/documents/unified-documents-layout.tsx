@@ -76,12 +76,12 @@ import {
   listFileShareLinksAction,
   revokeFileShareLinkAction,
 } from "@/app/(app)/documents/actions";
-import type { FileShareLink } from "@/app/(app)/documents/actions";
+import type { FileShareLink } from "@/app/(app)/documents/types";
 import type {
   FileVersion,
   FileWithUrls,
   FileTimelineEvent,
-} from "@/app/(app)/documents/actions";
+} from "@/app/(app)/documents/types";
 import {
   createDrawingSetFromUpload,
   getSheetDownloadUrlAction,
@@ -99,7 +99,7 @@ import type {
   DrawingSheet,
   DrawingMarkup,
   DrawingPin,
-} from "@/app/(app)/drawings/actions";
+} from "@/app/(app)/drawings/types";
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client";
 import { uploadDocumentFileDirect } from "@/lib/services/files-client";
 import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings";

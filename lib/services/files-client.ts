@@ -2,9 +2,11 @@
 
 import {
   finalizeUploadedFileAction,
-  type FileWithUrls,
-  type FinalizeUploadedFileInput,
 } from "@/app/(app)/documents/actions"
+import type {
+  FileWithUrls,
+  FinalizeUploadedFileInput,
+} from "@/app/(app)/documents/types"
 
 type UploadStage = "preparing" | "uploading" | "finalizing"
 type UploadProgress = { loaded: number; total: number; percent: number }

@@ -86,8 +86,8 @@ import {
   getVersionDownloadUrlAction,
   listFileAccessEventsAction,
   listFileLinkSummaryAction,
-} from "./actions"
-import type { FileWithUrls, FileUpdate, FileVersion, FileAccessEvent } from "./actions"
+} from "./types"
+import type { FileWithUrls, FileUpdate, FileVersion, FileAccessEvent } from "./types"
 import { FileMetadataSheet } from "./file-metadata-sheet"
 import type { FileVersionInfo } from "@/components/files/version-history-panel"
 import { FileActivitySheet } from "./file-activity-sheet"

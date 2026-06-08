@@ -32,7 +32,7 @@ import {
   sendDocumentEnvelopeAction,
   uploadESignDocumentFileAction,
 } from "@/app/(app)/signatures/actions"
-import type { FileWithUrls } from "@/app/(app)/documents/actions"
+import type { FileWithUrls } from "@/app/(app)/documents/types"
 import { type UnifiedSignableEntityType } from "@/lib/esign/unified-contracts"
 import { cn } from "@/lib/utils"
 import { ESignDocumentViewer, type ESignFieldDraft } from "@/components/esign/esign-document-viewer"

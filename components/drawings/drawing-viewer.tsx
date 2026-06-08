@@ -89,7 +89,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion"
-import type { DrawingSheet, DrawingSheetVersion, DrawingMarkup, DrawingPin, MarkupType } from "@/app/(app)/drawings/actions"
+import type { DrawingSheet, DrawingSheetVersion, DrawingMarkup, DrawingPin, MarkupType } from "@/app/(app)/drawings/types"
 import { listSheetVersionsWithUrlsAction } from "@/app/(app)/drawings/actions"
 import { useDrawingKeyboardShortcuts } from "./use-drawing-keyboard-shortcuts"
 import { KeyboardShortcutsHelp } from "./keyboard-shortcuts-help"

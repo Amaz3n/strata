@@ -61,8 +61,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import type { FileWithUrls } from "@/app/(app)/documents/actions"
-import type { DrawingSheet } from "@/app/(app)/drawings/actions"
+import type { FileWithUrls } from "@/app/(app)/documents/types"
+import type { DrawingSheet } from "@/app/(app)/drawings/types"
 import { useDocuments } from "./documents-context"
 import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 

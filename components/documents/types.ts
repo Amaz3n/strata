@@ -1,5 +1,5 @@
-import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/actions"
-import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/actions"
+import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
+import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/types"
 
 export type ViewMode = "grid" | "list"
 

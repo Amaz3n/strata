@@ -56,27 +56,7 @@ import {
   type CreateFileShareLinkInput,
   type FileShareLink,
 } from "@/lib/services/file-share-links"
-
-// Re-export types
-export type { FileRecord, FileWithUrls, FileListFilters, FileUpdate, FileCategory, FileLinkWithFile, FileVersion, FileLinkSummary }
-export type { FileAccessEvent }
-export type { FileShareLink, CreateFileShareLinkInput }
-export type { ProjectFolderPermissions, FileTimelineEvent, FolderChild } from "@/lib/services/files"
-
-export interface FinalizeUploadedFileInput {
-  projectId?: string
-  fileName: string
-  storagePath: string
-  fileSize: number
-  mimeType?: string
-  category?: FileCategory
-  visibility?: "public" | "private"
-  folderPath?: string | null
-  description?: string | null
-  tags?: string[]
-  shareWithClients?: boolean
-  shareWithSubs?: boolean
-}
+import type { FinalizeUploadedFileInput } from "./types"
 
 /**
  * List files with optional filters

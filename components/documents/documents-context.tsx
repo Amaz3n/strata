@@ -13,8 +13,8 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { listFilesAction, getFileCountsAction, listChildFoldersAction, listProjectFolderPermissionsAction } from "@/app/(app)/documents/actions"
 import { listDrawingSetsAction, listDrawingSheetsWithUrlsAction } from "@/app/(app)/drawings/actions"
-import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/actions"
-import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/actions"
+import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
+import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/types"
 import type { DocumentsContextValue, QuickFilter, ViewMode, FolderNode } from "./types"
 
 const DocumentsContext = createContext<DocumentsContextValue | null>(null)

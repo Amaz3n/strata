@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { getPinsForEntityAction, type DrawingPin, type PinEntityType } from "@/app/(app)/drawings/actions"
+import { getPinsForEntityAction } from "@/app/(app)/drawings/actions"
+import type { DrawingPin, PinEntityType } from "@/app/(app)/drawings/types"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -104,4 +105,3 @@ export function LinkedDrawings({
     </div>
   )
 }
-

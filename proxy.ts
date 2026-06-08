@@ -37,7 +37,30 @@ const PUBLIC_FILE_EXTENSIONS = [
   ".eot",
 ]
 
+function isBlockedHiddenPath(pathname: string) {
+  let decodedPathname: string
+  try {
+    decodedPathname = decodeURIComponent(pathname)
+  } catch {
+    return true
+  }
+
+  return decodedPathname
+    .split("/")
+    .some((segment, index) => segment.startsWith(".") && !(index === 1 && segment === ".well-known"))
+}
+
 export async function proxy(request: NextRequest) {
+  if (isBlockedHiddenPath(request.nextUrl.pathname)) {
+    return new NextResponse(null, {
+      status: 404,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    })
+  }
+
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set("x-pathname", request.nextUrl.pathname)
   requestHeaders.set("x-search", request.nextUrl.search)

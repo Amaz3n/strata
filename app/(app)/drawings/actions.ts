@@ -89,42 +89,7 @@ import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-
-// Re-export types
-export type {
-  DrawingSet,
-  DrawingRevision,
-  DrawingSheet,
-  DrawingSheetVersion,
-  DrawingMarkup,
-  DrawingPin,
-  DrawingSetInput,
-  DrawingSetUpdate,
-  DrawingRevisionInput,
-  DrawingRevisionUpdate,
-  DrawingSheetInput,
-  DrawingSheetUpdate,
-  DrawingSheetListFilters,
-  DrawingDiscipline,
-  DrawingMarkupInput,
-  DrawingMarkupUpdate,
-  DrawingPinInput,
-  DrawingPinUpdate,
-  PinEntityType,
-  PinStatus,
-  MarkupType,
-  SheetStatusCounts,
-}
-
-export interface UploadReviewSheet {
-  id: string
-  drawing_set_id: string
-  sheet_number: string
-  sheet_title?: string
-  discipline?: DrawingDiscipline
-  sort_order: number
-  updated_at: string
-}
+import type { UploadReviewSheet } from "./types"
 
 // ============================================================================
 // DRAWING SET ACTIONS

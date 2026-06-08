@@ -3,7 +3,7 @@
 import { useMemo } from "react"
 import type { ImageToScreenMatrix } from "./tiled-drawing-viewer"
 import { cn } from "@/lib/utils"
-import type { DrawingMarkup, DrawingPin } from "@/app/(app)/drawings/actions"
+import type { DrawingMarkup, DrawingPin } from "@/app/(app)/drawings/types"
 
 export interface SVGOverlayProps {
   className?: string

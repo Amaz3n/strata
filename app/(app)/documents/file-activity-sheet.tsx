@@ -11,8 +11,8 @@ import {
 } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import type { FileWithUrls } from "./actions"
-import type { FileAccessEvent } from "./actions"
+import type { FileWithUrls } from "./types"
+import type { FileAccessEvent } from "./types"
 
 interface FileActivitySheetProps {
   file: FileWithUrls | null

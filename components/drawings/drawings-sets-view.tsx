@@ -106,7 +106,7 @@ import type {
   UploadReviewSheet,
   DrawingRevision,
   DrawingSheetVersion,
-} from "@/app/(app)/drawings/actions"
+} from "@/app/(app)/drawings/types"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
 import { DrawingViewer } from "./drawing-viewer"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"

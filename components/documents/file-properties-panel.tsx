@@ -30,7 +30,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/actions"
+import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/types"
 import { cn } from "@/lib/utils"
 import { formatFileSize, getFileIcon } from "./documents-table"
 import { QUICK_FILTER_CONFIG } from "./types"

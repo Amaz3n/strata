@@ -21,7 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import type { DrawingSet } from "@/app/(app)/drawings/actions"
+import type { DrawingSet } from "@/app/(app)/drawings/types"
 
 interface PlanSetCardProps {
   set: DrawingSet

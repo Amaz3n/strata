@@ -23,7 +23,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { X } from "@/components/icons"
 import { FILE_CATEGORIES, type FileCategory } from "@/components/files/types"
-import type { FileWithUrls, FileUpdate } from "./actions"
+import type { FileWithUrls, FileUpdate } from "./types"
 import { formatFileSize } from "@/components/files/types"
 
 interface FileMetadataSheetProps {

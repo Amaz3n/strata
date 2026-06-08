@@ -76,7 +76,7 @@ import type {
   DrawingPin,
   SheetStatusCounts,
   DrawingRevision,
-} from "@/app/(app)/drawings/actions"
+} from "@/app/(app)/drawings/types"
 import {
   listDrawingSetsAction,
   listDrawingSheetsWithUrlsAction,
