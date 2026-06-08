@@ -50,6 +50,8 @@ export interface UpdateExpenseAccountingInput {
 export interface UpdateExpenseDetailsInput {
   description?: string | null
   costCodeId?: string | null
+  expenseDate?: string | null
+  paymentMethod?: string | null
 }
 
 export type ReceiptExtractionResult =
@@ -240,6 +242,8 @@ export async function updateProjectExpenseDetailsAction(
   const updateData: Record<string, any> = {}
   if ("description" in input) updateData.description = input.description?.trim() || null
   if ("costCodeId" in input) updateData.cost_code_id = input.costCodeId || null
+  if ("expenseDate" in input && input.expenseDate) updateData.expense_date = input.expenseDate
+  if ("paymentMethod" in input) updateData.payment_method = input.paymentMethod || null
 
   if (Object.keys(updateData).length === 0) {
     return listProjectExpensesAction(projectId)
@@ -253,6 +257,39 @@ export async function updateProjectExpenseDetailsAction(
     .eq("id", expenseId)
 
   if (error) throw new Error(`Failed to update expense: ${error.message}`)
+  revalidate(projectId)
+  return listProjectExpensesAction(projectId)
+}
+
+export async function updateProjectExpenseReceiptAction(projectId: string, expenseId: string, formData: FormData) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAuthorization({
+    permission: "bill.write",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project_expense",
+    resourceId: expenseId,
+  })
+
+  const file = formData.get("receipt")
+  // When a file is present we upload + set it; otherwise this clears the receipt.
+  const receiptFileId =
+    file instanceof File && file.size > 0
+      ? await uploadCostPlusFile({ file, orgId, projectId, kind: "expense_receipt" })
+      : null
+
+  const { error } = await supabase
+    .from("project_expenses")
+    .update({ receipt_file_id: receiptFileId })
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", expenseId)
+
+  if (error) throw new Error(`Failed to update receipt: ${error.message}`)
+
   revalidate(projectId)
   return listProjectExpensesAction(projectId)
 }

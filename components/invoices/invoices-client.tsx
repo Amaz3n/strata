@@ -1,9 +1,11 @@
 "use client"
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
+
+import { useRouter, useSearchParams, usePathname } from "next/navigation"
 
 import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/types"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
@@ -15,6 +17,7 @@ import {
   getInvoiceDetailAction,
   listInvoicesAction,
   manualResyncInvoiceAction,
+  reviseInvoiceAction,
   sendInvoiceReminderAction,
   updateInvoiceAction,
   voidInvoiceAction,
@@ -184,6 +187,11 @@ export function InvoicesClient({
   fullBleed = false,
   projectScoped = false,
 }: InvoicesClientProps) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const pathname = usePathname()
+  const urlInvoiceId = searchParams.get("invoice") || searchParams.get("invoiceId")
+
   const [items, setItems] = useState<Invoice[]>(invoices)
   const [packageSummaries, setPackageSummaries] = useState<OwnerBillingPackageSummary[]>(ownerBillingPackages)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -215,11 +223,42 @@ export function InvoicesClient({
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null)
   const [voidingInvoice, setVoidingInvoice] = useState<Invoice | null>(null)
+  const [revisingInvoice, setRevisingInvoice] = useState<Invoice | null>(null)
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | null>(null)
   const [destructiveActionLoading, setDestructiveActionLoading] = useState(false)
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
   const lastAutoOpenedInvoiceId = useRef<string | undefined>(undefined)
+
+  const handleOpenDetail = useCallback(async (invoiceId: string) => {
+    setDetailOpen(true)
+    setDetailLoading(true)
+    setDetailInvoice(null)
+    setDetailLink(undefined)
+    setDetailViews(undefined)
+    setDetailSyncHistory(undefined)
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search)
+      params.set("invoice", invoiceId)
+      router.replace(window.location.pathname + `?${params.toString()}`, { scroll: false })
+    }
+
+    try {
+      const result = await getInvoiceDetailAction(invoiceId)
+      setDetailInvoice(result.invoice)
+      setDetailLink(result.link)
+      setDetailViews(result.views as InvoiceView[])
+      setDetailSyncHistory(result.syncHistory as any)
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not load invoice", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setDetailLoading(false)
+    }
+  }, [router])
 
   useEffect(() => {
     setItems(invoices)
@@ -234,7 +273,15 @@ export function InvoicesClient({
     lastAutoOpenedInvoiceId.current = initialOpenInvoiceId
     void handleOpenDetail(initialOpenInvoiceId)
     onInitialOpenInvoiceHandled?.()
-  }, [initialOpenInvoiceId, onInitialOpenInvoiceHandled])
+  }, [initialOpenInvoiceId, onInitialOpenInvoiceHandled, handleOpenDetail])
+
+  useEffect(() => {
+    if (urlInvoiceId && urlInvoiceId !== detailInvoice?.id) {
+      void handleOpenDetail(urlInvoiceId)
+    }
+  }, [urlInvoiceId, detailInvoice?.id, handleOpenDetail])
+
+  const prevPendingLabelRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     if (pendingOpenInvoiceLabel && !initialOpenInvoiceId) {
@@ -244,13 +291,17 @@ export function InvoicesClient({
       setDetailLink(undefined)
       setDetailViews(undefined)
       setDetailSyncHistory(undefined)
-      return
-    }
-
-    if (!pendingOpenInvoiceLabel && !initialOpenInvoiceId && detailLoading && !detailInvoice) {
+    } else if (
+      prevPendingLabelRef.current &&
+      !pendingOpenInvoiceLabel &&
+      !initialOpenInvoiceId &&
+      detailLoading &&
+      !detailInvoice
+    ) {
       setDetailLoading(false)
       setDetailOpen(false)
     }
+    prevPendingLabelRef.current = pendingOpenInvoiceLabel
   }, [detailInvoice, detailLoading, initialOpenInvoiceId, pendingOpenInvoiceLabel])
 
   const projectLookup = useMemo(() => {
@@ -324,6 +375,7 @@ export function InvoicesClient({
       const created = await createInvoiceAction(values)
       setItems((prev) => [created, ...prev])
       setSheetOpen(false)
+      router.refresh()
       if (!options?.silent) {
         toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
           description: sendToClient ? "Client can now view this invoice." : "Invoice saved to receivables.",
@@ -349,6 +401,7 @@ export function InvoicesClient({
     try {
       const updated = await updateInvoiceAction(editingInvoice.id, values)
       setItems((prev) => prev.map((inv) => (inv.id === updated.id ? updated : inv)))
+      router.refresh()
       if (!options?.silent) {
         toast.success(sendToClient ? "Invoice sent" : "Invoice saved")
       }
@@ -475,6 +528,36 @@ export function InvoicesClient({
     }
   }
 
+  async function handleReviseInvoice() {
+    if (!revisingInvoice) return
+    setDestructiveActionLoading(true)
+    try {
+      const replacement = await reviseInvoiceAction(revisingInvoice.id)
+      setItems((prev) => [
+        replacement,
+        ...prev.map((invoice) =>
+          invoice.id === revisingInvoice.id
+            ? { ...invoice, status: "void" as const, client_visible: false, balance_due_cents: 0 }
+            : invoice,
+        ),
+      ])
+      setRevisingInvoice(null)
+      setEditingInvoice(replacement)
+      setEditOpen(true)
+      setDetailOpen(false)
+      toast.success("Replacement draft created", {
+        description: `Invoice ${replacement.invoice_number} is ready for review.`,
+      })
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not revise invoice", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setDestructiveActionLoading(false)
+    }
+  }
+
   async function handleDeleteInvoice() {
     if (!deletingInvoice) return
     setDestructiveActionLoading(true)
@@ -491,29 +574,6 @@ export function InvoicesClient({
       })
     } finally {
       setDestructiveActionLoading(false)
-    }
-  }
-
-  async function handleOpenDetail(invoiceId: string) {
-    setDetailOpen(true)
-    setDetailLoading(true)
-    setDetailInvoice(null)
-    setDetailLink(undefined)
-    setDetailViews(undefined)
-    setDetailSyncHistory(undefined)
-    try {
-      const result = await getInvoiceDetailAction(invoiceId)
-      setDetailInvoice(result.invoice)
-      setDetailLink(result.link)
-      setDetailViews(result.views as InvoiceView[])
-      setDetailSyncHistory(result.syncHistory as any)
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Could not load invoice", {
-        description: error?.message ?? "Please try again.",
-      })
-    } finally {
-      setDetailLoading(false)
     }
   }
 
@@ -706,7 +766,7 @@ export function InvoicesClient({
                 <TableHead className="px-4 py-4 text-center">Due date</TableHead>
                 <TableHead className="text-right px-4 py-4">Amount</TableHead>
                 {isProjectScoped && <TableHead className="text-right px-4 py-4">Balance</TableHead>}
-                <TableHead className="px-4 py-4 text-center">Backup</TableHead>
+                {enableApprovedCostsSource && <TableHead className="px-4 py-4 text-center">Backup</TableHead>}
                 <TableHead className="px-4 py-4 text-center">Status</TableHead>
                 <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
               </TableRow>
@@ -757,9 +817,11 @@ export function InvoicesClient({
                         <div className="font-semibold">{balance}</div>
                       </TableCell>
                     )}
-                    <TableCell className="px-4 py-4 text-center">
-                      <BackupPackageBadge summary={backupPackage} busy={packageBusy ? packageActionKind : null} />
-                    </TableCell>
+                    {enableApprovedCostsSource && (
+                      <TableCell className="px-4 py-4 text-center">
+                        <BackupPackageBadge summary={backupPackage} busy={packageBusy ? packageActionKind : null} />
+                      </TableCell>
+                    )}
                     <TableCell className="px-4 py-4 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}>
@@ -784,6 +846,11 @@ export function InvoicesClient({
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem
+                              disabled={
+                                !["draft", "saved"].includes(resolveStatusKey(invoice.status)) ||
+                                Boolean(invoice.sent_at) ||
+                                Boolean(invoice.qbo_id)
+                              }
                               onSelect={(event) => {
                                 event.preventDefault()
                                 setEditingInvoice(invoice)
@@ -791,6 +858,17 @@ export function InvoicesClient({
                               }}
                             >
                               Edit invoice
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={
+                                ["draft", "saved", "partial", "paid", "void"].includes(resolveStatusKey(invoice.status))
+                              }
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                setRevisingInvoice(invoice)
+                              }}
+                            >
+                              Revise and reissue
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               disabled={linkingId === invoice.id}
@@ -839,25 +917,38 @@ export function InvoicesClient({
                             >
                               {sendingReminderId === invoice.id ? "Sending…" : "Send reminder"}
                             </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              disabled={!invoice.project_id || packageBusy}
-                              onSelect={(event) => {
-                                event.preventDefault()
-                                void handleGenerateBackupPackage(invoice)
-                              }}
-                            >
-                              {packageBusy && packageActionKind === "generate" ? "Generating…" : backupPackage ? "Regenerate backup package" : "Generate backup package"}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              disabled={!invoice.project_id || !backupPackage || packageBusy || ["shared", "downloaded", "accepted"].includes(backupPackage.status)}
-                              onSelect={(event) => {
-                                event.preventDefault()
-                                void handleShareBackupPackage(invoice)
-                              }}
-                            >
-                              {packageBusy && packageActionKind === "share" ? "Sharing…" : "Share backup to portal"}
-                            </DropdownMenuItem>
+                            {enableApprovedCostsSource && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  disabled={!invoice.project_id || packageBusy}
+                                  onSelect={(event) => {
+                                    event.preventDefault()
+                                    void handleGenerateBackupPackage(invoice)
+                                  }}
+                                >
+                                  {packageBusy && packageActionKind === "generate"
+                                    ? "Generating…"
+                                    : backupPackage
+                                      ? "Regenerate backup package"
+                                      : "Generate backup package"}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={
+                                    !invoice.project_id ||
+                                    !backupPackage ||
+                                    packageBusy ||
+                                    ["shared", "downloaded", "accepted"].includes(backupPackage.status)
+                                  }
+                                  onSelect={(event) => {
+                                    event.preventDefault()
+                                    void handleShareBackupPackage(invoice)
+                                  }}
+                                >
+                                  {packageBusy && packageActionKind === "share" ? "Sharing…" : "Share backup to portal"}
+                                </DropdownMenuItem>
+                              </>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -867,7 +958,7 @@ export function InvoicesClient({
               })}
               {filtered.length === 0 && !isCreating && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={enableApprovedCostsSource ? 9 : 8} className="py-10 text-center text-muted-foreground">
                     <div className="flex flex-col items-center gap-4">
                       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                         <FolderOpen className="h-6 w-6" />
@@ -886,7 +977,7 @@ export function InvoicesClient({
               )}
               {isCreating && filtered.length === 0 && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={9}>
+                  <TableCell colSpan={enableApprovedCostsSource ? 9 : 8}>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {[...Array(3)].map((_, idx) => (
                         <Skeleton key={idx} className="h-24 w-full rounded-md" />
@@ -904,7 +995,17 @@ export function InvoicesClient({
 
       <InvoiceDetailSheet
         open={detailOpen}
-        onOpenChange={setDetailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open)
+          if (!open) {
+            const params = new URLSearchParams(window.location.search)
+            params.delete("invoice")
+            params.delete("invoiceId")
+            const newSearch = params.toString()
+            const newPath = window.location.pathname + (newSearch ? `?${newSearch}` : "")
+            router.replace(newPath, { scroll: false })
+          }
+        }}
         invoice={detailInvoice}
         link={detailLink}
         views={detailViews}
@@ -940,12 +1041,21 @@ export function InvoicesClient({
           }
         }}
         onEdit={
-          detailInvoice
+          detailInvoice &&
+          ["draft", "saved"].includes(resolveStatusKey(detailInvoice.status)) &&
+          !detailInvoice.sent_at &&
+          !detailInvoice.qbo_id
             ? () => {
                 setEditingInvoice(detailInvoice)
                 setEditOpen(true)
                 setDetailOpen(false)
               }
+            : undefined
+        }
+        onRevise={
+          detailInvoice &&
+          !["draft", "saved", "partial", "paid", "void"].includes(resolveStatusKey(detailInvoice.status))
+            ? () => setRevisingInvoice(detailInvoice)
             : undefined
         }
       />
@@ -962,6 +1072,23 @@ export function InvoicesClient({
             <AlertDialogCancel disabled={destructiveActionLoading}>Cancel</AlertDialogCancel>
             <AlertDialogAction disabled={destructiveActionLoading} onClick={() => void handleVoidInvoice()}>
               {destructiveActionLoading ? "Voiding..." : "Void invoice"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={Boolean(revisingInvoice)} onOpenChange={(open) => !open && setRevisingInvoice(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revise and reissue invoice?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This voids invoice {revisingInvoice?.invoice_number ?? ""}, preserves its audit history, and creates a new linked draft with a new invoice number.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={destructiveActionLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={destructiveActionLoading} onClick={() => void handleReviseInvoice()}>
+              {destructiveActionLoading ? "Creating revision..." : "Create replacement draft"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

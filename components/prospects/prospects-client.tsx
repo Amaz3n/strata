@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 
 import type { Prospect } from "@/lib/services/prospects"
@@ -163,6 +163,8 @@ export function ProspectsClient({
   onAddProspect,
 }: ProspectsClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const urlProspectId = searchParams.get("prospectId")
   // Badges toggle the same controlled filter; re-selecting the active one returns to the default view.
   const toggleAttention = (next: AttentionFilter) => onSelectFilter(activeFilter === next ? "active" : next)
   const attentionActive =
@@ -176,6 +178,13 @@ export function ProspectsClient({
   const [deleteTarget, setDeleteTarget] = useState<Prospect | null>(null)
   const [detailId, setDetailId] = useState<string | undefined>()
   const [detailOpen, setDetailOpen] = useState(false)
+
+  useEffect(() => {
+    if (urlProspectId) {
+      setDetailId(urlProspectId)
+      setDetailOpen(true)
+    }
+  }, [urlProspectId])
 
   const handleDelete = () => {
     if (!deleteTarget) return
@@ -241,6 +250,9 @@ export function ProspectsClient({
   const openDetail = (prospectId: string) => {
     setDetailId(prospectId)
     setDetailOpen(true)
+    const params = new URLSearchParams(window.location.search)
+    params.set("prospectId", prospectId)
+    router.replace(window.location.pathname + `?${params.toString()}`, { scroll: false })
   }
 
   const getOwnerName = (userId?: string | null) => {
@@ -259,7 +271,16 @@ export function ProspectsClient({
       <ProspectDetailSheet
         prospectId={detailId}
         open={detailOpen}
-        onOpenChange={setDetailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open)
+          if (!open) {
+            const params = new URLSearchParams(window.location.search)
+            params.delete("prospectId")
+            const newSearch = params.toString()
+            const newPath = window.location.pathname + (newSearch ? `?${newSearch}` : "")
+            router.replace(newPath, { scroll: false })
+          }
+        }}
         teamMembers={teamMembers}
         onEditProspect={(p) => {
           setDetailOpen(false)

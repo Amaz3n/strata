@@ -16,6 +16,11 @@ type PaymentRow = {
   status: string | null
 }
 
+type PaymentReversalRow = {
+  amount_cents: number | null
+  status: string | null
+}
+
 function isOverdue(dueDate: string | null | undefined) {
   if (!dueDate) return false
   const due = new Date(dueDate)
@@ -72,20 +77,34 @@ export async function recalcInvoiceBalanceAndStatus({
     throw new Error(invoiceError?.message ?? "Invoice not found or inaccessible")
   }
 
-  const { data: paymentRows, error: paymentError } = await supabase
-    .from("payments")
-    .select("amount_cents, status")
-    .eq("org_id", orgId)
-    .eq("invoice_id", invoiceId)
-    .in("status", ["succeeded", "processing"])
-    .returns<PaymentRow[]>()
+  const [paymentsResult, reversalsResult] = await Promise.all([
+    supabase
+      .from("payments")
+      .select("amount_cents, status")
+      .eq("org_id", orgId)
+      .eq("invoice_id", invoiceId)
+      .in("status", ["succeeded", "completed", "processing", "refunded"])
+      .returns<PaymentRow[]>(),
+    supabase
+      .from("payment_reversals")
+      .select("amount_cents, status")
+      .eq("org_id", orgId)
+      .eq("invoice_id", invoiceId)
+      .in("status", ["pending", "succeeded"])
+      .returns<PaymentReversalRow[]>(),
+  ])
 
-  if (paymentError) {
-    throw new Error(`Failed to aggregate payments: ${paymentError.message}`)
+  if (paymentsResult.error) {
+    throw new Error(`Failed to aggregate payments: ${paymentsResult.error.message}`)
+  }
+  if (reversalsResult.error) {
+    throw new Error(`Failed to aggregate payment reversals: ${reversalsResult.error.message}`)
   }
 
   const invoiceRow = invoice as unknown as InvoiceRow
-  const paidCents = (paymentRows ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
+  const grossPaidCents = (paymentsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
+  const reversedCents = (reversalsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
+  const paidCents = Math.max(grossPaidCents - reversedCents, 0)
   const totalCents = invoiceRow.total_cents ?? 0
 
   const currentStatus = invoiceRow.status ?? "sent"

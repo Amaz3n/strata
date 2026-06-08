@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Download, ExternalLink, Link2, Plug, Search, X } from "lucide-react"
 import { toast } from "sonner"
 
@@ -9,6 +9,8 @@ import {
   importQboRecordsAction,
   listQboImportRecordsAction,
 } from "@/app/(app)/integrations/qbo-import-actions"
+import { getProjectQboLinkAction } from "@/app/(app)/integrations/qbo-project-link-actions"
+import type { ProjectQboLink } from "@/lib/services/qbo-project-link"
 import type { QboImportEntityType, QboImportRecord } from "@/lib/services/qbo-import"
 import {
   Accordion,
@@ -52,6 +54,7 @@ const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "bill", label: "Bills" },
   { key: "payment", label: "Invoice payments" },
   { key: "bill_payment", label: "Bill payments" },
+  { key: "journal_entry", label: "Journal entries" },
 ]
 
 const LOOKBACK_OPTIONS: { value: string; label: string; days: number | null }[] = [
@@ -67,6 +70,7 @@ const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
   bill: 0,
   payment: 0,
   bill_payment: 0,
+  journal_entry: 0,
 }
 
 type TypeFilter = "all" | QboImportEntityType
@@ -125,6 +129,9 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [openSections, setOpenSections] = useState<string[]>(SECTIONS.map((section) => section.key))
   const [lastImport, setLastImport] = useState<Record<QboImportEntityType, number> | null>(null)
+  const [projectFilter, setProjectFilter] = useState<string>("all")
+  const [qboLink, setQboLink] = useState<ProjectQboLink | null>(null)
+  const defaultFilterApplied = useRef(false)
 
   const load = useCallback(async (lookbackValue: string) => {
     setLoading(true)
@@ -144,6 +151,16 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     if (active) void load(lookback)
   }, [active, lookback, load])
 
+  // The project's QBO customer/project link (set in the project settings sheet) defaults the import
+  // filter so opening import from a linked project shows just that project's transactions.
+  useEffect(() => {
+    if (!active) return
+    defaultFilterApplied.current = false
+    getProjectQboLinkAction({ projectId })
+      .then(setQboLink)
+      .catch(() => {})
+  }, [active, projectId])
+
   const recordByKey = useMemo(() => new Map(records.map((record) => [rowKey(record), record])), [records])
 
   const typeCounts = useMemo(() => {
@@ -162,13 +179,34 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     return records
       .filter((record) => {
         if (typeFilter !== "all" && record.entityType !== typeFilter) return false
+        if (projectFilter !== "all" && record.qboCustomerId !== projectFilter) return false
         if (!query) return true
         return [record.docNumber, record.counterparty, record.possibleMatch]
           .filter(Boolean)
           .some((field) => field!.toLowerCase().includes(query))
       })
       .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""))
-  }, [records, typeFilter, search])
+  }, [records, typeFilter, projectFilter, search])
+
+  // Distinct QBO customers/projects present in the fetched records — drives the project filter.
+  const projectFilterOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const record of records) {
+      if (record.qboCustomerId) map.set(record.qboCustomerId, record.qboCustomerName ?? record.qboCustomerId)
+    }
+    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [records])
+
+  // Default the filter to the project's linked QBO project once (per open), if it has records here.
+  useEffect(() => {
+    if (defaultFilterApplied.current) return
+    const linkedId = qboLink?.qboCustomerId
+    if (!linkedId || projectFilterOptions.length === 0) return
+    if (projectFilterOptions.some((option) => option.id === linkedId)) {
+      setProjectFilter(linkedId)
+    }
+    defaultFilterApplied.current = true
+  }, [qboLink, projectFilterOptions])
 
   function canImportRecord(record: QboImportRecord) {
     return record.dependencyStatus !== "missing"
@@ -331,7 +369,25 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
             </SelectContent>
           </Select>
         </div>
-        <span className="shrink-0 text-xs text-muted-foreground">{filteredRecords.length} shown</span>
+        <div className="flex items-center gap-2">
+          {projectFilterOptions.length > 0 ? (
+            <Select value={projectFilter} onValueChange={setProjectFilter} disabled={loading || importing}>
+              <SelectTrigger className="h-8 w-40 rounded-none text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                <SelectSeparator />
+                {projectFilterOptions.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {option.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          <span className="shrink-0 text-xs text-muted-foreground">{filteredRecords.length} shown</span>
+        </div>
       </div>
 
       {lastImport && (
@@ -339,7 +395,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
           <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
           {(lastImport.invoice > 0 || lastImport.payment > 0) && <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />}
           {(lastImport.bill > 0 || lastImport.bill_payment > 0) && <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />}
-          {lastImport.expense > 0 && <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />}
+          {(lastImport.expense > 0 || lastImport.journal_entry > 0) && <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />}
         </div>
       )}
 

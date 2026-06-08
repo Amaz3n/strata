@@ -31,6 +31,10 @@ import {
 } from "@/lib/services/fee-billing"
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { saveProjectFinancialSetup, type FinancialSetupInput } from "@/lib/services/project-financial-setup"
+import {
+  getBillingAutopilotState,
+  prepareBillingAutopilotRun,
+} from "@/lib/services/billing-autopilot"
 
 function messageForError(error: unknown) {
   return error instanceof Error ? error.message : String(error ?? "Unknown error")
@@ -127,13 +131,14 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  * - Cost codes for invoice line items
  */
 export async function fetchReceivablesTabDataAction(projectId: string) {
-  const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, gmpSummaryResult] = await Promise.allSettled([
+  const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, gmpSummaryResult, autopilotResult] = await Promise.allSettled([
     listInvoices({ projectId }),
     listContacts(),
     listCostCodes(),
     listProjectOwnerBillingPackageSummaries(projectId),
     getProjectFeeBillingSummary(projectId),
     getProjectGmpControlSummary(projectId),
+    getBillingAutopilotState(projectId),
   ])
 
   return {
@@ -143,6 +148,7 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
     ownerBillingPackages: ownerPackagesResult.status === "fulfilled" ? ownerPackagesResult.value : [],
     feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
     gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
+    autopilot: autopilotResult.status === "fulfilled" ? autopilotResult.value : { enabled: false, run: null },
     errors: [
       resultError("Invoices", invoicesResult),
       resultError("Contacts", contactsResult),
@@ -150,8 +156,15 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
       resultError("Owner billing packages", ownerPackagesResult),
       resultError("Fee billing", feeSummaryResult),
       resultError("GMP control", gmpSummaryResult),
+      resultError("Arc Autopilot", autopilotResult),
     ].filter(Boolean) as string[],
   }
+}
+
+export async function prepareBillingAutopilotAction(projectId: string) {
+  const state = await prepareBillingAutopilotRun(projectId)
+  revalidatePath(`/projects/${projectId}/financials/receivables`)
+  return state
 }
 
 /**

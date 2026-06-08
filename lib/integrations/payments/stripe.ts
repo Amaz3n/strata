@@ -305,6 +305,46 @@ export function mapStripeEventToDomain(event: Stripe.Event) {
         receipt_url: charge.receipt_url ?? undefined,
       }
     }
+    case "refund.created":
+    case "refund.updated": {
+      const refund = event.data.object as Stripe.Refund
+      if (refund.status !== "succeeded") return null
+      return {
+        type: "payment_reversed" as const,
+        reversal_type: "refund" as const,
+        amount_cents: refund.amount,
+        provider_reversal_id: refund.id,
+        provider_payment_id:
+          typeof refund.payment_intent === "string" ? refund.payment_intent : refund.payment_intent?.id,
+        provider_charge_id: typeof refund.charge === "string" ? refund.charge : refund.charge?.id,
+        reason: refund.reason ?? "Stripe refund",
+        metadata: refund.metadata,
+      }
+    }
+    case "charge.dispute.created": {
+      const dispute = event.data.object as Stripe.Dispute
+      return {
+        type: "payment_reversed" as const,
+        reversal_type: "chargeback" as const,
+        amount_cents: dispute.amount,
+        provider_reversal_id: dispute.id,
+        provider_payment_id:
+          typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id,
+        provider_charge_id: typeof dispute.charge === "string" ? dispute.charge : dispute.charge?.id,
+        reason: dispute.reason ?? "Stripe dispute",
+        metadata: dispute.metadata,
+      }
+    }
+    case "charge.dispute.closed": {
+      const dispute = event.data.object as Stripe.Dispute
+      return {
+        type: "payment_reversal_resolved" as const,
+        provider_reversal_id: dispute.id,
+        outcome: dispute.status === "won" ? "reversed" as const : "succeeded" as const,
+        reason: `Stripe dispute ${dispute.status}`,
+        metadata: dispute.metadata,
+      }
+    }
     default:
       return null
   }

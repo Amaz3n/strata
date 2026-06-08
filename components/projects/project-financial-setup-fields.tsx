@@ -114,7 +114,9 @@ export function financialSetupFromProject(project: Project, contract?: Contract 
   const snapshot = (billingContract?.snapshot ?? {}) as Record<string, any>
   const billingModel = resolveProjectBillingModel(project, billingContract)
   const costDriven = isCostDrivenModel(billingModel)
+  const contractSnapshot = (billingContract?.snapshot ?? {}) as Record<string, any>
   const totalCents =
+    (typeof contractSnapshot.base_total_cents === "number" ? contractSnapshot.base_total_cents : null) ??
     billingContract?.total_cents ??
     (typeof project.total_contract_value_cents === "number" ? project.total_contract_value_cents : null) ??
     (typeof project.total_value === "number" ? Math.round(project.total_value * 100) : null)

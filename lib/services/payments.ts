@@ -19,7 +19,6 @@ import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
 import { calculatePaymentFeeQuote, type OnlinePaymentMethod, loadPaymentFeePolicy } from "@/lib/payments/fees"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
-import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireReadyStripeConnectedAccount, requireReadyStripeConnectedAccountForOrg } from "@/lib/services/stripe-connected-accounts"
 
@@ -289,6 +288,34 @@ async function buildPaymentIntentAmounts(params: {
   }
 }
 
+async function findReusablePaymentIntent(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  invoiceId: string
+  amountCents: number
+  method?: string | null
+}) {
+  const { data } = await params.supabase
+    .from("payment_intents")
+    .select("*")
+    .eq("org_id", params.orgId)
+    .eq("invoice_id", params.invoiceId)
+    .in("status", ["requires_payment_method", "requires_confirmation", "requires_action", "processing"])
+    .order("created_at", { ascending: false })
+    .limit(5)
+
+  const reusable = (data ?? []).find((intent: any) => {
+    const metadata = intent.metadata ?? {}
+    return (
+      Number(intent.amount_cents ?? 0) === params.amountCents &&
+      (metadata.payment_method_choice ?? null) === (params.method ?? null) &&
+      typeof intent.client_secret === "string" &&
+      intent.client_secret.length > 0
+    )
+  })
+  return reusable ? mapPaymentIntent(reusable) : null
+}
+
 async function ensureReceiptForPayment({
   supabase,
   orgId,
@@ -438,11 +465,6 @@ export async function getInvoiceForPayLink(token: string) {
   const result = await validatePayLinkToken(token)
   if (!result) return null
 
-  // Signed token already carries invoice ids; for hashed tokens fetch full invoice.
-  if ("signed" in result && result.signed) {
-    return { link: result.link, invoice: result.invoice }
-  }
-
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("invoices")
@@ -454,6 +476,7 @@ export async function getInvoiceForPayLink(token: string) {
     .maybeSingle()
 
   if (error || !data) return null
+  if (data.client_visible === false || data.status === "void") return null
 
   return {
     link: result.link,
@@ -463,6 +486,78 @@ export async function getInvoiceForPayLink(token: string) {
       lines: (data as any).invoice_lines ?? [],
     },
   }
+}
+
+export async function createPayLinkPaymentIntent(token: string) {
+  const result = await getInvoiceForPayLink(token)
+  if (!result) throw new Error("Payment link is invalid, expired, or unavailable")
+
+  const invoice = result.invoice
+  const supabase = createServiceSupabaseClient()
+  const invoiceBalanceCents = invoice.balance_due_cents ?? invoice.total_cents ?? 0
+  if (invoiceBalanceCents <= 0) throw new Error("Invoice has no outstanding balance")
+
+  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(invoice.org_id)
+  const amounts = await buildPaymentIntentAmounts({
+    supabase,
+    orgId: invoice.org_id,
+    invoiceBalanceCents,
+    includeProcessingFee: false,
+  })
+  const reusable = await findReusablePaymentIntent({
+    supabase,
+    orgId: invoice.org_id,
+    invoiceId: invoice.id,
+    amountCents: amounts.chargeAmountCents,
+  })
+  if (reusable) return reusable
+
+  const stripeIntent = await createStripePaymentIntent({
+    amount_cents: amounts.chargeAmountCents,
+    currency: invoice.currency ?? "usd",
+    invoice_id: invoice.id,
+    org_id: invoice.org_id,
+    project_id: invoice.project_id,
+    description: `Invoice ${invoice.invoice_number ?? invoice.id}`,
+    connected_account_id: connectedAccount.stripe_account_id,
+    payment_method_types: stripePaymentMethodTypesFor(),
+    metadata: {
+      ...amounts.metadata,
+      pay_link_authorized: "true",
+    },
+  })
+
+  const { data, error } = await supabase
+    .from("payment_intents")
+    .insert({
+      org_id: invoice.org_id,
+      project_id: invoice.project_id,
+      invoice_id: invoice.id,
+      provider: "stripe",
+      amount_cents: amounts.chargeAmountCents,
+      currency: invoice.currency ?? "usd",
+      status: stripeIntent.status,
+      client_secret: stripeIntent.client_secret,
+      provider_intent_id: stripeIntent.provider_intent_id,
+      connected_account_id: connectedAccount.stripe_account_id,
+      charge_type: "direct",
+      application_fee_amount: 0,
+      processor_fee_cents: 0,
+      platform_fee_cents: 0,
+      on_behalf_of_account_id: null,
+      idempotency_key: stripeIntent.provider_intent_id,
+      metadata: {
+        invoice_balance_cents: amounts.invoiceBalanceCents,
+        payment_method_fee_cents: 0,
+        payment_method_total_cents: amounts.chargeAmountCents,
+        pay_link_authorized: true,
+      },
+    })
+    .select("*")
+    .single()
+
+  if (error || !data) throw new Error(`Failed to create payment intent: ${error?.message}`)
+  return mapPaymentIntent(data)
 }
 
 export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId?: string) {
@@ -489,6 +584,14 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     method: parsed.method,
     includeProcessingFee: parsed.include_processing_fee,
   })
+  const reusable = await findReusablePaymentIntent({
+    supabase,
+    orgId: resolvedOrgId,
+    invoiceId: parsed.invoice_id,
+    amountCents: amounts.chargeAmountCents,
+    method: parsed.method,
+  })
+  if (reusable) return reusable
 
   const stripeIntent = await createStripePaymentIntent({
     amount_cents: amounts.chargeAmountCents,
@@ -568,6 +671,14 @@ export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoic
     method: input.method,
     includeProcessingFee: true,
   })
+  const reusable = await findReusablePaymentIntent({
+    supabase,
+    orgId: invoice.org_id,
+    invoiceId: invoice.id,
+    amountCents: amounts.chargeAmountCents,
+    method: input.method,
+  })
+  if (reusable) return reusable
 
   const stripeIntent = await createStripePaymentIntent({
     amount_cents: amounts.chargeAmountCents,
@@ -696,13 +807,41 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     idempotency_key: parsed.idempotency_key ?? null,
   }
 
-  const { data: paymentRow, error: paymentError } = await supabase.from("payments").insert(payload).select("*").single()
+  const { data: paymentResult, error: paymentError } = await supabase.rpc("apply_invoice_payment_atomic", {
+    p_org_id: resolvedOrgId,
+    p_invoice_id: invoiceId,
+    p_amount_cents: payload.amount_cents,
+    p_currency: payload.currency,
+    p_method: payload.method,
+    p_provider: payload.provider,
+    p_provider_payment_id: payload.provider_payment_id,
+    p_status: payload.status,
+    p_reference: payload.reference,
+    p_fee_cents: payload.fee_cents,
+    p_gross_cents: payload.gross_cents,
+    p_net_cents: payload.net_cents,
+    p_idempotency_key: payload.idempotency_key,
+    p_metadata: payload.metadata,
+  })
 
-  if (paymentError || !paymentRow) {
+  if (paymentError || !paymentResult) {
     throw new Error(`Failed to record payment: ${paymentError?.message}`)
   }
 
-  await recalcInvoiceBalanceAndStatus({ supabase, orgId: resolvedOrgId, invoiceId })
+  const paymentRow = paymentResult as any
+  await supabase
+    .from("payments")
+    .update({
+      provider_charge_id: payload.provider_charge_id,
+      connected_account_id: payload.connected_account_id,
+      processor_fee_cents: payload.processor_fee_cents,
+      platform_fee_cents: payload.platform_fee_cents,
+      application_fee_cents: payload.application_fee_cents,
+      provider_balance_transaction_id: payload.provider_balance_transaction_id,
+      provider_transfer_id: payload.provider_transfer_id,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", paymentRow.id)
 
   if (payload.status === "succeeded" && payload.invoice_id) {
     await ensureReceiptForPayment({
@@ -770,7 +909,113 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     console.error("Failed to enqueue QBO payment sync", err)
   }
 
-  return mapPayment(paymentRow)
+  return mapPayment({ ...paymentRow, ...payload })
+}
+
+export async function recordPaymentReversal(input: {
+  paymentId?: string
+  providerPaymentId?: string
+  providerChargeId?: string
+  amountCents: number
+  reversalType: "refund" | "ach_return" | "chargeback" | "dispute" | "correction"
+  providerReversalId?: string
+  reason?: string
+  metadata?: Record<string, any>
+  orgId?: string
+}) {
+  const supabase = createServiceSupabaseClient()
+  let resolvedOrgId = input.orgId
+  let paymentId = input.paymentId
+
+  if (!resolvedOrgId) {
+    const ctx = await requireOrgContext()
+    resolvedOrgId = ctx.orgId
+    await requireAuthorization({
+      permission: "payment.release",
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      supabase: ctx.supabase,
+      logDecision: true,
+      resourceType: "payment",
+      resourceId: paymentId,
+    })
+  }
+
+  if (!paymentId && input.providerPaymentId) {
+    const { data: payment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("provider_payment_id", input.providerPaymentId)
+      .maybeSingle()
+    paymentId = payment?.id
+  }
+  if (!paymentId && input.providerChargeId) {
+    const { data: payment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("provider_charge_id", input.providerChargeId)
+      .maybeSingle()
+    paymentId = payment?.id
+  }
+  if (!paymentId) throw new Error("Payment not found for reversal")
+
+  const { data, error } = await supabase.rpc("record_payment_reversal_atomic", {
+    p_org_id: resolvedOrgId,
+    p_payment_id: paymentId,
+    p_amount_cents: input.amountCents,
+    p_reversal_type: input.reversalType,
+    p_provider_reversal_id: input.providerReversalId ?? null,
+    p_reason: input.reason ?? null,
+    p_metadata: input.metadata ?? {},
+  })
+  if (error || !data) {
+    throw new Error(`Failed to record payment reversal: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: undefined,
+    action: "insert",
+    entityType: "payment_reversal",
+    entityId: (data as any).id,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "payment_reversed",
+    entityType: "payment",
+    entityId: paymentId,
+    payload: {
+      amount_cents: input.amountCents,
+      reversal_type: input.reversalType,
+      provider_reversal_id: input.providerReversalId ?? null,
+    },
+  })
+
+  return data
+}
+
+export async function resolvePaymentReversal(input: {
+  orgId: string
+  providerReversalId: string
+  outcome: "succeeded" | "reversed"
+  reason?: string | null
+  metadata?: Record<string, any>
+}) {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase.rpc("resolve_payment_reversal_atomic", {
+    p_org_id: input.orgId,
+    p_provider_reversal_id: input.providerReversalId,
+    p_outcome: input.outcome,
+    p_reason: input.reason ?? null,
+    p_metadata: input.metadata ?? {},
+  })
+  if (error || !data) {
+    throw new Error(`Failed to resolve payment reversal: ${error?.message ?? "No result returned"}`)
+  }
+  return data
 }
 
 export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) {

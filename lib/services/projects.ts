@@ -398,13 +398,26 @@ async function upsertProjectBillingContract({
   const contractType = input.billing_model ? contractTypeForBillingModel(billingModel) : input.contract_type ?? contractTypeForBillingModel(billingModel)
   const isFixedPrice = billingModel === "fixed_price"
   const isFixedFee = billingModel === "cost_plus_fixed_fee"
+  const existingSnapshot = (existing?.snapshot ?? {}) as Record<string, any>
+  const approvedChangeOrdersCents = Number(existingSnapshot.approved_change_orders_cents ?? 0)
+  const existingBaseTotalCents = existing
+    ? Number(
+        existingSnapshot.base_total_cents ??
+          Math.max(0, Number(existing.total_cents ?? 0) - approvedChangeOrdersCents),
+      )
+    : null
+  const requestedBaseTotalCents =
+    input.total_contract_value_cents ??
+    (typeof input.total_value === "number" ? Math.round(input.total_value * 100) : null)
+  const baseTotalCents = requestedBaseTotalCents ?? existingBaseTotalCents
+  const revisedTotalCents = baseTotalCents == null ? null : baseTotalCents + approvedChangeOrdersCents
   const payload = {
     org_id: orgId,
     project_id: projectId,
     title: existing?.title ?? `${projectName} Contract`,
     status: existing?.status ?? "active",
     contract_type: contractType,
-    total_cents: input.total_contract_value_cents ?? existing?.total_cents ?? (typeof input.total_value === "number" ? Math.round(input.total_value * 100) : null),
+    total_cents: revisedTotalCents,
     currency: existing?.currency ?? "usd",
     markup_percent: isFixedPrice || isFixedFee ? null : input.markup_percent ?? existing?.markup_percent ?? 0,
     gmp_cents: billingModel === "cost_plus_gmp" ? input.gmp_cents ?? existing?.gmp_cents ?? null : null,
@@ -415,9 +428,12 @@ async function upsertProjectBillingContract({
     open_book: input.open_book ?? existing?.open_book ?? true,
     retainage_percent: input.retainage_percent ?? existing?.retainage_percent ?? 0,
     snapshot: {
-      ...(existing?.snapshot ?? {}),
+      ...existingSnapshot,
       billing_setup_source: "project_settings",
       billing_model: billingModel,
+      base_total_cents: baseTotalCents,
+      approved_change_orders_cents: approvedChangeOrdersCents,
+      revised_total_cents: revisedTotalCents,
       fixed_fee_cents: isFixedFee ? input.fixed_fee_cents ?? existing?.snapshot?.fixed_fee_cents ?? null : null,
       paid_costs_required: input.paid_costs_required ?? existing?.snapshot?.paid_costs_required ?? false,
       proof_required: input.proof_required ?? existing?.snapshot?.proof_required ?? false,

@@ -188,6 +188,10 @@ export interface AuditLogEntry {
   userInitials: string
   description: string | null
   createdAt: string
+  orgId: string | null
+  orgName: string | null
+  beforeData: any
+  afterData: any
 }
 
 export interface AuditLogsResult {
@@ -404,6 +408,9 @@ export async function getAuditLogs({
   action,
   entityType,
   user,
+  orgId,
+  startDate,
+  endDate,
   page = 1,
   limit = 50,
 }: {
@@ -411,6 +418,9 @@ export async function getAuditLogs({
   action?: string
   entityType?: string
   user?: string
+  orgId?: string
+  startDate?: string
+  endDate?: string
   page?: number
   limit?: number
 }): Promise<AuditLogsResult> {
@@ -430,6 +440,10 @@ export async function getAuditLogs({
       actor_user:actor_user_id (
         full_name,
         email
+      ),
+      org:org_id (
+        id,
+        name
       )
     `, { count: "exact" })
 
@@ -442,9 +456,37 @@ export async function getAuditLogs({
     query = query.eq("entity_type", entityType)
   }
 
-  if (user && user !== 'system') {
-    // For user filter, we'd need to match against actor_user_id
-    // This is simplified - in practice you'd need to join with users table
+  if (orgId && orgId !== 'all') {
+    query = query.eq("org_id", orgId)
+  }
+
+  if (user && user !== 'all') {
+    if (user === 'system') {
+      query = query.is("actor_user_id", null)
+    } else {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user.trim())
+      if (isUuid) {
+        query = query.eq("actor_user_id", user)
+      }
+    }
+  }
+
+  if (startDate) {
+    query = query.gte("created_at", startDate)
+  }
+
+  if (endDate) {
+    query = query.lte("created_at", endDate)
+  }
+
+  if (search) {
+    const trimmed = search.trim()
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)
+    if (isUuid) {
+      query = query.or(`entity_id.eq.${trimmed},actor_user_id.eq.${trimmed},org_id.eq.${trimmed}`)
+    } else {
+      query = query.or(`action.ilike.%${trimmed}%,entity_type.ilike.%${trimmed}%`)
+    }
   }
 
   // Get paginated results
@@ -464,6 +506,10 @@ export async function getAuditLogs({
     userInitials: getInitials((log.actor_user as any)?.full_name || (log.actor_user as any)?.email || 'System'),
     description: generateAuditDescription(log),
     createdAt: log.created_at,
+    orgId: (log.org as any)?.id || null,
+    orgName: (log.org as any)?.name || null,
+    beforeData: log.before_data,
+    afterData: log.after_data,
   }))
 
   const totalCount = count || 0
@@ -504,6 +550,29 @@ export interface FeatureFlag {
   orgName: string
 }
 
+export interface FeatureFlagOrganization {
+  id: string
+  name: string
+  slug: string | null
+  status: string
+}
+
+export async function getFeatureFlagOrganizations(): Promise<FeatureFlagOrganization[]> {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("orgs")
+    .select("id, name, slug, status")
+    .order("name", { ascending: true })
+
+  if (error) throw error
+  return (data ?? []).map((org) => ({
+    id: org.id,
+    name: org.name,
+    slug: org.slug ?? null,
+    status: org.status,
+  }))
+}
+
 export async function getFeatureFlags(): Promise<FeatureFlag[]> {
   const supabase = createServiceSupabaseClient()
 
@@ -520,46 +589,184 @@ export async function getFeatureFlags(): Promise<FeatureFlag[]> {
         name
       )
     `)
-    .order("org.name", { ascending: true })
     .order("flag_key", { ascending: true })
 
   if (error) throw error
 
-  return (data || []).map(flag => ({
-    id: flag.id,
-    orgId: flag.org_id,
-    flagKey: flag.flag_key,
-    enabled: flag.enabled,
-    config: flag.config || {},
-    expiresAt: flag.expires_at,
-    orgName: (flag.org as any)?.name || 'Unknown',
-  }))
+  return (data || [])
+    .map(flag => ({
+      id: flag.id,
+      orgId: flag.org_id,
+      flagKey: flag.flag_key,
+      enabled: flag.enabled,
+      config: flag.config || {},
+      expiresAt: flag.expires_at,
+      orgName: (flag.org as any)?.name || "Unknown",
+    }))
+    .sort((a, b) => a.orgName.localeCompare(b.orgName) || a.flagKey.localeCompare(b.flagKey))
 }
 
 export async function toggleFeatureFlag(
   flagId: string,
   orgId: string,
-  flagKey: string,
-  enabled: boolean
+  enabled: boolean,
+  actorId?: string,
 ): Promise<void> {
   const supabase = createServiceSupabaseClient()
+  const { data: existing, error: existingError } = await supabase
+    .from("feature_flags")
+    .select("id, flag_key, enabled")
+    .eq("id", flagId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+  if (existingError || !existing) throw new Error("Feature flag not found")
 
   const { error } = await supabase
     .from("feature_flags")
     .update({ enabled, updated_at: new Date().toISOString() })
     .eq("id", flagId)
+    .eq("org_id", orgId)
 
   if (error) throw error
 
-  // Record audit log
   await recordAudit({
     orgId,
-    actorId: undefined, // System action
+    actorId,
     action: "update",
     entityType: "feature_flag",
     entityId: flagId,
-    before: { enabled: !enabled },
-    after: { enabled },
+    before: existing,
+    after: { ...existing, enabled },
+  })
+}
+
+export async function createFeatureFlag(input: {
+  orgId: string
+  flagKey: string
+  enabled: boolean
+  config: Record<string, unknown>
+  expiresAt: string | null
+  actorId?: string
+}): Promise<FeatureFlag> {
+  const supabase = createServiceSupabaseClient()
+  const { data: org, error: orgError } = await supabase
+    .from("orgs")
+    .select("id, name")
+    .eq("id", input.orgId)
+    .maybeSingle()
+  if (orgError || !org) throw new Error("Organization not found")
+
+  const payload = {
+    org_id: input.orgId,
+    flag_key: input.flagKey,
+    enabled: input.enabled,
+    config: input.config,
+    expires_at: input.expiresAt,
+  }
+  const { data, error } = await supabase
+    .from("feature_flags")
+    .insert(payload)
+    .select("id, org_id, flag_key, enabled, config, expires_at")
+    .single()
+
+  if (error || !data) {
+    if (error?.code === "23505") throw new Error("This feature flag already exists for the organization")
+    throw new Error(error?.message ?? "Failed to create feature flag")
+  }
+
+  await recordAudit({
+    orgId: input.orgId,
+    actorId: input.actorId,
+    action: "insert",
+    entityType: "feature_flag",
+    entityId: data.id,
+    after: payload,
+  })
+
+  return {
+    id: data.id,
+    orgId: data.org_id,
+    flagKey: data.flag_key,
+    enabled: data.enabled,
+    config: data.config ?? {},
+    expiresAt: data.expires_at,
+    orgName: org.name,
+  }
+}
+
+export async function updateFeatureFlag(input: {
+  flagId: string
+  orgId: string
+  flagKey: string
+  enabled: boolean
+  config: Record<string, unknown>
+  expiresAt: string | null
+  actorId?: string
+}): Promise<void> {
+  const supabase = createServiceSupabaseClient()
+  const { data: existing, error: existingError } = await supabase
+    .from("feature_flags")
+    .select("id, org_id, flag_key, enabled, config, expires_at")
+    .eq("id", input.flagId)
+    .eq("org_id", input.orgId)
+    .maybeSingle()
+  if (existingError || !existing) throw new Error("Feature flag not found")
+
+  const after = {
+    flag_key: input.flagKey,
+    enabled: input.enabled,
+    config: input.config,
+    expires_at: input.expiresAt,
+  }
+  const { error } = await supabase
+    .from("feature_flags")
+    .update(after)
+    .eq("id", input.flagId)
+    .eq("org_id", input.orgId)
+  if (error) {
+    if (error.code === "23505") throw new Error("This feature flag already exists for the organization")
+    throw error
+  }
+
+  await recordAudit({
+    orgId: input.orgId,
+    actorId: input.actorId,
+    action: "update",
+    entityType: "feature_flag",
+    entityId: input.flagId,
+    before: existing,
+    after,
+  })
+}
+
+export async function deleteFeatureFlag(input: {
+  flagId: string
+  orgId: string
+  actorId?: string
+}): Promise<void> {
+  const supabase = createServiceSupabaseClient()
+  const { data: existing, error: existingError } = await supabase
+    .from("feature_flags")
+    .select("id, org_id, flag_key, enabled, config, expires_at")
+    .eq("id", input.flagId)
+    .eq("org_id", input.orgId)
+    .maybeSingle()
+  if (existingError || !existing) throw new Error("Feature flag not found")
+
+  const { error } = await supabase
+    .from("feature_flags")
+    .delete()
+    .eq("id", input.flagId)
+    .eq("org_id", input.orgId)
+  if (error) throw error
+
+  await recordAudit({
+    orgId: input.orgId,
+    actorId: input.actorId,
+    action: "delete",
+    entityType: "feature_flag",
+    entityId: input.flagId,
+    before: existing,
   })
 }
 
@@ -879,3 +1086,18 @@ export async function getSupportContracts(): Promise<SupportContract[]> {
 
 
 // Additional admin functions will be added here as we implement more features
+
+export async function getAuditUsers() {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("app_users")
+    .select("id, full_name, email")
+    .order("full_name", { ascending: true })
+
+  if (error) throw error
+  return (data || []).map(user => ({
+    id: user.id,
+    fullName: user.full_name,
+    email: user.email,
+  }))
+}

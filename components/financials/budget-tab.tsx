@@ -591,7 +591,10 @@ export function BudgetTab({
   }, [activeBucket, costCodesEnabled, projectId])
 
   // ---------- Render ----------
-  const contractValue = project?.total_contract_value_cents ?? 0
+  const contractValue =
+    project?.billing_contract?.total_cents ??
+    project?.total_contract_value_cents ??
+    0
   const contractBilled = summary?.total_invoiced_cents ?? 0
   const percentComplete = summary?.total_eac_cents > 0 ? (summary?.total_actual_cents ?? 0) / summary.total_eac_cents : 0
   const earnedRevenue = Math.round(contractValue * percentComplete)

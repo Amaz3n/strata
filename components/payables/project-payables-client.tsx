@@ -67,9 +67,12 @@ export function ProjectPayablesClient({
   const [qboDefaults, setQboDefaults] = useState<{ expenseAccountId?: string; apAccountId?: string }>({})
   const [projects, setProjects] = useState<ProjectOption[]>([])
 
-  // The open payable is local state (instant open) but mirrored to the URL (?bill=) via
-  // history so it deep-links and survives refresh without triggering a server refetch.
   const [workspaceBillId, setWorkspaceBillId] = useState<string | null>(searchParams.get("bill"))
+
+  const urlBillId = searchParams.get("bill")
+  useEffect(() => {
+    setWorkspaceBillId(urlBillId)
+  }, [urlBillId])
 
   const openBill = (billId: string | null) => {
     setWorkspaceBillId(billId)

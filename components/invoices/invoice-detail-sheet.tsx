@@ -41,6 +41,7 @@ type Props = {
   onManualResync?: () => Promise<void>
   manualResyncing?: boolean
   onEdit?: () => void
+  onRevise?: () => void
   onPaymentRecorded?: () => Promise<void> | void
 }
 
@@ -111,6 +112,7 @@ export function InvoiceDetailSheet({
   onManualResync,
   manualResyncing,
   onEdit,
+  onRevise,
   onPaymentRecorded,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
@@ -379,10 +381,10 @@ export function InvoiceDetailSheet({
                       variant="outline"
                       size="sm"
                       className="w-full justify-center"
-                      onClick={onEdit}
-                      disabled={!onEdit}
+                      onClick={onEdit ?? onRevise}
+                      disabled={!onEdit && !onRevise}
                     >
-                      Edit
+                      {onEdit ? "Edit" : "Revise"}
                     </Button>
                   </div>
                 </div>

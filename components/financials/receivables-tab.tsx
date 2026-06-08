@@ -10,12 +10,14 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AlertTriangle, Receipt, Calendar, DollarSign, Percent } from "lucide-react"
 import { useEffect, useMemo, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
 import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
 import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
+import type { BillingAutopilotState } from "@/lib/services/billing-autopilot"
+import { BillingAutopilotPanel } from "@/components/financials/billing-autopilot-panel"
 import {
   createProjectFeeInvoiceAction,
   updateProjectFeeProgressAction,
@@ -33,8 +35,8 @@ interface ReceivablesTabProps {
   ownerBillingPackages?: OwnerBillingPackageSummary[]
   feeSummary?: ProjectFeeBillingSummary | null
   gmpSummary?: ProjectGmpControlSummary | null
+  autopilot?: BillingAutopilotState
   contract: Contract | null
-  approvedChangeOrdersTotalCents?: number
   scheduleItems?: any[]
   builderInfo?: {
     name?: string | null
@@ -56,13 +58,15 @@ export function ReceivablesTab({
   ownerBillingPackages = [],
   feeSummary: initialFeeSummary = null,
   gmpSummary = null,
+  autopilot = { enabled: false, run: null },
   contract,
-  approvedChangeOrdersTotalCents,
   scheduleItems,
   builderInfo,
   loadErrors = [],
 }: ReceivablesTabProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const invoiceParam = searchParams.get("invoice")
   const [subTab, setSubTab] = useState<"invoices" | "draws" | "retainage" | "fee">("invoices")
   const [localInvoices, setLocalInvoices] = useState<Invoice[]>(invoices)
   const [feeSummary, setFeeSummary] = useState<ProjectFeeBillingSummary | null>(initialFeeSummary)
@@ -71,6 +75,10 @@ export function ReceivablesTab({
   const [isFeePending, startFeeTransition] = useTransition()
   const safeRetainage = useMemo(() => (Array.isArray(retainage) ? retainage : []), [retainage])
   const safeInvoices = useMemo(() => (Array.isArray(localInvoices) ? localInvoices : []), [localInvoices])
+  const invoiceProject = useMemo(
+    () => ({ ...project, billing_contract: contract }),
+    [project, contract],
+  )
   const visibleCostCodes = costCodesEnabled ? costCodes : []
   const enableApprovedCostsSource = supportsApprovedCostInvoicing(contract)
   const showFeeTab = feeSummary?.enabled || feeSummary?.billing_model === "cost_plus_fixed_fee"
@@ -82,6 +90,13 @@ export function ReceivablesTab({
   useEffect(() => {
     setFeeSummary(initialFeeSummary)
   }, [initialFeeSummary])
+
+  useEffect(() => {
+    if (invoiceParam) {
+      setSubTab("invoices")
+      setOpenInvoiceId(invoiceParam)
+    }
+  }, [invoiceParam])
 
   const tabCounts = {
     invoices: safeInvoices.length,
@@ -185,6 +200,7 @@ export function ReceivablesTab({
 
   return (
     <div className="w-full">
+      <BillingAutopilotPanel projectId={projectId} initialState={autopilot} />
       {loadErrors.length > 0 ? (
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6 lg:px-8 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
           <div className="flex items-start gap-2">
@@ -229,7 +245,7 @@ export function ReceivablesTab({
         <TabsContent value="invoices" className="m-0">
           <InvoicesClient
             invoices={safeInvoices}
-            projects={[project]}
+            projects={[invoiceProject]}
             initialOpenInvoiceId={openInvoiceId}
             onInitialOpenInvoiceHandled={() => setOpenInvoiceId(undefined)}
             pendingOpenInvoiceLabel={pendingInvoiceLabel}
@@ -263,7 +279,6 @@ export function ReceivablesTab({
               projectId={projectId}
               initialDraws={draws}
               contract={contract}
-              approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
               scheduleItems={scheduleItems}
               costCodes={visibleCostCodes}
               onInvoiceGenerationStart={(draw) => {
@@ -291,7 +306,7 @@ export function ReceivablesTab({
         <TabsContent value="retainage" className="m-0">
           <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
           <div className="p-4 sm:p-6 lg:p-8">
-            <RetainageTracker projectId={projectId} project={project} retainage={safeRetainage} />
+            <RetainageTracker projectId={projectId} retainage={safeRetainage} />
           </div>
         </TabsContent>
       </Tabs>

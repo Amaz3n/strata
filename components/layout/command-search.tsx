@@ -63,6 +63,9 @@ const SEARCH_TYPES = [
   "schedule_item",
   "photo",
   "portal_access",
+  "payable",
+  "expense",
+  "prospect",
 ] as const
 
 type SearchType = (typeof SEARCH_TYPES)[number]
@@ -474,6 +477,12 @@ function getIconForType(type: SearchType): LucideIcon {
       return Camera
     case "portal_access":
       return FolderOpen
+    case "payable":
+      return Receipt
+    case "expense":
+      return CreditCard
+    case "prospect":
+      return Users
     default:
       return FileText
   }
@@ -499,6 +508,8 @@ function getTypeColor(type: SearchType) {
     case "change_order":
     case "contract":
     case "proposal":
+    case "payable":
+    case "expense":
       return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300"
     case "rfi":
     case "submittal":
@@ -514,6 +525,8 @@ function getTypeColor(type: SearchType) {
     case "photo":
     case "portal_access":
       return "bg-slate-100 text-slate-800 dark:bg-slate-900 dark:text-slate-300"
+    case "prospect":
+      return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300"
     default:
       return "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300"
   }

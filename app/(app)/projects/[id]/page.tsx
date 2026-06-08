@@ -95,6 +95,7 @@ async function ProjectData({ id }: { id: string }) {
     portalTokens,
     daysRemaining,
     daysElapsed,
+    daysUntilStart,
     totalDays,
     scheduleProgress,
     approvedChangeOrdersTotalCents,
@@ -124,14 +125,16 @@ async function ProjectData({ id }: { id: string }) {
         timeElapsedPercent={timeElapsedPercent}
         daysRemaining={daysRemaining}
         daysElapsed={daysElapsed}
+        daysUntilStart={daysUntilStart}
         totalDays={totalDays}
+        startDate={project.start_date}
         contractTotalCents={health.financial.contractTotalCents}
         approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
         invoicedCents={health.financial.invoicedCents}
         endDate={project.end_date}
-        totalActualCents={budgetSummary?.totalActualCents}
+        totalActualCents={budgetSummary?.totalActualCents ?? health.financial.actualCents}
         adjustedBudgetCents={budgetSummary?.adjustedBudgetCents}
-        totalInvoicedCents={budgetSummary?.totalInvoicedCents}
+        totalInvoicedCents={budgetSummary?.totalInvoicedCents ?? health.financial.invoicedCents}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 flex-1">

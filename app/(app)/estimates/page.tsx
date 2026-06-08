@@ -42,6 +42,7 @@ async function EstimatesData({ searchParams }: EstimatesPageProps) {
   return (
     <div className="space-y-6">
       <EstimatesClient
+        key={orgId}
         estimates={estimates}
         contacts={contacts}
         costCodes={costCodes}

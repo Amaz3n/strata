@@ -10,9 +10,10 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { sendEmail, renderEmailTemplate, getOrgSenderEmail } from "@/lib/services/mailer"
 import { InvoiceEmail } from "@/lib/emails/invoice-email"
-import { markReservationUsed } from "@/lib/services/invoice-numbers"
+import { getNextInvoiceNumber, markReservationUsed, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
+import { requireAuthorization } from "@/lib/services/authorization"
 
 type InvoiceRow = {
   id: string
@@ -48,6 +49,28 @@ type SourceBillingContext = {
   retainagePercent: number
   retainageAmountCents: number
   metadata: Record<string, any>
+}
+
+type InvoicePermission = "invoice.read" | "invoice.write" | "invoice.send"
+
+async function requireInvoicePermission(params: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  permission: InvoicePermission
+  projectId?: string | null
+  invoiceId?: string
+}) {
+  await requireAuthorization({
+    permission: params.permission,
+    userId: params.userId,
+    orgId: params.orgId,
+    projectId: params.projectId ?? undefined,
+    supabase: params.supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: params.invoiceId,
+  })
 }
 
 function toCents(value: number): number {
@@ -162,7 +185,7 @@ async function resolveInvoiceSourceBillingContext(params: {
 }) {
   const { supabase, orgId, projectId, sourceType, sourceDrawId, sourceChangeOrderId, baseLines } = params
 
-  if (sourceType !== "draw" && sourceType !== "change_order") {
+  if (sourceType !== "manual" && sourceType !== "draw" && sourceType !== "change_order") {
     return null
   }
 
@@ -349,7 +372,7 @@ async function upsertRetainageForInvoice(params: {
   if (existing?.id) {
     if (existing.status === "paid") return
 
-    await supabase
+    const { error: updateError } = await supabase
       .from("retainage")
       .update({
         project_id: projectId,
@@ -358,10 +381,13 @@ async function upsertRetainageForInvoice(params: {
       })
       .eq("org_id", orgId)
       .eq("id", existing.id)
+    if (updateError) {
+      throw new Error(`Failed to update invoice retainage: ${updateError.message}`)
+    }
     return
   }
 
-  await supabase.from("retainage").insert({
+  const { error: insertError } = await supabase.from("retainage").insert({
     org_id: orgId,
     project_id: projectId,
     contract_id: sourceContext.contractId,
@@ -369,6 +395,9 @@ async function upsertRetainageForInvoice(params: {
     amount_cents: sourceContext.retainageAmountCents,
     status: "held",
   })
+  if (insertError) {
+    throw new Error(`Failed to record invoice retainage: ${insertError.message}`)
+  }
 }
 
 function shouldQueueQboSync(status?: string | null, clientVisible?: boolean | null) {
@@ -576,16 +605,6 @@ async function releaseInvoiceSourceLinks(params: {
     throw new Error(`Failed to release billed costs: ${costError.message}`)
   }
 
-  const { error: retainageError } = await supabase
-    .from("retainage")
-    .update({ status: "released", release_invoice_id: null })
-    .eq("org_id", orgId)
-    .eq("release_invoice_id", invoiceId)
-
-  if (retainageError) {
-    throw new Error(`Failed to release retainage links: ${retainageError.message}`)
-  }
-
   const { error: invoiceRetainageError } = await supabase
     .from("retainage")
     .delete()
@@ -696,7 +715,14 @@ export async function listInvoices({
   orgId?: string
   projectId?: string
 } = {}): Promise<Invoice[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.read",
+    projectId,
+  })
 
   const { data, error } = await supabase
     .from("invoices")
@@ -715,6 +741,22 @@ export async function listInvoices({
 export async function createInvoice({ input, orgId }: { input: InvoiceInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const reservationId = input.reservation_id ?? undefined
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: input.project_id,
+  })
+  if (input.status === "sent" || input.client_visible) {
+    await requireInvoicePermission({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      permission: "invoice.send",
+      projectId: input.project_id,
+    })
+  }
 
   // Fetch org info for "From" section on invoice
   const { data: orgData } = await supabase
@@ -1061,6 +1103,27 @@ export async function updateInvoice({
   if (existingError || !existing) {
     throw new Error(existingError?.message ?? "Invoice not found")
   }
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: existing.project_id,
+    invoiceId,
+  })
+  if (existing.sent_at || existing.qbo_id || !["draft", "saved"].includes(existing.status)) {
+    throw new Error("Issued or accounting-synced invoices are immutable. Void and reissue the invoice instead.")
+  }
+  if (input.status === "sent" || input.client_visible) {
+    await requireInvoicePermission({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      permission: "invoice.send",
+      projectId: existing.project_id,
+      invoiceId,
+    })
+  }
 
   const sourceType = input.source_type ?? (existing.metadata as any)?.source_type ?? "manual"
   const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
@@ -1106,6 +1169,7 @@ export async function updateInvoice({
     subtotal_cents: totals.subtotal_cents,
     tax_cents: totals.tax_cents,
     total_cents: totals.total_cents,
+    balance_due_cents: totals.total_cents,
     metadata: {
       ...(existing.metadata ?? {}),
       lines,
@@ -1278,6 +1342,14 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: existing.project_id,
+    invoiceId,
+  })
   if (existing.status === "void") {
     return mapInvoiceRow(existing as InvoiceRow)
   }
@@ -1303,6 +1375,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     .update({
       status: "void",
       client_visible: false,
+      token: null,
       balance_due_cents: 0,
       metadata: nextMetadata,
     })
@@ -1333,6 +1406,9 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     before: existing,
     after: data,
   })
+  if (existing.qbo_id) {
+    await enqueueInvoiceSync(invoiceId, resolvedOrgId)
+  }
 
   return mapInvoiceRow(data as InvoiceRow)
 }
@@ -1349,6 +1425,14 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: existing.project_id,
+    invoiceId,
+  })
   if (!["draft", "saved"].includes(existing.status) || existing.client_visible || existing.sent_at || existing.qbo_id) {
     throw new Error("Only unsent draft or saved invoices can be deleted. Void sent or synced invoices instead.")
   }
@@ -1389,6 +1473,104 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
   return { projectId: existing.project_id as string | null }
 }
 
+export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const original = await getInvoiceWithLines(invoiceId, resolvedOrgId)
+  if (!original) throw new Error("Invoice not found")
+  if (["draft", "saved"].includes(original.status) && !original.sent_at && !original.qbo_id) {
+    throw new Error("This invoice is still editable and does not need to be revised.")
+  }
+  if (original.status === "paid" || original.status === "partial") {
+    throw new Error("Paid or partially paid invoices require a credit or adjustment workflow.")
+  }
+  if (original.status === "void") {
+    throw new Error("This invoice has already been voided.")
+  }
+
+  const next = await getNextInvoiceNumber(resolvedOrgId)
+  const editableLines = (original.lines ?? []).filter((line) => !isSystemGeneratedRetainageLine(line))
+  if (editableLines.length === 0) {
+    if (next.reservation_id) await releaseInvoiceNumberReservation(next.reservation_id, resolvedOrgId)
+    throw new Error("The original invoice has no billable lines to revise.")
+  }
+
+  await voidInvoice({ invoiceId, orgId: resolvedOrgId })
+
+  try {
+    const replacement = await createInvoice({
+      orgId: resolvedOrgId,
+      input: {
+        project_id: original.project_id ?? null,
+        invoice_number: next.number,
+        reservation_id: next.reservation_id,
+        title: original.title,
+        status: "saved",
+        issue_date: new Date().toISOString().slice(0, 10),
+        due_date: original.due_date ?? undefined,
+        notes: original.notes ?? undefined,
+        client_visible: false,
+        tax_rate: Number(original.totals?.tax_rate ?? original.metadata?.tax_rate ?? 0),
+        customer_id: original.metadata?.customer_id ?? null,
+        customer_name: original.customer_name ?? original.metadata?.customer_name ?? null,
+        customer_address: original.metadata?.customer_address ?? null,
+        qbo_customer_id: original.metadata?.qbo_customer_id ?? null,
+        qbo_customer_name: original.metadata?.qbo_customer_name ?? null,
+        from_name: original.metadata?.from_name ?? null,
+        from_email: original.metadata?.from_email ?? null,
+        from_address: original.metadata?.from_address ?? null,
+        payment_terms_days: original.metadata?.payment_terms_days,
+        source_type: original.metadata?.source_type ?? "manual",
+        source_draw_id: original.metadata?.source_draw_id ?? undefined,
+        source_change_order_id: original.metadata?.source_change_order_id ?? undefined,
+        lines: editableLines.map((line) => ({
+          cost_code_id: line.cost_code_id ?? undefined,
+          description: line.description,
+          quantity: Number(line.quantity),
+          unit: line.unit ?? "unit",
+          unit_cost: Number(line.unit_cost_cents) / 100,
+          taxable: line.taxable !== false,
+          qbo_income_account_id: line.qbo_income_account_id ?? null,
+          qbo_income_account_name: line.qbo_income_account_name ?? null,
+          billable_cost_ids: line.billable_cost_ids,
+          cost_cents: line.cost_cents ?? undefined,
+          markup_cents: line.markup_cents ?? undefined,
+          markup_percent: line.markup_percent ?? undefined,
+        })),
+      },
+    })
+
+    const originalMetadata = {
+      ...(original.metadata ?? {}),
+      voided_by: userId,
+      replaced_by_invoice_id: replacement.id,
+    }
+    const replacementMetadata = {
+      ...(replacement.metadata ?? {}),
+      revision_of_invoice_id: original.id,
+      revision_of_invoice_number: original.invoice_number,
+    }
+    await Promise.all([
+      supabase
+        .from("invoices")
+        .update({ metadata: originalMetadata })
+        .eq("org_id", resolvedOrgId)
+        .eq("id", original.id),
+      supabase
+        .from("invoices")
+        .update({ metadata: replacementMetadata })
+        .eq("org_id", resolvedOrgId)
+        .eq("id", replacement.id),
+    ])
+
+    return (await getInvoiceWithLines(replacement.id, resolvedOrgId)) ?? replacement
+  } catch (error) {
+    if (next.reservation_id) {
+      await releaseInvoiceNumberReservation(next.reservation_id, resolvedOrgId)
+    }
+    throw error
+  }
+}
+
 export async function getInvoiceForPortal(invoiceId: string, orgId: string, projectId: string) {
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
@@ -1399,6 +1581,8 @@ export async function getInvoiceForPortal(invoiceId: string, orgId: string, proj
     .eq("id", invoiceId)
     .eq("org_id", orgId)
     .eq("project_id", projectId)
+    .eq("client_visible", true)
+    .neq("status", "void")
     .maybeSingle()
 
   if (error) throw new Error(`Failed to load invoice: ${error.message}`)
@@ -1415,6 +1599,8 @@ export async function getInvoiceByToken(token: string) {
       "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("token", token)
+    .eq("client_visible", true)
+    .neq("status", "void")
     .maybeSingle()
 
   if (error) {
@@ -1427,7 +1613,7 @@ export async function getInvoiceByToken(token: string) {
 }
 
 export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Promise<Invoice | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data, error } = await supabase
     .from("invoices")
     .select(
@@ -1443,15 +1629,23 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
   }
 
   if (!data) return null
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.read",
+    projectId: data.project_id,
+    invoiceId,
+  })
   return mapInvoiceWithLines(data)
 }
 
 export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data, error } = await supabase
     .from("invoices")
-    .select("id, org_id, token, client_visible")
+    .select("id, org_id, project_id, token, client_visible, status")
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -1459,13 +1653,30 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
   if (error || !data) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.send",
+    projectId: data.project_id,
+    invoiceId,
+  })
+  if (data.status === "void") {
+    throw new Error("Void invoices cannot be shared.")
+  }
 
-  if (data.token) return data.token
+  if (data.token && data.client_visible && data.status === "sent") return data.token
 
-  const newToken = randomUUID()
+  const newToken = data.token ?? randomUUID()
+  const sentAt = new Date().toISOString()
   const { data: updated, error: updateError } = await supabase
     .from("invoices")
-    .update({ token: newToken, client_visible: data.client_visible ?? true })
+    .update({
+      token: newToken,
+      client_visible: true,
+      status: "sent",
+      sent_at: sentAt,
+    })
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .select("token")
@@ -1474,6 +1685,25 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
   if (updateError || !updated) {
     throw new Error(updateError?.message ?? "Failed to generate invoice link")
   }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "invoice_sent",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: { delivery: "share_link" },
+    channel: "notification",
+  })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: data,
+    after: { ...data, token: updated.token, client_visible: true, status: "sent", sent_at: sentAt },
+  })
+  await enqueueInvoiceSync(invoiceId, resolvedOrgId)
 
   return updated.token
 }

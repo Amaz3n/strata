@@ -27,6 +27,14 @@
     {
       "path": "/api/jobs/follow-up-reminders",
       "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/jobs/reminders",
+      "schedule": "15 13 * * *"
+    },
+    {
+      "path": "/api/jobs/late-fees",
+      "schedule": "30 13 * * *"
     }
   ],
   "functions": {
@@ -52,6 +60,12 @@
       "maxDuration": 300
     },
     "app/api/jobs/follow-up-reminders/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/reminders/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/late-fees/route.ts": {
       "maxDuration": 120
     }
   }

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useEffect, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, usePathname, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { ChevronsUpDown, Loader2, Plus } from "@/components/icons"
 
@@ -37,6 +37,8 @@ export function OrgSwitcher({
 }) {
   const { isMobile, state } = useSidebar()
   const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const [orgs, setOrgs] = useState<OrgMembershipSummary[]>([])
   const [activeOrgId, setActiveOrgId] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -116,7 +118,20 @@ export function OrgSwitcher({
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("arc-org-change", { detail: targetOrgId }))
       }
-      router.refresh()
+
+      const isProjectScoped =
+        (pathname.startsWith("/projects/") && pathname !== "/projects") ||
+        (pathname.startsWith("/pipeline/prospects/") && pathname !== "/pipeline/prospects") ||
+        searchParams.has("project") ||
+        searchParams.has("project_id") ||
+        searchParams.has("prospect") ||
+        searchParams.has("prospect_id")
+
+      if (isProjectScoped) {
+        router.push("/")
+      } else {
+        router.refresh()
+      }
     })
   }
 

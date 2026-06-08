@@ -457,24 +457,29 @@ async function checkRetainageMismatch(
 ): Promise<TrustCenterException[]> {
   const { data: retainageRecords } = await ctx.supabase
     .from("retainage")
-    .select("id, amount_cents, status, invoice_id")
+    .select("id, amount_cents, status, invoice_id, release_invoice_id")
     .eq("org_id", ctx.orgId)
     .eq("project_id", projectId)
 
   if (!retainageRecords || retainageRecords.length === 0) return []
 
-  const heldCents = (retainageRecords as any[])
-    .filter((r) => r.status === "held")
-    .reduce((sum, r) => sum + (r.amount_cents ?? 0), 0)
-
-  const releasedCents = (retainageRecords as any[])
-    .filter((r) => r.status === "released" || r.status === "invoiced" || r.status === "paid")
-    .reduce((sum, r) => sum + (r.amount_cents ?? 0), 0)
-
-  // Check for retainage records missing invoice links
   const orphanedRetainage = (retainageRecords as any[]).filter(
     (r) => r.status === "held" && !r.invoice_id
   )
+  const releasedWithoutInvoice = (retainageRecords as any[]).filter(
+    (r) => ["released", "invoiced", "paid"].includes(r.status) && !r.release_invoice_id,
+  )
+  const releaseInvoiceIds = Array.from(new Set(
+    (retainageRecords as any[]).map((row) => row.release_invoice_id).filter(Boolean),
+  )) as string[]
+  const { data: releaseInvoices } = releaseInvoiceIds.length
+    ? await ctx.supabase
+        .from("invoices")
+        .select("id, invoice_number, status, balance_due_cents, total_cents")
+        .eq("org_id", ctx.orgId)
+        .in("id", releaseInvoiceIds)
+    : { data: [] }
+  const releaseInvoiceById = new Map((releaseInvoices ?? []).map((invoice: any) => [invoice.id, invoice]))
 
   const exceptions: TrustCenterException[] = []
 
@@ -490,6 +495,60 @@ async function checkRetainageMismatch(
       amount_cents: totalOrphaned,
       href: projectFinancialHref(projectId, "/receivables"),
     })
+  }
+
+  if (releasedWithoutInvoice.length > 0) {
+    const amountCents = releasedWithoutInvoice.reduce((sum: number, row: any) => sum + Number(row.amount_cents ?? 0), 0)
+    exceptions.push({
+      id: `retainage-release-invoice-missing-${projectId}`,
+      kind: "retainage_mismatch",
+      severity: "critical",
+      project_id: projectId,
+      reference: `${releasedWithoutInvoice.length} released retainage record(s)`,
+      description: `$${(amountCents / 100).toLocaleString()} is marked released or paid without a release invoice`,
+      amount_cents: amountCents,
+      href: projectFinancialHref(projectId, "/receivables"),
+    })
+  }
+
+  for (const row of retainageRecords as any[]) {
+    if (!row.release_invoice_id) continue
+    const releaseInvoice = releaseInvoiceById.get(row.release_invoice_id)
+    if (!releaseInvoice || releaseInvoice.status === "void") {
+      exceptions.push({
+        id: `retainage-release-invalid-${row.id}`,
+        kind: "retainage_mismatch",
+        severity: "critical",
+        project_id: projectId,
+        reference: `Retainage ${row.id.slice(0, 8)}`,
+        description: `Retainage release for $${(Number(row.amount_cents ?? 0) / 100).toLocaleString()} points to a missing or void invoice`,
+        amount_cents: Number(row.amount_cents ?? 0),
+        source_type: "invoice",
+        source_id: row.release_invoice_id,
+        href: projectFinancialHref(projectId, `/receivables?invoice=${row.release_invoice_id}`),
+      })
+      continue
+    }
+
+    const invoicePaid = releaseInvoice.status === "paid" || Number(releaseInvoice.balance_due_cents ?? 0) === 0
+    if ((row.status === "paid") !== invoicePaid) {
+      exceptions.push({
+        id: `retainage-payment-state-${row.id}`,
+        kind: "retainage_mismatch",
+        severity: "warning",
+        project_id: projectId,
+        reference: releaseInvoice.invoice_number
+          ? `Invoice ${releaseInvoice.invoice_number}`
+          : `Retainage ${row.id.slice(0, 8)}`,
+        description: invoicePaid
+          ? "Release invoice is paid but the retainage ledger is not marked paid"
+          : "Retainage is marked paid but its release invoice still has an outstanding balance",
+        amount_cents: Number(row.amount_cents ?? 0),
+        source_type: "invoice",
+        source_id: row.release_invoice_id,
+        href: projectFinancialHref(projectId, `/receivables?invoice=${row.release_invoice_id}`),
+      })
+    }
   }
 
   return exceptions

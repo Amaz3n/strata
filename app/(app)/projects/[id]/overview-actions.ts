@@ -3,6 +3,7 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
+import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { getProjectContract } from "@/lib/services/contracts"
 import type { Project, ScheduleItem, Task, DrawSchedule, Rfi, Submittal, PunchItem, CloseoutItem, WarrantyRequest, FileMetadata, PortalAccessToken, Proposal, Contract } from "@/lib/types"
 import { differenceInCalendarDays, parseISO, isBefore, isAfter, addDays, subDays } from "date-fns"
@@ -24,6 +25,7 @@ export interface HealthCounts {
     budgetVariancePercent: number
     contractTotalCents: number
     invoicedCents: number
+    actualCents: number
     nextDrawAmountCents: number | null
     nextDrawTitle: string | null
   }
@@ -74,6 +76,7 @@ export interface ProjectOverviewDTO {
   // Timeline data
   daysRemaining: number
   daysElapsed: number
+  daysUntilStart: number
   totalDays: number
   scheduleProgress: number
   // Budget data (if available)
@@ -106,10 +109,15 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     .select("*")
     .eq("org_id", orgId)
     .eq("id", projectId)
-    .single()
+    .maybeSingle()
 
-  if (projectError || !projectData) {
-    console.error("Failed to fetch project:", projectError?.message)
+  // No row here is expected (e.g. a platform admin whose active org differs from the
+  // project's org) — return null quietly. Only log genuine query failures.
+  if (projectError) {
+    console.error("Failed to fetch project:", projectError.message)
+    return null
+  }
+  if (!projectData) {
     return null
   }
 
@@ -162,9 +170,29 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
   const totalDays = Math.max(1, differenceInCalendarDays(endDate, startDate))
   const daysElapsed = Math.max(0, Math.min(totalDays, differenceInCalendarDays(today, startDate)))
   const daysRemaining = Math.max(0, differenceInCalendarDays(endDate, today))
+  // Days until the project starts (0 once it's underway) — lets the UI surface
+  // "Starts in Nd" for not-yet-started projects instead of "Day 0 of N".
+  const daysUntilStart = project.start_date
+    ? Math.max(0, differenceInCalendarDays(startDate, today))
+    : 0
 
   // Calculate financial health data
   const nextDraw = drawsData.find(d => d.status === "pending" || (d.status as string) === "scheduled")
+
+  // Invoiced and actuals must not depend on a budget existing. When a project has
+  // invoices (e.g. imported from QBO) but no budget, getBudgetSummary returns null,
+  // which previously zeroed the Billed and Margin KPIs. Fall back to computing these
+  // directly so the overview reflects real invoiced/cost data regardless of budget setup.
+  let invoicedCents = budgetData?.totalInvoicedCents ?? 0
+  let actualCents = budgetData?.totalActualCents ?? 0
+  if (!budgetData) {
+    const [directInvoiced, directActual] = await Promise.all([
+      getInvoicedTotal(supabase, orgId, projectId),
+      getActualTotal(supabase, orgId, projectId),
+    ])
+    invoicedCents = directInvoiced
+    actualCents = directActual
+  }
 
   const health: HealthCounts = {
     tasks: taskCounts,
@@ -181,7 +209,8 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     financial: {
       budgetVariancePercent: budgetData?.variancePercent ?? 0,
       contractTotalCents: contractData?.total_cents ?? 0,
-      invoicedCents: budgetData?.totalInvoicedCents ?? 0,
+      invoicedCents,
+      actualCents,
       nextDrawAmountCents: nextDraw?.amount_cents ?? null,
       nextDrawTitle: nextDraw?.title ?? null,
     },
@@ -201,6 +230,7 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     portalTokens: portalTokensData,
     daysRemaining,
     daysElapsed,
+    daysUntilStart,
     totalDays,
     scheduleProgress: scheduleCounts.progress,
     budgetSummary: budgetData ?? undefined,
@@ -699,6 +729,39 @@ async function getApprovedChangeOrderTotal(supabase: any, orgId: string, project
     .eq("status", "approved")
 
   return (data ?? []).reduce((sum: number, row: any) => sum + (row.total_cents ?? 0), 0)
+}
+
+// Direct invoiced total, mirroring the budget service's status filter and line math.
+// Used as a fallback when the project has no budget so the Billed/Margin KPIs still
+// reflect real invoices (including QBO-imported ones).
+async function getInvoicedTotal(supabase: any, orgId: string, projectId: string): Promise<number> {
+  const { data: invoices } = await supabase
+    .from("invoices")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .in("status", ["sent", "partial", "paid", "overdue"])
+
+  const invoiceIds = (invoices ?? []).map((i: any) => i.id)
+  if (invoiceIds.length === 0) return 0
+
+  const { data: lines } = await supabase
+    .from("invoice_lines")
+    .select("unit_price_cents, quantity")
+    .eq("org_id", orgId)
+    .in("invoice_id", invoiceIds)
+
+  const total = (lines ?? []).reduce(
+    (sum: number, line: any) => sum + (line.unit_price_cents ?? 0) * (line.quantity ?? 1),
+    0,
+  )
+  return Math.round(total)
+}
+
+// Direct job-cost actuals total, used as a fallback when no budget exists.
+async function getActualTotal(supabase: any, orgId: string, projectId: string): Promise<number> {
+  const actuals = await getProjectJobCostActualsByCostCode({ projectId, orgId, supabase })
+  return actuals.reduce((sum, a) => sum + a.actual_cents, 0)
 }
 
 async function getBudgetSummary(orgId: string, projectId: string) {

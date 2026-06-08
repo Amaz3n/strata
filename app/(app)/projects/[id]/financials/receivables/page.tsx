@@ -30,7 +30,7 @@ async function FinancialsReceivablesData({ id }: { id: string }) {
     fetchReceivablesTabDataAction(id),
     getProjectFinancialSetupStatusForProject(id),
   ])
-  const { project, scheduleItems, contract, draws, retainage, approvedChangeOrdersTotalCents, builderInfo } = financialsData
+  const { project, scheduleItems, contract, draws, retainage, builderInfo } = financialsData
 
   return (
     <PageLayout
@@ -55,8 +55,8 @@ async function FinancialsReceivablesData({ id }: { id: string }) {
         ownerBillingPackages={receivablesData.ownerBillingPackages}
         feeSummary={receivablesData.feeSummary}
         gmpSummary={receivablesData.gmpSummary}
+        autopilot={receivablesData.autopilot}
         contract={contract}
-        approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
         scheduleItems={scheduleItems}
         builderInfo={builderInfo}
         loadErrors={receivablesData.errors}

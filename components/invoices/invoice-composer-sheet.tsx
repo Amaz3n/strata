@@ -138,7 +138,14 @@ function formatAddressBlock(value?: string | null) {
 }
 
 function toLineState(invoice?: Invoice | null): ComposerLine[] {
-  const lines = invoice?.lines ?? (invoice?.metadata?.lines as any[] | undefined) ?? []
+  const rawLines = invoice?.lines ?? (invoice?.metadata?.lines as any[] | undefined) ?? []
+  const lines = Array.isArray(rawLines)
+    ? rawLines.filter((line: any) => {
+        const unit = String(line.unit ?? "").toLowerCase()
+        const systemKind = (line.metadata as Record<string, any> | undefined)?.system_generated_kind
+        return unit !== "retainage" && systemKind !== "retainage_hold"
+      })
+    : []
   if (!Array.isArray(lines) || lines.length === 0) {
     return [
       {
@@ -534,6 +541,10 @@ export function InvoiceComposerSheet({
     () => projects.find((project) => project.id === projectId)?.name ?? "Project",
     [projectId, projects],
   )
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === projectId) ?? null,
+    [projectId, projects],
+  )
   const showCustomerSelector = customerDetails.trim().length === 0
   const showQboWarning = Boolean(
     qboConnected &&
@@ -569,6 +580,16 @@ export function InvoiceComposerSheet({
       total: subtotal + tax,
     }
   }, [lines, taxRate])
+  const retainagePercent = Number(
+    selectedProject?.billing_contract?.retainage_percent ??
+      selectedProject?.retainage_percent ??
+      0,
+  )
+  const retainageCents =
+    retainagePercent > 0
+      ? Math.round(Math.max(lineTotals.subtotal, 0) * (retainagePercent / 100))
+      : 0
+  const netInvoiceTotal = lineTotals.total - retainageCents
 
   const releaseReservation = useCallback(async () => {
     if (mode === "edit") return
@@ -1716,9 +1737,15 @@ export function InvoiceComposerSheet({
                   )}
                   <span className="tabular-nums">{formatMoney(lineTotals.tax / 100)}</span>
                 </div>
+                {retainageCents > 0 ? (
+                  <div className="flex items-center justify-between text-amber-700 dark:text-amber-300">
+                    <span>Retainage held ({retainagePercent}%)</span>
+                    <span className="tabular-nums">-{formatMoney(retainageCents / 100)}</span>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between border-t pt-2 mt-2 text-base font-semibold">
-                  <span>Total</span>
-                  <AnimatedCurrency cents={lineTotals.total} className="tabular-nums" />
+                  <span>Amount due</span>
+                  <AnimatedCurrency cents={netInvoiceTotal} className="tabular-nums" />
                 </div>
               </div>
             </div>

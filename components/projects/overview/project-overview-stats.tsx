@@ -7,10 +7,12 @@ interface ProjectOverviewStatsProps {
   timeElapsedPercent: number
   daysRemaining: number
   daysElapsed: number
+  daysUntilStart: number
   totalDays: number
   contractTotalCents: number
   approvedChangeOrdersTotalCents: number
   invoicedCents: number
+  startDate?: string
   endDate?: string
   totalActualCents?: number
   adjustedBudgetCents?: number
@@ -47,16 +49,20 @@ export function ProjectOverviewStats({
   timeElapsedPercent,
   daysRemaining,
   daysElapsed,
+  daysUntilStart,
   totalDays,
   contractTotalCents,
   approvedChangeOrdersTotalCents,
   invoicedCents,
+  startDate,
   endDate,
   totalActualCents,
   adjustedBudgetCents,
   totalInvoicedCents,
 }: ProjectOverviewStatsProps) {
-  const totalContractCents = contractTotalCents + approvedChangeOrdersTotalCents
+  // contracts.total_cents is the revised value after approved change orders.
+  const totalContractCents = contractTotalCents
+  const baseContractCents = Math.max(0, totalContractCents - approvedChangeOrdersTotalCents)
   const hasContract = totalContractCents > 0
   const hasCOs = approvedChangeOrdersTotalCents > 0
 
@@ -65,10 +71,11 @@ export function ProjectOverviewStats({
     : 0
   const outstandingCents = Math.max(0, totalContractCents - invoicedCents)
 
+  const notStarted = daysUntilStart > 0
   const variance = scheduleProgress - timeElapsedPercent
   const varianceDays = totalDays > 0 ? Math.round((variance / 100) * totalDays) : 0
   const paceTone: Tone =
-    totalDays <= 0
+    totalDays <= 0 || notStarted
       ? "neutral"
       : varianceDays >= 3
       ? "success"
@@ -78,6 +85,8 @@ export function ProjectOverviewStats({
   const scheduleStatus: CellStatus | null =
     totalDays <= 0
       ? null
+      : notStarted
+      ? { tone: "neutral", label: "Upcoming" }
       : paceTone === "success"
       ? { tone: "success", label: `${Math.abs(varianceDays)}d ahead`, trend: "up" }
       : paceTone === "destructive"
@@ -140,7 +149,7 @@ export function ProjectOverviewStats({
           detail={
             hasContract
               ? hasCOs
-                ? `Base ${formatMoney(contractTotalCents)} · ${approvedChangeOrdersTotalCents > 0 ? "with change orders" : ""}`
+                ? `Base ${formatMoney(baseContractCents)} · with change orders`
                 : "No change orders"
               : "No contract"
           }
@@ -150,7 +159,7 @@ export function ProjectOverviewStats({
           {hasContract && hasCOs ? (
             <StackedBar
               parts={[
-                { value: contractTotalCents, tone: "primary" },
+                { value: baseContractCents, tone: "primary" },
                 { value: approvedChangeOrdersTotalCents, tone: "accent" },
               ]}
               total={totalContractCents}
@@ -183,13 +192,23 @@ export function ProjectOverviewStats({
 
         <Cell
           label="Schedule"
-          value={totalDays > 0 ? `Day ${daysElapsed} of ${totalDays}` : "—"}
+          value={
+            totalDays <= 0
+              ? "—"
+              : notStarted
+              ? `Starts in ${daysUntilStart}d`
+              : `Day ${daysElapsed} of ${totalDays}`
+          }
           detail={
-            totalDays > 0
-              ? endDate
-                ? `Ends ${format(parseISO(endDate), "MMM d, yyyy")} · ${daysRemaining}d left`
-                : `${daysRemaining}d left`
-              : "Start and end dates not set"
+            totalDays <= 0
+              ? "Start and end dates not set"
+              : notStarted
+              ? startDate
+                ? `Begins ${format(parseISO(startDate), "MMM d, yyyy")} · ${totalDays}d planned`
+                : `${totalDays}d planned`
+              : endDate
+              ? `Ends ${format(parseISO(endDate), "MMM d, yyyy")} · ${daysRemaining}d left`
+              : `${daysRemaining}d left`
           }
           status={scheduleStatus}
           position={2}

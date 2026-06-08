@@ -17,15 +17,16 @@ import { logQBO } from "@/lib/services/qbo-logger"
  */
 
 // Arc-facing entity classification for an importable QBO transaction.
-export type QboImportEntityType = "invoice" | "expense" | "bill" | "payment" | "bill_payment"
+export type QboImportEntityType = "invoice" | "expense" | "bill" | "payment" | "bill_payment" | "journal_entry"
 
 // QBO transaction entity name → Arc entity classification.
-const QBO_ENTITY_BY_TYPE: Record<QboImportEntityType, "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment"> = {
+const QBO_ENTITY_BY_TYPE: Record<QboImportEntityType, "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment" | "JournalEntry"> = {
   invoice: "Invoice",
   expense: "Purchase",
   bill: "Bill",
   payment: "Payment",
   bill_payment: "BillPayment",
+  journal_entry: "JournalEntry",
 }
 
 export type QboImportRecord = {
@@ -46,6 +47,13 @@ export type QboImportRecord = {
   dependencyStatus?: "already_in_arc" | "available_to_import" | "missing" | null
   dependencyMessage?: string | null
   possibleMatch?: string | null
+  /**
+   * The QBO customer/project this record is associated with — header CustomerRef for invoices/
+   * payments, the first cost line's customer for bills/expenses/journal entries. Drives the
+   * "filter import by QBO project" picker. Multi-project transactions surface their first line.
+   */
+  qboCustomerId?: string | null
+  qboCustomerName?: string | null
 }
 
 export type QboImportListing = {
@@ -105,6 +113,21 @@ function refValue(ref: { value?: string } | null | undefined): string | null {
   return String(ref.value)
 }
 
+/** The customer/project ref on the first expense line of a Bill/Purchase, if any (job-costing link). */
+function firstLineCustomerRef(lines: any[] | undefined): { value?: string; name?: string } | null {
+  for (const line of lines ?? []) {
+    const ref = line?.AccountBasedExpenseLineDetail?.CustomerRef ?? line?.ItemBasedExpenseLineDetail?.CustomerRef
+    if (ref?.value) return ref
+  }
+  return null
+}
+
+/** The customer/project ref on a journal-entry line (Entity of type Customer), if any. */
+function jeLineCustomerRef(line: any): { value?: string; name?: string } | null {
+  const entity = line?.JournalEntryLineDetail?.Entity
+  return String(entity?.Type ?? "").toLowerCase() === "customer" ? (entity?.EntityRef ?? null) : null
+}
+
 function isPastDue(dateIso: string | null) {
   if (!dateIso) return false
   const due = new Date(dateIso)
@@ -161,15 +184,25 @@ async function collectLinkedQboIds(
     bill: new Set(),
     payment: new Set(),
     bill_payment: new Set(),
+    // Journal-entry imports dedupe at the line level (see listImportableQboRecords), not by JE id,
+    // so this set is intentionally left empty.
+    journal_entry: new Set(),
   }
 
   const [invoiceRows, expenseRows, billRows, syncRows] = await Promise.all([
     supabase.from("invoices").select("qbo_id").eq("org_id", orgId).not("qbo_id", "is", null),
-    supabase.from("project_expenses").select("qbo_id").eq("org_id", orgId).not("qbo_id", "is", null),
+    // Exclude JE-derived expenses: their qbo_id is the JournalEntry id (shared across lines) and must
+    // not shadow a real Purchase that happens to share that numeric id.
+    supabase
+      .from("project_expenses")
+      .select("qbo_id")
+      .eq("org_id", orgId)
+      .not("qbo_id", "is", null)
+      .or("qbo_transaction_type.is.null,qbo_transaction_type.neq.journal_entry"),
     supabase.from("vendor_bills").select("qbo_id").eq("org_id", orgId).not("qbo_id", "is", null),
     supabase
       .from("qbo_sync_records")
-      .select("entity_type, qbo_id")
+      .select("entity_type, qbo_id, metadata")
       .eq("org_id", orgId)
       .in("entity_type", ["invoice", "project_expense", "bill", "payment", "bill_payment"]),
   ])
@@ -185,6 +218,7 @@ async function collectLinkedQboIds(
         linked.invoice.add(qboId)
         break
       case "project_expense":
+        if ((row.metadata as { source?: string } | null)?.source === "journal_entry") break
         linked.expense.add(qboId)
         break
       case "bill":
@@ -240,6 +274,26 @@ export async function listImportableQboRecords({
     ),
   ])
 
+  // Journal-entry support needs the org's expense/COGS account ids (to keep only cost lines) and the
+  // set of JE lines already imported (line-level dedup, since one JE maps to many Arc expenses).
+  let jeExpenseAccountIds = new Set<string>()
+  const importedJeLines = new Set<string>()
+  if (wanted.includes("journal_entry")) {
+    const [accounts, jeExpenseRows] = await Promise.all([
+      client.listExpenseAccounts().catch(() => [] as { id: string }[]),
+      supabase
+        .from("project_expenses")
+        .select("qbo_id, metadata")
+        .eq("org_id", resolvedOrgId)
+        .eq("qbo_transaction_type", "journal_entry"),
+    ])
+    jeExpenseAccountIds = new Set(accounts.map((account) => account.id))
+    for (const row of jeExpenseRows.data ?? []) {
+      const lineId = (row.metadata as { qbo_je_line_id?: string } | null)?.qbo_je_line_id
+      if (row.qbo_id && lineId != null) importedJeLines.add(`${row.qbo_id}:${lineId}`)
+    }
+  }
+
   const records: QboImportRecord[] = []
 
   for (const { type, rows } of results) {
@@ -247,7 +301,35 @@ export async function listImportableQboRecords({
       const qboId = row?.Id ? String(row.Id) : null
       if (!qboId || linked[type].has(qboId)) continue
 
-      if (type === "invoice") {
+      if (type === "journal_entry") {
+        // Only debit/credit lines hitting an expense/COGS account are real project costs; the
+        // balancing cash/AP/equity lines are skipped. Credits to an expense account reverse cost.
+        const costLines = ((row.Line ?? []) as any[]).filter(
+          (line) =>
+            line?.DetailType === "JournalEntryLineDetail" &&
+            jeExpenseAccountIds.has(refValue(line.JournalEntryLineDetail?.AccountRef) ?? ""),
+        )
+        const remaining = costLines.filter((line) => !importedJeLines.has(`${qboId}:${line.Id}`))
+        if (remaining.length === 0) continue
+        const amountCents = remaining.reduce((sum, line) => {
+          const isCredit = String(line.JournalEntryLineDetail?.PostingType ?? "").toLowerCase() === "credit"
+          return sum + toCents(line.Amount) * (isCredit ? -1 : 1)
+        }, 0)
+        records.push({
+          qboId,
+          entityType: type,
+          docNumber: row.DocNumber ? String(row.DocNumber) : null,
+          counterparty: row.PrivateNote
+            ? String(row.PrivateNote)
+            : `${remaining.length} cost ${remaining.length === 1 ? "line" : "lines"}`,
+          date: normalizeDate(row.TxnDate),
+          amountCents,
+          balanceCents: null,
+          hasLinks: false,
+          qboCustomerId: refValue(jeLineCustomerRef(remaining[0])),
+          qboCustomerName: refName(jeLineCustomerRef(remaining[0])),
+        })
+      } else if (type === "invoice") {
         records.push({
           qboId,
           entityType: type,
@@ -257,9 +339,12 @@ export async function listImportableQboRecords({
           amountCents: toCents(row.TotalAmt),
           balanceCents: toCents(row.Balance),
           hasLinks: false,
+          qboCustomerId: refValue(row.CustomerRef),
+          qboCustomerName: refName(row.CustomerRef),
         })
       } else if (type === "expense") {
         const vendor = refName(row.EntityRef) ?? refName(row.AccountRef)
+        const lineCustomer = firstLineCustomerRef(row.Line)
         records.push({
           qboId,
           entityType: type,
@@ -269,8 +354,11 @@ export async function listImportableQboRecords({
           amountCents: toCents(row.TotalAmt),
           balanceCents: null,
           hasLinks: false,
+          qboCustomerId: refValue(lineCustomer),
+          qboCustomerName: refName(lineCustomer),
         })
       } else if (type === "bill") {
+        const lineCustomer = firstLineCustomerRef(row.Line)
         records.push({
           qboId,
           entityType: type,
@@ -280,6 +368,8 @@ export async function listImportableQboRecords({
           amountCents: toCents(row.TotalAmt),
           balanceCents: toCents(row.Balance),
           hasLinks: false,
+          qboCustomerId: refValue(lineCustomer),
+          qboCustomerName: refName(lineCustomer),
         })
       } else if (type === "payment") {
         const linkedQboIds = extractLinkedInvoiceQboIds(row)
@@ -294,6 +384,8 @@ export async function listImportableQboRecords({
           hasLinks: linkedQboIds.length > 0,
           linkedEntityType: "invoice",
           linkedQboIds,
+          qboCustomerId: refValue(row.CustomerRef),
+          qboCustomerName: refName(row.CustomerRef),
         })
       } else if (type === "bill_payment") {
         const linkedQboIds = extractLinkedBillQboIds(row)
@@ -324,6 +416,7 @@ export async function listImportableQboRecords({
       bill: new Set(),
       payment: new Set(),
       bill_payment: new Set(),
+      journal_entry: new Set(),
     },
   )
 
@@ -435,6 +528,9 @@ async function linkSyncRecord(params: {
   entityId: string
   qboId: string
   syncToken?: string | null
+  /** False for inbound-only shadow records (e.g. journal-entry lines) the outbound sync must never push. */
+  pushable?: boolean
+  metadata?: Record<string, unknown>
 }) {
   await params.supabase.from("qbo_sync_records").upsert(
     {
@@ -448,6 +544,8 @@ async function linkSyncRecord(params: {
       sync_direction: "inbound",
       status: "synced",
       error_message: null,
+      pushable: params.pushable ?? true,
+      metadata: params.metadata ?? {},
     },
     { onConflict: "org_id,entity_type,entity_id" },
   )
@@ -930,6 +1028,155 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
 }
 
 /**
+ * Import a QBO journal entry's cost lines as Arc project expenses. Unlike the other types this is a
+ * 1:many, inbound-only projection: each qualifying line becomes its own expense (mapped to the Arc
+ * project for the line's QBO customer, falling back to the import target), linked with
+ * `pushable = false` so the outbound sync never tries to reconstruct the JE. Re-importing is
+ * idempotent at the line level.
+ */
+async function importJournalEntry(
+  ctx: ResolvedContext,
+  client: QBOClient,
+  connectionId: string,
+  projectId: string,
+  qboId: string,
+  expenseAccountIds: Set<string>,
+) {
+  const { supabase, orgId } = ctx
+
+  const qbo = await client.getJournalEntryById(qboId)
+  if (!qbo) throw new Error("Journal entry not found in QuickBooks")
+
+  const costLines = ((qbo.Line ?? []) as any[]).filter(
+    (line) =>
+      line?.DetailType === "JournalEntryLineDetail" &&
+      expenseAccountIds.has(refValue(line.JournalEntryLineDetail?.AccountRef) ?? ""),
+  )
+  if (costLines.length === 0) return { skipped: true as const }
+
+  // Skip lines already imported (idempotent re-import of the same JE).
+  const { data: existingRows } = await supabase
+    .from("project_expenses")
+    .select("metadata")
+    .eq("org_id", orgId)
+    .eq("qbo_transaction_type", "journal_entry")
+    .eq("qbo_id", qboId)
+  const importedLineIds = new Set<string>()
+  for (const row of existingRows ?? []) {
+    const lineId = (row.metadata as { qbo_je_line_id?: string } | null)?.qbo_je_line_id
+    if (lineId != null) importedLineIds.add(String(lineId))
+  }
+  const pending = costLines.filter((line) => !importedLineIds.has(String(line.Id)))
+  if (pending.length === 0) return { skipped: true as const }
+
+  // Resolve the Arc project for each line's QBO customer (job), so a JE spanning multiple projects
+  // lands its lines in the right places.
+  const customerIds = Array.from(
+    new Set(
+      pending
+        .map((line) => {
+          const entity = line.JournalEntryLineDetail?.Entity
+          return String(entity?.Type ?? "").toLowerCase() === "customer" ? refValue(entity?.EntityRef) : null
+        })
+        .filter((value): value is string => Boolean(value)),
+    ),
+  )
+  const projectByCustomer = new Map<string, string>()
+  if (customerIds.length > 0) {
+    const { data: projectRows } = await supabase
+      .from("projects")
+      .select("id, qbo_customer_id")
+      .eq("org_id", orgId)
+      .in("qbo_customer_id", customerIds)
+    for (const projectRow of projectRows ?? []) {
+      if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
+    }
+  }
+
+  const nowIso = new Date().toISOString()
+  const jeDate = normalizeDate(qbo.TxnDate) ?? nowIso.split("T")[0]
+  let created = 0
+
+  for (const line of pending) {
+    const detail = line.JournalEntryLineDetail
+    const isCredit = String(detail?.PostingType ?? "").toLowerCase() === "credit"
+    const amountCents = toCents(line.Amount) * (isCredit ? -1 : 1)
+    const entity = detail?.Entity
+    const entityType = String(entity?.Type ?? "").toLowerCase()
+    const isCustomer = entityType === "customer"
+    const isVendor = entityType === "vendor"
+    const customerId = isCustomer ? refValue(entity?.EntityRef) : null
+    const lineProjectId = (customerId && projectByCustomer.get(customerId)) || projectId
+    const accountRef = detail?.AccountRef
+    const classRef = detail?.ClassRef
+    const description = String(
+      line.Description ?? qbo.PrivateNote ?? refName(accountRef) ?? "Imported QuickBooks journal entry",
+    )
+
+    const { data: expenseRow, error: expenseError } = await supabase
+      .from("project_expenses")
+      .insert({
+        org_id: orgId,
+        project_id: lineProjectId,
+        expense_date: jeDate,
+        description,
+        amount_cents: amountCents,
+        tax_cents: 0,
+        is_billable: false,
+        status: "approved",
+        approved_by_pm_at: nowIso,
+        approved_by_pm_user_id: ctx.userId,
+        vendor_name_text: isVendor ? refName(entity?.EntityRef) : null,
+        payment_method: null,
+        metadata: {
+          imported_from_qbo: true,
+          qbo_imported_at: nowIso,
+          source: "journal_entry",
+          qbo_je_id: qboId,
+          qbo_je_line_id: String(line.Id),
+        },
+        qbo_id: qboId,
+        qbo_transaction_type: "journal_entry",
+        qbo_synced_at: nowIso,
+        qbo_sync_status: "synced",
+        qbo_vendor_id: isVendor ? refValue(entity?.EntityRef) : null,
+        qbo_vendor_name: isVendor ? refName(entity?.EntityRef) : null,
+        qbo_expense_account_id: refValue(accountRef),
+        qbo_expense_account_name: refName(accountRef),
+        qbo_class_id: refValue(classRef),
+        qbo_class_name: refName(classRef),
+      })
+      .select("id")
+      .single()
+
+    if (expenseError || !expenseRow) throw new Error(expenseError?.message ?? "Failed to import journal entry line")
+
+    await linkSyncRecord({
+      supabase,
+      orgId,
+      connectionId,
+      entityType: "project_expense",
+      entityId: expenseRow.id,
+      qboId,
+      pushable: false,
+      metadata: { source: "journal_entry", qbo_je_line_id: String(line.Id) },
+    })
+    await recordEvent({
+      orgId,
+      actorId: ctx.userId,
+      eventType: "expense_imported_from_qbo",
+      entityType: "project_expense",
+      entityId: expenseRow.id,
+      payload: { qbo_id: qboId, source: "journal_entry", amount_cents: amountCents, project_id: lineProjectId },
+    })
+    created += 1
+  }
+
+  await markEventsResolved(supabase, qboId)
+  return { skipped: created === 0 }
+}
+
+/**
  * Import the selected QBO transactions into the given project, creating Arc records pre-linked as
  * synced. Each item is processed independently; a failure on one never aborts the rest.
  *
@@ -970,10 +1217,16 @@ export async function importQboRecords({
     invoice: 0,
     bill: 0,
     expense: 0,
+    journal_entry: 0,
     payment: 1,
     bill_payment: 1,
   }
   const ordered = [...items].sort((a, b) => order[a.entityType] - order[b.entityType])
+
+  // Journal entries need the org's expense/COGS account ids to keep only cost lines; fetch once.
+  const jeExpenseAccountIds = ordered.some((item) => item.entityType === "journal_entry")
+    ? new Set((await client.listExpenseAccounts().catch(() => [] as { id: string }[])).map((account) => account.id))
+    : new Set<string>()
 
   const result: QboImportResult = { imported: 0, skipped: 0, failed: 0, errors: [] }
 
@@ -995,6 +1248,9 @@ export async function importQboRecords({
           break
         case "bill_payment":
           outcome = await importBillPayment(ctx, client, connectionId, item.qboId)
+          break
+        case "journal_entry":
+          outcome = await importJournalEntry(ctx, client, connectionId, projectId, item.qboId, jeExpenseAccountIds)
           break
         default:
           throw new Error(`Unsupported entity type: ${item.entityType}`)

@@ -37,6 +37,7 @@ import {
 import { CompanyForm } from "@/components/companies/company-form";
 import { ContactForm } from "@/components/contacts/contact-form";
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet";
+import { ImportContactsSheet } from "@/components/directory/import-contacts-sheet";
 import {
   DirectoryTable,
   type DirectorySortDirection,
@@ -48,6 +49,7 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
+  Upload,
   User,
   X,
 } from "@/components/icons";
@@ -180,6 +182,7 @@ export function DirectoryClient({
   >();
   const [detailContactId, setDetailContactId] = useState<string | undefined>();
   const [detailContactOpen, setDetailContactOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const typeOptions = useMemo(() => {
     if (view === "companies") {
@@ -396,6 +399,11 @@ export function DirectoryClient({
         <DropdownMenuItem onSelect={() => openNewContact()}>
           <User className="mr-2 h-4 w-4" />
           Add contact
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => setImportOpen(true)}>
+          <Upload className="mr-2 h-4 w-4" />
+          Import from CSV
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -693,6 +701,10 @@ export function DirectoryClient({
         onOpenChange={setDetailContactOpen}
         onEditContact={openEditContact}
       />
+
+      {canCreate ? (
+        <ImportContactsSheet open={importOpen} onOpenChange={setImportOpen} />
+      ) : null}
     </div>
   );
 }

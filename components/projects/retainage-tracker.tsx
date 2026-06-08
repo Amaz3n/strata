@@ -7,21 +7,13 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ExternalLink, ReceiptText, Settings } from "lucide-react"
+import { ExternalLink, ReceiptText } from "lucide-react"
 import type { Retainage } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { ReleaseRetainageSheet } from "./release-retainage-sheet"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
-import { useRouter } from "next/navigation"
-import { useTransition } from "react"
-import { toast } from "sonner"
 
 interface RetainageTrackerProps {
   projectId: string
-  project?: any // Optional project for settings
   retainage: Retainage[]
   compact?: boolean
 }
@@ -33,30 +25,9 @@ const statusMap: Record<string, { label: string; tone: string }> = {
   paid: { label: "Paid", tone: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
 }
 
-export function RetainageTracker({ projectId, project, retainage, compact = false }: RetainageTrackerProps) {
-  const router = useRouter()
-  const [isPending, startTransition] = useTransition()
+export function RetainageTracker({ projectId, retainage, compact = false }: RetainageTrackerProps) {
   const [releaseOpen, setReleaseOpen] = useState(false)
-  
-  // Local state for the settings popover
-  const [retainageInput, setRetainageInput] = useState(String(project?.retainage_percent ?? "0"))
-  const [valueInput, setValueInput] = useState(project?.total_contract_value_cents ? String(project.total_contract_value_cents / 100) : "")
 
-  const handleUpdateSettings = () => {
-    startTransition(async () => {
-      try {
-        await updateProjectSettingsAction(projectId, {
-          retainage_percent: Number.parseFloat(retainageInput) || 0,
-          total_contract_value_cents: valueInput ? Math.round(Number.parseFloat(valueInput) * 100) : null,
-        })
-        toast.success("Retainage settings updated")
-        router.refresh()
-      } catch (error) {
-        toast.error("Failed to update settings")
-      }
-    })
-  }
-  
   const totalHeld = retainage.reduce((sum, r) => sum + (r.status === "held" ? r.amount_cents : 0), 0)
   const totalReleased = retainage.reduce((sum, r) => sum + (r.status === "released" || r.status === "paid" || r.status === "invoiced" ? r.amount_cents : 0), 0)
   const totalPool = totalHeld + totalReleased
@@ -121,57 +92,6 @@ export function RetainageTracker({ projectId, project, retainage, compact = fals
           </div>
 
           <div className="flex items-center gap-3">
-            {project && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" size="icon" className="shadow-sm">
-                    <Settings className="h-4 w-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-80 p-5 shadow-xl" align="end">
-                  <div className="space-y-4">
-                    <div className="space-y-1">
-                      <h4 className="font-semibold leading-none">Financial Terms</h4>
-                      <p className="text-xs text-muted-foreground">Adjust withholding for all future invoices.</p>
-                    </div>
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Default Retainage %</Label>
-                        <div className="relative">
-                          <Input
-                            className="pr-7 h-9 font-semibold"
-                            value={retainageInput}
-                            onChange={(e) => setRetainageInput(e.target.value.replace(/[^\d.]/g, ""))}
-                            placeholder="0"
-                          />
-                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
-                            <span className="text-muted-foreground text-xs">%</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Total Project Value</Label>
-                        <div className="relative">
-                          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                            <span className="text-muted-foreground text-xs">$</span>
-                          </div>
-                          <Input
-                            className="pl-7 h-9 font-semibold"
-                            value={valueInput}
-                            onChange={(e) => setValueInput(e.target.value.replace(/[^\d.]/g, ""))}
-                            placeholder="0.00"
-                          />
-                        </div>
-                      </div>
-                      <Button className="w-full h-9 shadow-md" size="sm" onClick={handleUpdateSettings} disabled={isPending}>
-                        {isPending ? "Updating..." : "Update Settings"}
-                      </Button>
-                    </div>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            )}
-
             <Button 
               className="shadow-sm"
               disabled={totalHeld <= 0}

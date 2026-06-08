@@ -87,6 +87,11 @@ interface QBOCustomer {
   Id?: string
   SyncToken?: string
   DisplayName: string
+  FullyQualifiedName?: string
+  /** True when this (sub-)customer is a QBO Project. Projects are modeled as sub-customers. */
+  IsProject?: boolean
+  Job?: boolean
+  ParentRef?: { value: string; name?: string }
   PrimaryEmailAddr?: { Address: string }
   PrimaryPhone?: { FreeFormNumber: string }
   BillAddr?: { Line1?: string; Line2?: string; City?: string; CountrySubDivisionCode?: string; PostalCode?: string }
@@ -190,6 +195,11 @@ export interface QBOCustomerOption {
   name: string
   email?: string | null
   billingAddress?: string | null
+  /** True when this customer is a QBO Project (a sub-customer with IsProject set). */
+  isProject?: boolean
+  /** Hierarchy path, e.g. "Shara Barnett:Barnett Design". */
+  fullyQualifiedName?: string | null
+  parentId?: string | null
 }
 
 export interface QBOVendorOption {
@@ -647,6 +657,22 @@ export class QBOClient {
     return result.Invoice
   }
 
+  async voidInvoice(invoice: Pick<QBOInvoice, "Id" | "SyncToken">): Promise<QBOInvoice> {
+    if (!invoice.Id || !invoice.SyncToken) {
+      throw new Error("Invoice Id and SyncToken required for void")
+    }
+    const result = await this.request<{ Invoice: QBOInvoice }>(
+      "POST",
+      "invoice?operation=void",
+      {
+        Id: invoice.Id,
+        SyncToken: invoice.SyncToken,
+        sparse: true,
+      },
+    )
+    return result.Invoice
+  }
+
   async createPayment(payment: any): Promise<any> {
     const result = await this.request<{ Payment: any }>("POST", "payment", payment)
     return result.Payment
@@ -763,6 +789,22 @@ export class QBOClient {
     }
   }
 
+  async getJournalEntryById(journalEntryId: string): Promise<any | null> {
+    const normalizedId = String(journalEntryId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ JournalEntry?: any }>(
+        "GET",
+        `journalentry/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.JournalEntry ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
+  }
+
   async changeDataCapture(entities: string[], changedSinceIso: string): Promise<any> {
     const entityList = entities.map((entity) => entity.trim()).filter(Boolean).join(",")
     if (!entityList) throw new Error("At least one CDC entity is required")
@@ -798,7 +840,7 @@ export class QBOClient {
    * those on or after `sinceDate` (YYYY-MM-DD), most recent first.
    */
   async listTransactionsForImport(
-    entity: "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment",
+    entity: "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment" | "JournalEntry",
     opts?: { sinceDate?: string | null; maxResults?: number },
   ): Promise<any[]> {
     const since =
@@ -893,6 +935,9 @@ function mapCustomerOption(customer: QBOCustomer): QBOCustomerOption {
     name: String(customer.DisplayName),
     email: customer.PrimaryEmailAddr?.Address ?? null,
     billingAddress: formatQboAddress(customer.BillAddr),
+    isProject: customer.IsProject === true,
+    fullyQualifiedName: customer.FullyQualifiedName ? String(customer.FullyQualifiedName) : null,
+    parentId: customer.ParentRef?.value ? String(customer.ParentRef.value) : null,
   }
 }
 

@@ -1,9 +1,13 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  if (!isAuthorizedCronRequest(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   const supabase = createServiceSupabaseClient()
 
   const { data: rules, error: rulesError } = await supabase.from("late_fees").select("*")
@@ -72,51 +76,19 @@ export async function POST() {
 
       if (feeAmountCents <= 0) continue
 
-      const { data: newLine, error: lineError } = await supabase
-        .from("invoice_lines")
-        .insert({
-          org_id: invoice.org_id,
-          invoice_id: invoice.id,
-          description: `Late Fee (${daysOverdue} days overdue)`,
-          quantity: 1,
-          unit_price_cents: feeAmountCents,
-          metadata: { taxable: false, late_fee_rule_id: rule.id, days_overdue: daysOverdue },
-        })
-        .select("id")
-        .single()
-
-      if (lineError || !newLine) continue
-
-      await supabase.from("late_fee_applications").insert({
-        org_id: invoice.org_id,
-        invoice_id: invoice.id,
-        late_fee_rule_id: rule.id,
-        invoice_line_id: newLine.id,
-        amount_cents: feeAmountCents,
-        application_number: applicationCount + 1,
+      const { error: applyError } = await supabase.rpc("apply_invoice_late_fee_atomic", {
+        p_org_id: invoice.org_id,
+        p_invoice_id: invoice.id,
+        p_rule_id: rule.id,
+        p_amount_cents: feeAmountCents,
+        p_days_overdue: daysOverdue,
       })
 
-      // Bump invoice totals/balance locally (no DB helper available)
-      await supabase
-        .from("invoices")
-        .update({
-          total_cents: (invoice.total_cents ?? 0) + feeAmountCents,
-          balance_due_cents: (invoice.balance_due_cents ?? 0) + feeAmountCents,
-          status: "overdue",
-        })
-        .eq("id", invoice.id)
-        .eq("org_id", invoice.org_id)
-
-      // Ensure status/balance reflect any existing payments (partial payments should not reset balance).
-      try {
-        await recalcInvoiceBalanceAndStatus({ supabase, orgId: invoice.org_id, invoiceId: invoice.id })
-      } catch (err) {
-        console.warn("Failed to recalc invoice after late fee", err)
-      }
-
-      applied += 1
+      if (!applyError) applied += 1
     }
   }
 
   return NextResponse.json({ applied })
 }
+
+export const GET = POST

@@ -1,7 +1,7 @@
 "use client"
 
 import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
-import { format } from "date-fns"
+import { usePathname, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -14,11 +14,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Check, CheckCircle2, ChevronsUpDown, Clock, ExternalLink, Loader2, MoreHorizontal, Plus, Receipt, RefreshCcw, SlidersHorizontal, Sparkles, Upload, XCircle } from "@/components/icons"
+import { Check, CheckCircle2, ChevronsUpDown, Clock, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
 
 import {
   approveProjectExpenseFormAction,
@@ -38,35 +37,21 @@ import { ExpenseForm } from "@/components/expenses/expense-form"
 import { FileViewer } from "@/components/files/file-viewer"
 import type { FileWithDetails } from "@/components/files/types"
 import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
+import { ExpenseWorkspace } from "@/components/expenses/expense-workspace"
+import {
+  AUTO_QBO_VENDOR,
+  accountLabel,
+  costCodeLabel,
+  formatCurrency,
+  formatDate,
+  needsQboReview,
+  readyForQboSync,
+  statusLabels,
+  statusStyles,
+  vendorOf,
+  type ProjectExpense,
+} from "@/components/expenses/expense-shared"
 import { cn } from "@/lib/utils"
-
-interface ProjectExpense {
-  id: string
-  expense_date: string
-  vendor_name_text: string | null
-  description: string | null
-  status: string
-  amount_cents: number | null
-  tax_cents: number | null
-  is_billable: boolean | null
-  receipt_file_id: string | null
-  payment_method: string | null
-  qbo_id?: string | null
-  qbo_sync_status?: "pending" | "synced" | "error" | "skipped" | "needs_review" | null
-  qbo_sync_error?: string | null
-  qbo_transaction_type?: "purchase" | "bill" | null
-  qbo_expense_account_id?: string | null
-  qbo_expense_account_name?: string | null
-  qbo_payment_account_id?: string | null
-  qbo_payment_account_name?: string | null
-  qbo_ap_account_id?: string | null
-  qbo_ap_account_name?: string | null
-  qbo_vendor_id?: string | null
-  qbo_vendor_name?: string | null
-  vendor_company?: { name?: string | null } | null
-  cost_code_id?: string | null
-  cost_code?: { code?: string | null; name?: string | null } | null
-}
 
 interface ExpensesClientProps {
   projectId: string
@@ -74,29 +59,8 @@ interface ExpensesClientProps {
 }
 
 type ExpenseAccountingContext = Awaited<ReturnType<typeof getExpenseAccountingContextAction>>
-type AccountingDraft = {
-  qboExpenseAccountId: string
-  qboPaymentAccountId: string
-  qboVendorId: string
-}
 
 type QueueFilter = "all" | "needs_review" | "ready" | "synced"
-
-const statusLabels: Record<string, string> = {
-  draft: "Draft",
-  submitted: "Submitted",
-  approved: "Approved",
-  rejected: "Rejected",
-  invoiced: "Invoiced",
-}
-
-const statusStyles: Record<string, string> = {
-  draft: "bg-muted text-muted-foreground border-muted",
-  submitted: "bg-warning/20 text-warning border-warning/40",
-  approved: "bg-success/20 text-success border-success/30",
-  rejected: "bg-destructive/15 text-destructive border-destructive/30",
-  invoiced: "bg-muted text-muted-foreground border-muted",
-}
 
 const qboStatusStyles: Record<string, string> = {
   pending: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
@@ -114,28 +78,6 @@ const qboStatusLabels: Record<string, string> = {
   skipped: "Sync Disabled",
 }
 
-const AUTO_QBO_VENDOR = "__auto_qbo_vendor__"
-
-function formatCurrency(cents: number | null | undefined) {
-  return ((cents ?? 0) / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-  })
-}
-
-function formatDate(value: string | null | undefined) {
-  if (!value) return "—"
-  try {
-    return format(new Date(`${value}T00:00:00`), "MMM d, yyyy")
-  } catch {
-    return value
-  }
-}
-
-function vendorOf(expense: ProjectExpense) {
-  return expense.vendor_company?.name ?? expense.vendor_name_text ?? expense.description ?? "Expense"
-}
-
 function initialsFor(value: string) {
   const parts = value
     .replace(/[^a-zA-Z0-9\s]/g, " ")
@@ -146,14 +88,6 @@ function initialsFor(value: string) {
   if (parts.length === 0) return "EX"
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
   return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase()
-}
-
-function accountLabel(account: { name: string; fullyQualifiedName?: string }) {
-  return account.fullyQualifiedName ?? account.name
-}
-
-function costCodeLabel(code: { code?: string | null; name?: string | null }) {
-  return `${code.code ?? ""} ${code.name ?? ""}`.trim() || "Cost code"
 }
 
 function IconTooltip({ label, children }: { label: string; children: ReactNode }) {
@@ -169,34 +103,21 @@ function findAccount(accounts: { id: string; name: string; fullyQualifiedName?: 
   return (accounts ?? []).find((account) => account.id === id) ?? null
 }
 
+type AccountingDraft = {
+  qboExpenseAccountId: string
+  qboPaymentAccountId: string
+  qboVendorId: string
+}
+
 function defaultAccountingDraft(expense: ProjectExpense, context: ExpenseAccountingContext | null): AccountingDraft {
   return {
     qboExpenseAccountId: expense.qbo_expense_account_id ?? context?.defaults?.expenseAccountId ?? "",
-    qboPaymentAccountId: expense.qbo_payment_account_id ?? (expense.payment_method === "company_card" ? context?.defaults?.creditCardAccountId : context?.defaults?.paymentAccountId) ?? "",
+    qboPaymentAccountId:
+      expense.qbo_payment_account_id ??
+      (expense.payment_method === "company_card" ? context?.defaults?.creditCardAccountId : context?.defaults?.paymentAccountId) ??
+      "",
     qboVendorId: expense.qbo_vendor_id ?? AUTO_QBO_VENDOR,
   }
-}
-
-function hasRequiredQboCoding(expense: ProjectExpense) {
-  if (!expense.qbo_expense_account_id) return false
-  return Boolean(expense.qbo_payment_account_id)
-}
-
-function needsQboReview(expense: ProjectExpense) {
-  if (expense.qbo_sync_status === "needs_review" || expense.qbo_sync_status === "error") return true
-  return expense.status === "approved" && expense.qbo_sync_status !== "synced" && !hasRequiredQboCoding(expense)
-}
-
-function readyForQboSync(expense: ProjectExpense) {
-  return expense.status === "approved" && expense.qbo_sync_status !== "synced" && !needsQboReview(expense)
-}
-
-function qboDeepLink(expense: ProjectExpense) {
-  if (!expense.qbo_id) return null
-  if (expense.qbo_transaction_type === "bill") {
-    return `https://qbo.intuit.com/app/bill?txnId=${expense.qbo_id}`
-  }
-  return `https://qbo.intuit.com/app/expense?txnId=${expense.qbo_id}`
 }
 
 function AccountCombobox({
@@ -448,6 +369,8 @@ interface PendingReceipt {
 
 export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientProps) {
   const isMobile = useIsMobile()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const [items, setItems] = useState<ProjectExpense[]>(initialExpenses)
   const [search, setSearch] = useState("")
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all")
@@ -456,9 +379,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const [isPageDragging, setIsPageDragging] = useState(false)
   const [pendingReceipt, setPendingReceipt] = useState<PendingReceipt | null>(null)
   const [accountingContext, setAccountingContext] = useState<ExpenseAccountingContext | null>(null)
-  const [accountingExpense, setAccountingExpense] = useState<ProjectExpense | null>(null)
-  const [accountingDraft, setAccountingDraft] = useState<AccountingDraft | null>(null)
-  const [accountingSaving, setAccountingSaving] = useState(false)
   const [openAccountExpenseId, setOpenAccountExpenseId] = useState<string | null>(null)
   const [savingAccountExpenseId, setSavingAccountExpenseId] = useState<string | null>(null)
   const [openVendorExpenseId, setOpenVendorExpenseId] = useState<string | null>(null)
@@ -472,6 +392,23 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const dragDepthRef = useRef(0)
   const [isPending, startTransition] = useTransition()
+
+  const [workspaceExpenseId, setWorkspaceExpenseId] = useState<string | null>(searchParams.get("expense"))
+
+  const urlExpenseId = searchParams.get("expense")
+  useEffect(() => {
+    setWorkspaceExpenseId(urlExpenseId)
+  }, [urlExpenseId])
+
+  function openExpense(expenseId: string | null) {
+    setWorkspaceExpenseId(expenseId)
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    if (expenseId) params.set("expense", expenseId)
+    else params.delete("expense")
+    const query = params.toString()
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname)
+  }
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase().trim()
@@ -495,7 +432,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         expense.expense_date ?? "",
       ].some((value) => String(value).toLowerCase().includes(term))
     })
-  }, [items, search, queueFilter])
+  }, [items, search, queueFilter, costCodesEnabled])
 
   const filterCounts = useMemo(
     () => ({
@@ -668,18 +605,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     setSheetOpen(true)
   }
 
-  function openAccounting(expense: ProjectExpense) {
-    setAccountingExpense(expense)
-    setAccountingDraft(defaultAccountingDraft(expense, accountingContext))
-  }
-
-  function closeAccounting(open: boolean) {
-    if (open) return
-    setAccountingExpense(null)
-    setAccountingDraft(null)
-    setAccountingSaving(false)
-  }
-
   function approve(expenseId: string) {
     startTransition(async () => {
       try {
@@ -717,56 +642,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         refresh()
       }
     })
-  }
-
-  async function saveAccounting(syncAfterSave = false) {
-    if (!accountingExpense || !accountingDraft) return
-    const expenseAccount = findAccount(accountingContext?.expenseAccounts, accountingDraft.qboExpenseAccountId)
-    const paymentAccount = findAccount(accountingContext?.paymentAccounts, accountingDraft.qboPaymentAccountId)
-    const qboVendor = accountingDraft.qboVendorId === AUTO_QBO_VENDOR ? null : findAccount(accountingContext?.vendors, accountingDraft.qboVendorId)
-
-    if (!expenseAccount) {
-      toast.error("Choose a QuickBooks account")
-      return
-    }
-    if (!paymentAccount) {
-      toast.error("Choose the QuickBooks account this was paid from")
-      return
-    }
-
-    setAccountingSaving(true)
-    try {
-      const next = await updateProjectExpenseAccountingAction(projectId, accountingExpense.id, {
-        qboTransactionType: "purchase",
-        qboExpenseAccountId: expenseAccount.id,
-        qboExpenseAccountName: accountLabel(expenseAccount),
-        qboPaymentAccountId: paymentAccount.id,
-        qboPaymentAccountName: accountLabel(paymentAccount),
-        qboApAccountId: null,
-        qboApAccountName: null,
-        qboVendorId: qboVendor?.id ?? null,
-        qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
-      })
-      setItems((next as ProjectExpense[]) ?? [])
-
-      if (syncAfterSave) {
-        await syncProjectExpenseToQBOAction(projectId, accountingExpense.id)
-        toast.success("Expense coded and synced to QuickBooks")
-      } else {
-        toast.success("QuickBooks coding saved")
-      }
-
-      refresh()
-      setAccountingExpense(null)
-      setAccountingDraft(null)
-    } catch (error: any) {
-      toast.error(syncAfterSave ? "Could not save and sync" : "Could not save QuickBooks coding", {
-        description: error?.message ?? "Please try again.",
-      })
-      refresh()
-    } finally {
-      setAccountingSaving(false)
-    }
   }
 
   async function saveExpenseAccount(expense: ProjectExpense, accountId: string) {
@@ -911,8 +786,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
           <TooltipContent>More actions</TooltipContent>
         </Tooltip>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => openAccounting(expense)}>Edit</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => openAccounting(expense)}>QuickBooks coding</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openExpense(expense.id)}>Open</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openExpense(expense.id)}>QuickBooks coding</DropdownMenuItem>
           <DropdownMenuSeparator />
           {isSubmitted ? (
             <>
@@ -973,131 +848,15 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
 
       <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
 
-      <Sheet open={Boolean(accountingExpense)} onOpenChange={closeAccounting}>
-        <SheetContent side="right" className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] flex flex-col p-0 shadow-2xl">
-          <SheetHeader className="border-b bg-muted/30 px-6 pb-4 pt-6">
-            <SheetTitle className="flex items-center gap-2">
-              <SlidersHorizontal className="h-4 w-4 text-primary" />
-              QuickBooks coding
-            </SheetTitle>
-            <SheetDescription>{accountingExpense ? vendorOf(accountingExpense) : "Code this expense before syncing."}</SheetDescription>
-          </SheetHeader>
-
-          {accountingExpense && accountingDraft ? (
-            <>
-              <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
-                {!accountingContext?.qboConnected ? (
-                  <div className="rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">Connect QuickBooks in integrations before coding expenses.</div>
-                ) : null}
-
-                <div className="grid grid-cols-2 gap-3 rounded-lg border bg-card p-3 text-xs">
-                  <div>
-                    <p className="text-muted-foreground">Amount</p>
-                    <p className="mt-1 font-semibold tabular-nums">{formatCurrency((accountingExpense.amount_cents ?? 0) + (accountingExpense.tax_cents ?? 0))}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">Current status</p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <Badge variant="secondary" className={`border text-[10px] font-normal ${statusStyles[accountingExpense.status] ?? ""}`}>
-                        {statusLabels[accountingExpense.status] ?? accountingExpense.status}
-                      </Badge>
-                      <ExpenseQBOStatus expense={accountingExpense} compact />
-                    </div>
-                  </div>
-                </div>
-
-                {accountingExpense.qbo_sync_error ? (
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">{accountingExpense.qbo_sync_error}</div>
-                ) : null}
-
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">QBO vendor</Label>
-                  <Select
-                    value={accountingDraft.qboVendorId}
-                    onValueChange={(value) => setAccountingDraft((draft) => (draft ? { ...draft, qboVendorId: value } : draft))}
-                    disabled={!accountingContext?.qboConnected || accountingSaving}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Match by expense vendor name" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={AUTO_QBO_VENDOR}>Match/create automatically</SelectItem>
-                      {(accountingContext?.vendors ?? []).map((vendor) => (
-                        <SelectItem key={vendor.id} value={vendor.id}>
-                          {accountLabel(vendor)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">Leave blank to match or create from the receipt vendor.</p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">Account</Label>
-                  <Select
-                    value={accountingDraft.qboExpenseAccountId}
-                    onValueChange={(value) => setAccountingDraft((draft) => (draft ? { ...draft, qboExpenseAccountId: value } : draft))}
-                    disabled={!accountingContext?.qboConnected || accountingSaving}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(accountingContext?.expenseAccounts ?? []).map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {accountLabel(account)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">Paid from</Label>
-                  <Select
-                    value={accountingDraft.qboPaymentAccountId}
-                    onValueChange={(value) => setAccountingDraft((draft) => (draft ? { ...draft, qboPaymentAccountId: value } : draft))}
-                    disabled={!accountingContext?.qboConnected || accountingSaving}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Bank or credit card" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(accountingContext?.paymentAccounts ?? []).map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {accountLabel(account)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {qboDeepLink(accountingExpense) ? (
-                  <Button variant="outline" size="sm" asChild>
-                    <a href={qboDeepLink(accountingExpense)!} target="_blank" rel="noreferrer" className="gap-2">
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      Open in QuickBooks
-                    </a>
-                  </Button>
-                ) : null}
-              </div>
-
-              <SheetFooter className="border-t bg-background/80 px-6 py-3">
-                <div className="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
-                  <Button type="button" variant="outline" onClick={() => void saveAccounting(false)} disabled={!accountingContext?.qboConnected || accountingSaving}>
-                    {accountingSaving ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                    Save coding
-                  </Button>
-                  <Button type="button" onClick={() => void saveAccounting(true)} disabled={!accountingContext?.qboConnected || accountingSaving || accountingExpense.status !== "approved"}>
-                    {accountingSaving ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="mr-2 h-3.5 w-3.5" />}
-                    Save & sync
-                  </Button>
-                </div>
-              </SheetFooter>
-            </>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+      <ExpenseWorkspace
+        projectId={projectId}
+        expenses={items}
+        selectedExpenseId={workspaceExpenseId}
+        onSelect={openExpense}
+        accountingContext={accountingContext}
+        costCodesEnabled={costCodesEnabled}
+        onChanged={refresh}
+      />
 
       <FileViewer
         file={viewerFile}
@@ -1188,7 +947,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                       aria-label={`Select expense ${vendorOf(expense)}`}
                       className="mt-1"
                     />
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 cursor-pointer" onClick={() => openExpense(expense.id)}>
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-medium text-muted-foreground">{formatDate(expense.expense_date)}</span>
                         <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[expense.status] ?? ""}`}>
@@ -1202,7 +961,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           {expense.cost_code.code} {expense.cost_code.name}
                         </p>
                       ) : null}
-                      <div className="mt-2 max-w-full">
+                      <div className="mt-2 max-w-full" onClick={(e) => e.stopPropagation()}>
                         <AccountCombobox
                           expense={expense}
                           context={accountingContext}
@@ -1275,7 +1034,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           <Checkbox checked={selectedIds.includes(expense.id)} onCheckedChange={(checked) => toggleSelectOne(expense.id, checked)} aria-label={`Select expense ${vendor}`} />
                         </div>
                       </TableCell>
-                      <TableCell className="px-4 py-2">
+                      <TableCell className="px-4 py-2 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => openExpense(expense.id)}>
                         <div className="flex min-w-0 items-center gap-3">
                           <Avatar className="size-7 rounded-md">
                             <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendor)}</AvatarFallback>
@@ -1290,8 +1049,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           </IconTooltip>
                         </div>
                       </TableCell>
-                      <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground">{formatDate(expense.expense_date)}</TableCell>
-                      <TableCell className="px-4 py-2 text-right text-sm font-semibold tabular-nums">{formatCurrency(amount)}</TableCell>
+                      <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => openExpense(expense.id)}>{formatDate(expense.expense_date)}</TableCell>
+                      <TableCell className="px-4 py-2 text-right text-sm font-semibold tabular-nums cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => openExpense(expense.id)}>{formatCurrency(amount)}</TableCell>
                       <TableCell className="p-0">
                         <AccountCombobox
                           expense={expense}
@@ -1303,10 +1062,10 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           onSelect={(accountId) => void saveExpenseAccount(expense, accountId)}
                         />
                       </TableCell>
-                      <TableCell className="px-4 py-2 text-center">
+                      <TableCell className="px-4 py-2 text-center cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => openExpense(expense.id)}>
                         {expense.receipt_file_id ? (
                           <IconTooltip label="Preview receipt">
-                            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => void openReceiptPreview(expense)}>
+                            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={(e) => { e.stopPropagation(); openExpense(expense.id); }}>
                               <Receipt className="h-5 w-5 text-primary" />
                               <span className="sr-only">Preview receipt</span>
                             </Button>

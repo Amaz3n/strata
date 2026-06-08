@@ -37,7 +37,6 @@ export function FinancialsTab({
           projectId={projectId}
           initialDraws={draws}
           contract={contract}
-          approvedChangeOrdersTotalCents={approvedChangeOrdersTotalCents}
           scheduleItems={scheduleItems}
         />
         <RetainageTracker projectId={projectId} retainage={retainage} />

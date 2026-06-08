@@ -259,3 +259,120 @@ test("closed billing periods block invoice creation and in-place edits", () => {
     )
   }
 })
+
+test("receivables mutations remain routed through atomic database functions", () => {
+  const paymentSource = fs.readFileSync(path.join(__dirname, "../lib/services/payments.ts"), "utf8")
+  const projectActions = fs.readFileSync(path.join(__dirname, "../app/(app)/projects/[id]/actions.ts"), "utf8")
+  const lateFeeJob = fs.readFileSync(path.join(__dirname, "../app/api/jobs/late-fees/route.ts"), "utf8")
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260607120000_receivables_hardening_and_autopilot.sql"),
+    "utf8",
+  )
+
+  assert.match(paymentSource, /rpc\("apply_invoice_payment_atomic"/)
+  assert.match(paymentSource, /rpc\("record_payment_reversal_atomic"/)
+  assert.match(projectActions, /rpc\("release_project_retainage_atomic"/)
+  assert.match(projectActions, /p_reservation_id: next\.reservation_id \?\? null/)
+  assert.match(lateFeeJob, /rpc\("apply_invoice_late_fee_atomic"/)
+  assert.match(migration, /for update/)
+  assert.match(migration, /invoices_sync_retainage_release_status/)
+})
+
+test("financial jobs and public payment links keep their authorization boundaries", () => {
+  for (const route of ["reminders", "late-fees", "payments"]) {
+    const source = fs.readFileSync(path.join(__dirname, `../app/api/jobs/${route}/route.ts`), "utf8")
+    assert.match(source, /isAuthorizedCronRequest/)
+    assert.match(source, /status:\s*401/)
+  }
+
+  const payLinkPage = fs.readFileSync(path.join(__dirname, "../app/p/pay/[token]/page.tsx"), "utf8")
+  const paymentService = fs.readFileSync(path.join(__dirname, "../lib/services/payments.ts"), "utf8")
+  assert.match(payLinkPage, /createPayLinkPaymentIntent\(token\)/)
+  assert.doesNotMatch(payLinkPage, /createPaymentIntent\(/)
+  assert.match(paymentService, /data\.client_visible === false \|\| data\.status === "void"/)
+})
+
+test("sent and synchronized invoices are immutable through the standard editor", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
+
+  assert.match(source, /existing\.sent_at \|\| existing\.qbo_id/)
+  assert.match(source, /Issued or accounting-synced invoices are immutable/)
+  assert.match(source, /client_visible", true/)
+  assert.match(source, /neq\("status", "void"\)/)
+})
+
+test("Arc Autopilot is opt-in and prepares review runs without posting invoices", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/services/billing-autopilot.ts"), "utf8")
+
+  assert.match(source, /flagKey:\s*FLAG_KEY/)
+  assert.match(source, /defaultEnabled:\s*false/)
+  assert.match(source, /Nothing is posted or sent automatically|status:\s*"prepared"/)
+  assert.doesNotMatch(source, /createInvoice\(/)
+})
+
+test("draw billing creates a linked review draft instead of issuing immediately", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/services/draws.ts"), "utf8")
+
+  assert.match(source, /status:\s*"saved"/)
+  assert.match(source, /client_visible:\s*false/)
+  assert.match(source, /source_type:\s*"draw"/)
+  assert.match(source, /source_draw_id:\s*draw\.id/)
+})
+
+test("invoice revisions preserve the original and create a linked replacement draft", () => {
+  const service = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
+  const client = fs.readFileSync(path.join(__dirname, "../components/invoices/invoices-client.tsx"), "utf8")
+
+  assert.match(service, /export async function reviseInvoice/)
+  assert.match(service, /await voidInvoice/)
+  assert.match(service, /revision_of_invoice_id/)
+  assert.match(service, /replaced_by_invoice_id/)
+  assert.match(client, /Revise and reissue/)
+})
+
+test("retainage is derived from the active contract and shown before invoice issuance", () => {
+  const invoiceService = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
+  const composer = fs.readFileSync(path.join(__dirname, "../components/invoices/invoice-composer-sheet.tsx"), "utf8")
+  const receivables = fs.readFileSync(path.join(__dirname, "../components/financials/receivables-tab.tsx"), "utf8")
+  const retainageTracker = fs.readFileSync(path.join(__dirname, "../components/projects/retainage-tracker.tsx"), "utf8")
+
+  assert.match(invoiceService, /sourceType !== "manual" && sourceType !== "draw" && sourceType !== "change_order"/)
+  assert.match(invoiceService, /Failed to record invoice retainage/)
+  assert.match(composer, /billing_contract\?\.retainage_percent/)
+  assert.match(composer, /Retainage held/)
+  assert.match(receivables, /billing_contract: contract/)
+  assert.match(receivables, /projects=\{\[invoiceProject\]\}/)
+  assert.doesNotMatch(retainageTracker, /updateProjectSettingsAction/)
+  assert.doesNotMatch(retainageTracker, /Total Project Value/)
+})
+
+test("contract value uses base plus approved changes exactly once", () => {
+  const projectService = fs.readFileSync(path.join(__dirname, "../lib/services/projects.ts"), "utf8")
+  const overview = fs.readFileSync(
+    path.join(__dirname, "../components/projects/overview/project-overview-stats.tsx"),
+    "utf8",
+  )
+  const contractCard = fs.readFileSync(
+    path.join(__dirname, "../components/projects/contract-summary-card.tsx"),
+    "utf8",
+  )
+  const drawManager = fs.readFileSync(
+    path.join(__dirname, "../components/projects/draw-schedule-manager.tsx"),
+    "utf8",
+  )
+
+  assert.match(projectService, /revisedTotalCents = baseTotalCents == null \? null : baseTotalCents \+ approvedChangeOrdersCents/)
+  assert.match(overview, /const totalContractCents = contractTotalCents/)
+  assert.match(contractCard, /const revisedTotal = contractTotal/)
+  assert.match(drawManager, /return contract\?\.total_cents \?\? 0/)
+  assert.doesNotMatch(drawManager, /contract\?\.total_cents \?\? 0\) \+ /)
+})
+
+test("Autopilot treats completed linked milestones as billing evidence", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/services/billing-autopilot.ts"), "utf8")
+
+  assert.match(source, /from\("schedule_items"\)/)
+  assert.match(source, /milestoneComplete/)
+  assert.match(source, /Number\(milestone\.progress \?\? 0\) >= 100/)
+  assert.match(source, /Review the draw before preparing its invoice/)
+})

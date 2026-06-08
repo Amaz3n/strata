@@ -6,6 +6,272 @@ import { attachFile } from "@/lib/services/file-links"
 import { renderDrawSummaryPdf } from "@/lib/pdfs/draw-summary"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { recordEvent } from "@/lib/services/events"
+import { recordAudit } from "@/lib/services/audit"
+
+function drawStatusForInvoice(invoiceStatus: string | null | undefined): "invoiced" | "partial" | "paid" {
+  const normalized = String(invoiceStatus ?? "").toLowerCase()
+  if (normalized === "paid") return "paid"
+  if (normalized === "partial") return "partial"
+  return "invoiced"
+}
+
+/**
+ * Link an already-existing invoice to a pending draw. Used when an invoice was
+ * created (or imported from QBO) before the draw, and the builder wants the two
+ * tied together. This is the reverse of {@link invoiceDrawSchedule}, which
+ * generates a fresh invoice from a draw.
+ */
+export async function linkInvoiceToDraw({
+  drawId,
+  invoiceId,
+  orgId,
+}: {
+  drawId: string
+  invoiceId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: draw, error: drawError } = await supabase
+    .from("draw_schedules")
+    .select("*")
+    .eq("id", drawId)
+    .eq("org_id", resolvedOrgId)
+    .single()
+
+  if (drawError || !draw) {
+    throw new Error("Draw not found")
+  }
+
+  await requireAuthorization({
+    permission: "draw.approve",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: draw.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "draw_schedule",
+    resourceId: drawId,
+  })
+
+  if (draw.invoice_id) {
+    throw new Error("This draw is already linked to an invoice. Unlink it first.")
+  }
+
+  if (draw.status !== "pending") {
+    throw new Error("Only pending draws can be linked to an invoice.")
+  }
+
+  const { data: invoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .select("id, project_id, status, total_cents, invoice_number, metadata")
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (invoiceError) {
+    throw new Error(`Failed to load invoice: ${invoiceError.message}`)
+  }
+
+  if (!invoice) {
+    throw new Error("Invoice not found")
+  }
+
+  if (invoice.project_id !== draw.project_id) {
+    throw new Error("That invoice belongs to a different project.")
+  }
+
+  if (String(invoice.status).toLowerCase() === "void") {
+    throw new Error("Voided invoices cannot be linked to a draw.")
+  }
+
+  const metadata = (invoice.metadata ?? {}) as Record<string, any>
+  const existingSourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
+  const existingSourceDrawId = typeof metadata.source_draw_id === "string" ? metadata.source_draw_id : null
+
+  if (existingSourceDrawId && existingSourceDrawId !== drawId) {
+    throw new Error("This invoice is already linked to another draw.")
+  }
+
+  if (existingSourceType && existingSourceType !== "manual" && existingSourceType !== "draw" && existingSourceType !== "qbo") {
+    throw new Error(`This invoice was generated from a ${existingSourceType.replace(/_/g, " ")} and can't be linked to a draw.`)
+  }
+
+  const nextStatus = drawStatusForInvoice(invoice.status)
+  const nowIso = new Date().toISOString()
+
+  const { error: drawUpdateError } = await supabase
+    .from("draw_schedules")
+    .update({
+      invoice_id: invoice.id,
+      status: nextStatus,
+      invoiced_at: draw.invoiced_at ?? nowIso,
+    })
+    .eq("id", drawId)
+    .eq("org_id", resolvedOrgId)
+
+  if (drawUpdateError) {
+    throw new Error(`Failed to link invoice to draw: ${drawUpdateError.message}`)
+  }
+
+  const nextMetadata = {
+    ...metadata,
+    source_type: "draw",
+    source_draw_id: draw.id,
+    draw_id: draw.id,
+    draw_number: draw.draw_number,
+    draw_title: draw.title,
+    draw_amount_cents: draw.amount_cents,
+    draw_percent_of_contract: draw.percent_of_contract,
+    draw_linked_at: nowIso,
+    draw_linked_manually: true,
+  }
+
+  const { error: invoiceUpdateError } = await supabase
+    .from("invoices")
+    .update({ metadata: nextMetadata })
+    .eq("id", invoice.id)
+    .eq("org_id", resolvedOrgId)
+
+  if (invoiceUpdateError) {
+    // Roll back the draw side so we don't leave a half-linked state.
+    await supabase
+      .from("draw_schedules")
+      .update({ invoice_id: null, status: "pending", invoiced_at: draw.invoiced_at ?? null })
+      .eq("id", drawId)
+      .eq("org_id", resolvedOrgId)
+    throw new Error(`Failed to update invoice link: ${invoiceUpdateError.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "draw_invoice_linked",
+    entityType: "draw_schedule",
+    entityId: draw.id,
+    payload: { invoice_id: invoice.id, invoice_number: invoice.invoice_number, draw_number: draw.draw_number },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    action: "update",
+    entityType: "draw_schedule",
+    entityId: draw.id,
+    before: { invoice_id: draw.invoice_id, status: draw.status },
+    after: { invoice_id: invoice.id, status: nextStatus },
+    source: "draw.link_invoice",
+  })
+
+  return {
+    draw: { ...draw, invoice_id: invoice.id, status: nextStatus, invoiced_at: draw.invoiced_at ?? nowIso },
+    invoice_id: invoice.id,
+  }
+}
+
+/**
+ * Reverse a manual (or generated) draw↔invoice link, returning the draw to
+ * pending and stripping the draw source metadata from the invoice. The invoice
+ * itself is preserved.
+ */
+export async function unlinkInvoiceFromDraw({
+  drawId,
+  orgId,
+}: {
+  drawId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: draw, error: drawError } = await supabase
+    .from("draw_schedules")
+    .select("id, project_id, invoice_id, status")
+    .eq("id", drawId)
+    .eq("org_id", resolvedOrgId)
+    .single()
+
+  if (drawError || !draw) {
+    throw new Error("Draw not found")
+  }
+
+  await requireAuthorization({
+    permission: "draw.approve",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: draw.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "draw_schedule",
+    resourceId: drawId,
+  })
+
+  if (!draw.invoice_id) {
+    throw new Error("This draw has no linked invoice.")
+  }
+
+  const invoiceId = draw.invoice_id
+
+  const { error: drawUpdateError } = await supabase
+    .from("draw_schedules")
+    .update({ invoice_id: null, status: "pending", invoiced_at: null })
+    .eq("id", drawId)
+    .eq("org_id", resolvedOrgId)
+
+  if (drawUpdateError) {
+    throw new Error(`Failed to unlink invoice: ${drawUpdateError.message}`)
+  }
+
+  const { data: invoice } = await supabase
+    .from("invoices")
+    .select("id, metadata")
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (invoice) {
+    const metadata = (invoice.metadata ?? {}) as Record<string, any>
+    const {
+      source_draw_id: _sourceDrawId,
+      draw_id: _drawId,
+      draw_number: _drawNumber,
+      draw_title: _drawTitle,
+      draw_amount_cents: _drawAmountCents,
+      draw_percent_of_contract: _drawPercent,
+      draw_linked_at: _drawLinkedAt,
+      draw_linked_manually: _drawLinkedManually,
+      ...rest
+    } = metadata
+    const nextMetadata = {
+      ...rest,
+      source_type: metadata.source_type === "draw" ? "manual" : metadata.source_type,
+    }
+
+    await supabase
+      .from("invoices")
+      .update({ metadata: nextMetadata })
+      .eq("id", invoiceId)
+      .eq("org_id", resolvedOrgId)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "draw_invoice_unlinked",
+    entityType: "draw_schedule",
+    entityId: draw.id,
+    payload: { invoice_id: invoiceId, draw_number: undefined },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    action: "update",
+    entityType: "draw_schedule",
+    entityId: draw.id,
+    before: { invoice_id: invoiceId, status: draw.status },
+    after: { invoice_id: null, status: "pending" },
+    source: "draw.unlink_invoice",
+  })
+
+  return { draw: { ...draw, invoice_id: null, status: "pending", invoiced_at: null }, invoice_id: invoiceId }
+}
 
 export async function listDueDraws(projectId?: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -172,13 +438,15 @@ export async function invoiceDrawSchedule({
       invoice_number,
       reservation_id,
       title: `Draw ${draw.draw_number}: ${draw.title}`,
-      status: "sent",
+      status: "saved",
       issue_date,
       due_date: due_date ?? draw.due_date ?? undefined,
       notes: draw.description ?? undefined,
-      client_visible: true,
+      client_visible: false,
       tax_rate: 0,
       lines,
+      source_type: "draw",
+      source_draw_id: draw.id,
     },
     orgId: resolvedOrgId,
   })
@@ -389,6 +657,5 @@ async function generateAndAttachDrawSummary({
 
   return record.id
 }
-
 
 

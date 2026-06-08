@@ -42,6 +42,9 @@ export type SearchEntityType =
   | 'schedule_item'
   | 'photo'
   | 'portal_access'
+  | 'payable'
+  | 'expense'
+  | 'prospect'
 
 export interface SearchFilters {
   entityTypes?: SearchEntityType[]
@@ -84,10 +87,10 @@ const SEARCH_DOCUMENT_BACKFILL_MAX_BATCH = 12
 const searchDocumentBackfillSeenAt = new Map<string, number>()
 
 // Entity sets used when the caller does not request specific types.
-const DEFAULT_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company"]
+const DEFAULT_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company", "payable", "expense", "prospect"]
 // Live ("preferFast") header search: widened to surface the records users expect to find
 // instantly — contacts, companies, and invoices — not just project/task/file.
-const FAST_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company", "invoice", "payment"]
+const FAST_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company", "invoice", "payment", "payable", "expense", "prospect"]
 // Money-bearing entities, used when the query is a bare amount/amount range.
 const MONEY_ENTITY_TYPES: SearchEntityType[] = [
   "invoice",
@@ -98,6 +101,8 @@ const MONEY_ENTITY_TYPES: SearchEntityType[] = [
   "change_order",
   "contract",
   "proposal",
+  "payable",
+  "expense",
 ]
 // Maps each money entity to the integer-cents column its amount lives in.
 const AMOUNT_FIELD_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
@@ -109,6 +114,8 @@ const AMOUNT_FIELD_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   change_order: "total_cents",
   contract: "total_cents",
   proposal: "total_cents",
+  payable: "total_cents",
+  expense: "amount_cents",
 }
 
 function sanitizeSearchTerm(query: string) {
@@ -305,10 +312,8 @@ async function searchViaUnifiedIndex(
 
       const metadata = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {}
       const config = SEARCH_CONFIGS[type]
-      const href =
-        typeof metadata.href === "string" && metadata.href.length > 0
-          ? metadata.href
-          : config.hrefTemplate.replace("{id}", id)
+      const resolvedProjectId = (row.project_id || metadata.project_id) as string || ""
+      const href = config.hrefTemplate.replace("{id}", id).replace("{project_id}", resolvedProjectId)
 
       const normalized: SearchResult = {
         id,
@@ -436,7 +441,7 @@ const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'title',
     subtitleFields: ['invoice_number', 'status', 'total_cents'],
     searchableFields: ['title', 'invoice_number', 'notes'],
-    hrefTemplate: '/invoices/{id}',
+    hrefTemplate: '/projects/{project_id}/financials/receivables?invoice={id}',
     joins: ['LEFT JOIN projects p ON i.project_id = p.id'],
   },
   payment: {
@@ -572,6 +577,29 @@ const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     searchableFields: [],
     hrefTemplate: '/portal-access/{id}',
     joins: ['LEFT JOIN projects p ON pat.project_id = p.id'],
+  },
+  payable: {
+    table: 'vendor_bills',
+    titleField: 'bill_number',
+    subtitleFields: ['status', 'total_cents'],
+    searchableFields: ['bill_number', 'status'],
+    hrefTemplate: '/projects/{project_id}/financials/payables?bill={id}',
+    joins: ['LEFT JOIN projects p ON payable.project_id = p.id'],
+  },
+  expense: {
+    table: 'project_expenses',
+    titleField: 'description',
+    subtitleFields: ['status', 'amount_cents', 'vendor_name_text'],
+    searchableFields: ['description', 'vendor_name_text', 'status'],
+    hrefTemplate: '/projects/{project_id}/expenses?expense={id}',
+    joins: ['LEFT JOIN projects p ON expense.project_id = p.id'],
+  },
+  prospect: {
+    table: 'prospects',
+    titleField: 'name',
+    subtitleFields: ['status', 'project_type'],
+    searchableFields: ['name', 'status', 'project_type', 'notes'],
+    hrefTemplate: '/pipeline?prospectId={id}',
   },
 }
 
@@ -849,7 +877,7 @@ async function searchSingleEntity(
   const { limit = 10 } = options
 
   // Determine if this entity has projects
-  const hasProject = ['project', 'task', 'file', 'invoice', 'payment', 'budget', 'estimate', 'commitment', 'change_order', 'contract', 'proposal', 'rfi', 'submittal', 'drawing_set', 'drawing_sheet', 'daily_log', 'punch_item', 'schedule_item', 'photo', 'portal_access'].includes(entityType)
+  const hasProject = ['project', 'task', 'file', 'invoice', 'payment', 'budget', 'estimate', 'commitment', 'change_order', 'contract', 'proposal', 'rfi', 'submittal', 'drawing_set', 'drawing_sheet', 'daily_log', 'punch_item', 'schedule_item', 'photo', 'portal_access', 'payable', 'expense'].includes(entityType)
   const includeProject = hasProject && entityType !== 'project'
   const selectClause = buildEntitySelectClause(entityType, config, includeProject)
 
@@ -926,7 +954,7 @@ async function searchSingleEntity(
       id: row.id,
       type: entityType,
       title: row[config.titleField] || `Untitled ${entityType}`,
-      href: config.hrefTemplate.replace('{id}', row.id),
+      href: config.hrefTemplate.replace('{id}', row.id).replace('{project_id}', row.project_id || ''),
       created_at: row.created_at,
       updated_at: row.updated_at,
       project_id: row.project_id,

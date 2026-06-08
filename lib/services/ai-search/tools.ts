@@ -27,12 +27,15 @@ const ENTITY_HINTS: Array<{ type: SearchEntityType; pattern: RegExp }> = [
   { type: "rfi", pattern: /\brfis?\b/i },
   { type: "submittal", pattern: /\bsubmittals?\b/i },
   { type: "change_order", pattern: /\bchange orders?|cos?\b/i },
+  { type: "payable", pattern: /\bpayables?|bills?\b/i },
+  { type: "expense", pattern: /\bexpenses?\b/i },
+  { type: "prospect", pattern: /\bprospects?\b/i },
 ]
 
 const HREF_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   project: "/projects/{id}",
   task: "/tasks/{id}",
-  invoice: "/invoices/{id}",
+  invoice: "/projects/{project_id}/financials/receivables?invoice={id}",
   payment: "/payments/{id}",
   budget: "/budgets/{id}",
   estimate: "/estimates/{id}",
@@ -42,6 +45,9 @@ const HREF_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   proposal: "/signatures",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
+  payable: "/projects/{project_id}/financials/payables?bill={id}",
+  expense: "/projects/{project_id}/expenses?expense={id}",
+  prospect: "/pipeline?prospectId={id}",
 }
 
 const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i
@@ -177,6 +183,9 @@ function normalizeEntityType(value: unknown): SearchEntityType | null {
     "schedule_item",
     "photo",
     "portal_access",
+    "payable",
+    "expense",
+    "prospect",
   ]
 
   return allowed.includes(normalized as SearchEntityType) ? (normalized as SearchEntityType) : null
@@ -437,12 +446,15 @@ async function executePendingApprovalsForUser(context: OrgServiceContext): Promi
     const title = payloadTitle || `${formatEntityTypeForAi(entityType)} approval`
     const hrefTemplate = HREF_BY_ENTITY[entityType]
 
+    const resolvedProjectId = (payload.project_id || (row as any).project_id) as string || ""
     return {
       id: entityId,
       type: entityType,
       title,
       subtitle: `Pending since ${formatDateForAnswer(row.created_at)}`,
-      href: hrefTemplate ? hrefTemplate.replace("{id}", entityId) : `/tasks/${entityId}`,
+      href: hrefTemplate
+        ? hrefTemplate.replace("{id}", entityId).replace("{project_id}", resolvedProjectId)
+        : `/tasks/${entityId}`,
       updated_at: row.created_at ?? undefined,
     }
   })

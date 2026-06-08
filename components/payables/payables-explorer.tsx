@@ -195,7 +195,7 @@ export function PayablesExplorer({
                     <Checkbox checked={selectedIds.includes(bill.id)} onCheckedChange={(checked) => toggleSelectOne(bill.id, checked)} aria-label={`Select payable ${vendorLabel(bill)}`} />
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-2" onClick={() => onViewDetails?.(bill)}>
+                <TableCell className="px-4 py-2 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
                   <div className="flex min-w-0 items-center gap-3">
                     <Avatar className="size-7 rounded-md">
                       <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendorLabel(bill))}</AvatarFallback>
@@ -211,8 +211,8 @@ export function PayablesExplorer({
                     </span>
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground">{bill.due_date ? format(new Date(`${bill.due_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
-                <TableCell className="px-4 py-2 text-right">
+                <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>{bill.due_date ? format(new Date(`${bill.due_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
+                <TableCell className="px-4 py-2 text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
                   <div className="text-sm font-semibold tabular-nums">{formatCurrency(bill.project_amount_cents ?? bill.total_cents ?? 0)}</div>
                   {bill.is_shared ? (
                     <div className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400">of {formatCurrency(bill.total_cents ?? 0)} shared</div>
@@ -226,9 +226,9 @@ export function PayablesExplorer({
                 <TableCell className="px-4 py-2">
                   <code className="text-xs font-mono bg-muted px-1.5 py-0.5 uppercase tracking-wider">{bill.bill_number ?? "—"}</code>
                 </TableCell>
-                <TableCell className="px-4 py-2 text-center" onClick={(event) => event.stopPropagation()}>
+                <TableCell className="px-4 py-2 text-center cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
                   {bill.file_id ? (
-                    <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => onViewFiles?.(bill)}>
+                    <Button variant="ghost" size="icon" className="h-9 w-9" onClick={(e) => { e.stopPropagation(); onViewFiles?.(bill); }}>
                       <Receipt className="h-5 w-5 text-primary" />
                       <span className="sr-only">Preview receipt</span>
                     </Button>

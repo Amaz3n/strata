@@ -1,10 +1,15 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { sendReminderEmail, sendReminderSMS } from "@/lib/services/mailer"
 import { generateSignedPayLink } from "@/lib/services/payments"
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  if (!isAuthorizedCronRequest(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   const supabase = createServiceSupabaseClient()
 
   const { data: reminders, error } = await supabase
@@ -13,8 +18,8 @@ export async function POST() {
       `
       id, org_id, invoice_id, channel, schedule, offset_days, template_id,
       invoice:invoices(
-        id, org_id, project_id, invoice_number, status, due_date,
-        balance_due_cents, total_cents,
+        id, org_id, project_id, invoice_number, token, status, due_date,
+        client_visible, balance_due_cents, total_cents,
         recipient:contacts(id, full_name, email, phone)
       )
     `,
@@ -82,8 +87,13 @@ export async function POST() {
         })
         payLink = signed.url
       } catch {
-        payLink = `${process.env.NEXT_PUBLIC_APP_URL}/p/pay/${reminder.invoice.id}`
+        const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+        if (appUrl && reminder.invoice.client_visible && reminder.invoice.token) {
+          payLink = `${appUrl}/i/${reminder.invoice.token}`
+        }
       }
+
+      if (!payLink) continue
 
       if (reminder.channel === "email" && reminder.invoice.recipient?.email) {
         const orgMeta = orgById.get(reminder.org_id)
@@ -134,3 +144,5 @@ export async function POST() {
 
   return NextResponse.json({ processed: reminders.length, sent: sentCount })
 }
+
+export const GET = POST

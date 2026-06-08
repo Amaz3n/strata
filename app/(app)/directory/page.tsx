@@ -11,6 +11,8 @@ import {
   type DirectoryView,
 } from "@/lib/services/directory";
 
+import { requireOrgContext } from "@/lib/services/context";
+
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 25;
@@ -47,6 +49,7 @@ function resolvePage(value?: string) {
 }
 
 async function DirectoryData({ searchParams }: DirectoryPageProps) {
+  const { orgId } = await requireOrgContext();
   const resolvedSearchParams = await searchParams;
   const view = resolveView(resolvedSearchParams?.view);
   const search =
@@ -89,6 +92,7 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
 
   return (
     <DirectoryClient
+      key={orgId}
       companies={directoryPage.companies}
       contacts={directoryPage.contacts}
       canCreate={canEdit}

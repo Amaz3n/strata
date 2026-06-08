@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation"
 
 import { PayLinkClient } from "@/components/payments/pay-link-client"
-import { createPaymentIntent, getInvoiceForPayLink } from "@/lib/services/payments"
+import { createPayLinkPaymentIntent, getInvoiceForPayLink } from "@/lib/services/payments"
 
 interface Params {
   params: Promise<{ token: string }>
@@ -21,14 +21,7 @@ export default async function PayLinkPage({ params }: Params) {
     throw new Error("Stripe publishable key is not configured")
   }
 
-  const intent = await createPaymentIntent(
-    {
-      invoice_id: result.invoice.id,
-      currency: result.invoice.currency,
-      include_processing_fee: false,
-    },
-    result.invoice.org_id,
-  )
+  const intent = await createPayLinkPaymentIntent(token)
 
   return (
     <PayLinkClient
@@ -40,7 +33,6 @@ export default async function PayLinkPage({ params }: Params) {
     />
   )
 }
-
 
 
 

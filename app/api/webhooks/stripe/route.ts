@@ -6,7 +6,7 @@ import {
   mapStripeEventToDomain,
   retrieveStripeChargeWithBalanceTransaction,
 } from "@/lib/integrations/payments/stripe"
-import { recordPayment } from "@/lib/services/payments"
+import { recordPayment, recordPaymentReversal, resolvePaymentReversal } from "@/lib/services/payments"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { upsertSubscriptionFromStripe } from "@/lib/services/subscriptions"
 import { authorize } from "@/lib/services/authorization"
@@ -53,7 +53,15 @@ export async function POST(request: NextRequest) {
   }
 
   const supabase = createServiceSupabaseClient()
-  const orgId = resolveOrgIdFromEvent(event)
+  let orgId = resolveOrgIdFromEvent(event)
+  if (!orgId && typeof event.account === "string") {
+    const { data: connection } = await supabase
+      .from("stripe_connected_accounts")
+      .select("org_id")
+      .eq("stripe_account_id", event.account)
+      .maybeSingle()
+    orgId = connection?.org_id ?? null
+  }
 
   const { data: existingWebhookEvent } = await supabase
     .from("webhook_events")
@@ -173,6 +181,41 @@ export async function POST(request: NextRequest) {
           payload: domainEvent,
         })
       }
+    }
+
+    if (domainEvent.type === "payment_reversed") {
+      const reversalOrgId =
+        orgId ??
+        (typeof domainEvent.metadata?.org_id === "string" ? domainEvent.metadata.org_id : null)
+      if (!reversalOrgId) {
+        throw new Error("Stripe reversal is missing organization metadata")
+      }
+      await recordPaymentReversal({
+        orgId: reversalOrgId,
+        providerPaymentId: domainEvent.provider_payment_id,
+        providerChargeId: domainEvent.provider_charge_id,
+        amountCents: domainEvent.amount_cents,
+        reversalType: domainEvent.reversal_type,
+        providerReversalId: domainEvent.provider_reversal_id,
+        reason: domainEvent.reason,
+        metadata: domainEvent.metadata ?? undefined,
+      })
+    }
+
+    if (domainEvent.type === "payment_reversal_resolved") {
+      const reversalOrgId =
+        orgId ??
+        (typeof domainEvent.metadata?.org_id === "string" ? domainEvent.metadata.org_id : null)
+      if (!reversalOrgId) {
+        throw new Error("Stripe reversal resolution is missing organization metadata")
+      }
+      await resolvePaymentReversal({
+        orgId: reversalOrgId,
+        providerReversalId: domainEvent.provider_reversal_id,
+        outcome: domainEvent.outcome,
+        reason: domainEvent.reason,
+        metadata: domainEvent.metadata ?? undefined,
+      })
     }
 
     if (event.type === "charge.succeeded") {

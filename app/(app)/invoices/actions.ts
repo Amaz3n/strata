@@ -9,6 +9,7 @@ import {
   getInvoiceWithLines,
   listInvoiceViews,
   listInvoices,
+  reviseInvoice,
   updateInvoice,
   voidInvoice,
 } from "@/lib/services/invoices"
@@ -143,6 +144,16 @@ export async function voidInvoiceAction(invoiceId: string) {
   return invoice
 }
 
+export async function reviseInvoiceAction(invoiceId: string) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+  const invoice = await reviseInvoice({ invoiceId })
+  revalidatePath("/invoices")
+  if (invoice.project_id) {
+    revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+  }
+  return invoice
+}
+
 export async function deleteInvoiceAction(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
   const result = await deleteInvoice({ invoiceId })
@@ -173,7 +184,10 @@ export async function getInvoiceDetailAction(invoiceId: string) {
   const invoice = await getInvoiceWithLines(invoiceId)
   if (!invoice) throw new Error("Invoice not found")
 
-  const token = await ensureInvoiceToken(invoiceId, invoice.org_id)
+  const token =
+    invoice.client_visible || invoice.sent_at || invoice.status === "sent"
+      ? await ensureInvoiceToken(invoiceId, invoice.org_id)
+      : invoice.token ?? null
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
   const views = await listInvoiceViews(invoiceId, invoice.org_id)
   const supabase = createServiceSupabaseClient()
@@ -187,7 +201,7 @@ export async function getInvoiceDetailAction(invoiceId: string) {
 
   return {
     invoice: { ...invoice, token },
-    link: `${appUrl}/i/${token}`,
+    link: token ? `${appUrl}/i/${token}` : undefined,
     views,
     syncHistory: syncHistory ?? [],
   }

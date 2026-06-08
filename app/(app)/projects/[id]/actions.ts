@@ -46,10 +46,10 @@ import {
   bulkUpdateScheduleItems,
 } from "@/lib/services/schedule"
 import { createDrawScheduleFromContract } from "@/lib/services/proposals"
-import { invoiceDrawSchedule } from "@/lib/services/draws"
+import { invoiceDrawSchedule, linkInvoiceToDraw, unlinkInvoiceFromDraw } from "@/lib/services/draws"
+import { listInvoices } from "@/lib/services/invoices"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
-import { createInvoice } from "@/lib/services/invoices"
-import { AuthorizationError } from "@/lib/services/authorization"
+import { AuthorizationError, requireAuthorization } from "@/lib/services/authorization"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
@@ -167,10 +167,15 @@ export async function getProjectAction(projectId: string): Promise<Project | nul
     .select("*")
     .eq("org_id", orgId)
     .eq("id", projectId)
-    .single()
+    .maybeSingle()
 
-  if (error || !data) {
-    console.error("Failed to fetch project:", error?.message)
+  // No row here is expected (e.g. a platform admin whose active org differs from the
+  // project's org) — return null quietly. Only log genuine query failures.
+  if (error) {
+    console.error("Failed to fetch project:", error.message)
+    return null
+  }
+  if (!data) {
     return null
   }
 
@@ -932,138 +937,159 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
   }
 }
 
+/**
+ * List invoices in this project that can be attached to a draw: ones that are
+ * not voided and not already tied to a draw or change order. Used by the draw
+ * detail sheet's "Link existing invoice" picker.
+ */
+export async function listLinkableInvoicesForDrawAction(projectId: string) {
+  const { orgId } = await requireOrgContext()
+  const invoices = await listInvoices({ orgId, projectId })
+
+  return invoices
+    .filter((invoice) => {
+      if (String(invoice.status).toLowerCase() === "void") return false
+      const metadata = (invoice.metadata ?? {}) as Record<string, any>
+      if (metadata.source_draw_id) return false
+      const sourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
+      if (sourceType && sourceType !== "manual" && sourceType !== "qbo") return false
+      return true
+    })
+    .map((invoice) => ({
+      id: invoice.id,
+      invoice_number: invoice.invoice_number,
+      title: invoice.title ?? null,
+      status: invoice.status,
+      total_cents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
+      issue_date: invoice.issue_date ?? null,
+      from_qbo: Boolean(invoice.qbo_id) || (invoice.metadata as any)?.source_type === "qbo",
+    }))
+}
+
+export async function linkInvoiceToDrawAction(projectId: string, drawId: string, invoiceId: string) {
+  try {
+    const result = await linkInvoiceToDraw({ drawId, invoiceId })
+    revalidatePath(`/projects/${projectId}`)
+    revalidatePath(`/projects/${projectId}/financials/receivables`)
+    return result
+  } catch (err) {
+    if (err instanceof AuthorizationError) {
+      throw new Error(`AUTH_FORBIDDEN:${err.reasonCode}`)
+    }
+    throw err
+  }
+}
+
+export async function unlinkInvoiceFromDrawAction(projectId: string, drawId: string) {
+  try {
+    const result = await unlinkInvoiceFromDraw({ drawId })
+    revalidatePath(`/projects/${projectId}`)
+    revalidatePath(`/projects/${projectId}/financials/receivables`)
+    return result
+  } catch (err) {
+    if (err instanceof AuthorizationError) {
+      throw new Error(`AUTH_FORBIDDEN:${err.reasonCode}`)
+    }
+    throw err
+  }
+}
+
 export async function releaseProjectRetainageAction(
   projectId: string,
   input: { amount_cents: number; title: string; notes?: string }
 ) {
-  const { supabase, orgId } = await requireOrgContext()
-  
-  // 1. Get current held retainage
-  const { data: heldRows, error: heldError } = await supabase
-    .from("retainage")
-    .select("id, org_id, project_id, contract_id, invoice_id, amount_cents, held_at, metadata")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("status", "held")
-    .order("held_at", { ascending: true })
+  const parsed = z.object({
+    amount_cents: z.number().int().positive(),
+    title: z.string().trim().min(1).max(200),
+    notes: z.string().trim().max(5000).optional(),
+  }).parse(input)
+  const { supabase, orgId, userId } = await requireOrgContext()
 
-  if (heldError) throw new Error(`Failed to fetch held retainage: ${heldError.message}`)
-  
-  const totalHeld = (heldRows ?? []).reduce((sum, r) => sum + r.amount_cents, 0)
-  if (input.amount_cents > totalHeld) {
-    throw new Error(`Cannot release ${input.amount_cents / 100} - only ${totalHeld / 100} is held.`)
-  }
-
-  // 2. Create Release Invoice
-  const next = await getNextInvoiceNumber(orgId)
-  const invoice = await createInvoice({
-    input: {
-      project_id: projectId,
-      invoice_number: next.number,
-      reservation_id: next.reservation_id,
-      title: input.title,
-      status: "sent",
-      issue_date: new Date().toISOString().split("T")[0],
-      notes: input.notes,
-      client_visible: true,
-      tax_rate: 0,
-      lines: [
-        {
-          description: input.title,
-          quantity: 1,
-          unit: "release",
-          unit_cost: input.amount_cents / 100,
-          taxable: false,
-        }
-      ],
-      source_type: "manual", // Specialized release
-    },
+  await requireAuthorization({
+    permission: "invoice.write",
+    userId,
     orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "retainage",
+    resourceId: projectId,
+  })
+  await requireAuthorization({
+    permission: "invoice.send",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "retainage",
+    resourceId: projectId,
   })
 
-  // 3. Mark retainage records as released
-  // We release from the oldest records first (FIFO)
-  let remainingToRelease = input.amount_cents
-  for (const row of heldRows ?? []) {
-    if (remainingToRelease <= 0) break
-    
-    const releaseFromThisRow = Math.min(row.amount_cents, remainingToRelease)
-    const isFullRelease = releaseFromThisRow === row.amount_cents
-    
-    if (isFullRelease) {
-      const { error: releaseError } = await supabase
-        .from("retainage")
-        .update({
-          status: "invoiced",
-          released_at: new Date().toISOString(),
-          release_invoice_id: invoice.id,
-        })
-        .eq("id", row.id)
-        .eq("org_id", orgId)
+  const next = await getNextInvoiceNumber(orgId)
+  const serviceClient = createServiceSupabaseClient()
+  const issueDate = new Date().toISOString().slice(0, 10)
 
-      if (releaseError) {
-        throw new Error(`Failed to release retainage: ${releaseError.message}`)
-      }
-    } else {
-      const remainingHeldCents = row.amount_cents - releaseFromThisRow
-      const releasedAt = new Date().toISOString()
-      const { data: releasedRow, error: insertReleaseError } = await supabase
-        .from("retainage")
-        .insert({
-          org_id: orgId,
-          project_id: row.project_id,
-          contract_id: row.contract_id,
-          invoice_id: row.invoice_id,
-          amount_cents: releaseFromThisRow,
-          status: "invoiced",
-          held_at: row.held_at,
-          released_at: releasedAt,
-          release_invoice_id: invoice.id,
-          metadata: {
-            ...(row.metadata ?? {}),
-            source_retainage_id: row.id,
-            partial_release: true,
-          },
-        })
-        .select("id")
-        .single()
+  const { data, error } = await serviceClient.rpc("release_project_retainage_atomic", {
+    p_org_id: orgId,
+    p_project_id: projectId,
+    p_actor_id: userId,
+    p_amount_cents: parsed.amount_cents,
+    p_invoice_number: next.number,
+    p_reservation_id: next.reservation_id ?? null,
+    p_title: parsed.title,
+    p_notes: parsed.notes ?? null,
+    p_issue_date: issueDate,
+    p_due_date: null,
+  })
 
-      if (insertReleaseError || !releasedRow) {
-        throw new Error(`Failed to record partial retainage release: ${insertReleaseError?.message}`)
-      }
-
-      const { error: updateHeldError } = await supabase
-        .from("retainage")
-        .update({
-          amount_cents: remainingHeldCents,
-          metadata: {
-            ...(row.metadata ?? {}),
-            partially_released_cents: ((row.metadata as any)?.partially_released_cents ?? 0) + releaseFromThisRow,
-            last_partial_release_invoice_id: invoice.id,
-            last_partial_release_at: releasedAt,
-          },
-        })
-        .eq("id", row.id)
-        .eq("org_id", orgId)
-
-      if (updateHeldError) {
-        await supabase.from("retainage").delete().eq("org_id", orgId).eq("id", releasedRow.id)
-        throw new Error(`Failed to update held retainage balance: ${updateHeldError.message}`)
-      }
+  if (error || !data) {
+    if (next.reservation_id) {
+      await releaseInvoiceNumberReservation(next.reservation_id, orgId)
     }
-    
-    remainingToRelease -= releaseFromThisRow
+    throw new Error(`Failed to release retainage: ${error?.message ?? "No result returned"}`)
   }
+
+  const result = data as { invoice_id: string; released_cents: number }
+  await recordEvent({
+    orgId,
+    eventType: "retainage_released",
+    entityType: "invoice",
+    entityId: result.invoice_id,
+    payload: { project_id: projectId, amount_cents: result.released_cents },
+  })
+  await recordAudit({
+    orgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "retainage_release",
+    entityId: result.invoice_id,
+    after: {
+      project_id: projectId,
+      invoice_id: result.invoice_id,
+      amount_cents: result.released_cents,
+    },
+  })
 
   revalidatePath(`/projects/${projectId}`)
   revalidatePath(`/projects/${projectId}/financials`)
   revalidatePath(`/projects/${projectId}/financials/receivables`)
 
-  return { success: true, invoice_id: invoice.id }
+  return { success: true, invoice_id: result.invoice_id }
 }
 
 export async function listProjectRetainageAction(projectId: string) {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAuthorization({
+    permission: "invoice.read",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "retainage",
+    resourceId: projectId,
+  })
   const { data, error } = await supabase
     .from("retainage")
     .select(

@@ -518,7 +518,7 @@ const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   file: "/files/{id}",
   contact: "/contacts/{id}",
   company: "/companies/{id}",
-  invoice: "/invoices/{id}",
+  invoice: "/projects/{project_id}/financials/receivables?invoice={id}",
   payment: "/payments/{id}",
   budget: "/budgets/{id}",
   estimate: "/estimates/{id}",
@@ -535,6 +535,9 @@ const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   schedule_item: "/schedule/{id}",
   photo: "/photos/{id}",
   portal_access: "/portal-access/{id}",
+  payable: "/projects/{project_id}/financials/payables?bill={id}",
+  expense: "/projects/{project_id}/expenses?expense={id}",
+  prospect: "/pipeline?prospectId={id}",
 }
 const ENTITY_SEMANTIC_FALLBACKS: Partial<Record<SearchEntityType, SearchEntityType[]>> = {
   contract: ["commitment", "proposal", "change_order"],
@@ -2639,10 +2642,10 @@ function toSearchResultFromSemanticRow(raw: SemanticSearchRow): SearchResult | n
 
   const metadata = raw.metadata && typeof raw.metadata === "object" ? raw.metadata : {}
   const typedMetadata = metadata as Record<string, unknown>
-  const href =
-    typeof typedMetadata.href === "string" && typedMetadata.href.length > 0
-      ? typedMetadata.href
-      : ENTITY_HREF_FALLBACKS[type].replace("{id}", id)
+  const resolvedProjectId = (raw.project_id || typedMetadata.project_id) as string || ""
+  const href = ENTITY_HREF_FALLBACKS[type]
+    .replace("{id}", id)
+    .replace("{project_id}", resolvedProjectId)
 
   const title = typeof raw.title === "string" && raw.title.trim().length > 0 ? raw.title : `Untitled ${type}`
   const score = Number.isFinite(raw.similarity) ? raw.similarity : 0
@@ -3830,11 +3833,14 @@ async function executeEntityAttributeLookupIntent(
   const row = data as Record<string, unknown>
   const resolvedTitle = normalizeAttributeScalar(row[entityConfig.titleField]) ?? candidate.title
   const value = fieldConfig.extract(row)
-  const fallbackHref = ENTITY_HREF_FALLBACKS[intent.entityType]?.replace("{id}", candidate.id) ?? candidate.href
+  const resolvedProjectId = (row.project_id || candidate.project_id) as string || ""
+  const fallbackHref = ENTITY_HREF_FALLBACKS[intent.entityType]
+    ?.replace("{id}", candidate.id)
+    ?.replace("{project_id}", resolvedProjectId) ?? candidate.href
   const relatedResult: SearchResult = {
     ...candidate,
     title: resolvedTitle,
-    href: candidate.href || fallbackHref,
+    href: fallbackHref,
     updated_at: typeof row.updated_at === "string" ? row.updated_at : candidate.updated_at,
   }
 

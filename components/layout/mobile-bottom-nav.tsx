@@ -8,6 +8,7 @@ import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   Briefcase,
   Building2,
+  CircleHelp,
   Contact,
   FolderOpen,
   Hammer,
@@ -440,6 +441,12 @@ export function MobileBottomNav({
                     href={settingsHref}
                     icon={Settings}
                     label="Settings"
+                    onClick={() => setMenuOpen(false)}
+                  />
+                  <MenuActionLink
+                    href="/help"
+                    icon={CircleHelp}
+                    label="Help Center"
                     onClick={() => setMenuOpen(false)}
                   />
                   <button

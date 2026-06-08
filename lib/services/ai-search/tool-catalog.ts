@@ -254,6 +254,9 @@ const GENERIC_TOOLS: AiToolDefinition[] = [
       "schedule_item",
       "photo",
       "portal_access",
+      "payable",
+      "expense",
+      "prospect",
     ],
     dataSources: ["search_documents", "search_embeddings", "core_entity_tables"],
     parameters: [

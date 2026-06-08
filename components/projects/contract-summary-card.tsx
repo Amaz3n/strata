@@ -30,7 +30,13 @@ export function ContractSummaryCard({ contract, approvedChangeOrdersTotalCents, 
 
   const approvedChanges = approvedChangeOrdersTotalCents ?? 0
   const contractTotal = typeof contract.total_cents === "number" ? contract.total_cents : undefined
-  const revisedTotal = typeof contractTotal === "number" ? contractTotal + approvedChanges : undefined
+  const baseTotal =
+    typeof contract.snapshot?.base_total_cents === "number"
+      ? contract.snapshot.base_total_cents
+      : typeof contractTotal === "number"
+        ? Math.max(0, contractTotal - approvedChanges)
+        : undefined
+  const revisedTotal = contractTotal
 
   return (
     <Card>
@@ -49,9 +55,9 @@ export function ContractSummaryCard({ contract, approvedChangeOrdersTotalCents, 
           <InfoItem
             label="Value"
             value={
-              typeof contractTotal === "number" && contract.currency
+              typeof baseTotal === "number" && contract.currency
                 ? new Intl.NumberFormat("en-US", { style: "currency", currency: contract.currency }).format(
-                    contractTotal / 100,
+                    baseTotal / 100,
                   )
                 : "—"
             }

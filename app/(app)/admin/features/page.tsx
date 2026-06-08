@@ -4,11 +4,16 @@ import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { FeatureFlagsTable } from "@/components/admin/feature-flags-table"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getFeatureFlags, getFeatureFlagOrganizations } from "@/lib/services/admin"
 
 export const dynamic = 'force-dynamic'
 
 export default async function FeaturesPage() {
   await requireAnyPermissionGuard(["features.manage", "platform.feature_flags.manage"])
+  const [featureFlags, organizations] = await Promise.all([
+    getFeatureFlags(),
+    getFeatureFlagOrganizations(),
+  ])
 
   return (
     <PageLayout
@@ -35,7 +40,7 @@ export default async function FeaturesPage() {
           </CardHeader>
           <CardContent>
             <Suspense fallback={<FeatureFlagsTableSkeleton />}>
-              <FeatureFlagsTable />
+              <FeatureFlagsTable initialFlags={featureFlags} organizations={organizations} />
             </Suspense>
           </CardContent>
         </Card>

@@ -8,6 +8,7 @@ import {
   ArrowUp,
   Calendar as CalendarIcon,
   FileText,
+  Link2,
   Loader2,
   LockKeyhole,
   MoreHorizontal,
@@ -15,15 +16,17 @@ import {
   ReceiptText,
   Search,
   Trash2,
+  Unlink,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import type { Contract, DrawSchedule, ScheduleItem, CostCode, Invoice, InvoiceView } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn, parseLocalDate, formatLocalDate } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter, SheetDescription } from "@/components/ui/sheet"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -37,8 +40,11 @@ import {
   createProjectDrawAction,
   deleteProjectDrawAction,
   generateInvoiceFromDrawAction,
+  linkInvoiceToDrawAction,
+  listLinkableInvoicesForDrawAction,
   listProjectDrawsAction,
   reorderProjectDrawsAction,
+  unlinkInvoiceFromDrawAction,
   updateProjectDrawAction,
 } from "@/app/(app)/projects/[id]/actions"
 import { getInvoiceDetailAction, manualResyncInvoiceAction } from "@/app/(app)/invoices/actions"
@@ -52,6 +58,16 @@ const statusMap: Record<string, { label: string; tone: string }> = {
 
 type AmountMode = "fixed" | "percent"
 type DueMode = "date" | "milestone" | "approval"
+
+type LinkableInvoice = {
+  id: string
+  invoice_number: string
+  title: string | null
+  status: string
+  total_cents: number
+  issue_date: string | null
+  from_qbo: boolean
+}
 
 function formatCurrency(cents: number) {
   return (cents / 100).toLocaleString("en-US", {
@@ -76,7 +92,6 @@ export function DrawScheduleManager({
   projectId,
   initialDraws,
   contract,
-  approvedChangeOrdersTotalCents,
   scheduleItems,
   costCodes,
   compact = false,
@@ -87,7 +102,6 @@ export function DrawScheduleManager({
   projectId: string
   initialDraws: DrawSchedule[]
   contract: Contract | null
-  approvedChangeOrdersTotalCents?: number
   scheduleItems?: ScheduleItem[]
   costCodes?: CostCode[]
   compact?: boolean
@@ -111,6 +125,11 @@ export function DrawScheduleManager({
   >()
   const [invoiceResyncing, setInvoiceResyncing] = useState(false)
   const [search, setSearch] = useState("")
+  const [linkPickerOpen, setLinkPickerOpen] = useState(false)
+  const [linkableInvoices, setLinkableInvoices] = useState<LinkableInvoice[]>([])
+  const [linkableLoading, setLinkableLoading] = useState(false)
+  const [linkingInvoiceId, setLinkingInvoiceId] = useState<string | null>(null)
+  const [unlinking, setUnlinking] = useState(false)
 
   const milestonesById = useMemo(() => {
     const map = new Map<string, ScheduleItem>()
@@ -125,8 +144,8 @@ export function DrawScheduleManager({
   }, [scheduleItems])
 
   const revisedContractCents = useMemo(() => {
-    return (contract?.total_cents ?? 0) + (approvedChangeOrdersTotalCents ?? 0)
-  }, [contract?.total_cents, approvedChangeOrdersTotalCents])
+    return contract?.total_cents ?? 0
+  }, [contract?.total_cents])
 
   const effectiveAmountCents = useCallback((draw: DrawSchedule) => {
     if (typeof draw.percent_of_contract === "number" && revisedContractCents > 0) {
@@ -135,7 +154,22 @@ export function DrawScheduleManager({
     return draw.amount_cents ?? 0
   }, [revisedContractCents])
 
-  const nextActionDraw = draws.find((draw) => draw.status === "pending" && !draw.invoice_id)
+  const nextActionDraw = draws.find((draw) => {
+    if (draw.status !== "pending" || draw.invoice_id) return false
+    if (draw.due_trigger === "date") {
+      return Boolean(draw.due_date && draw.due_date <= new Date().toISOString().slice(0, 10))
+    }
+    if (draw.due_trigger === "milestone" && draw.milestone_id) {
+      const milestone = milestonesById.get(draw.milestone_id)
+      return Boolean(
+        milestone &&
+          (milestone.status === "completed" ||
+            (milestone.status as string) === "done" ||
+            Number(milestone.progress ?? 0) >= 100),
+      )
+    }
+    return false
+  })
 
   function openCreate() {
     setEditing(null)
@@ -299,12 +333,65 @@ export function DrawScheduleManager({
         invoice_number: result.invoice_number,
         draw: result.draw,
       })
-      toast.success("Invoice created", { description: `Invoice #${result.invoice_number}` })
+      toast.success("Invoice draft created", {
+        description: `Review invoice #${result.invoice_number} before sending it to the client.`,
+      })
     } catch (err: any) {
       onInvoiceGenerationFailed?.()
       toast.error("Could not generate invoice", { description: err?.message ?? "Please try again." })
     } finally {
       setGeneratingInvoiceDrawId(null)
+    }
+  }
+
+  async function openLinkPicker() {
+    if (!selectedDraw) return
+    setLinkPickerOpen(true)
+    setLinkableLoading(true)
+    try {
+      const invoices = await listLinkableInvoicesForDrawAction(projectId)
+      setLinkableInvoices(invoices)
+    } catch (err: any) {
+      toast.error("Could not load invoices", { description: err?.message ?? "Please try again." })
+      setLinkableInvoices([])
+    } finally {
+      setLinkableLoading(false)
+    }
+  }
+
+  async function handleLinkInvoice(invoiceId: string) {
+    if (!selectedDraw) return
+    setLinkingInvoiceId(invoiceId)
+    try {
+      const result = await linkInvoiceToDrawAction(projectId, selectedDraw.id, invoiceId)
+      setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? (result.draw as DrawSchedule) : d)))
+      setSelectedDraw(result.draw as DrawSchedule)
+      setLinkPickerOpen(false)
+      toast.success("Invoice linked to draw")
+      await loadLinkedInvoice(invoiceId)
+    } catch (err: any) {
+      toast.error("Could not link invoice", { description: err?.message ?? "Please try again." })
+    } finally {
+      setLinkingInvoiceId(null)
+    }
+  }
+
+  async function handleUnlinkInvoice() {
+    if (!selectedDraw) return
+    setUnlinking(true)
+    try {
+      const result = await unlinkInvoiceFromDrawAction(projectId, selectedDraw.id)
+      setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? (result.draw as DrawSchedule) : d)))
+      setSelectedDraw(result.draw as DrawSchedule)
+      setLinkedInvoice(null)
+      setLinkedInvoiceLink(undefined)
+      setLinkedInvoiceViews(undefined)
+      setLinkedInvoiceSyncHistory(undefined)
+      toast.success("Invoice unlinked")
+    } catch (err: any) {
+      toast.error("Could not unlink invoice", { description: err?.message ?? "Please try again." })
+    } finally {
+      setUnlinking(false)
     }
   }
 
@@ -318,10 +405,10 @@ export function DrawScheduleManager({
     const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
     if (draw.due_trigger === "milestone") {
       if (!milestone) return "Milestone"
-      const projectedDate = milestone.end_date ? format(new Date(milestone.end_date), "MMM d, yyyy") : ""
+      const projectedDate = milestone.end_date ? formatLocalDate(milestone.end_date, "MMM d, yyyy") : ""
       return `${milestone.name}${projectedDate ? ` · ${projectedDate}` : ""}`
     }
-    if (draw.due_date) return format(new Date(draw.due_date), "MMM d, yyyy")
+    if (draw.due_date) return formatLocalDate(draw.due_date, "MMM d, yyyy")
     if ((draw.metadata as any)?.due_trigger_label) return (draw.metadata as any).due_trigger_label
     return "No trigger"
   }
@@ -358,7 +445,7 @@ export function DrawScheduleManager({
           {nextActionDraw ? (
             <Button variant="outline" size="sm" onClick={() => handleGenerateInvoice(nextActionDraw)} disabled={saving || Boolean(generatingInvoiceDrawId)}>
               {generatingInvoiceDrawId === nextActionDraw.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
-              {generatingInvoiceDrawId === nextActionDraw.id ? "Creating invoice" : "Invoice next draw"}
+              {generatingInvoiceDrawId === nextActionDraw.id ? "Creating draft" : "Prepare next draw"}
             </Button>
           ) : null}
           <Button onClick={openCreate} size="sm">
@@ -524,6 +611,18 @@ export function DrawScheduleManager({
         onInvoice={(draw) => handleGenerateInvoice(draw)}
         onDelete={(draw) => handleDelete(draw)}
         onOpenInvoice={openLinkedInvoiceDetail}
+        onLinkInvoice={openLinkPicker}
+        onUnlinkInvoice={handleUnlinkInvoice}
+        unlinking={unlinking}
+      />
+
+      <LinkInvoiceDialog
+        open={linkPickerOpen}
+        onOpenChange={setLinkPickerOpen}
+        loading={linkableLoading}
+        invoices={linkableInvoices}
+        linkingInvoiceId={linkingInvoiceId}
+        onLink={handleLinkInvoice}
       />
 
       <InvoiceDetailSheet
@@ -587,11 +686,14 @@ function DrawDetailSheet({
   linkedInvoiceLoading,
   saving,
   generatingInvoice,
+  unlinking,
   onOpenChange,
   onEdit,
   onInvoice,
   onDelete,
   onOpenInvoice,
+  onLinkInvoice,
+  onUnlinkInvoice,
 }: {
   draw: DrawSchedule | null
   status: { label: string; tone: string }
@@ -603,11 +705,14 @@ function DrawDetailSheet({
   linkedInvoiceLoading?: boolean
   saving: boolean
   generatingInvoice: boolean
+  unlinking: boolean
   onOpenChange: (open: boolean) => void
   onEdit: (draw: DrawSchedule) => void
   onInvoice: (draw: DrawSchedule) => void
   onDelete: (draw: DrawSchedule) => void
   onOpenInvoice: () => void
+  onLinkInvoice: () => void
+  onUnlinkInvoice: () => void
 }) {
   const allocations = ((draw?.metadata as any)?.allocations ?? []) as { cost_code_id: string; amount_cents: number; description?: string }[]
   const costCodeById = useMemo(() => new Map(costCodes.map((code) => [code.id, code])), [costCodes])
@@ -709,9 +814,15 @@ function DrawDetailSheet({
                           {formatCurrency(linkedInvoiceTotal)} total · {formatCurrency(linkedInvoiceBalance)} balance
                         </p>
                       </div>
-                      <Button size="sm" variant="outline" onClick={onOpenInvoice}>
-                        View invoice
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={onOpenInvoice}>
+                          View invoice
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={onUnlinkInvoice} disabled={unlinking} title="Unlink invoice from this draw">
+                          {unlinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlink className="h-4 w-4" />}
+                          <span className="sr-only">Unlink invoice</span>
+                        </Button>
+                      </div>
                     </div>
                   ) : (
                     <div className="flex items-center justify-between gap-4">
@@ -722,11 +833,33 @@ function DrawDetailSheet({
                         </div>
                         <p className="mt-1 break-all text-xs text-muted-foreground">Invoice ID: {draw.invoice_id}</p>
                       </div>
-                      <Button size="sm" variant="outline" onClick={onOpenInvoice}>
-                        Open
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={onOpenInvoice}>
+                          Open
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={onUnlinkInvoice} disabled={unlinking} title="Unlink invoice from this draw">
+                          {unlinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlink className="h-4 w-4" />}
+                          <span className="sr-only">Unlink invoice</span>
+                        </Button>
+                      </div>
                     </div>
                   )}
+                </div>
+              ) : canInvoice ? (
+                <div className="mt-6 flex flex-col gap-3 rounded-md border border-dashed bg-muted/10 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Link2 className="h-4 w-4 text-muted-foreground" />
+                      Already invoiced outside this draw?
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Attach an existing invoice (including one imported from QuickBooks) instead of generating a new one.
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" className="shrink-0" onClick={onLinkInvoice} disabled={saving}>
+                    <Link2 className="mr-2 h-4 w-4" />
+                    Link existing invoice
+                  </Button>
                 </div>
               ) : null}
             </div>
@@ -737,7 +870,7 @@ function DrawDetailSheet({
               </Button>
               <Button onClick={() => onInvoice(draw)} disabled={saving || !canInvoice}>
                 {generatingInvoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                {generatingInvoice ? "Creating" : "Invoice"}
+                {generatingInvoice ? "Creating draft" : "Prepare invoice"}
               </Button>
               <Button variant="destructive" onClick={() => onDelete(draw)} disabled={saving || !canDelete}>
                 Delete
@@ -756,6 +889,114 @@ function DetailStat({ label, value }: { label: string; value: string }) {
       <p className="text-[11px] font-medium uppercase text-muted-foreground">{label}</p>
       <p className="mt-1 truncate text-sm font-semibold capitalize tabular-nums">{value}</p>
     </div>
+  )
+}
+
+function LinkInvoiceDialog({
+  open,
+  onOpenChange,
+  loading,
+  invoices,
+  linkingInvoiceId,
+  onLink,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  loading: boolean
+  invoices: LinkableInvoice[]
+  linkingInvoiceId: string | null
+  onLink: (invoiceId: string) => void
+}) {
+  const [search, setSearch] = useState("")
+
+  useEffect(() => {
+    if (!open) setSearch("")
+  }, [open])
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return invoices
+    const s = search.toLowerCase()
+    return invoices.filter(
+      (invoice) =>
+        invoice.invoice_number.toLowerCase().includes(s) || (invoice.title ?? "").toLowerCase().includes(s),
+    )
+  }, [invoices, search])
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Link existing invoice</DialogTitle>
+          <DialogDescription>
+            Choose an invoice to attach to this draw. Only unlinked invoices on this project are shown.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search invoices"
+            className="h-9 pl-9"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        <div className="max-h-80 overflow-y-auto rounded-md border">
+          {loading ? (
+            <div className="space-y-2 p-3">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="h-12 animate-pulse rounded bg-muted" />
+              ))}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              {invoices.length === 0 ? "No linkable invoices on this project." : "No invoices match your search."}
+            </div>
+          ) : (
+            filtered.map((invoice) => (
+              <button
+                key={invoice.id}
+                type="button"
+                disabled={Boolean(linkingInvoiceId)}
+                onClick={() => onLink(invoice.id)}
+                className="flex w-full items-center justify-between gap-4 border-b px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-muted/40 disabled:opacity-60"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">Invoice {invoice.invoice_number}</span>
+                    <Badge variant="secondary" className="rounded-sm capitalize">
+                      {invoice.status}
+                    </Badge>
+                    {invoice.from_qbo ? (
+                      <Badge variant="outline" className="rounded-sm">
+                        QBO
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {formatCurrency(invoice.total_cents)}
+                    {invoice.title ? ` · ${invoice.title}` : ""}
+                    {invoice.issue_date ? ` · ${formatLocalDate(invoice.issue_date, "MMM d, yyyy")}` : ""}
+                  </p>
+                </div>
+                {linkingInvoiceId === invoice.id ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                ) : (
+                  <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                )}
+              </button>
+            ))
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -798,6 +1039,7 @@ function DrawDialog({
   const [percent, setPercent] = useState<string>("")
   const [dueMode, setDueMode] = useState<DueMode>("date")
   const [dueDate, setDueDate] = useState<string>("")
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false)
   const [milestoneId, setMilestoneId] = useState<string>("")
   const [triggerLabel, setTriggerLabel] = useState<string>("")
   const [allocations, setAllocations] = useState<{ id: string; cost_code_id: string; amount_dollars: string; description: string }[]>([])
@@ -967,7 +1209,7 @@ function DrawDialog({
                   {dueMode === "date" ? "Due date" : dueMode === "milestone" ? "Select milestone" : "Trigger label"}
                 </Label>
                 {dueMode === "date" ? (
-                  <Popover>
+                  <Popover open={isCalendarOpen} onOpenChange={setIsCalendarOpen}>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
@@ -977,14 +1219,17 @@ function DrawDialog({
                         )}
                       >
                         <CalendarIcon className="mr-2 h-4 w-4" />
-                        {dueDate ? format(new Date(dueDate), "PPP") : <span>Pick a date</span>}
+                        {dueDate ? formatLocalDate(dueDate, "PPP") : <span>Pick a date</span>}
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-auto p-0" align="start">
                       <CalendarPicker
                         mode="single"
-                        selected={dueDate ? new Date(dueDate) : undefined}
-                        onSelect={(date) => setDueDate(date ? format(date, "yyyy-MM-dd") : "")}
+                        selected={dueDate ? parseLocalDate(dueDate) ?? undefined : undefined}
+                        onSelect={(date) => {
+                          setDueDate(date ? format(date, "yyyy-MM-dd") : "")
+                          setIsCalendarOpen(false)
+                        }}
                         initialFocus
                       />
                     </PopoverContent>

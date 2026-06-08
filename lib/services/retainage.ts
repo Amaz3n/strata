@@ -22,7 +22,7 @@ export async function createRetainageRecord({
 
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
-    permission: "retainage.manage",
+    permission: "invoice.write",
     userId,
     orgId: resolvedOrgId,
     projectId: project_id,
@@ -65,6 +65,12 @@ export async function releaseRetainage({
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const now = new Date().toISOString()
+  if (status === "paid") {
+    throw new Error("Use the payment workflow to mark retainage paid")
+  }
+  if (status === "invoiced" && !release_invoice_id) {
+    throw new Error("Invoiced retainage requires a release invoice")
+  }
 
   const { data: existing, error: existingError } = await supabase
     .from("retainage")
@@ -78,7 +84,7 @@ export async function releaseRetainage({
   }
 
   await requireAuthorization({
-    permission: "retainage.manage",
+    permission: "invoice.write",
     userId,
     orgId: resolvedOrgId,
     projectId: existing.project_id,
@@ -87,6 +93,18 @@ export async function releaseRetainage({
     resourceType: "retainage",
     resourceId: retainageId,
   })
+
+  if (release_invoice_id) {
+    const { data: releaseInvoice, error: releaseInvoiceError } = await supabase
+      .from("invoices")
+      .select("id, project_id, status")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", release_invoice_id)
+      .maybeSingle()
+    if (releaseInvoiceError || !releaseInvoice || releaseInvoice.project_id !== existing.project_id || releaseInvoice.status === "void") {
+      throw new Error("Release invoice is missing, void, or belongs to another project")
+    }
+  }
 
   const { error } = await supabase
     .from("retainage")
@@ -120,7 +138,7 @@ export async function markRetainagePaid(retainageId: string, orgId?: string) {
   }
 
   await requireAuthorization({
-    permission: "retainage.manage",
+    permission: "payment.release",
     userId,
     orgId: resolvedOrgId,
     projectId: existing.project_id,
@@ -129,6 +147,26 @@ export async function markRetainagePaid(retainageId: string, orgId?: string) {
     resourceType: "retainage",
     resourceId: retainageId,
   })
+
+  const { data: retainage, error: retainageError } = await supabase
+    .from("retainage")
+    .select("id, release_invoice_id")
+    .eq("id", retainageId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+  if (retainageError || !retainage?.release_invoice_id) {
+    throw new Error("Retainage must have a release invoice before it can be marked paid")
+  }
+
+  const { data: releaseInvoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .select("id, status, balance_due_cents")
+    .eq("id", retainage.release_invoice_id)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+  if (invoiceError || !releaseInvoice || (releaseInvoice.status !== "paid" && releaseInvoice.balance_due_cents !== 0)) {
+    throw new Error("Retainage cannot be marked paid until its release invoice is paid")
+  }
 
   const { error } = await supabase
     .from("retainage")
@@ -195,7 +233,7 @@ export async function createInvoiceWithRetainage({
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
-    permission: "retainage.manage",
+    permission: "invoice.write",
     userId,
     orgId: resolvedOrgId,
     projectId: project_id,
@@ -228,17 +266,13 @@ export async function createInvoiceWithRetainage({
     orgId: resolvedOrgId,
   })
 
-  // Compute retainage from invoice total
-  const retainageAmount = Math.round((invoice.total_cents ?? 0) * (retainage_percent / 100))
-  if (retainageAmount > 0) {
-    await applyRetainageToInvoice({
-      invoiceId: invoice.id,
-      contract_id,
-      amount_cents: retainageAmount,
-      project_id,
-      orgId: resolvedOrgId,
-    })
-  }
+  const { data: retainageRow } = await supabase
+    .from("retainage")
+    .select("amount_cents")
+    .eq("org_id", resolvedOrgId)
+    .eq("invoice_id", invoice.id)
+    .maybeSingle()
+  const retainageAmount = Number(retainageRow?.amount_cents ?? 0)
 
   return { invoice, retainage_amount_cents: retainageAmount }
 }
@@ -254,11 +288,19 @@ export async function releaseRetainageForContract({
 }) {
   const supabase = createServiceSupabaseClient()
   const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: contract, error: contractError } = await supabase
+    .from("contracts")
+    .select("id, project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", contract_id)
+    .maybeSingle()
+  if (contractError || !contract) throw new Error("Contract not found")
 
   await requireAuthorization({
-    permission: "retainage.manage",
+    permission: "invoice.write",
     userId,
     orgId: resolvedOrgId,
+    projectId: contract.project_id,
     supabase,
     logDecision: true,
     resourceType: "contract",
@@ -283,8 +325,6 @@ export async function releaseRetainageForContract({
 
   return { released: (held ?? []).length }
 }
-
-
 
 
 

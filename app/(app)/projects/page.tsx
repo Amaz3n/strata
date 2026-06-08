@@ -4,15 +4,18 @@ import { ProjectsClient } from "./projects-client"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 
+import { requireOrgContext } from "@/lib/services/context"
+
 export const dynamic = 'force-dynamic'
 
 async function ProjectsData() {
+  const { orgId } = await requireOrgContext()
   const [projects, clientContacts] = await Promise.all([
     listProjectsAction(),
     listProjectClientContactsAction(),
   ])
 
-  return <ProjectsClient projects={projects} clientContacts={clientContacts} />
+  return <ProjectsClient key={orgId} projects={projects} clientContacts={clientContacts} />
 }
 
 export default function ProjectsPage() {

@@ -9,6 +9,7 @@ import { sendSupportRequestAction } from "@/app/actions/support"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   ChevronsUpDown,
+  CircleHelp,
   HardHat,
   LogOut,
   Mail,
@@ -172,6 +173,12 @@ export function NavUser({
                 <Link href={settingsHref}>
                   <Settings />
                   Settings
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
+                <Link href="/help">
+                  <CircleHelp />
+                  Help Center
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuItem
