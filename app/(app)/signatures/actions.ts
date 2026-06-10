@@ -27,7 +27,7 @@ import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { SignatureEmail } from "@/lib/emails/signature-email"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
@@ -174,7 +174,7 @@ async function sendSignerRequestEmail(input: {
   isReminder?: boolean
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: org } = await supabase.from("orgs").select("name, logo_url").eq("id", input.orgId).maybeSingle()
+  const { data: org } = await supabase.from("orgs").select("name, logo_url, slug").eq("id", input.orgId).maybeSingle()
   const subject = input.isReminder ? `Reminder: Signature requested - ${input.documentTitle}` : `Signature requested: ${input.documentTitle}`
   const html = await renderEmailTemplate(
     SignatureEmail({
@@ -198,6 +198,7 @@ async function sendSignerRequestEmail(input: {
     to: [input.toEmail],
     subject,
     html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
   })
 }
 

@@ -1473,6 +1473,131 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
   return { projectId: existing.project_id as string | null }
 }
 
+export async function moveInvoiceToProject({
+  invoiceId,
+  targetProjectId,
+  orgId,
+}: {
+  invoiceId: string
+  targetProjectId: string
+  orgId?: string
+}) {
+  if (!targetProjectId) throw new Error("A destination project is required")
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, project_id, invoice_number, status, metadata, billing_period_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+
+  if (error || !existing) {
+    throw new Error(error?.message ?? "Invoice not found")
+  }
+  if (existing.project_id === targetProjectId) {
+    throw new Error("Invoice is already on this project")
+  }
+
+  // Require write access on both the current and the destination project.
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: existing.project_id,
+    invoiceId,
+  })
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: targetProjectId,
+    invoiceId,
+  })
+
+  // Verify the destination project exists in this org.
+  const { data: targetProject, error: projectError } = await supabase
+    .from("projects")
+    .select("id, name")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", targetProjectId)
+    .maybeSingle()
+  if (projectError || !targetProject) {
+    throw new Error("Destination project not found")
+  }
+
+  // Source-derived links (draw schedules, fee billings, billable costs, retainage)
+  // belong to the original project and cannot follow the invoice. Release them so the
+  // original project's draws/costs return to an unbilled state, then detach the invoice
+  // from any project-specific source so it becomes a plain manual invoice on the new project.
+  const metadata = (existing.metadata as Record<string, any> | null) ?? null
+  await releaseInvoiceSourceLinks({
+    supabase,
+    orgId: resolvedOrgId,
+    invoiceId,
+    metadata,
+  })
+
+  const nextMetadata = {
+    ...(metadata ?? {}),
+    source_type: "manual",
+    source_draw_id: null,
+    source_change_order_id: null,
+    source_contract_id: null,
+    moved_from_project_id: existing.project_id ?? null,
+    moved_by: userId,
+    moved_at: new Date().toISOString(),
+  }
+
+  const { data: updated, error: updateError } = await supabase
+    .from("invoices")
+    .update({
+      project_id: targetProjectId,
+      billing_period_id: null,
+      metadata: nextMetadata,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .select(
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+    )
+    .single()
+
+  if (updateError || !updated) {
+    throw new Error(`Failed to move invoice: ${updateError?.message ?? "unknown error"}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "invoice_moved",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: {
+      invoice_number: existing.invoice_number,
+      from_project_id: existing.project_id,
+      to_project_id: targetProjectId,
+    },
+  })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: { project_id: existing.project_id },
+    after: { project_id: targetProjectId },
+  })
+
+  return {
+    invoice: mapInvoiceRow(updated as InvoiceRow),
+    fromProjectId: existing.project_id as string | null,
+    toProjectId: targetProjectId,
+  }
+}
+
 export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const original = await getInvoiceWithLines(invoiceId, resolvedOrgId)

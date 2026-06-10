@@ -9,10 +9,12 @@ import {
   getInvoiceWithLines,
   listInvoiceViews,
   listInvoices,
+  moveInvoiceToProject,
   reviseInvoice,
   updateInvoice,
   voidInvoice,
 } from "@/lib/services/invoices"
+import { listProjects } from "@/lib/services/projects"
 import { forceSyncInvoiceToQBO, retryFailedQBOSyncJobs, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
@@ -162,6 +164,23 @@ export async function deleteInvoiceAction(invoiceId: string) {
     revalidatePath(`/projects/${result.projectId}/financials/receivables`)
   }
   return { success: true }
+}
+
+export async function listMovableProjectsAction() {
+  const projects = await listProjects()
+  return projects.map((project) => ({ id: project.id, name: project.name }))
+}
+
+export async function moveInvoiceToProjectAction(invoiceId: string, targetProjectId: string) {
+  if (!invoiceId) throw new Error("Invoice id is required")
+  if (!targetProjectId) throw new Error("A destination project is required")
+  const result = await moveInvoiceToProject({ invoiceId, targetProjectId })
+  revalidatePath("/invoices")
+  if (result.fromProjectId) {
+    revalidatePath(`/projects/${result.fromProjectId}/financials/receivables`)
+  }
+  revalidatePath(`/projects/${result.toProjectId}/financials/receivables`)
+  return result.invoice
 }
 
 export async function generateInvoiceLinkAction(invoiceId: string) {

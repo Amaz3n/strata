@@ -9,6 +9,7 @@ import {
   type QboImportListing,
   type QboImportResult,
 } from "@/lib/services/qbo-import"
+import { listProjects } from "@/lib/services/projects"
 
 /** List QBO transactions with no Arc counterpart, optionally bounded by a lookback window. */
 export async function listQboImportRecordsAction(params?: {
@@ -18,10 +19,16 @@ export async function listQboImportRecordsAction(params?: {
   return listImportableQboRecords({ sinceDate: params?.sinceDate, types: params?.types })
 }
 
+/** Lightweight project list (id + name) for the per-line "allocate to project" picker. */
+export async function listProjectsForImportAction(): Promise<{ id: string; name: string }[]> {
+  const projects = await listProjects()
+  return projects.map((project) => ({ id: project.id, name: project.name }))
+}
+
 /** Import the selected QBO transactions into a project, creating pre-linked Arc records. */
 export async function importQboRecordsAction(params: {
   projectId: string
-  items: { qboId: string; entityType: QboImportEntityType }[]
+  items: { qboId: string; entityType: QboImportEntityType; allocations?: Record<string, string> }[]
 }): Promise<QboImportResult> {
   const result = await importQboRecords({ projectId: params.projectId, items: params.items })
 

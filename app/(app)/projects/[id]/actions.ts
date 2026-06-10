@@ -2995,6 +2995,7 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
     dailyLogId: data.id as string,
     mentionedBy: userId,
     mentionedUserIds: parsed.mentioned_user_ids ?? [],
+    text: parsed.summary,
   })
 
   if (mentionedUsers.length > 0) {
@@ -3164,6 +3165,7 @@ export async function updateProjectDailyLogAction(
     dailyLogId,
     mentionedBy: userId,
     mentionedUserIds: parsed.mentioned_user_ids ?? [],
+    text: parsed.summary,
   })
 
   const newlyMentionedUsers = mentionedUsers.filter((user) => !previousMentionIds.has(user.id))
@@ -3293,6 +3295,7 @@ export async function createDailyLogCommentAction(
     dailyLogCommentId: data.id,
     mentionedBy: userId,
     mentionedUserIds: parsed.mentioned_user_ids ?? [],
+    text: parsed.body,
   })
 
   if (mentionedUsers.length > 0) {
@@ -3365,6 +3368,19 @@ type MentionUser = {
   avatar_url?: string
 }
 
+function escapeMentionRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function textMentionsAll(text: string) {
+  return /(^|\s)@all(?=\s|$|[.,;:!?])/i.test(text)
+}
+
+function textMentionsName(text: string, name: string) {
+  if (!name) return false
+  return new RegExp(`(^|\\s)@${escapeMentionRegExp(name)}(?=\\s|$|[.,;:!?])`, "i").test(text)
+}
+
 async function createDailyLogMentions({
   supabase,
   orgId,
@@ -3373,6 +3389,7 @@ async function createDailyLogMentions({
   dailyLogCommentId,
   mentionedBy,
   mentionedUserIds,
+  text,
 }: {
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
@@ -3381,29 +3398,61 @@ async function createDailyLogMentions({
   dailyLogCommentId?: string
   mentionedBy: string
   mentionedUserIds: string[]
+  // Raw summary/comment text. Used as a server-side safety net to resolve
+  // @mentions even when the client fails to populate mentionedUserIds
+  // (stale team list, offline sync, free-typed names, etc.).
+  text?: string
 }): Promise<MentionUser[]> {
-  const uniqueIds = Array.from(new Set(mentionedUserIds)).filter((id) => id !== mentionedBy)
-  if (uniqueIds.length === 0) return []
-
+  // Fetch all active project members so we can both validate client-supplied
+  // IDs and resolve @mentions directly from the text.
   const { data: members, error } = await supabase
     .from("project_members")
-    .select("user_id, app_users!inner(id, full_name, email, avatar_url)")
+    .select("user_id, app_users!inner(id, full_name, email, avatar_url), roles:roles(key)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "active")
-    .in("user_id", uniqueIds)
 
   if (error) {
     throw new Error(`Failed to validate mentioned users: ${error.message}`)
   }
 
-  const users = (members ?? []).map((member: any) => {
+  const memberRows = (members ?? []).map((member: any) => {
     const user = member.app_users as any
     return {
       id: member.user_id as string,
-      full_name: user?.full_name ?? undefined,
-      email: user?.email ?? undefined,
-      avatar_url: user?.avatar_url ?? undefined,
+      full_name: (user?.full_name ?? undefined) as string | undefined,
+      email: (user?.email ?? undefined) as string | undefined,
+      avatar_url: (user?.avatar_url ?? undefined) as string | undefined,
+      roleKey: ((member.roles as any)?.key ?? null) as string | null,
+    }
+  })
+
+  const resolvedIds = new Set<string>(mentionedUserIds)
+
+  // Safety net: re-parse the free text against project members in case the
+  // client never resolved the @mention into a user id.
+  if (text && text.trim()) {
+    const mentionableMembers = memberRows.filter((m) => isInternalProjectRoleKey(m.roleKey))
+    if (textMentionsAll(text)) {
+      for (const m of mentionableMembers) resolvedIds.add(m.id)
+    } else {
+      for (const m of mentionableMembers) {
+        if (m.full_name && textMentionsName(text, m.full_name)) resolvedIds.add(m.id)
+      }
+    }
+  }
+
+  const memberById = new Map(memberRows.map((m) => [m.id, m]))
+  const uniqueIds = Array.from(resolvedIds).filter((id) => id !== mentionedBy && memberById.has(id))
+  if (uniqueIds.length === 0) return []
+
+  const users = uniqueIds.map((id) => {
+    const m = memberById.get(id)!
+    return {
+      id: m.id,
+      full_name: m.full_name,
+      email: m.email,
+      avatar_url: m.avatar_url,
     }
   })
 

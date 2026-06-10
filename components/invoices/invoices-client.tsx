@@ -16,7 +16,9 @@ import {
   generateInvoiceLinkAction,
   getInvoiceDetailAction,
   listInvoicesAction,
+  listMovableProjectsAction,
   manualResyncInvoiceAction,
+  moveInvoiceToProjectAction,
   reviseInvoiceAction,
   sendInvoiceReminderAction,
   updateInvoiceAction,
@@ -56,6 +58,14 @@ import {
   DropdownMenuTrigger,
   DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Ban, Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
@@ -225,6 +235,12 @@ export function InvoicesClient({
   const [voidingInvoice, setVoidingInvoice] = useState<Invoice | null>(null)
   const [revisingInvoice, setRevisingInvoice] = useState<Invoice | null>(null)
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | null>(null)
+  const [movingInvoice, setMovingInvoice] = useState<Invoice | null>(null)
+  const [moveProjects, setMoveProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [moveProjectsLoading, setMoveProjectsLoading] = useState(false)
+  const [moveTargetId, setMoveTargetId] = useState<string | null>(null)
+  const [moveSearch, setMoveSearch] = useState("")
+  const [moveLoading, setMoveLoading] = useState(false)
   const [destructiveActionLoading, setDestructiveActionLoading] = useState(false)
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
@@ -577,6 +593,53 @@ export function InvoicesClient({
     }
   }
 
+  async function handleOpenMove(invoice: Invoice) {
+    setMovingInvoice(invoice)
+    setMoveTargetId(null)
+    setMoveSearch("")
+    setMoveProjectsLoading(true)
+    try {
+      const list = await listMovableProjectsAction()
+      setMoveProjects(list.filter((project) => project.id !== invoice.project_id))
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not load projects", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setMoveProjectsLoading(false)
+    }
+  }
+
+  async function handleMoveInvoice() {
+    if (!movingInvoice || !moveTargetId) return
+    setMoveLoading(true)
+    try {
+      const updated = await moveInvoiceToProjectAction(movingInvoice.id, moveTargetId)
+      // The invoice now belongs to another project — drop it from this project-scoped list.
+      setItems((prev) =>
+        isProjectScoped
+          ? prev.filter((invoice) => invoice.id !== updated.id)
+          : prev.map((invoice) => (invoice.id === updated.id ? updated : invoice)),
+      )
+      setSelectedIds((prev) => prev.filter((id) => id !== updated.id))
+      const targetName = moveProjects.find((project) => project.id === moveTargetId)?.name
+      setMovingInvoice(null)
+      setMoveTargetId(null)
+      toast.success("Invoice moved", {
+        description: targetName ? `Moved to ${targetName}.` : undefined,
+      })
+      router.refresh()
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not move invoice", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setMoveLoading(false)
+    }
+  }
+
   function toggleSelectAll(checked: boolean | "indeterminate") {
     if (checked) {
       const merged = Array.from(new Set([...selectedIds, ...visibleIds]))
@@ -879,6 +942,15 @@ export function InvoicesClient({
                             >
                               {linkingId === invoice.id ? "Copying…" : "Copy link"}
                             </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                void handleOpenMove(invoice)
+                              }}
+                            >
+                              <FolderOpen className="mr-2 h-4 w-4" />
+                              Move to project…
+                            </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               disabled={invoice.status === "paid" || invoice.status === "partial" || invoice.status === "void"}
@@ -1114,6 +1186,88 @@ export function InvoicesClient({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={Boolean(movingInvoice)}
+        onOpenChange={(open) => {
+          if (!open && !moveLoading) {
+            setMovingInvoice(null)
+            setMoveTargetId(null)
+            setMoveSearch("")
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move invoice to another project</DialogTitle>
+            <DialogDescription>
+              Move {movingInvoice?.invoice_number ?? "this invoice"} to a different project. Any draws, billable costs, or
+              retainage linked to the current project will be released so they can be billed again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={moveSearch}
+                onChange={(event) => setMoveSearch(event.target.value)}
+                placeholder="Search projects"
+                className="h-9 pl-9"
+                disabled={moveProjectsLoading || moveLoading}
+              />
+            </div>
+            <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-1">
+              {moveProjectsLoading ? (
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground">Loading projects…</div>
+              ) : (
+                (() => {
+                  const term = moveSearch.trim().toLowerCase()
+                  const visible = moveProjects.filter(
+                    (project) => term.length === 0 || project.name.toLowerCase().includes(term),
+                  )
+                  if (visible.length === 0) {
+                    return (
+                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                        {moveProjects.length === 0 ? "No other projects available." : "No projects match your search."}
+                      </div>
+                    )
+                  }
+                  return visible.map((project) => (
+                    <button
+                      key={project.id}
+                      type="button"
+                      disabled={moveLoading}
+                      onClick={() => setMoveTargetId(project.id)}
+                      className={`flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left text-sm transition-colors hover:bg-muted ${
+                        moveTargetId === project.id ? "bg-muted font-medium" : ""
+                      }`}
+                    >
+                      <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{project.name}</span>
+                    </button>
+                  ))
+                })()
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={moveLoading}
+              onClick={() => {
+                setMovingInvoice(null)
+                setMoveTargetId(null)
+                setMoveSearch("")
+              }}
+            >
+              Cancel
+            </Button>
+            <Button disabled={!moveTargetId || moveLoading} onClick={() => void handleMoveInvoice()}>
+              {moveLoading ? "Moving…" : "Move invoice"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

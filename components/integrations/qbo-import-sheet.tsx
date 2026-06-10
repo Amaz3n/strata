@@ -7,6 +7,7 @@ import { toast } from "sonner"
 
 import {
   importQboRecordsAction,
+  listProjectsForImportAction,
   listQboImportRecordsAction,
 } from "@/app/(app)/integrations/qbo-import-actions"
 import { getProjectQboLinkAction } from "@/app/(app)/integrations/qbo-project-link-actions"
@@ -55,6 +56,7 @@ const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "payment", label: "Invoice payments" },
   { key: "bill_payment", label: "Bill payments" },
   { key: "journal_entry", label: "Journal entries" },
+  { key: "client_deposit", label: "Client deposits (historical)" },
 ]
 
 const LOOKBACK_OPTIONS: { value: string; label: string; days: number | null }[] = [
@@ -71,6 +73,7 @@ const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
   payment: 0,
   bill_payment: 0,
   journal_entry: 0,
+  client_deposit: 0,
 }
 
 type TypeFilter = "all" | QboImportEntityType
@@ -132,6 +135,9 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   const [projectFilter, setProjectFilter] = useState<string>("all")
   const [qboLink, setQboLink] = useState<ProjectQboLink | null>(null)
   const defaultFilterApplied = useRef(false)
+  // Arc projects for the per-line allocation picker, and per-record line→project overrides.
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
+  const [allocations, setAllocations] = useState<Record<string, Record<string, string>>>({})
 
   const load = useCallback(async (lookbackValue: string) => {
     setLoading(true)
@@ -159,7 +165,42 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     getProjectQboLinkAction({ projectId })
       .then(setQboLink)
       .catch(() => {})
+    listProjectsForImportAction()
+      .then(setProjects)
+      .catch(() => {})
   }, [active, projectId])
+
+  // Effective line→project for a record: the user's per-line override, else the line's suggested
+  // (customer-linked) project. Only lines with a destination are included.
+  const recordAllocations = useCallback(
+    (record: QboImportRecord): Record<string, string> => {
+      const chosen = allocations[rowKey(record)] ?? {}
+      const result: Record<string, string> = {}
+      for (const line of record.lines ?? []) {
+        const target = chosen[line.lineId] ?? line.suggestedProjectId ?? ""
+        if (target) result[line.lineId] = target
+      }
+      return result
+    },
+    [allocations],
+  )
+
+  // A record is importable once every one of its lines has a destination project (chosen or suggested).
+  const isFullyAllocated = useCallback(
+    (record: QboImportRecord) => {
+      if (!record.lines || record.lines.length === 0) return true
+      const effective = recordAllocations(record)
+      return record.lines.every((line) => effective[line.lineId])
+    },
+    [recordAllocations],
+  )
+
+  const setLineAllocation = (record: QboImportRecord, lineId: string, projectId: string) => {
+    setAllocations((prev) => ({
+      ...prev,
+      [rowKey(record)]: { ...(prev[rowKey(record)] ?? {}), [lineId]: projectId },
+    }))
+  }
 
   const recordByKey = useMemo(() => new Map(records.map((record) => [rowKey(record), record])), [records])
 
@@ -173,13 +214,20 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     )
   }, [records])
 
+  // Every QBO project a record touches — its per-line customers when present (so a multi-project
+  // bill/expense matches each of its projects), falling back to the single header customer.
+  const recordProjectIds = (record: QboImportRecord): string[] => {
+    if (record.qboCustomerIds && record.qboCustomerIds.length > 0) return record.qboCustomerIds.map((c) => c.id)
+    return record.qboCustomerId ? [record.qboCustomerId] : []
+  }
+
   // Apply type + text filter, newest first.
   const filteredRecords = useMemo(() => {
     const query = search.trim().toLowerCase()
     return records
       .filter((record) => {
         if (typeFilter !== "all" && record.entityType !== typeFilter) return false
-        if (projectFilter !== "all" && record.qboCustomerId !== projectFilter) return false
+        if (projectFilter !== "all" && !recordProjectIds(record).includes(projectFilter)) return false
         if (!query) return true
         return [record.docNumber, record.counterparty, record.possibleMatch]
           .filter(Boolean)
@@ -189,10 +237,15 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   }, [records, typeFilter, projectFilter, search])
 
   // Distinct QBO customers/projects present in the fetched records — drives the project filter.
+  // A multi-project record contributes every project it touches, so each appears as an option.
   const projectFilterOptions = useMemo(() => {
     const map = new Map<string, string>()
     for (const record of records) {
-      if (record.qboCustomerId) map.set(record.qboCustomerId, record.qboCustomerName ?? record.qboCustomerId)
+      if (record.qboCustomerIds && record.qboCustomerIds.length > 0) {
+        for (const customer of record.qboCustomerIds) map.set(customer.id, customer.name ?? customer.id)
+      } else if (record.qboCustomerId) {
+        map.set(record.qboCustomerId, record.qboCustomerName ?? record.qboCustomerId)
+      }
     }
     return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
   }, [records])
@@ -265,14 +318,26 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     () => selectedItems.reduce((sum, item) => sum + item.amountCents, 0),
     [selectedItems],
   )
+  // Selected multi-line records that still have an unassigned line — block import until resolved.
+  const selectedNeedingAllocation = useMemo(
+    () => selectedItems.filter((item) => !isFullyAllocated(item)),
+    [selectedItems, isFullyAllocated],
+  )
 
   const handleImport = async () => {
-    if (importing || selectedItems.length === 0) return
+    if (importing || selectedItems.length === 0 || selectedNeedingAllocation.length > 0) return
     setImporting(true)
     try {
       const result = await importQboRecordsAction({
         projectId,
-        items: selectedItems.map((item) => ({ qboId: item.qboId, entityType: item.entityType })),
+        items: selectedItems.map((item) => {
+          const alloc = recordAllocations(item)
+          return {
+            qboId: item.qboId,
+            entityType: item.entityType,
+            allocations: Object.keys(alloc).length > 0 ? alloc : undefined,
+          }
+        }),
       })
 
       if (result.failed > 0) {
@@ -393,7 +458,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       {lastImport && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-emerald-500/10 px-6 py-3 text-xs">
           <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
-          {(lastImport.invoice > 0 || lastImport.payment > 0) && <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />}
+          {(lastImport.invoice > 0 || lastImport.payment > 0 || lastImport.client_deposit > 0) && <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />}
           {(lastImport.bill > 0 || lastImport.bill_payment > 0) && <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />}
           {(lastImport.expense > 0 || lastImport.journal_entry > 0) && <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />}
         </div>
@@ -456,6 +521,18 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
                             blocked={!canImportRecord(item)}
                             onToggle={() => toggle(rowKey(item))}
                           />
+                          {selected.has(rowKey(item)) &&
+                          item.lines &&
+                          item.lines.length > 0 &&
+                          (item.lines.length > 1 || item.lines.some((line) => !line.suggestedProjectId)) ? (
+                            <LineAllocationEditor
+                              record={item}
+                              projects={projects}
+                              value={allocations[rowKey(item)] ?? {}}
+                              disabled={importing}
+                              onChange={(lineId, projectId) => setLineAllocation(item, lineId, projectId)}
+                            />
+                          ) : null}
                         </li>
                       ))}
                     </ul>
@@ -487,6 +564,11 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
           ) : (
             <span className="text-sm text-muted-foreground">Select transactions to import</span>
           )}
+          {selectedNeedingAllocation.length > 0 ? (
+            <span className="shrink-0 text-xs text-amber-700 dark:text-amber-400">
+              · {selectedNeedingAllocation.length} need a project assigned
+            </span>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {onCancel ? (
@@ -494,7 +576,12 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
               Cancel
             </Button>
           ) : null}
-          <Button onClick={handleImport} disabled={importing || loading || selectedItems.length === 0} size="sm" className="h-8">
+          <Button
+            onClick={handleImport}
+            disabled={importing || loading || selectedItems.length === 0 || selectedNeedingAllocation.length > 0}
+            size="sm"
+            className="h-8"
+          >
             {importing ? <Spinner className="mr-1.5 size-4" /> : <Download className="mr-1.5 size-4" />}
             Import{selectedItems.length > 0 ? ` ${selectedItems.length}` : ""}
           </Button>
@@ -562,6 +649,58 @@ function ImportRow({
         </div>
       </div>
     </button>
+  )
+}
+
+function LineAllocationEditor({
+  record,
+  projects,
+  value,
+  disabled,
+  onChange,
+}: {
+  record: QboImportRecord
+  projects: { id: string; name: string }[]
+  value: Record<string, string>
+  disabled: boolean
+  onChange: (lineId: string, projectId: string) => void
+}) {
+  return (
+    <div className="border-t bg-muted/20 py-2.5 pl-12 pr-6">
+      <p className="mb-2 text-xs font-medium text-muted-foreground">Allocate each line to a project</p>
+      <ul className="space-y-2">
+        {(record.lines ?? []).map((line) => {
+          const current = value[line.lineId] ?? line.suggestedProjectId ?? ""
+          const unassigned = !current
+          return (
+            <li key={line.lineId} className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs text-foreground">{line.description}</div>
+                <div className="truncate text-[11px] text-muted-foreground">
+                  {line.qboCustomerName ?? "No QBO customer"} · {formatMoney(line.amountCents)}
+                </div>
+              </div>
+              <Select
+                value={current || undefined}
+                onValueChange={(projectId) => onChange(line.lineId, projectId)}
+                disabled={disabled}
+              >
+                <SelectTrigger className={cn("h-7 w-48 shrink-0 text-xs", unassigned && "border-amber-500 text-amber-700")}>
+                  <SelectValue placeholder="Choose project…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }
 
