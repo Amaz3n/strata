@@ -838,6 +838,11 @@ export class QBOClient {
   /**
    * List transactions of the given QBO entity type for the import picker. Optionally filtered to
    * those on or after `sinceDate` (YYYY-MM-DD), most recent first.
+   *
+   * Pages through the full result set (QBO returns at most 1000 rows per request), so a busy org with
+   * thousands of transactions in the window still surfaces older ones — a single 200-row page would
+   * silently drop everything past the 200 most recent. `maxResults` is a safety ceiling on the total
+   * rows pulled (default 5000), not a per-page cap.
    */
   async listTransactionsForImport(
     entity: "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment" | "JournalEntry",
@@ -847,11 +852,22 @@ export class QBOClient {
       opts?.sinceDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.sinceDate)
         ? `TxnDate >= '${this.toQboStringLiteral(opts.sinceDate)}'`
         : undefined
-    return this.queryEntity<any>(entity, {
-      whereClause: since,
-      orderBy: "TxnDate DESC",
-      maxResults: opts?.maxResults ?? 200,
-    })
+    const hardCap = Math.max(opts?.maxResults ?? 5000, 1)
+    const pageSize = 1000
+    const all: any[] = []
+    let startPosition = 1
+    while (all.length < hardCap) {
+      const page = await this.queryEntity<any>(entity, {
+        whereClause: since,
+        orderBy: "TxnDate DESC",
+        startPosition,
+        maxResults: Math.min(pageSize, hardCap - all.length),
+      })
+      all.push(...page)
+      if (page.length < pageSize) break
+      startPosition += page.length
+    }
+    return all
   }
 
   async uploadAttachmentForEntity(params: {
