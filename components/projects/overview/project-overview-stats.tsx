@@ -44,6 +44,17 @@ function formatMoney(cents: number): string {
   return `$${Math.round(dollars).toLocaleString()}`
 }
 
+function formatFullMoney(cents: number): string {
+  if (cents === undefined || cents === null) return "$0.00"
+  const dollars = cents / 100
+  const absoluteDollars = Math.abs(dollars)
+  const formatted = absoluteDollars.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return dollars < 0 ? `-$${formatted}` : `$${formatted}`
+}
+
 export function ProjectOverviewStats({
   scheduleProgress,
   timeElapsedPercent,
@@ -137,7 +148,7 @@ export function ProjectOverviewStats({
 
   // Contract value status: surface CO count if any
   const contractStatus: CellStatus | null = hasCOs
-    ? { tone: "neutral", label: `+${formatMoney(approvedChangeOrdersTotalCents)} COs` }
+    ? { tone: "neutral", label: `+${formatFullMoney(approvedChangeOrdersTotalCents)} COs` }
     : null
 
   return (
@@ -145,11 +156,11 @@ export function ProjectOverviewStats({
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
         <Cell
           label="Contract value"
-          value={hasContract ? formatMoney(totalContractCents) : "—"}
+          value={hasContract ? formatFullMoney(totalContractCents) : "—"}
           detail={
             hasContract
               ? hasCOs
-                ? `Base ${formatMoney(baseContractCents)} · with change orders`
+                ? `Base ${formatFullMoney(baseContractCents)} · with change orders`
                 : "No change orders"
               : "No contract"
           }
@@ -171,10 +182,10 @@ export function ProjectOverviewStats({
 
         <Cell
           label="Billed"
-          value={hasContract ? formatMoney(invoicedCents) : "—"}
+          value={hasContract ? formatFullMoney(invoicedCents) : "—"}
           detail={
             hasContract
-              ? `${billedPercent}% of ${formatMoney(totalContractCents)} · ${formatMoney(
+              ? `${billedPercent}% of ${formatFullMoney(totalContractCents)} · ${formatFullMoney(
                   outstandingCents
                 )} outstanding`
               : "No contract to bill against"

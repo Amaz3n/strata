@@ -899,3 +899,259 @@ async function applyChangeOrderFinancialImpact({
     }
   }
 }
+
+/**
+ * Link an already-existing invoice to a change order. Used when an invoice was
+ * created (or imported from QBO) before the change order, and the builder wants
+ * the two tied together — e.g. backfilling a project that started pre-Arc. This
+ * is the reverse of billing a change order from the invoice composer, which
+ * derives a fresh invoice from the CO.
+ *
+ * Unlike draws, change_orders has no invoice_id column: the link lives entirely
+ * in the invoice's metadata (source_change_order_id). Linking here stamps that
+ * metadata, which is also what the composer reads to hide already-billed COs.
+ * Any CO status (including draft) may be linked.
+ */
+export async function linkInvoiceToChangeOrder({
+  changeOrderId,
+  invoiceId,
+  orgId,
+}: {
+  changeOrderId: string
+  invoiceId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const changeOrder = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!changeOrder) {
+    throw new Error("Change order not found")
+  }
+
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: changeOrder.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+
+  const { data: invoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .select("id, project_id, status, total_cents, invoice_number, metadata")
+    .eq("id", invoiceId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (invoiceError) {
+    throw new Error(`Failed to load invoice: ${invoiceError.message}`)
+  }
+
+  if (!invoice) {
+    throw new Error("Invoice not found")
+  }
+
+  if (invoice.project_id !== changeOrder.project_id) {
+    throw new Error("That invoice belongs to a different project.")
+  }
+
+  if (String(invoice.status).toLowerCase() === "void") {
+    throw new Error("Voided invoices cannot be linked to a change order.")
+  }
+
+  const metadata = (invoice.metadata ?? {}) as Record<string, any>
+  const existingSourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
+  const existingSourceChangeOrderId =
+    typeof metadata.source_change_order_id === "string" ? metadata.source_change_order_id : null
+  const existingSourceDrawId = typeof metadata.source_draw_id === "string" ? metadata.source_draw_id : null
+
+  if (existingSourceChangeOrderId && existingSourceChangeOrderId !== changeOrderId) {
+    throw new Error("This invoice is already linked to another change order.")
+  }
+
+  if (existingSourceDrawId) {
+    throw new Error("This invoice is already linked to a draw. Unlink it first.")
+  }
+
+  if (
+    existingSourceType &&
+    existingSourceType !== "manual" &&
+    existingSourceType !== "qbo" &&
+    existingSourceType !== "change_order"
+  ) {
+    throw new Error(
+      `This invoice was generated from a ${existingSourceType.replace(/_/g, " ")} and can't be linked to a change order.`,
+    )
+  }
+
+  const nowIso = new Date().toISOString()
+  const nextMetadata = {
+    ...metadata,
+    source_type: "change_order",
+    source_change_order_id: changeOrder.id,
+    change_order_id: changeOrder.id,
+    change_order_title: changeOrder.title,
+    change_order_total_cents: changeOrder.total_cents ?? null,
+    change_order_status: changeOrder.status,
+    change_order_approved_at: changeOrder.approved_at ?? null,
+    change_order_linked_at: nowIso,
+    change_order_linked_manually: true,
+  }
+
+  const { error: invoiceUpdateError } = await supabase
+    .from("invoices")
+    .update({ metadata: nextMetadata })
+    .eq("id", invoice.id)
+    .eq("org_id", resolvedOrgId)
+
+  if (invoiceUpdateError) {
+    throw new Error(`Failed to link invoice to change order: ${invoiceUpdateError.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_invoice_linked",
+    entityType: "change_order",
+    entityId: changeOrder.id,
+    payload: { invoice_id: invoice.id, invoice_number: invoice.invoice_number },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "change_order",
+    entityId: changeOrder.id,
+    before: { invoice_id: null },
+    after: { invoice_id: invoice.id },
+    source: "change_order.link_invoice",
+  })
+
+  return { changeOrderId: changeOrder.id, invoice_id: invoice.id }
+}
+
+/**
+ * Reverse a manual change order↔invoice link, stripping the change order source
+ * metadata from the invoice. The invoice itself is preserved.
+ */
+export async function unlinkInvoiceFromChangeOrder({
+  changeOrderId,
+  orgId,
+}: {
+  changeOrderId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const changeOrder = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!changeOrder) {
+    throw new Error("Change order not found")
+  }
+
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: changeOrder.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+
+  const { data: invoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .select("id, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", changeOrder.project_id)
+    .eq("metadata->>source_change_order_id", changeOrderId)
+    .neq("status", "void")
+    .maybeSingle()
+
+  if (invoiceError) {
+    throw new Error(`Failed to load linked invoice: ${invoiceError.message}`)
+  }
+
+  if (!invoice) {
+    throw new Error("This change order has no linked invoice.")
+  }
+
+  const metadata = (invoice.metadata ?? {}) as Record<string, any>
+  const {
+    source_change_order_id: _sourceChangeOrderId,
+    change_order_id: _changeOrderId,
+    change_order_title: _changeOrderTitle,
+    change_order_total_cents: _changeOrderTotalCents,
+    change_order_status: _changeOrderStatus,
+    change_order_approved_at: _changeOrderApprovedAt,
+    change_order_linked_at: _changeOrderLinkedAt,
+    change_order_linked_manually: _changeOrderLinkedManually,
+    ...rest
+  } = metadata
+  const nextMetadata = {
+    ...rest,
+    source_type: metadata.source_type === "change_order" ? "manual" : metadata.source_type,
+  }
+
+  const { error: invoiceUpdateError } = await supabase
+    .from("invoices")
+    .update({ metadata: nextMetadata })
+    .eq("id", invoice.id)
+    .eq("org_id", resolvedOrgId)
+
+  if (invoiceUpdateError) {
+    throw new Error(`Failed to unlink invoice: ${invoiceUpdateError.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_invoice_unlinked",
+    entityType: "change_order",
+    entityId: changeOrder.id,
+    payload: { invoice_id: invoice.id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "change_order",
+    entityId: changeOrder.id,
+    before: { invoice_id: invoice.id },
+    after: { invoice_id: null },
+    source: "change_order.unlink_invoice",
+  })
+
+  return { changeOrderId: changeOrder.id, invoice_id: invoice.id }
+}
+
+/**
+ * The invoice currently linked to a change order (via metadata), if any.
+ * Returns the invoice id + a few display fields for the detail sheet.
+ */
+export async function getChangeOrderLinkedInvoice({
+  changeOrderId,
+  orgId,
+}: {
+  changeOrderId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const { data: invoice, error } = await supabase
+    .from("invoices")
+    .select("id, invoice_number, title, status, total_cents, balance_due_cents, issue_date")
+    .eq("org_id", resolvedOrgId)
+    .eq("metadata->>source_change_order_id", changeOrderId)
+    .neq("status", "void")
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load linked invoice: ${error.message}`)
+  }
+
+  return invoice ?? null
+}

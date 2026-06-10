@@ -16,8 +16,17 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Clock, Sparkles } from "@/components/icons"
-import { approveChangeOrderAction } from "@/app/(app)/change-orders/actions"
+import { Link2, Loader2, Receipt, Unlink } from "lucide-react"
+import {
+  approveChangeOrderAction,
+  getChangeOrderLinkedInvoiceAction,
+  linkInvoiceToChangeOrderAction,
+  listLinkableInvoicesForChangeOrderAction,
+  unlinkInvoiceFromChangeOrderAction,
+  type LinkableChangeOrderInvoice,
+} from "@/app/(app)/change-orders/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { EnvelopeWizard } from "@/components/esign/envelope-wizard"
 import {
@@ -45,6 +54,16 @@ const statusStyles: Record<string, string> = {
   requested_changes: "bg-amber-100 text-amber-800 border-amber-200",
   cancelled: "bg-destructive/15 text-destructive border-destructive/30",
   void: "bg-muted text-muted-foreground border-muted",
+}
+
+type LinkedInvoice = {
+  id: string
+  invoice_number: string
+  title: string | null
+  status: string
+  total_cents: number | null
+  balance_due_cents: number | null
+  issue_date: string | null
 }
 
 interface ChangeOrderDetailSheetProps {
@@ -87,6 +106,80 @@ export function ChangeOrderDetailSheet({
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
   const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
+
+  const [linkedInvoice, setLinkedInvoice] = useState<LinkedInvoice | null>(null)
+  const [linkedInvoiceLoading, setLinkedInvoiceLoading] = useState(false)
+  const [linkPickerOpen, setLinkPickerOpen] = useState(false)
+  const [linkableInvoices, setLinkableInvoices] = useState<LinkableChangeOrderInvoice[]>([])
+  const [linkableLoading, setLinkableLoading] = useState(false)
+  const [linkingInvoiceId, setLinkingInvoiceId] = useState<string | null>(null)
+  const [unlinking, setUnlinking] = useState(false)
+
+  const loadLinkedInvoice = useCallback(async () => {
+    if (!changeOrder) return
+    setLinkedInvoiceLoading(true)
+    try {
+      const invoice = await getChangeOrderLinkedInvoiceAction(changeOrder.id)
+      setLinkedInvoice((invoice as LinkedInvoice | null) ?? null)
+    } catch {
+      setLinkedInvoice(null)
+    } finally {
+      setLinkedInvoiceLoading(false)
+    }
+  }, [changeOrder])
+
+  useEffect(() => {
+    if (open && changeOrder) {
+      void loadLinkedInvoice()
+    } else if (!open) {
+      setLinkedInvoice(null)
+      setLinkPickerOpen(false)
+    }
+  }, [open, changeOrder, loadLinkedInvoice])
+
+  async function openLinkPicker() {
+    if (!changeOrder) return
+    setLinkPickerOpen(true)
+    setLinkableLoading(true)
+    try {
+      const invoices = await listLinkableInvoicesForChangeOrderAction(changeOrder.project_id)
+      setLinkableInvoices(invoices ?? [])
+    } catch (error: any) {
+      toast.error("Could not load invoices", { description: error?.message ?? "Please try again." })
+      setLinkableInvoices([])
+    } finally {
+      setLinkableLoading(false)
+    }
+  }
+
+  async function handleLinkInvoice(invoiceId: string) {
+    if (!changeOrder) return
+    setLinkingInvoiceId(invoiceId)
+    try {
+      await linkInvoiceToChangeOrderAction(changeOrder.project_id, changeOrder.id, invoiceId)
+      setLinkPickerOpen(false)
+      await loadLinkedInvoice()
+      toast.success("Invoice linked to change order")
+    } catch (error: any) {
+      toast.error("Could not link invoice", { description: error?.message ?? "Please try again." })
+    } finally {
+      setLinkingInvoiceId(null)
+    }
+  }
+
+  async function handleUnlinkInvoice() {
+    if (!changeOrder) return
+    setUnlinking(true)
+    try {
+      await unlinkInvoiceFromChangeOrderAction(changeOrder.project_id, changeOrder.id)
+      setLinkedInvoice(null)
+      toast.success("Invoice unlinked")
+    } catch (error: any) {
+      toast.error("Could not unlink invoice", { description: error?.message ?? "Please try again." })
+    } finally {
+      setUnlinking(false)
+    }
+  }
 
   const loadAttachments = useCallback(async () => {
     if (!changeOrder) return
@@ -339,6 +432,60 @@ export function ChangeOrderDetailSheet({
             </div>
           )}
 
+          {/* Linked receivable invoice */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-semibold">Linked invoice</h4>
+              {!linkedInvoice && !linkedInvoiceLoading && (
+                <Button type="button" variant="outline" size="sm" onClick={openLinkPicker}>
+                  <Link2 className="mr-2 h-4 w-4" />
+                  Link existing invoice
+                </Button>
+              )}
+            </div>
+            {linkedInvoiceLoading ? (
+              <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading linked invoice…
+              </div>
+            ) : linkedInvoice ? (
+              <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 p-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <Receipt className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">Invoice {linkedInvoice.invoice_number}</span>
+                      <Badge variant="outline" className="text-[10px] capitalize">
+                        {linkedInvoice.status}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {formatMoney(linkedInvoice.total_cents)} total
+                      {linkedInvoice.balance_due_cents != null
+                        ? ` · ${formatMoney(linkedInvoice.balance_due_cents)} balance`
+                        : ""}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleUnlinkInvoice}
+                  disabled={unlinking}
+                  title="Unlink invoice from this change order"
+                >
+                  {unlinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlink className="h-4 w-4" />}
+                  <span className="sr-only">Unlink invoice</span>
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Attach an existing or QuickBooks-synced invoice to record that this change order has already been billed.
+              </p>
+            )}
+          </div>
+
           {financialImpact && (
             <div className="space-y-3">
               <h4 className="text-sm font-semibold">Financial Posting</h4>
@@ -471,6 +618,64 @@ export function ChangeOrderDetailSheet({
           </div>
         </SheetContent>
       </Sheet>
+
+      <Dialog open={linkPickerOpen} onOpenChange={setLinkPickerOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Link existing invoice</DialogTitle>
+            <DialogDescription>
+              Choose an invoice for this project to tie to {changeOrder.title}. Already-linked, draw-linked, and voided
+              invoices are excluded.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] space-y-2 overflow-y-auto">
+            {linkableLoading ? (
+              <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading invoices…
+              </div>
+            ) : linkableInvoices.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">No linkable invoices found for this project.</p>
+            ) : (
+              linkableInvoices.map((invoice) => (
+                <button
+                  key={invoice.id}
+                  type="button"
+                  onClick={() => handleLinkInvoice(invoice.id)}
+                  disabled={linkingInvoiceId != null}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-60"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Receipt className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">Invoice {invoice.invoice_number}</span>
+                        {invoice.from_qbo && (
+                          <Badge variant="outline" className="text-[10px]">
+                            QBO
+                          </Badge>
+                        )}
+                        <Badge variant="outline" className="text-[10px] capitalize">
+                          {invoice.status}
+                        </Badge>
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {formatMoney(invoice.total_cents)}
+                        {invoice.title ? ` · ${invoice.title}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                  {linkingInvoiceId === invoice.id ? (
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                  ) : (
+                    <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <EnvelopeWizard
         open={signatureWizardOpen}

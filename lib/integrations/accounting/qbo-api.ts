@@ -789,6 +789,22 @@ export class QBOClient {
     }
   }
 
+  async getVendorCreditById(vendorCreditId: string): Promise<any | null> {
+    const normalizedId = String(vendorCreditId ?? "").trim()
+    if (!normalizedId) return null
+
+    try {
+      const result = await this.request<{ VendorCredit?: any }>(
+        "GET",
+        `vendorcredit/${encodeURIComponent(normalizedId)}`,
+      )
+      return result.VendorCredit ?? null
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
+    }
+  }
+
   async getJournalEntryById(journalEntryId: string): Promise<any | null> {
     const normalizedId = String(journalEntryId ?? "").trim()
     if (!normalizedId) return null
@@ -845,7 +861,7 @@ export class QBOClient {
    * rows pulled (default 5000), not a per-page cap.
    */
   async listTransactionsForImport(
-    entity: "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment" | "JournalEntry",
+    entity: "Invoice" | "Purchase" | "Bill" | "Payment" | "BillPayment" | "JournalEntry" | "VendorCredit",
     opts?: { sinceDate?: string | null; maxResults?: number },
   ): Promise<any[]> {
     const since =

@@ -23,6 +23,7 @@ const securityHeaders = [
 ]
 
 const nextConfig = {
+  allowedDevOrigins: ['unreproachably-preparoxysmal-talon.ngrok-free.dev', '*.ngrok-free.dev'],
   typescript: {
     ignoreBuildErrors: true,
   },

@@ -226,6 +226,7 @@ function buildFinancialSubs(projectId: string, section: string, project?: Projec
       : { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
     { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
     { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
+    { title: "Reports", url: url("/reports"), isActive: section === "reports", requiredAny: ["budget.read", "invoice.read"] },
   ].filter(Boolean) as SidebarNavSubItem[]
 }
 

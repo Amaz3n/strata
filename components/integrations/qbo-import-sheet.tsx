@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Download, ExternalLink, Link2, Plug, Search, X } from "lucide-react"
+import { Check, ChevronsUpDown, Download, ExternalLink, Link2, Plug, Search, X } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -12,7 +12,7 @@ import {
 } from "@/app/(app)/integrations/qbo-import-actions"
 import { getProjectQboLinkAction } from "@/app/(app)/integrations/qbo-project-link-actions"
 import type { ProjectQboLink } from "@/lib/services/qbo-project-link"
-import type { QboImportEntityType, QboImportRecord } from "@/lib/services/qbo-import"
+import type { QboImportEntityType, QboImportRecord, QboImportLine } from "@/lib/services/qbo-import"
 import {
   Accordion,
   AccordionContent,
@@ -23,6 +23,16 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command"
 import {
   Select,
   SelectContent,
@@ -53,6 +63,7 @@ const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "invoice", label: "Invoices" },
   { key: "expense", label: "Expenses" },
   { key: "bill", label: "Bills" },
+  { key: "vendor_credit", label: "Vendor credits" },
   { key: "payment", label: "Invoice payments" },
   { key: "bill_payment", label: "Bill payments" },
   { key: "journal_entry", label: "Journal entries" },
@@ -70,6 +81,7 @@ const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
   invoice: 0,
   expense: 0,
   bill: 0,
+  vendor_credit: 0,
   payment: 0,
   bill_payment: 0,
   journal_entry: 0,
@@ -88,7 +100,13 @@ function formatMoney(cents: number) {
 
 function formatDate(value: string | null) {
   if (!value) return "—"
-  const date = new Date(value)
+  // QBO transaction dates are calendar dates (YYYY-MM-DD). Build a *local* Date from the parts so the
+  // displayed day doesn't shift back: `new Date("2026-04-02")` parses as UTC midnight, which renders
+  // as the previous day in EST and other negative-offset zones.
+  const calendar = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  const date = calendar
+    ? new Date(Number(calendar[1]), Number(calendar[2]) - 1, Number(calendar[3]))
+    : new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
@@ -133,6 +151,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   const [openSections, setOpenSections] = useState<string[]>(SECTIONS.map((section) => section.key))
   const [lastImport, setLastImport] = useState<Record<QboImportEntityType, number> | null>(null)
   const [projectFilter, setProjectFilter] = useState<string>("all")
+  const [projectFilterOpen, setProjectFilterOpen] = useState(false)
   const [qboLink, setQboLink] = useState<ProjectQboLink | null>(null)
   const defaultFilterApplied = useRef(false)
   // Arc projects for the per-line allocation picker, and per-record line→project overrides.
@@ -266,10 +285,14 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   }
 
   function dependencyKeys(record: QboImportRecord) {
-    if (record.dependencyStatus !== "available_to_import" || !record.linkedEntityType) return []
-    return (record.linkedQboIds ?? [])
-      .map((qboId) => `${record.linkedEntityType}:${qboId}`)
-      .filter((key) => recordByKey.has(key))
+    const keys: string[] = []
+    if (record.dependencyStatus === "available_to_import" && record.linkedEntityType) {
+      for (const qboId of record.linkedQboIds ?? []) keys.push(`${record.linkedEntityType}:${qboId}`)
+    }
+    // A bill payment that applied vendor credits pulls those credits in too, so the credit's cost
+    // reduction is imported alongside the payment that settled the bill.
+    for (const qboId of record.appliedVendorCreditQboIds ?? []) keys.push(`vendor_credit:${qboId}`)
+    return keys.filter((key) => recordByKey.has(key))
   }
 
   const sections = useMemo(
@@ -436,20 +459,69 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
         </div>
         <div className="flex items-center gap-2">
           {projectFilterOptions.length > 0 ? (
-            <Select value={projectFilter} onValueChange={setProjectFilter} disabled={loading || importing}>
-              <SelectTrigger className="h-8 w-40 rounded-none text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All projects</SelectItem>
-                <SelectSeparator />
-                {projectFilterOptions.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {option.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Popover open={projectFilterOpen} onOpenChange={setProjectFilterOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={projectFilterOpen}
+                  className="h-8 w-40 justify-between rounded-none text-xs px-3 font-normal"
+                  disabled={loading || importing}
+                >
+                  <span className="truncate">
+                    {projectFilter === "all"
+                      ? "All projects"
+                      : projectFilterOptions.find((option) => option.id === projectFilter)?.name ?? projectFilter}
+                  </span>
+                  <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-48 p-0" align="end">
+                <Command>
+                  <CommandInput placeholder="Search project..." className="h-8" />
+                  <CommandList>
+                    <CommandEmpty>No project found.</CommandEmpty>
+                    <CommandGroup>
+                      <CommandItem
+                        value="all"
+                        onSelect={() => {
+                          setProjectFilter("all")
+                          setProjectFilterOpen(false)
+                        }}
+                        className="text-xs"
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 size-3",
+                            projectFilter === "all" ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        All projects
+                      </CommandItem>
+                      {projectFilterOptions.map((option) => (
+                        <CommandItem
+                          key={option.id}
+                          value={option.name}
+                          onSelect={() => {
+                            setProjectFilter(option.id)
+                            setProjectFilterOpen(false)
+                          }}
+                          className="text-xs"
+                        >
+                          <Check
+                            className={cn(
+                              "mr-2 size-3",
+                              projectFilter === option.id ? "opacity-100" : "opacity-0"
+                            )}
+                          />
+                          <span className="truncate">{option.name}</span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           ) : null}
           <span className="shrink-0 text-xs text-muted-foreground">{filteredRecords.length} shown</span>
         </div>
@@ -459,7 +531,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-emerald-500/10 px-6 py-3 text-xs">
           <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
           {(lastImport.invoice > 0 || lastImport.payment > 0 || lastImport.client_deposit > 0) && <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />}
-          {(lastImport.bill > 0 || lastImport.bill_payment > 0) && <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />}
+          {(lastImport.bill > 0 || lastImport.bill_payment > 0 || lastImport.vendor_credit > 0) && <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />}
           {(lastImport.expense > 0 || lastImport.journal_entry > 0) && <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />}
         </div>
       )}
@@ -521,10 +593,17 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
                             blocked={!canImportRecord(item)}
                             onToggle={() => toggle(rowKey(item))}
                           />
+                          {/* Surface the per-line allocation when there's a real choice to make: more
+                              than one line, a line with no suggested project, or a line whose suggested
+                              project (from its QBO customer link) diverges from the project being
+                              imported into — so a single line never silently lands elsewhere. */}
                           {selected.has(rowKey(item)) &&
                           item.lines &&
                           item.lines.length > 0 &&
-                          (item.lines.length > 1 || item.lines.some((line) => !line.suggestedProjectId)) ? (
+                          (item.lines.length > 1 ||
+                            item.lines.some(
+                              (line) => !line.suggestedProjectId || line.suggestedProjectId !== projectId,
+                            )) ? (
                             <LineAllocationEditor
                               record={item}
                               projects={projects}
@@ -671,36 +750,96 @@ function LineAllocationEditor({
       <ul className="space-y-2">
         {(record.lines ?? []).map((line) => {
           const current = value[line.lineId] ?? line.suggestedProjectId ?? ""
-          const unassigned = !current
           return (
-            <li key={line.lineId} className="flex items-center gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs text-foreground">{line.description}</div>
-                <div className="truncate text-[11px] text-muted-foreground">
-                  {line.qboCustomerName ?? "No QBO customer"} · {formatMoney(line.amountCents)}
-                </div>
-              </div>
-              <Select
-                value={current || undefined}
-                onValueChange={(projectId) => onChange(line.lineId, projectId)}
-                disabled={disabled}
-              >
-                <SelectTrigger className={cn("h-7 w-48 shrink-0 text-xs", unassigned && "border-amber-500 text-amber-700")}>
-                  <SelectValue placeholder="Choose project…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </li>
+            <LineAllocationRow
+              key={line.lineId}
+              line={line}
+              projects={projects}
+              current={current}
+              disabled={disabled}
+              onChange={(projectId) => onChange(line.lineId, projectId)}
+            />
           )
         })}
       </ul>
     </div>
+  )
+}
+
+function LineAllocationRow({
+  line,
+  projects,
+  current,
+  disabled,
+  onChange,
+}: {
+  line: QboImportLine
+  projects: { id: string; name: string }[]
+  current: string
+  disabled: boolean
+  onChange: (projectId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const unassigned = !current
+  const currentProjectName = projects.find((p) => p.id === current)?.name
+
+  return (
+    <li className="flex items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-xs text-foreground">{line.description}</div>
+        <div className="truncate text-[11px] text-muted-foreground">
+          {line.qboCustomerName ?? "No QBO customer"} · {formatMoney(line.amountCents)}
+        </div>
+      </div>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            disabled={disabled}
+            className={cn(
+              "h-7 w-48 shrink-0 justify-between rounded-none text-xs px-2 font-normal",
+              unassigned && "border-amber-500 text-amber-700"
+            )}
+          >
+            <span className="truncate">
+              {currentProjectName ?? "Choose project…"}
+            </span>
+            <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-56 p-0" align="end">
+          <Command>
+            <CommandInput placeholder="Search project..." className="h-8" />
+            <CommandList>
+              <CommandEmpty>No project found.</CommandEmpty>
+              <CommandGroup>
+                {projects.map((project) => (
+                  <CommandItem
+                    key={project.id}
+                    value={project.name}
+                    onSelect={() => {
+                      onChange(project.id)
+                      setOpen(false)
+                    }}
+                    className="text-xs"
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 size-3",
+                        current === project.id ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    <span className="truncate">{project.name}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </li>
   )
 }
 
