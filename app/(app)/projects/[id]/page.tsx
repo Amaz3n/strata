@@ -135,6 +135,7 @@ async function ProjectData({ id }: { id: string }) {
         totalActualCents={budgetSummary?.totalActualCents ?? health.financial.actualCents}
         adjustedBudgetCents={budgetSummary?.adjustedBudgetCents}
         totalInvoicedCents={budgetSummary?.totalInvoicedCents ?? health.financial.invoicedCents}
+        totalExpensesCents={budgetSummary?.totalActualCents ?? health.financial.actualCents}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 flex-1">

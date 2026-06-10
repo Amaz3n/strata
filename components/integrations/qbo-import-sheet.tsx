@@ -8,11 +8,17 @@ import { toast } from "sonner"
 import {
   importQboRecordsAction,
   listProjectsForImportAction,
+  listQboCustomersForImportAction,
   listQboImportRecordsAction,
 } from "@/app/(app)/integrations/qbo-import-actions"
 import { getProjectQboLinkAction } from "@/app/(app)/integrations/qbo-project-link-actions"
 import type { ProjectQboLink } from "@/lib/services/qbo-project-link"
-import type { QboImportEntityType, QboImportRecord, QboImportLine } from "@/lib/services/qbo-import"
+import type {
+  QboImportCustomerOption,
+  QboImportEntityType,
+  QboImportRecord,
+  QboImportLine,
+} from "@/lib/services/qbo-import"
 import {
   Accordion,
   AccordionContent,
@@ -153,6 +159,9 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   const [projectFilter, setProjectFilter] = useState<string>("all")
   const [projectFilterOpen, setProjectFilterOpen] = useState(false)
   const [qboLink, setQboLink] = useState<ProjectQboLink | null>(null)
+  // Full QBO customer/project list — drives the project filter so every project shows, not just the
+  // ones referenced by the fetched transactions.
+  const [qboCustomers, setQboCustomers] = useState<QboImportCustomerOption[]>([])
   const defaultFilterApplied = useRef(false)
   // Arc projects for the per-line allocation picker, and per-record line→project overrides.
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
@@ -186,6 +195,9 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       .catch(() => {})
     listProjectsForImportAction()
       .then(setProjects)
+      .catch(() => {})
+    listQboCustomersForImportAction()
+      .then((listing) => setQboCustomers(listing.customers))
       .catch(() => {})
   }, [active, projectId])
 
@@ -255,30 +267,37 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""))
   }, [records, typeFilter, projectFilter, search])
 
-  // Distinct QBO customers/projects present in the fetched records — drives the project filter.
-  // A multi-project record contributes every project it touches, so each appears as an option.
+  // The project filter's options. Sourced from the full live QBO customer/project list so every
+  // project shows — even ones with no un-imported transactions in the current window. Any customer
+  // referenced by a fetched record but missing from that list (e.g. an inactive customer that still
+  // has un-imported transactions) is folded in too, so nothing in view is unfilterable.
   const projectFilterOptions = useMemo(() => {
     const map = new Map<string, string>()
+    for (const customer of qboCustomers) map.set(customer.id, customer.name)
     for (const record of records) {
       if (record.qboCustomerIds && record.qboCustomerIds.length > 0) {
-        for (const customer of record.qboCustomerIds) map.set(customer.id, customer.name ?? customer.id)
-      } else if (record.qboCustomerId) {
+        for (const customer of record.qboCustomerIds) {
+          if (!map.has(customer.id)) map.set(customer.id, customer.name ?? customer.id)
+        }
+      } else if (record.qboCustomerId && !map.has(record.qboCustomerId)) {
         map.set(record.qboCustomerId, record.qboCustomerName ?? record.qboCustomerId)
       }
     }
     return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
-  }, [records])
+  }, [qboCustomers, records])
 
-  // Default the filter to the project's linked QBO project once (per open), if it has records here.
+  // Default the filter to the project's linked QBO project once (per open), but only if that project
+  // actually has records in view — otherwise we'd auto-filter to an empty list. The full customer
+  // list now always contains the linked project, so we key this on the records, not the options.
   useEffect(() => {
     if (defaultFilterApplied.current) return
     const linkedId = qboLink?.qboCustomerId
-    if (!linkedId || projectFilterOptions.length === 0) return
-    if (projectFilterOptions.some((option) => option.id === linkedId)) {
+    if (!linkedId || loading) return
+    if (records.some((record) => recordProjectIds(record).includes(linkedId))) {
       setProjectFilter(linkedId)
+      defaultFilterApplied.current = true
     }
-    defaultFilterApplied.current = true
-  }, [qboLink, projectFilterOptions])
+  }, [qboLink, records, loading])
 
   function canImportRecord(record: QboImportRecord) {
     return record.dependencyStatus !== "missing"

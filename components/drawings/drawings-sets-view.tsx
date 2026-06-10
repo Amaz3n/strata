@@ -17,6 +17,7 @@ import {
   Download,
   Eye,
   AlertTriangle,
+  History,
 } from "lucide-react"
 import {
   disciplineGradientClass,
@@ -360,6 +361,7 @@ export function DrawingsSetsView({
 
   // Viewer state
   const [viewerOpen, setViewerOpen] = useState(false)
+  const [viewerVersionsOpen, setViewerVersionsOpen] = useState(false)
   const [viewerSheet, setViewerSheet] = useState<DrawingSheet | null>(null)
   const [viewerSheets, setViewerSheets] = useState<DrawingSheet[]>([])
   const [viewerUrl, setViewerUrl] = useState<string | null>(null)
@@ -685,6 +687,10 @@ export function DrawingsSetsView({
 
         if (status.status === "ready") {
           await Promise.all([refreshSets(), loadProjectSheets()])
+          // The worker re-points sheets onto this newly processed set, so the
+          // previously selected set is now empty. Switch to the new set so the
+          // register isn't left showing an empty table after a revision upload.
+          if (!cancelled) setSelectedSetId(uploadSetId)
           if (uploadSourceFileId) {
             const reviewSheets = await listUploadedSheetsAction(uploadSourceFileId)
             if (cancelled) return
@@ -1017,7 +1023,7 @@ export function DrawingsSetsView({
   )
 
   const handleViewSheet = useCallback(
-    async (sheet: DrawingSheet, highlightPinId?: string | null) => {
+    async (sheet: DrawingSheet, highlightPinId?: string | null, openVersions?: boolean) => {
       const requestId = ++sheetOpenRequestIdRef.current
       const siblings = sheetsBySet.get(sheet.drawing_set_id) ?? [sheet]
       setViewerSheets(siblings)
@@ -1028,6 +1034,7 @@ export function DrawingsSetsView({
         setViewerUrl(cached.fileUrl)
         setViewerMarkups(cached.markups)
         setViewerPins(cached.pins)
+        setViewerVersionsOpen(openVersions ?? false)
         setViewerOpen(true)
         return
       }
@@ -1037,6 +1044,7 @@ export function DrawingsSetsView({
       setViewerUrl(null)
       setViewerMarkups([])
       setViewerPins([])
+      setViewerVersionsOpen(openVersions ?? false)
       setViewerOpen(true)
 
       try {
@@ -1398,7 +1406,7 @@ export function DrawingsSetsView({
               className="h-9"
             >
               <Upload className="mr-2 h-4 w-4" />
-              Upload
+              Upload sheets / revision
             </Button>
           </div>
         </div>
@@ -1487,7 +1495,7 @@ export function DrawingsSetsView({
             action={
               <Button onClick={openFilePicker} size="sm">
                 <Upload className="mr-2 h-4 w-4" />
-                Upload plan set
+                Upload plan set / revision
               </Button>
             }
           />
@@ -2077,6 +2085,7 @@ export function DrawingsSetsView({
       {viewerOpen && viewerSheet && (
         <DrawingViewer
           sheet={viewerSheet}
+          initialVersionsPanelOpen={viewerVersionsOpen}
           fileUrl={viewerUrl ?? undefined}
           markups={viewerMarkups}
           pins={viewerPins}
@@ -2148,7 +2157,7 @@ function DisciplineRows({
   onToggle: () => void
   onEditGroup: () => void
   onDeleteGroup: () => void
-  onViewSheet: (sheet: DrawingSheet) => void
+  onViewSheet: (sheet: DrawingSheet, highlightPinId?: string | null, openVersions?: boolean) => void
   onDisciplineChange: (sheetId: string, d: DrawingDiscipline) => void
   onRenameSheet: (sheet: DrawingSheet) => void
   onDeleteSheet: (sheet: DrawingSheet) => void
@@ -2228,7 +2237,7 @@ function DisciplineRows({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+                  className="h-7 w-7 md:opacity-0 transition-opacity md:group-hover:opacity-100 data-[state=open]:opacity-100"
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />
                 </Button>
@@ -2259,6 +2268,7 @@ function DisciplineRows({
             onOpen={() => onViewSheet(sheet)}
             onDisciplineChange={(d) => onDisciplineChange(sheet.id, d)}
             onRename={() => onRenameSheet(sheet)}
+            onViewVersions={() => onViewSheet(sheet, null, true)}
             onDelete={() => onDeleteSheet(sheet)}
             onUploadRevision={() => onUploadRevisionSheet(sheet)}
             highlight={highlight}
@@ -2273,6 +2283,7 @@ function SheetRow({
   onOpen,
   onDisciplineChange,
   onRename,
+  onViewVersions,
   onDelete,
   onUploadRevision,
   highlight,
@@ -2281,6 +2292,7 @@ function SheetRow({
   onOpen: () => void
   onDisciplineChange: (d: DrawingDiscipline) => void
   onRename: () => void
+  onViewVersions: () => void
   onDelete: () => void
   onUploadRevision: () => void
   highlight: string
@@ -2323,7 +2335,7 @@ function SheetRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+                className="h-7 w-7 md:opacity-0 transition-opacity md:group-hover:opacity-100 data-[state=open]:opacity-100"
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </Button>
@@ -2336,6 +2348,10 @@ function SheetRow({
               <DropdownMenuItem onClick={onRename}>
                 <Pencil className="mr-2 h-4 w-4" />
                 Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onViewVersions}>
+                <History className="mr-2 h-4 w-4" />
+                Version history
               </DropdownMenuItem>
               <DropdownMenuItem onClick={onUploadRevision}>
                 <Upload className="mr-2 h-4 w-4" />

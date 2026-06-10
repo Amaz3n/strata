@@ -1007,7 +1007,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                       <Checkbox checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false} onCheckedChange={toggleSelectAll} aria-label="Select all expenses" />
                     </div>
                   </TableHead>
-                  <TableHead className="min-w-[220px] px-4 py-3">Merchant / Vendor</TableHead>
+                  <TableHead className="w-[220px] max-w-[220px] px-4 py-3">Merchant / Vendor</TableHead>
                   <TableHead className="w-[132px] px-4 py-3 text-center">Date</TableHead>
                   <TableHead className="w-[168px] px-4 py-3 text-right">Amount</TableHead>
                   <TableHead className="min-w-[340px] px-4 py-3">QBO Category</TableHead>
@@ -1034,7 +1034,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                           <Checkbox checked={selectedIds.includes(expense.id)} onCheckedChange={(checked) => toggleSelectOne(expense.id, checked)} aria-label={`Select expense ${vendor}`} />
                         </div>
                       </TableCell>
-                      <TableCell className="px-4 py-2 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => openExpense(expense.id)}>
+                      <TableCell className="w-[220px] max-w-[220px] px-4 py-2 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => openExpense(expense.id)}>
                         <div className="flex min-w-0 items-center gap-3">
                           <Avatar className="size-7 rounded-md">
                             <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendor)}</AvatarFallback>

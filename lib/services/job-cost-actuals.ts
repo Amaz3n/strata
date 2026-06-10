@@ -8,7 +8,12 @@ import { requireOrgContext } from "@/lib/services/context"
 
 export type { JobCostActualByCostCode } from "@/lib/financials/job-cost-rules"
 
-export type JobCostSourceType = "vendor_bill_line" | "project_expense" | "time_entry" | "manual_adjustment"
+export type JobCostSourceType =
+  | "vendor_bill_line"
+  | "project_expense"
+  | "project_expense_line"
+  | "time_entry"
+  | "manual_adjustment"
 
 export interface JobCostEntry {
   id: string
@@ -198,6 +203,59 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
       source_label: "project_expense",
       expense_status: expense.status,
       description: expense.description ?? expense.vendor_name_text ?? null,
+      vendor_company_id: expense.vendor_company_id ?? null,
+      vendor_name_text: expense.vendor_name_text ?? null,
+      receipt_file_id: expense.receipt_file_id ?? null,
+    },
+  })
+}
+
+export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+  const { data: line, error } = await supabase
+    .from("project_expense_lines")
+    .select(`
+      id, org_id, expense_id, project_id, cost_code_id, description, amount_cents, metadata,
+      expense:project_expenses(id, org_id, project_id, expense_date, status, vendor_company_id, vendor_name_text, receipt_file_id)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", args.expenseLineId)
+    .maybeSingle()
+
+  if (error || !line) throw new Error("Expense split not found")
+  const expense = (line as any).expense
+  // A split can post to a different project than the expense's primary (cross-project
+  // allocation); fall back to the expense's project when the line is untagged.
+  const lineProjectId = (line as any).project_id ?? expense?.project_id
+  if (!lineProjectId) throw new Error("Expense split is missing project context")
+  if (!["approved", "locked"].includes(String(expense?.status))) {
+    throw new Error("Expense must be approved before it posts to job cost")
+  }
+
+  const billable = await findBillableCostForSource({
+    supabase,
+    orgId: resolvedOrgId,
+    sourceType: "project_expense_line",
+    sourceId: line.id,
+  })
+
+  return upsertJobCostEntry(supabase, {
+    org_id: resolvedOrgId,
+    project_id: lineProjectId,
+    cost_code_id: line.cost_code_id ?? null,
+    source_type: "project_expense_line",
+    source_id: line.id,
+    incurred_on: expense.expense_date,
+    cost_cents: Number(line.amount_cents ?? 0),
+    is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
+    billable_cost_id: billable?.id ?? null,
+    invoice_id: billable?.invoice_id ?? null,
+    metadata: {
+      ...(line.metadata ?? {}),
+      source_label: "project_expense_line",
+      expense_id: expense.id,
+      expense_status: expense.status,
+      description: line.description ?? expense.description ?? expense.vendor_name_text ?? null,
       vendor_company_id: expense.vendor_company_id ?? null,
       vendor_name_text: expense.vendor_name_text ?? null,
       receipt_file_id: expense.receipt_file_id ?? null,

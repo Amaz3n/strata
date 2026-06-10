@@ -137,6 +137,22 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
     const pagesWithText = pageTexts.reduce((count, text) => (text.trim() ? count + 1 : count), 0);
     console.log(`Extracted searchable text for ${pagesWithText}/${pageCount} pages`);
 
+    // Determine revision label based on existing revisions in this project
+    let revisionLabel = 'Initial';
+    try {
+      const { count, error: countError } = await supabase
+        .from('drawing_revisions')
+        .select('*', { count: 'exact', head: true })
+        .eq('org_id', drawingSet.org_id)
+        .eq('project_id', projectId);
+
+      if (!countError && count !== null && count > 0) {
+        revisionLabel = `Rev ${count + 1}`;
+      }
+    } catch (err) {
+      console.warn('Failed to calculate revision label:', err);
+    }
+
     // Create a default revision for this drawing set
     const { data: revision, error: revisionError } = await supabase
       .from('drawing_revisions')
@@ -144,9 +160,9 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
         org_id: drawingSet.org_id,
         project_id: projectId,
         drawing_set_id: drawingSetId,
-        revision_label: 'Initial',
+        revision_label: revisionLabel,
         issued_date: new Date().toISOString(),
-        notes: 'Initial upload',
+        notes: revisionLabel === 'Initial' ? 'Initial upload' : `Upload revision ${revisionLabel}`,
         created_at: new Date().toISOString(),
       })
       .select()
@@ -245,33 +261,73 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
         `[SheetDetect] Page ${pageNumber}: ${resolvedSheet.sheetNumber} (${resolvedSheet.method}, ${resolvedSheet.confidence})`
       );
 
-      // Create sheet record
-      if (pageIndex === 0) {
-        await updateSetStage(supabase, drawingSetId, {
-          processing_stage: 'creating_sheets',
-        });
-      }
-      const { data: sheet, error: sheetError } = await supabase
-        .from('drawing_sheets')
-        .insert({
-          org_id: drawingSet.org_id,
-          project_id: projectId,
-          drawing_set_id: drawingSetId,
-          sheet_number: ensureUniqueSheetNumber(resolvedSheet.sheetNumber, pageNumber, usedSheetNumbers),
-          sheet_title: sheetTitle,
-          discipline: resolvedSheet.discipline,
-          sort_order: pageIndex,
-          share_with_clients: false,
-          share_with_subs: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .select()
-        .single();
+      const targetSheetNumber = ensureUniqueSheetNumber(resolvedSheet.sheetNumber, pageNumber, usedSheetNumbers);
 
-      if (sheetError || !sheet) {
-        console.error(`Failed to create sheet for page ${pageIndex}:`, sheetError);
-        continue;
+      // Check if a sheet with this sheet_number already exists in this project
+      const { data: existingSheet, error: findError } = await supabase
+        .from('drawing_sheets')
+        .select('*')
+        .eq('org_id', drawingSet.org_id)
+        .eq('project_id', projectId)
+        .eq('sheet_number', targetSheetNumber)
+        .maybeSingle();
+
+      let sheet = existingSheet;
+
+      if (existingSheet) {
+        // Stack a new version onto the existing sheet: keep it on the project's
+        // canonical set, point it at the new revision, and refresh its title.
+        // Setting drawing_set_id also pulls in any sheets stranded on an older
+        // set so the project converges onto a single register.
+        const { data: updatedSheet, error: updateError } = await supabase
+          .from('drawing_sheets')
+          .update({
+            drawing_set_id: drawingSetId,
+            current_revision_id: revision.id,
+            sheet_title: sheetTitle,
+            discipline: resolvedSheet.discipline,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingSheet.id)
+          .select()
+          .single();
+
+        if (updateError || !updatedSheet) {
+          console.error(`Failed to update sheet for page ${pageIndex}:`, updateError);
+          continue;
+        }
+        sheet = updatedSheet;
+      } else {
+        // Create sheet record
+        if (pageIndex === 0) {
+          await updateSetStage(supabase, drawingSetId, {
+            processing_stage: 'creating_sheets',
+          });
+        }
+        const { data: newSheet, error: sheetError } = await supabase
+          .from('drawing_sheets')
+          .insert({
+            org_id: drawingSet.org_id,
+            project_id: projectId,
+            drawing_set_id: drawingSetId,
+            sheet_number: targetSheetNumber,
+            sheet_title: sheetTitle,
+            discipline: resolvedSheet.discipline,
+            current_revision_id: revision.id,
+            sort_order: pageIndex,
+            share_with_clients: false,
+            share_with_subs: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (sheetError || !newSheet) {
+          console.error(`Failed to create sheet for page ${pageIndex}:`, sheetError);
+          continue;
+        }
+        sheet = newSheet;
       }
 
       // Create sheet version with temp PNG path

@@ -17,6 +17,7 @@ interface ProjectOverviewStatsProps {
   totalActualCents?: number
   adjustedBudgetCents?: number
   totalInvoicedCents?: number
+  totalExpensesCents?: number
 }
 
 type Tone = "neutral" | "success" | "warning" | "destructive"
@@ -70,6 +71,7 @@ export function ProjectOverviewStats({
   totalActualCents,
   adjustedBudgetCents,
   totalInvoicedCents,
+  totalExpensesCents,
 }: ProjectOverviewStatsProps) {
   // contracts.total_cents is the revised value after approved change orders.
   const totalContractCents = contractTotalCents
@@ -146,6 +148,12 @@ export function ProjectOverviewStats({
     ? { tone: "warning", label: "Lagging" }
     : null
 
+  // Total expenses: all posted job-cost actuals (approved bills + expenses) on the project.
+  const totalExpenses = totalExpensesCents ?? 0
+  const hasExpenses = totalExpenses > 0
+  const expensesOfContractPercent =
+    hasContract && hasExpenses ? Math.round((totalExpenses / totalContractCents) * 100) : null
+
   // Contract value status: surface CO count if any
   const contractStatus: CellStatus | null = hasCOs
     ? { tone: "neutral", label: `+${formatFullMoney(approvedChangeOrdersTotalCents)} COs` }
@@ -153,7 +161,7 @@ export function ProjectOverviewStats({
 
   return (
     <section className="border-b">
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
         <Cell
           label="Contract value"
           value={hasContract ? formatFullMoney(totalContractCents) : "—"}
@@ -260,16 +268,35 @@ export function ProjectOverviewStats({
             tone={marginStatus?.tone ?? "neutral"}
           />
         </Cell>
+
+        <Cell
+          label="Total expenses"
+          value={hasExpenses ? formatFullMoney(totalExpenses) : "—"}
+          detail={
+            hasExpenses
+              ? expensesOfContractPercent !== null
+                ? `${expensesOfContractPercent}% of contract value`
+                : "Costs recorded to date"
+              : "No costs recorded yet"
+          }
+          position={4}
+        >
+          <ThinBar
+            width={expensesOfContractPercent ?? (hasExpenses ? 100 : 0)}
+            tone={hasExpenses ? "primary" : "muted"}
+          />
+        </Cell>
       </div>
     </section>
   )
 }
 
 const cellBorders: Record<number, string> = {
-  0: "border-b sm:border-r xl:border-b-0 xl:border-r",
-  1: "border-b xl:border-b-0 xl:border-r",
-  2: "border-b sm:border-r sm:border-b-0 xl:border-r",
-  3: "",
+  0: "border-b sm:border-r lg:border-b-0 lg:border-r",
+  1: "border-b lg:border-b-0 lg:border-r",
+  2: "border-b sm:border-r lg:border-b-0 lg:border-r",
+  3: "border-b lg:border-b-0 lg:border-r",
+  4: "",
 }
 
 const cellTints: Record<Tone, string> = {

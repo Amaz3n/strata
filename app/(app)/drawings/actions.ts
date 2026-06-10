@@ -195,6 +195,10 @@ export async function createDrawingSetFromUpload(input: {
     source: "upload",
   })
 
+  // Single register per project: reuse the project's canonical (oldest) set so
+  // re-uploads stack versions onto existing sheets in place instead of creating
+  // a new set each time. We do NOT delete existing sheets/revisions here — the
+  // worker matches sheets by sheet_number and appends a new version.
   const { data: existingSets, error: existingSetsError } = await supabase
     .from("drawing_sets")
     .select("id")
@@ -210,27 +214,7 @@ export async function createDrawingSetFromUpload(input: {
   let drawingSet: DrawingSet
 
   if (existingSets && existingSets.length > 0) {
-    const existingSetId = existingSets[0].id as string
-    const { error: deleteSheetsError } = await supabase
-      .from("drawing_sheets")
-      .delete()
-      .eq("org_id", orgId)
-      .eq("drawing_set_id", existingSetId)
-
-    if (deleteSheetsError) {
-      throw new Error(`Failed to clear previous drawing sheets: ${deleteSheetsError.message}`)
-    }
-
-    const { error: deleteRevisionsError } = await supabase
-      .from("drawing_revisions")
-      .delete()
-      .eq("org_id", orgId)
-      .eq("drawing_set_id", existingSetId)
-
-    if (deleteRevisionsError) {
-      throw new Error(`Failed to clear previous drawing revisions: ${deleteRevisionsError.message}`)
-    }
-
+    const canonicalSetId = existingSets[0].id as string
     const { error: updateError } = await supabase
       .from("drawing_sets")
       .update({
@@ -243,13 +227,13 @@ export async function createDrawingSetFromUpload(input: {
         source_file_id: fileRecord.id,
       })
       .eq("org_id", orgId)
-      .eq("id", existingSetId)
+      .eq("id", canonicalSetId)
 
     if (updateError) {
       throw new Error(`Failed to prepare drawing set: ${updateError.message}`)
     }
 
-    const reusedSet = await getDrawingSet(existingSetId)
+    const reusedSet = await getDrawingSet(canonicalSetId)
     if (!reusedSet) {
       throw new Error("Prepared drawing set could not be loaded")
     }

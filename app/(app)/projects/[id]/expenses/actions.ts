@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { listProjects } from "@/lib/services/projects"
 import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { uploadCostPlusFile } from "@/lib/services/cost-plus-files"
 import { extractExpenseReceiptFromFile, type ExtractedExpenseReceipt } from "@/lib/services/receipt-extraction"
@@ -11,6 +12,8 @@ import {
   createProjectExpense,
   listCostPlusTabData,
   rejectProjectExpense,
+  replaceProjectExpenseLines,
+  type ProjectExpenseLineInput,
 } from "@/lib/services/cost-plus"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import { syncProjectExpenseToQBO } from "@/lib/services/qbo-sync"
@@ -257,6 +260,21 @@ export async function updateProjectExpenseDetailsAction(
     .eq("id", expenseId)
 
   if (error) throw new Error(`Failed to update expense: ${error.message}`)
+  revalidate(projectId)
+  return listProjectExpensesAction(projectId)
+}
+
+export async function listExpenseProjectsAction(): Promise<{ id: string; name: string }[]> {
+  const projects = await listProjects()
+  return projects.map((project) => ({ id: project.id, name: project.name }))
+}
+
+export async function updateProjectExpenseLinesAction(
+  projectId: string,
+  expenseId: string,
+  lines: ProjectExpenseLineInput[],
+) {
+  await replaceProjectExpenseLines({ expenseId, lines })
   revalidate(projectId)
   return listProjectExpensesAction(projectId)
 }

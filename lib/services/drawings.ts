@@ -211,9 +211,14 @@ function mapDrawingSheet(row: any): DrawingSheet {
   const mediumPath = row.medium_path ?? row.image_medium_path ?? null
   const fullPath = row.full_path ?? row.image_full_path ?? null
   const currentRevision = (row.drawing_revisions as any) ?? null
+  // The optimized list view (drawing_sheets_list_mv) exposes these as flat
+  // columns; the joined query nests them under drawing_revisions.
+  const currentRevisionLabel =
+    currentRevision?.revision_label ?? row.current_revision_label ?? undefined
   const currentRevisionCreator =
     (currentRevision?.app_users as any)?.full_name ??
     (currentRevision?.creator_name as string | undefined) ??
+    (row.current_revision_creator_name as string | undefined) ??
     undefined
 
   return {
@@ -225,7 +230,7 @@ function mapDrawingSheet(row: any): DrawingSheet {
     sheet_title: row.sheet_title ?? undefined,
     discipline: row.discipline ?? undefined,
     current_revision_id: row.current_revision_id ?? undefined,
-    current_revision_label: currentRevision?.revision_label ?? undefined,
+    current_revision_label: currentRevisionLabel,
     current_revision_creator_name: currentRevisionCreator,
     last_modified_by_name: currentRevisionCreator,
     sort_order: row.sort_order ?? 0,
@@ -322,7 +327,7 @@ function mapDrawingSheetVersion(row: any): DrawingSheetVersion {
     drawing_revision_id: row.drawing_revision_id,
     revision_label: revision?.revision_label ?? undefined,
     version_number: revision?.revision_label ?? undefined,
-    creator_name: revision?.creator_name ?? undefined,
+    creator_name: (revision?.app_users as any)?.full_name ?? revision?.creator_name ?? undefined,
     change_description: revision?.notes ?? undefined,
     file_id: row.file_id ?? undefined,
     thumbnail_file_id: row.thumbnail_file_id ?? undefined,
@@ -1280,9 +1285,12 @@ export async function listSheetVersions(
       file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
       thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
       thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
-      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label, creator_name, notes)
+      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(
+        revision_label,
+        notes,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      )
     `)
-
     .eq("org_id", resolvedOrgId)
     .eq("drawing_sheet_id", sheetId)
     .order("created_at", { ascending: false })
@@ -1312,7 +1320,11 @@ export async function listSheetVersionsWithUrls(
       file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
       thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
       thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
-      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(revision_label, creator_name, notes),
+      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(
+        revision_label,
+        notes,
+        app_users!drawing_revisions_created_by_fkey(full_name)
+      ),
       files!drawing_sheet_versions_file_id_fkey(storage_path),
       thumbnail:files!drawing_sheet_versions_thumbnail_file_id_fkey(storage_path)
     `)

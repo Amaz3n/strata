@@ -1,5 +1,18 @@
 import { format } from "date-fns"
 
+/** A single cost-allocation split within an expense (mirrors vendor bill_lines). */
+export interface ProjectExpenseLine {
+  id?: string
+  project_id?: string | null
+  cost_code_id?: string | null
+  cost_code?: { code?: string | null; name?: string | null } | null
+  description?: string | null
+  amount_cents: number
+  qbo_expense_account_id?: string | null
+  qbo_expense_account_name?: string | null
+  sort_order?: number | null
+}
+
 /** Single source of truth for the expense shape used by the table and the workspace. */
 export interface ProjectExpense {
   id: string
@@ -27,6 +40,7 @@ export interface ProjectExpense {
   vendor_company?: { name?: string | null } | null
   cost_code_id?: string | null
   cost_code?: { code?: string | null; name?: string | null } | null
+  lines?: ProjectExpenseLine[]
 }
 
 export const AUTO_QBO_VENDOR = "__auto_qbo_vendor__"

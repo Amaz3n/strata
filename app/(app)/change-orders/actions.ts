@@ -5,11 +5,13 @@ import { revalidatePath } from "next/cache"
 import {
   approveChangeOrder,
   createChangeOrder,
-  getChangeOrderLinkedInvoice,
+  getChangeOrderLinkedInvoices,
   linkInvoiceToChangeOrder,
   listChangeOrders,
   publishChangeOrder,
   unlinkInvoiceFromChangeOrder,
+  updateChangeOrder,
+  deleteChangeOrder,
 } from "@/lib/services/change-orders"
 import { listInvoices } from "@/lib/services/invoices"
 import { requireOrgContext } from "@/lib/services/context"
@@ -108,9 +110,9 @@ export async function listLinkableInvoicesForChangeOrderAction(
   }
 }
 
-export async function getChangeOrderLinkedInvoiceAction(changeOrderId: string) {
+export async function getChangeOrderLinkedInvoicesAction(changeOrderId: string) {
   try {
-    return await getChangeOrderLinkedInvoice({ changeOrderId })
+    return await getChangeOrderLinkedInvoices({ changeOrderId })
   } catch (error) {
     rethrowTypedAuthError(error)
   }
@@ -132,13 +134,40 @@ export async function linkInvoiceToChangeOrderAction(
   }
 }
 
-export async function unlinkInvoiceFromChangeOrderAction(projectId: string, changeOrderId: string) {
+export async function unlinkInvoiceFromChangeOrderAction(projectId: string, changeOrderId: string, invoiceId: string) {
   try {
-    const result = await unlinkInvoiceFromChangeOrder({ changeOrderId })
+    const result = await unlinkInvoiceFromChangeOrder({ changeOrderId, invoiceId })
     revalidatePath("/change-orders")
     revalidatePath(`/projects/${projectId}/change-orders`)
     revalidatePath(`/projects/${projectId}/financials/receivables`)
     return result
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function updateChangeOrderAction(changeOrderId: string, input: unknown) {
+  try {
+    const parsed = changeOrderInputSchema.parse(input)
+    const changeOrder = await updateChangeOrder({ changeOrderId, input: parsed })
+    revalidatePath("/change-orders")
+    if (changeOrder.project_id) {
+      revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+    }
+    return changeOrder
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function deleteChangeOrderAction(changeOrderId: string) {
+  try {
+    const changeOrder = await deleteChangeOrder({ changeOrderId })
+    revalidatePath("/change-orders")
+    if (changeOrder.project_id) {
+      revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+    }
+    return changeOrder
   } catch (error) {
     rethrowTypedAuthError(error)
   }

@@ -3428,7 +3428,16 @@ async function createDailyLogMentions({
 }): Promise<MentionUser[]> {
   // Fetch all active project members so we can both validate client-supplied
   // IDs and resolve @mentions directly from the text.
-  const { data: members, error } = await supabase
+  //
+  // Use a service-role client: the `roles` table is only readable by
+  // service_role (RLS), so under a regular user's request context the
+  // `roles:roles(key)` embed comes back null. That would make every member
+  // look external (isInternalProjectRoleKey(null) === false), so the safety-net
+  // text resolution below would silently mention nobody. The action is already
+  // authorized via requireOrgContext and the query stays scoped by
+  // org_id + project_id, so reading members with elevated privileges is safe.
+  const memberLookup = createServiceSupabaseClient()
+  const { data: members, error } = await memberLookup
     .from("project_members")
     .select("user_id, app_users!inner(id, full_name, email, avatar_url), roles:roles(key)")
     .eq("org_id", orgId)
@@ -3550,7 +3559,6 @@ async function sendDailyLogMentionNotifications({
 
       try {
         const sent = await sendDailyLogMentionEmailNow({
-          supabase,
           orgId,
           userId: user.id,
           title,
@@ -3574,7 +3582,6 @@ async function sendDailyLogMentionNotifications({
 }
 
 async function sendDailyLogMentionEmailNow({
-  supabase,
   orgId,
   userId,
   title,
@@ -3582,7 +3589,6 @@ async function sendDailyLogMentionEmailNow({
   projectId,
   dailyLogId,
 }: {
-  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
   userId: string
   title: string
@@ -3590,7 +3596,17 @@ async function sendDailyLogMentionEmailNow({
   projectId: string
   dailyLogId: string
 }) {
-  const { data: prefs } = await supabase
+  // Read recipient prefs/identity/org with a service-role client. Under a
+  // regular user's request context, RLS blocks reading another user's
+  // `app_users` row (policy: id = auth.uid()) and their
+  // `user_notification_prefs`, so the recipient lookup returns null and this
+  // function throws "Mentioned user email not found". That exception is caught
+  // upstream and the email is pushed onto the hourly outbox cron instead —
+  // i.e. instant send only ever worked for platform admins (who get a
+  // service-role client). The send itself is already authorized via the
+  // surrounding action; we only widen these reads.
+  const db = createServiceSupabaseClient()
+  const { data: prefs } = await db
     .from("user_notification_prefs")
     .select("email_enabled, email_type_settings")
     .eq("org_id", orgId)
@@ -3601,12 +3617,12 @@ async function sendDailyLogMentionEmailNow({
   if (prefs && !isEmailNotificationTypeEnabled(prefs.email_type_settings, "daily_log_mentioned")) return true
 
   const [{ data: recipient, error: recipientError }, { data: org }] = await Promise.all([
-    supabase
+    db
       .from("app_users")
       .select("email, full_name")
       .eq("id", userId)
       .maybeSingle(),
-    supabase
+    db
       .from("orgs")
       .select("name, logo_url, slug")
       .eq("id", orgId)

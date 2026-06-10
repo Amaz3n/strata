@@ -314,6 +314,34 @@ export class QBOClient {
       .map((customer) => mapCustomerOption(customer))
   }
 
+  /**
+   * Every active customer and project (QBO models projects as sub-customers), paged through in full.
+   * Unlike `listCustomers`, which caps at a single 1000-row page, this advances STARTPOSITION until
+   * QBO returns a short page, so an org with thousands of customers/projects surfaces all of them —
+   * used to populate the import project filter from the real QBO list rather than inferring it from
+   * the fetched transactions. `maxResults` is a safety ceiling on total rows (default 10000).
+   */
+  async listAllCustomers(opts?: { maxResults?: number }): Promise<QBOCustomerOption[]> {
+    const hardCap = Math.max(opts?.maxResults ?? 10000, 1)
+    const pageSize = 1000
+    const all: QBOCustomerOption[] = []
+    let startPosition = 1
+    while (all.length < hardCap) {
+      const page = await this.queryEntity<QBOCustomer>("Customer", {
+        whereClause: "Active = true",
+        orderBy: "DisplayName",
+        startPosition,
+        maxResults: Math.min(pageSize, hardCap - all.length),
+      })
+      for (const customer of page) {
+        if (customer.Id && customer.DisplayName) all.push(mapCustomerOption(customer))
+      }
+      if (page.length < pageSize) break
+      startPosition += page.length
+    }
+    return all
+  }
+
   // Server-side typeahead. Empty/short queries return the leading slice of active customers so the
   // picker has something to show on open; non-empty queries do a DisplayName "contains" match in QBO
   // (wildcards on both sides) so searching by a last name or keyword mid-name still finds the customer.

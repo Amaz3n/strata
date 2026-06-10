@@ -1,8 +1,9 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { FormEvent } from "react"
 
+import type { ChangeOrder } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -20,6 +21,7 @@ interface ChangeOrderFormProps {
   onSubmit: (values: ChangeOrderInput, publish: boolean) => Promise<void>
   isSubmitting?: boolean
   isGmpProject?: boolean
+  changeOrder?: ChangeOrder | null
 }
 
 function parseAmountToCents(value: string) {
@@ -41,6 +43,7 @@ export function ChangeOrderForm({
   onSubmit,
   isSubmitting,
   isGmpProject = false,
+  changeOrder,
 }: ChangeOrderFormProps) {
   const [title, setTitle] = useState("")
   const [amount, setAmount] = useState("")
@@ -67,6 +70,25 @@ export function ChangeOrderForm({
     setDaysImpactError(null)
     setNotesError(null)
   }
+
+  useEffect(() => {
+    if (open && changeOrder) {
+      setTitle(changeOrder.title || "")
+      const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
+      setAmount(totalCents > 0 ? (totalCents / 100).toString() : "")
+      setDaysImpact(changeOrder.days_impact != null ? changeOrder.days_impact.toString() : "")
+      setNotes(changeOrder.summary ?? changeOrder.description ?? "")
+
+      const firstLine = changeOrder.lines?.[0]
+      const financialImpact = changeOrder.metadata?.financial_impact as any
+      const classification = firstLine?.gmp_classification ?? "inside_gmp"
+      const impact = financialImpact?.gmp_impact ?? firstLine?.gmp_impact ?? "none"
+      setGmpClassification(classification)
+      setGmpImpact(impact)
+    } else if (open) {
+      reset()
+    }
+  }, [open, changeOrder])
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -105,11 +127,11 @@ export function ChangeOrderForm({
       summary: cleanNotes || cleanTitle,
       description: undefined,
       days_impact: impact,
-      requires_signature: true,
-      tax_rate: 0,
-      markup_percent: 0,
-      status: "draft",
-      client_visible: false,
+      requires_signature: changeOrder ? changeOrder.requires_signature ?? true : true,
+      tax_rate: changeOrder ? changeOrder.totals?.tax_rate ?? 0 : 0,
+      markup_percent: changeOrder ? changeOrder.totals?.markup_percent ?? 0 : 0,
+      status: changeOrder ? changeOrder.status as any : "draft",
+      client_visible: changeOrder ? changeOrder.client_visible ?? false : false,
       lines: [
         {
           description: cleanTitle,
@@ -145,10 +167,12 @@ export function ChangeOrderForm({
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
-            New change order
+            {changeOrder ? "Edit change order" : "New change order"}
           </SheetTitle>
           <SheetDescription className="text-sm text-muted-foreground">
-            Track the change order here. Send your company PDF for execution from Signatures.
+            {changeOrder
+              ? "Update details of your change order."
+              : "Track the change order here. Send your company PDF for execution from Signatures."}
           </SheetDescription>
         </SheetHeader>
 

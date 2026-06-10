@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache"
 import {
   importQboRecords,
   listImportableQboRecords,
+  listQboCustomersForImport,
+  type QboImportCustomerListing,
   type QboImportEntityType,
   type QboImportListing,
   type QboImportResult,
@@ -17,6 +19,11 @@ export async function listQboImportRecordsAction(params?: {
   types?: QboImportEntityType[]
 }): Promise<QboImportListing> {
   return listImportableQboRecords({ sinceDate: params?.sinceDate, types: params?.types })
+}
+
+/** Full QBO customer/project list for the import sheet's project filter. */
+export async function listQboCustomersForImportAction(): Promise<QboImportCustomerListing> {
+  return listQboCustomersForImport()
 }
 
 /** Lightweight project list (id + name) for the per-line "allocate to project" picker. */

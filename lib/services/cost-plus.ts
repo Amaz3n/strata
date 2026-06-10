@@ -16,6 +16,7 @@ import { recordEvent } from "@/lib/services/events"
 import {
   calculateTimeEntryCostCents,
   postJobCostEntryFromProjectExpense,
+  postJobCostEntryFromExpenseLine,
   postJobCostEntryFromTimeEntry,
   postJobCostEntryFromBillLine,
   voidJobCostEntryForSource,
@@ -42,7 +43,7 @@ import {
 } from "@/lib/validation/cost-plus"
 
 type MarkupSource = "line" | "cost_code" | "contract" | "org" | "default"
-type CostSourceType = "vendor_bill_line" | "project_expense" | "time_entry" | "manual_adjustment" | "allowance_overage"
+type CostSourceType = "vendor_bill_line" | "project_expense" | "project_expense_line" | "time_entry" | "manual_adjustment" | "allowance_overage"
 
 export interface BillableCost {
   id: string
@@ -675,6 +676,69 @@ export async function upsertBillableCostFromExpense(args: { expenseId: string; o
   return billable
 }
 
+export async function upsertBillableCostFromExpenseLine(args: { expenseLineId: string; orgId?: string }): Promise<BillableCost> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+  const { data: line, error } = await supabase
+    .from("project_expense_lines")
+    .select(`
+      id, org_id, expense_id, project_id, cost_code_id, description, amount_cents,
+      cost_code:cost_codes(id, category, is_reimbursable_default),
+      expense:project_expenses(id, org_id, project_id, expense_date, status, is_billable, markup_percent_override, vendor_company_id, vendor_name_text, description, receipt_file_id)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", args.expenseLineId)
+    .maybeSingle()
+
+  if (error || !line) throw new Error("Expense split not found")
+  const expense = (line as any).expense
+  if (!expense) throw new Error("Expense split is missing its expense")
+  if (expense.status !== "approved") throw new Error("Expense must be approved before it enters the ledger")
+  const lineProjectId = (line as any).project_id ?? expense.project_id
+  if (!lineProjectId) throw new Error("Expense split is missing project context")
+
+  const contract = await getProjectCostContract(supabase, resolvedOrgId, lineProjectId)
+  if (!isCostPlusContract(contract)) throw new Error("Project contract is not cost-plus or T&M")
+  assertCostSourceCanEnterBillableLedger({
+    billingModel: contract.contract_type === "time_materials" ? "time_and_materials" : contract.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent",
+    sourceType: "project_expense",
+    sourceStatus: String(expense.status),
+  })
+
+  const costCents = Number(line.amount_cents ?? 0)
+  const markup = await resolveMarkupPercent({
+    supabase,
+    orgId: resolvedOrgId,
+    contractId: contract.id,
+    costCodeId: line.cost_code_id ?? null,
+    costCodeCategory: (line as any).cost_code?.category ?? null,
+    occurredOn: new Date(expense.expense_date),
+    lineOverride: expense.markup_percent_override,
+  })
+  const isBillable = expense.is_billable !== false && (line as any).cost_code?.is_reimbursable_default !== false
+
+  return insertOrReturnBillableCost(
+    supabase,
+    resolvedOrgId,
+    {
+      org_id: resolvedOrgId,
+      project_id: lineProjectId,
+      cost_code_id: line.cost_code_id ?? null,
+      source_type: "project_expense_line",
+      source_id: line.id,
+      source_company_id: expense.vendor_company_id ?? null,
+      occurred_on: expense.expense_date,
+      description: line.description || expense.description || expense.vendor_name_text || "Project expense",
+      cost_cents: costCents,
+      markup_percent_resolved: markup.percent,
+      markup_cents: calculateMarkupCents(costCents, markup.percent),
+      is_billable: isBillable,
+      status: isBillable ? "open" : "excluded",
+      metadata: { markup_source: markup.source, expense_id: expense.id, receipt_file_id: expense.receipt_file_id ?? null },
+    },
+    "project_expense_line",
+  )
+}
+
 export async function upsertBillableCostFromTimeEntry(args: { timeEntryId: string; orgId?: string }): Promise<BillableCost> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
   const { data: entry, error } = await supabase
@@ -782,6 +846,33 @@ export async function propagateApprovalToLedger(args: {
       .maybeSingle()
 
     if (error || !expense) throw new Error("Expense not found")
+
+    const { data: lines, error: linesError } = await supabase
+      .from("project_expense_lines")
+      .select("id, project_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("expense_id", args.sourceId)
+      .order("sort_order", { ascending: true })
+    if (linesError) throw new Error(`Failed to load expense splits: ${linesError.message}`)
+
+    if ((lines ?? []).length > 0) {
+      // Split expense: post one ledger row per line, resolving the contract per the
+      // line's project so cross-project allocations bill against the right contract.
+      const contractByProject = new Map<string, boolean>()
+      for (const line of lines!) {
+        const projectId = line.project_id ?? expense.project_id
+        if (!contractByProject.has(projectId)) {
+          const contract = await getProjectCostContract(supabase, resolvedOrgId, projectId)
+          contractByProject.set(projectId, isCostPlusContract(contract))
+        }
+        if (contractByProject.get(projectId)) {
+          await upsertBillableCostFromExpenseLine({ expenseLineId: line.id, orgId: resolvedOrgId })
+        }
+        await postJobCostEntryFromExpenseLine({ expenseLineId: line.id, orgId: resolvedOrgId })
+      }
+      return
+    }
+
     const contract = await getProjectCostContract(supabase, resolvedOrgId, expense.project_id)
     if (isCostPlusContract(contract)) {
       await upsertBillableCostFromExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
@@ -1135,6 +1226,205 @@ export async function approveTimeEntryByToken(token: string) {
   return data
 }
 
+export interface ProjectExpenseLineInput {
+  project_id?: string | null
+  cost_code_id?: string | null
+  description?: string | null
+  amount_cents: number
+  qbo_expense_account_id?: string | null
+  qbo_expense_account_name?: string | null
+}
+
+/**
+ * Replace the cost-allocation splits on an expense (mirrors replaceBillLineCoding).
+ * Lines must sum to the expense total (amount + tax). Passing an empty array clears
+ * the splits and reverts the expense to its single-line behaviour.
+ */
+export async function replaceProjectExpenseLines(args: {
+  expenseId: string
+  lines: ProjectExpenseLineInput[]
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(args.orgId)
+
+  const { data: expense, error: expenseError } = await supabase
+    .from("project_expenses")
+    .select("id, project_id, amount_cents, tax_cents, status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", args.expenseId)
+    .maybeSingle()
+  if (expenseError || !expense) throw new Error("Expense not found")
+
+  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: expense.project_id, permission: "bill.write" })
+
+  // Capture the previous splits up-front: if the expense already posted to the cost
+  // ledger we must void those rows and re-post against the new allocation.
+  const { data: priorLines } = await supabase
+    .from("project_expense_lines")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("expense_id", args.expenseId)
+  const priorLineIds = (priorLines ?? []).map((line) => line.id as string)
+  const alreadyPosted = ["approved", "locked"].includes(String(expense.status))
+
+  if (alreadyPosted) {
+    // Block edits that would rewrite a cost that's already been billed on an invoice.
+    const billed = await supabase
+      .from("billable_costs")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .not("invoice_id", "is", null)
+      .or(
+        [
+          `and(source_type.eq.project_expense,source_id.eq.${args.expenseId})`,
+          priorLineIds.length > 0 ? `and(source_type.eq.project_expense_line,source_id.in.(${priorLineIds.join(",")}))` : null,
+        ]
+          .filter(Boolean)
+          .join(","),
+      )
+      .limit(1)
+    if ((billed.data ?? []).length > 0) {
+      throw new Error("This expense has costs already billed on an invoice. Remove them from the invoice before changing the split.")
+    }
+  }
+
+  const lines = args.lines ?? []
+  if (lines.length > 0) {
+    const totalCents = Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0)
+    const allocated = lines.reduce((sum, line) => sum + Math.round(Number(line.amount_cents ?? 0)), 0)
+    if (allocated !== totalCents) {
+      throw new Error(`Splits must total ${(totalCents / 100).toFixed(2)} (currently ${(allocated / 100).toFixed(2)})`)
+    }
+
+    const costCodeIds = Array.from(
+      new Set(lines.map((line) => line.cost_code_id).filter((id): id is string => typeof id === "string" && id.length > 0)),
+    )
+    if (costCodeIds.length > 0) {
+      const { data: costCodes, error: costCodeError } = await supabase
+        .from("cost_codes")
+        .select("id")
+        .eq("org_id", resolvedOrgId)
+        .in("id", costCodeIds)
+      if (costCodeError || (costCodes ?? []).length !== costCodeIds.length) {
+        throw new Error("Cost code not found")
+      }
+    }
+  }
+
+  const { error: deleteError } = await supabase
+    .from("project_expense_lines")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("expense_id", args.expenseId)
+  if (deleteError) throw new Error(`Failed to update expense splits: ${deleteError.message}`)
+
+  if (lines.length > 0) {
+    const rows = lines.map((line, index) => ({
+      org_id: resolvedOrgId,
+      expense_id: args.expenseId,
+      project_id: line.project_id ?? expense.project_id,
+      cost_code_id: line.cost_code_id ?? null,
+      description: line.description?.trim() || null,
+      amount_cents: Math.round(Number(line.amount_cents ?? 0)),
+      qbo_expense_account_id: line.qbo_expense_account_id ?? null,
+      qbo_expense_account_name: line.qbo_expense_account_name ?? null,
+      sort_order: index,
+    }))
+    const { error: insertError } = await supabase.from("project_expense_lines").insert(rows)
+    if (insertError) throw new Error(`Failed to update expense splits: ${insertError.message}`)
+
+    // Keep the parent's primary coding coherent with the first split so single-line
+    // consumers (budget rollups, QBO fallbacks) still resolve sensibly.
+    const first = rows[0]
+    await supabase
+      .from("project_expenses")
+      .update({
+        cost_code_id: first.cost_code_id,
+        qbo_expense_account_id: first.qbo_expense_account_id,
+        qbo_expense_account_name: first.qbo_expense_account_name,
+      })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", args.expenseId)
+  }
+
+  // If the expense has already entered the cost ledger, re-post it against the new
+  // allocation so budget/WIP and cost-plus billable costs reflect the split immediately.
+  if (alreadyPosted) {
+    await resyncApprovedExpenseLedger(supabase, resolvedOrgId, {
+      expenseId: args.expenseId,
+      expenseProjectId: expense.project_id,
+      priorLineIds,
+      hasNewLines: lines.length > 0,
+      // Billable costs only post for `approved` expenses; `locked` ones are past that stage.
+      canPostBillable: expense.status === "approved",
+    })
+  }
+}
+
+/** Void the prior cost-ledger rows for an approved expense and re-post the current allocation. */
+async function resyncApprovedExpenseLedger(
+  supabase: SupabaseClient,
+  orgId: string,
+  args: { expenseId: string; expenseProjectId: string; priorLineIds: string[]; hasNewLines: boolean; canPostBillable: boolean },
+) {
+  // 1. Void the previous ledger rows (whole-expense + every prior split).
+  await voidJobCostEntryForSource({ sourceType: "project_expense", sourceId: args.expenseId, orgId })
+  await supabase
+    .from("billable_costs")
+    .update({ status: "voided" })
+    .eq("org_id", orgId)
+    .eq("source_type", "project_expense")
+    .eq("source_id", args.expenseId)
+    .is("invoice_id", null)
+
+  for (const lineId of args.priorLineIds) {
+    await voidJobCostEntryForSource({ sourceType: "project_expense_line", sourceId: lineId, orgId })
+  }
+  if (args.priorLineIds.length > 0) {
+    await supabase
+      .from("billable_costs")
+      .update({ status: "voided" })
+      .eq("org_id", orgId)
+      .eq("source_type", "project_expense_line")
+      .in("source_id", args.priorLineIds)
+      .is("invoice_id", null)
+  }
+
+  // 2. Re-post against the new allocation, resolving each project's contract once.
+  const contractCostPlusByProject = new Map<string, boolean>()
+  const isCostPlusProject = async (projectId: string) => {
+    if (!contractCostPlusByProject.has(projectId)) {
+      const contract = await getProjectCostContract(supabase, orgId, projectId)
+      contractCostPlusByProject.set(projectId, isCostPlusContract(contract))
+    }
+    return contractCostPlusByProject.get(projectId)!
+  }
+
+  if (args.hasNewLines) {
+    await supabase.from("project_expenses").update({ billable_cost_id: null }).eq("org_id", orgId).eq("id", args.expenseId)
+    const { data: newLines } = await supabase
+      .from("project_expense_lines")
+      .select("id, project_id")
+      .eq("org_id", orgId)
+      .eq("expense_id", args.expenseId)
+      .order("sort_order", { ascending: true })
+    for (const line of newLines ?? []) {
+      const projectId = line.project_id ?? args.expenseProjectId
+      if (args.canPostBillable && (await isCostPlusProject(projectId))) {
+        await upsertBillableCostFromExpenseLine({ expenseLineId: line.id, orgId })
+      }
+      await postJobCostEntryFromExpenseLine({ expenseLineId: line.id, orgId })
+    }
+    return
+  }
+
+  // Collapsed back to a single allocation: re-post the whole-expense ledger rows.
+  if (args.canPostBillable && (await isCostPlusProject(args.expenseProjectId))) {
+    await upsertBillableCostFromExpense({ expenseId: args.expenseId, orgId })
+  }
+  await postJobCostEntryFromProjectExpense({ expenseId: args.expenseId, orgId })
+}
+
 export async function createProjectExpense(input: ProjectExpenseInput, orgId?: string) {
   const parsed = projectExpenseInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -1228,6 +1518,14 @@ export async function rejectProjectExpense(expenseId: string, input: { rejection
   await recordEvent({ orgId: resolvedOrgId, eventType: "expense_rejected", entityType: "project_expense", entityId: data.id, payload: { project_id: data.project_id } })
   if (["approved", "locked"].includes(String(before.status))) {
     await voidJobCostEntryForSource({ sourceType: "project_expense", sourceId: data.id, orgId: resolvedOrgId })
+    const { data: lines } = await supabase
+      .from("project_expense_lines")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("expense_id", data.id)
+    for (const line of lines ?? []) {
+      await voidJobCostEntryForSource({ sourceType: "project_expense_line", sourceId: line.id, orgId: resolvedOrgId })
+    }
   }
   return data
 }
@@ -1325,10 +1623,28 @@ export async function listCostPlusTabData(projectId: string, orgId?: string) {
   if (timeEntries.error) throw new Error(`Failed to load time entries: ${timeEntries.error.message}`)
   if (expenses.error) throw new Error(`Failed to load expenses: ${expenses.error.message}`)
 
+  const expenseRows = expenses.data ?? []
+  const expenseIds = expenseRows.map((expense) => expense.id).filter(Boolean)
+  const linesByExpense = new Map<string, any[]>()
+  if (expenseIds.length > 0) {
+    const { data: lineRows, error: lineError } = await supabase
+      .from("project_expense_lines")
+      .select("*, cost_code:cost_codes(code, name)")
+      .eq("org_id", resolvedOrgId)
+      .in("expense_id", expenseIds)
+      .order("sort_order", { ascending: true })
+    if (lineError) throw new Error(`Failed to load expense lines: ${lineError.message}`)
+    for (const line of lineRows ?? []) {
+      const existing = linesByExpense.get(line.expense_id)
+      if (existing) existing.push(line)
+      else linesByExpense.set(line.expense_id, [line])
+    }
+  }
+
   return {
     billableCosts: (billableCosts.data ?? []).map(mapBillableCost),
     timeEntries: timeEntries.data ?? [],
-    expenses: expenses.data ?? [],
+    expenses: expenseRows.map((expense) => ({ ...expense, lines: linesByExpense.get(expense.id) ?? [] })),
     gmpSnapshot,
   }
 }

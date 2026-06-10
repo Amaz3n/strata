@@ -8,7 +8,12 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import type { ChangeOrder, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
-import { createChangeOrderAction } from "@/app/(app)/change-orders/actions"
+import {
+  createChangeOrderAction,
+  updateChangeOrderAction,
+  deleteChangeOrderAction,
+} from "@/app/(app)/change-orders/actions"
+import { Pencil, Trash2 } from "lucide-react"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
@@ -98,9 +103,10 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
   )
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [searchTerm, setSearchTerm] = useState("")
-  const [sheetOpen, setSheetOpen] = useState(false)
+const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
   const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(null)
+  const [editingChangeOrder, setEditingChangeOrder] = useState<ChangeOrder | null>(null)
   const [signatureOpen, setSignatureOpen] = useState(false)
   const [signatureSource, setSignatureSource] = useState<EnvelopeWizardSourceEntity | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -152,18 +158,57 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
     })
   }, [filterProjectId, items, projectLookup, searchTerm, statusFilter])
 
-  async function handleCreate(values: ChangeOrderInput) {
+  const handleNewChangeOrder = () => {
+    setEditingChangeOrder(null)
+    setSheetOpen(true)
+  }
+
+  async function handleSubmit(values: ChangeOrderInput) {
     startTransition(async () => {
       try {
-        const created = await createChangeOrderAction(values)
-        setItems((prev) => [created, ...prev])
-        setSheetOpen(false)
-        toast.success("Change order saved", {
-          description: "Send your company document for signature when ready.",
-        })
+        if (editingChangeOrder) {
+          const updated = await updateChangeOrderAction(editingChangeOrder.id, values)
+          setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+          if (selectedChangeOrder?.id === updated.id) {
+            setSelectedChangeOrder(updated)
+          }
+          setSheetOpen(false)
+          setEditingChangeOrder(null)
+          toast.success("Change order updated")
+        } else {
+          const created = await createChangeOrderAction(values)
+          setItems((prev) => [created, ...prev])
+          setSheetOpen(false)
+          toast.success("Change order saved", {
+            description: "Send your company document for signature when ready.",
+          })
+        }
       } catch (error: any) {
         console.error(error)
-        toast.error("Could not save change order", { description: error?.message ?? "Please try again." })
+        toast.error(
+          editingChangeOrder ? "Could not update change order" : "Could not save change order",
+          { description: error?.message ?? "Please try again." }
+        )
+      }
+    })
+  }
+
+  async function handleDelete(changeOrder: ChangeOrder) {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${changeOrder.title}"? This action cannot be undone.`
+    )
+    if (!confirmed) return
+
+    startTransition(async () => {
+      try {
+        await deleteChangeOrderAction(changeOrder.id)
+        setItems((prev) => prev.filter((item) => item.id !== changeOrder.id))
+        toast.success("Change order deleted")
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Could not delete change order", {
+          description: error?.message ?? "Please try again.",
+        })
       }
     })
   }
@@ -211,7 +256,7 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
             </div>
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
-            <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+            <Button onClick={handleNewChangeOrder} className="w-full sm:w-auto">
               <Plus className="h-4 w-4 mr-2" />
               New change order
             </Button>
@@ -279,7 +324,7 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                       <p className="font-medium">No change orders yet</p>
                       <p className="text-sm">Create your first change order to get started.</p>
                     </div>
-                    <Button onClick={() => setSheetOpen(true)}>
+                    <Button onClick={handleNewChangeOrder}>
                       <Plus className="mr-2 h-4 w-4" />
                       Create change order
                     </Button>
@@ -386,9 +431,27 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                               <DropdownMenuItem onClick={() => handleRowClick(changeOrder)}>
                                 View details
                               </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setEditingChangeOrder(changeOrder)
+                                  setSheetOpen(true)
+                                }}
+                                disabled={changeOrder.status === "approved" || changeOrder.esign_status === "sent" || changeOrder.esign_status === "signed"}
+                              >
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Edit details
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleStartSignature(changeOrder)}>
                                 <PenLine className="mr-2 h-4 w-4" />
                                 Send for signature
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => handleDelete(changeOrder)}
+                                disabled={changeOrder.status === "approved" || changeOrder.esign_status === "sent" || changeOrder.esign_status === "signed"}
+                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -410,7 +473,7 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
                           <p className="text-sm text-muted-foreground mt-0.5">Create your first change order to get started.</p>
                         </div>
                         <div className="mt-2">
-                          <Button variant="default" size="sm" onClick={() => setSheetOpen(true)}>
+                          <Button variant="default" size="sm" onClick={handleNewChangeOrder}>
                             <Plus className="mr-2 h-4 w-4" />
                             Create change order
                           </Button>
@@ -439,11 +502,15 @@ export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter }
 
       <ChangeOrderForm
         open={sheetOpen}
-        onOpenChange={setSheetOpen}
+        onOpenChange={(open) => {
+          setSheetOpen(open)
+          if (!open) setEditingChangeOrder(null)
+        }}
         projectId={formProjectId}
-        onSubmit={handleCreate}
+        onSubmit={handleSubmit}
         isSubmitting={isPending}
         isGmpProject={isGmpProject}
+        changeOrder={editingChangeOrder}
       />
 
       <ChangeOrderDetailSheet

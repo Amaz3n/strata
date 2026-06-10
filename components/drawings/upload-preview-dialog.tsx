@@ -187,7 +187,7 @@ export function UploadPreviewDialog({
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                            className="md:opacity-0 transition-opacity md:group-hover:opacity-100 shrink-0"
                             onClick={() => setEditingSheet(sheet)}
                           >
                             <Pencil className="h-3 w-3" />

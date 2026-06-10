@@ -1039,9 +1039,11 @@ export async function linkInvoiceToChangeOrder({
  */
 export async function unlinkInvoiceFromChangeOrder({
   changeOrderId,
+  invoiceId,
   orgId,
 }: {
   changeOrderId: string
+  invoiceId: string
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -1066,6 +1068,7 @@ export async function unlinkInvoiceFromChangeOrder({
     .from("invoices")
     .select("id, metadata")
     .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
     .eq("project_id", changeOrder.project_id)
     .eq("metadata->>source_change_order_id", changeOrderId)
     .neq("status", "void")
@@ -1129,10 +1132,10 @@ export async function unlinkInvoiceFromChangeOrder({
 }
 
 /**
- * The invoice currently linked to a change order (via metadata), if any.
+ * The invoices currently linked to a change order (via metadata), if any.
  * Returns the invoice id + a few display fields for the detail sheet.
  */
-export async function getChangeOrderLinkedInvoice({
+export async function getChangeOrderLinkedInvoices({
   changeOrderId,
   orgId,
 }: {
@@ -1141,17 +1144,284 @@ export async function getChangeOrderLinkedInvoice({
 }) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
-  const { data: invoice, error } = await supabase
+  const { data: invoices, error } = await supabase
     .from("invoices")
     .select("id, invoice_number, title, status, total_cents, balance_due_cents, issue_date")
     .eq("org_id", resolvedOrgId)
     .eq("metadata->>source_change_order_id", changeOrderId)
     .neq("status", "void")
-    .maybeSingle()
 
   if (error) {
-    throw new Error(`Failed to load linked invoice: ${error.message}`)
+    throw new Error(`Failed to load linked invoices: ${error.message}`)
   }
 
-  return invoice ?? null
+  return invoices ?? []
 }
+
+export async function updateChangeOrder({
+  changeOrderId,
+  input,
+  orgId,
+}: {
+  changeOrderId: string
+  input: ChangeOrderInput
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) {
+    throw new Error("Change order not found")
+  }
+
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+
+  if (existing.status === "approved") {
+    throw new Error("Approved change orders cannot be edited.")
+  }
+
+  const normalizedLines = normalizeLines(input.lines)
+  const totals = calculateTotals(input.lines, input.tax_rate, input.markup_percent)
+  const status = input.client_visible ? "pending" : input.status ?? "draft"
+
+  const payload = {
+    title: input.title,
+    description: input.description ?? null,
+    status,
+    total_cents: totals.total_cents,
+    summary: input.summary,
+    days_impact: input.days_impact ?? null,
+    requires_signature: input.requires_signature ?? true,
+    client_visible: input.client_visible ?? false,
+    metadata: {
+      ...(existing.metadata ?? {}),
+      lines: normalizedLines,
+      totals,
+      tax_rate: input.tax_rate,
+      markup_percent: input.markup_percent,
+      updated_by: userId,
+    },
+  }
+
+  const { data, error } = await supabase
+    .from("change_orders")
+    .update(payload)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+    .select(
+      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+    )
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update change order: ${error?.message}`)
+  }
+
+  // delete old lines and insert new ones
+  const { error: deleteError } = await supabase
+    .from("change_order_lines")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("change_order_id", changeOrderId)
+
+  if (deleteError) {
+    throw new Error(`Failed to delete change order lines: ${deleteError.message}`)
+  }
+
+  const linePayload = normalizedLines.map((line, idx) => ({
+    org_id: resolvedOrgId,
+    change_order_id: data.id,
+    cost_code_id: line.cost_code_id ?? null,
+    description: line.description,
+    quantity: line.quantity,
+    unit: line.unit ?? "unit",
+    unit_cost_cents: line.unit_cost_cents,
+    gmp_classification: line.gmp_classification ?? "inside_gmp",
+    gmp_impact: line.gmp_impact ?? "none",
+    gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
+    sort_order: idx,
+    metadata: {
+      allowance_cents: line.allowance_cents ?? 0,
+      allowance_draw_cents: line.allowance_cents ?? 0,
+      budget_revision_cents: calculateLineBudgetRevisionCents(line),
+      financial_impact_type: line.allowance_cents && line.allowance_cents > 0 ? "allowance_plus_budget_revision" : "budget_revision",
+      taxable: line.taxable ?? true,
+      gmp_classification: line.gmp_classification ?? "inside_gmp",
+      gmp_impact: line.gmp_impact ?? "none",
+      gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
+    },
+  }))
+
+  if (linePayload.length > 0) {
+    const { error: lineError } = await supabase.from("change_order_lines").insert(linePayload)
+    if (lineError) {
+      throw new Error(`Failed to update change order lines: ${lineError.message}`)
+    }
+  }
+
+  // Update linked invoice details if any exists, keeping sync
+  const { data: invoices, error: invoicesError } = await supabase
+    .from("invoices")
+    .select("id, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", data.project_id)
+    .eq("metadata->>source_change_order_id", changeOrderId)
+    .neq("status", "void")
+
+  if (!invoicesError && invoices && invoices.length > 0) {
+    for (const invoice of invoices) {
+      const metadata = (invoice.metadata ?? {}) as Record<string, any>
+      const nextMetadata = {
+        ...metadata,
+        change_order_title: data.title,
+        change_order_total_cents: data.total_cents,
+        change_order_status: data.status,
+      }
+      await supabase
+        .from("invoices")
+        .update({ metadata: nextMetadata })
+        .eq("org_id", resolvedOrgId)
+        .eq("id", invoice.id)
+    }
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_updated",
+    entityType: "change_order",
+    entityId: data.id,
+    payload: { title: input.title, project_id: data.project_id, total_cents: totals.total_cents },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "change_order",
+    entityId: data.id,
+    before: existing as any,
+    after: { ...data, lines: linePayload } as any,
+  })
+
+  return mapChangeOrderRow(data as ChangeOrderRow)
+}
+
+export async function deleteChangeOrder({
+  changeOrderId,
+  orgId,
+}: {
+  changeOrderId: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) {
+    throw new Error("Change order not found")
+  }
+
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+
+  if (existing.status === "approved") {
+    throw new Error("Approved change orders cannot be deleted.")
+  }
+
+  if (existing.esign_status === "sent" || existing.esign_status === "signed") {
+    throw new Error("Change orders with active or executed e-signatures cannot be deleted.")
+  }
+
+  // Unlink invoices if any
+  const { data: invoices, error: invoicesError } = await supabase
+    .from("invoices")
+    .select("id, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", existing.project_id)
+    .eq("metadata->>source_change_order_id", changeOrderId)
+    .neq("status", "void")
+
+  if (!invoicesError && invoices && invoices.length > 0) {
+    for (const invoice of invoices) {
+      const metadata = (invoice.metadata ?? {}) as Record<string, any>
+      const {
+        source_change_order_id: _sourceChangeOrderId,
+        change_order_id: _changeOrderId,
+        change_order_title: _changeOrderTitle,
+        change_order_total_cents: _changeOrderTotalCents,
+        change_order_status: _changeOrderStatus,
+        change_order_approved_at: _changeOrderApprovedAt,
+        change_order_linked_at: _changeOrderLinkedAt,
+        change_order_linked_manually: _changeOrderLinkedManually,
+        ...rest
+      } = metadata
+      const nextMetadata = {
+        ...rest,
+        source_type: metadata.source_type === "change_order" ? "manual" : metadata.source_type,
+      }
+      await supabase
+        .from("invoices")
+        .update({ metadata: nextMetadata })
+        .eq("org_id", resolvedOrgId)
+        .eq("id", invoice.id)
+    }
+  }
+
+  // Clean up change_order_lines
+  const { error: lineError } = await supabase
+    .from("change_order_lines")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("change_order_id", changeOrderId)
+
+  if (lineError) {
+    throw new Error(`Failed to delete change order lines: ${lineError.message}`)
+  }
+
+  // Delete change order
+  const { error: deleteError } = await supabase
+    .from("change_orders")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+
+  if (deleteError) {
+    throw new Error(`Failed to delete change order: ${deleteError.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_deleted",
+    entityType: "change_order",
+    entityId: changeOrderId,
+    payload: { title: existing.title, project_id: existing.project_id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "change_order",
+    entityId: changeOrderId,
+    before: existing as any,
+  })
+
+  return existing
+}
+

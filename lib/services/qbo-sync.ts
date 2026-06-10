@@ -675,7 +675,8 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
     const customer = await getOrCreateProjectCustomer({ client, supabase, orgId, projectId: typedExpense.project_id, projectName: typedExpense.project?.name ?? null })
     const totalAmount = (Number(typedExpense.amount_cents ?? 0) + Number(typedExpense.tax_cents ?? 0)) / 100
     const lineDescription = typedExpense.description?.trim() || vendorName
-    const classRef = resolveQBOClassRef(
+    const billableStatus = typedExpense.is_billable === false ? "NotBillable" : "Billable"
+    const parentClassRef = resolveQBOClassRef(
       {
         ...((typedExpense.metadata as Record<string, any> | null) ?? {}),
         qbo_class_id: typedExpense.qbo_class_id,
@@ -683,24 +684,77 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
       },
       typedExpense.project,
     )
-    const line = {
-      DetailType: "AccountBasedExpenseLineDetail",
-      Amount: totalAmount,
-      Description: lineDescription,
-      AccountBasedExpenseLineDetail: {
-        AccountRef: {
-          value: typedExpense.qbo_expense_account_id,
-          name: typedExpense.qbo_expense_account_name ?? undefined,
+
+    // When the expense is split, emit one QBO expense line per allocation, resolving
+    // the customer/class per the line's project so cross-project splits land correctly.
+    const { data: splitLines } = await supabase
+      .from("project_expense_lines")
+      .select("id, project_id, cost_code_id, description, amount_cents, qbo_expense_account_id, qbo_expense_account_name")
+      .eq("org_id", orgId)
+      .eq("expense_id", expenseId)
+      .order("sort_order", { ascending: true })
+
+    let qboLines: any[]
+    if ((splitLines ?? []).length > 0) {
+      const projectIds = Array.from(
+        new Set((splitLines ?? []).map((line) => line.project_id ?? typedExpense.project_id).filter(Boolean) as string[]),
+      )
+      const { data: projectInfos } = await supabase
+        .from("projects")
+        .select("id, name, qbo_class_id, qbo_class_name")
+        .eq("org_id", orgId)
+        .in("id", projectIds)
+      const projectInfoById = new Map((projectInfos ?? []).map((p) => [p.id, p]))
+      const customerByProject = new Map<string, Awaited<ReturnType<typeof getOrCreateProjectCustomer>>>()
+      for (const pid of projectIds) {
+        customerByProject.set(
+          pid,
+          pid === typedExpense.project_id
+            ? customer
+            : await getOrCreateProjectCustomer({ client, supabase, orgId, projectId: pid, projectName: projectInfoById.get(pid)?.name ?? null }),
+        )
+      }
+
+      qboLines = (splitLines ?? []).map((line) => {
+        const lineProjectId = line.project_id ?? typedExpense.project_id
+        const lineCustomer = customerByProject.get(lineProjectId) ?? customer
+        const lineProject = projectInfoById.get(lineProjectId) ?? typedExpense.project
+        const lineClassRef = resolveQBOClassRef(
+          { qbo_class_id: lineProject?.qbo_class_id, qbo_class_name: lineProject?.qbo_class_name },
+          lineProject,
+        )
+        return {
+          DetailType: "AccountBasedExpenseLineDetail",
+          Amount: Number(line.amount_cents ?? 0) / 100,
+          Description: line.description?.trim() || lineDescription,
+          AccountBasedExpenseLineDetail: {
+            AccountRef: {
+              value: line.qbo_expense_account_id || typedExpense.qbo_expense_account_id,
+              name: line.qbo_expense_account_name ?? typedExpense.qbo_expense_account_name ?? undefined,
+            },
+            CustomerRef: lineCustomer?.Id ? { value: lineCustomer.Id, name: lineCustomer.DisplayName } : undefined,
+            BillableStatus: billableStatus,
+            ClassRef: lineClassRef ?? parentClassRef,
+          },
+        }
+      })
+    } else {
+      qboLines = [
+        {
+          DetailType: "AccountBasedExpenseLineDetail",
+          Amount: totalAmount,
+          Description: lineDescription,
+          AccountBasedExpenseLineDetail: {
+            AccountRef: {
+              value: typedExpense.qbo_expense_account_id,
+              name: typedExpense.qbo_expense_account_name ?? undefined,
+            },
+            CustomerRef: customer?.Id ? { value: customer.Id, name: customer.DisplayName } : undefined,
+            BillableStatus: billableStatus,
+            ClassRef: parentClassRef,
+          },
         },
-        CustomerRef: customer?.Id
-          ? {
-              value: customer.Id,
-              name: customer.DisplayName,
-            }
-          : undefined,
-        BillableStatus: typedExpense.is_billable === false ? "NotBillable" : "Billable",
-        ClassRef: classRef,
-      },
+      ]
     }
 
     const { data: existingSync } = await supabase
@@ -716,7 +770,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
       SyncToken: existingSync?.qbo_sync_token ?? undefined,
       TxnDate: typedExpense.expense_date,
       PrivateNote: typedExpense.description ?? undefined,
-      Line: [line],
+      Line: qboLines,
     }
 
     const result =

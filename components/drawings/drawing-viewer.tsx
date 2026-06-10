@@ -34,6 +34,7 @@ import {
   Layers,
   RotateCcw,
   GitCompare,
+  History,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -306,7 +307,8 @@ export function DrawingViewer({
   imageFullUrl,
   imageWidth,
   imageHeight,
-}: DrawingViewerProps) {
+  initialVersionsPanelOpen = false,
+}: DrawingViewerProps & { initialVersionsPanelOpen?: boolean }) {
   // Device detection
   const isMobile = useIsMobile()
   const isTouch = useIsTouchDevice()
@@ -405,7 +407,7 @@ export function DrawingViewer({
   const [sheetListOpen, setSheetListOpen] = useState(false)
   const [sheetListQuery, setSheetListQuery] = useState("")
   const [markupMenuOpen, setMarkupMenuOpen] = useState(false)
-  const [versionsPanelOpen, setVersionsPanelOpen] = useState(false)
+  const [versionsPanelOpen, setVersionsPanelOpen] = useState(initialVersionsPanelOpen)
   const [compareSelection, setCompareSelection] = useState<string[]>([])
 
   // Stage 2: Comparison mode state
@@ -1759,14 +1761,14 @@ export function DrawingViewer({
               <TooltipTrigger asChild>
                 <Button
                   variant={versionsPanelOpen ? "secondary" : "ghost"}
-                  size="icon"
-                  className="h-9 w-9"
+                  className="h-9 px-3 gap-2"
                   onClick={() => setVersionsPanelOpen((v) => !v)}
                 >
-                  <GitCompare className="h-4 w-4" />
+                  <History className="h-4 w-4" />
+                  <span className="hidden sm:inline">Versions</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">Versions</TooltipContent>
+              <TooltipContent side="bottom">Version History</TooltipContent>
             </Tooltip>
 
             <Tooltip>
