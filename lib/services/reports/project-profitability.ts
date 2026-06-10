@@ -33,6 +33,7 @@ export type ProjectProfitabilityReport = {
   project_id: string
   project_name: string
   org_name: string | null
+  org_logo_url: string | null
   basis: ProfitabilityBasis
   from: string | null
   to: string | null
@@ -131,6 +132,7 @@ export async function getProjectProfitabilityReport({
 
   const projectName = projectResult.data.name as string
   const orgName = (orgBilling?.org?.name as string | undefined) ?? null
+  const orgLogoUrl = (orgBilling?.org?.logo_url as string | undefined) ?? null
 
   // ---- Income ----------------------------------------------------------------
   const incomeBySource = new Map<string, { label: string; amount_cents: number }>()
@@ -318,6 +320,7 @@ export async function getProjectProfitabilityReport({
     project_id: projectId,
     project_name: projectName,
     org_name: orgName,
+    org_logo_url: orgLogoUrl,
     basis,
     from,
     to,

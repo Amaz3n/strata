@@ -25,6 +25,71 @@ export type AppBreadcrumbItem = {
   href?: string
 }
 
+/**
+ * Renders a breadcrumb label that compacts long text (e.g. long project names)
+ * with a fade-out edge instead of wrapping to a second line. On hover the text
+ * slides horizontally within its fixed box to reveal the full name, keeping the
+ * header on a single line.
+ */
+function SlidingLabel({ label, className }: { label: string; className?: string }) {
+  const outerRef = React.useRef<HTMLSpanElement>(null)
+  const innerRef = React.useRef<HTMLSpanElement>(null)
+  const [overflow, setOverflow] = React.useState(0)
+
+  React.useEffect(() => {
+    const outer = outerRef.current
+    const inner = innerRef.current
+    if (!outer || !inner) return
+
+    const measure = () => {
+      setOverflow(Math.max(0, inner.scrollWidth - outer.clientWidth))
+    }
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(outer)
+    observer.observe(inner)
+    return () => observer.disconnect()
+  }, [label])
+
+  const isTruncated = overflow > 0
+  // Reveal the very end (+8px) and pace the slide at a roughly constant speed.
+  const slideDistance = isTruncated ? overflow + 8 : 0
+  const duration = Math.min(4, Math.max(0.5, slideDistance / 70))
+
+  return (
+    <span
+      ref={outerRef}
+      title={isTruncated ? label : undefined}
+      className={cn(
+        "group/slide block max-w-[220px] overflow-hidden whitespace-nowrap",
+        className,
+      )}
+      style={
+        isTruncated
+          ? {
+              maskImage:
+                "linear-gradient(to right, black calc(100% - 14px), transparent)",
+              WebkitMaskImage:
+                "linear-gradient(to right, black calc(100% - 14px), transparent)",
+            }
+          : undefined
+      }
+    >
+      <span
+        ref={innerRef}
+        className="inline-block transition-transform ease-linear group-hover/slide:[transform:translateX(var(--slide-x))]"
+        style={{
+          ["--slide-x" as string]: `-${slideDistance}px`,
+          transitionDuration: `${duration}s`,
+        }}
+      >
+        {label}
+      </span>
+    </span>
+  )
+}
+
 interface AppHeaderProps {
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
@@ -109,20 +174,21 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
 
-          {/* Always show breadcrumbs for debugging */}
           <Breadcrumb className="flex min-w-0 items-center">
-            <BreadcrumbList className="flex min-w-0 items-center">
+            <BreadcrumbList className="flex min-w-0 flex-nowrap items-center">
               {breadcrumbItems.length > 0 ? (
                 breadcrumbItems.map((item, index) => {
                   const isLast = index === breadcrumbItems.length - 1
                   const content = isLast ? (
-                    <BreadcrumbPage className="truncate">{item.label}</BreadcrumbPage>
+                    <BreadcrumbPage>
+                      <SlidingLabel label={item.label} />
+                    </BreadcrumbPage>
                   ) : item.href ? (
-                    <BreadcrumbLink href={item.href} className="truncate">
-                      {item.label}
+                    <BreadcrumbLink href={item.href}>
+                      <SlidingLabel label={item.label} />
                     </BreadcrumbLink>
                   ) : (
-                    <span className="truncate text-muted-foreground">{item.label}</span>
+                    <SlidingLabel label={item.label} className="text-muted-foreground" />
                   )
 
                   return (

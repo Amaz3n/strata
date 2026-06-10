@@ -36,6 +36,10 @@ const nextConfig = {
   },
   // Native Node addons (prevent bundling so bindings resolve correctly)
   serverExternalPackages: ["@napi-rs/canvas"],
+  // Ensure bundled PDF fonts ship with the report export function on Vercel.
+  outputFileTracingIncludes: {
+    "/api/projects/[id]/reports/profitability": ["./lib/pdfs/fonts/**"],
+  },
   // Server Actions configuration
   experimental: {
     proxyClientMaxBodySize: '250mb',

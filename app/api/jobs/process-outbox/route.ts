@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { sendEmail, getOrgSenderEmail, renderStandardEmailLayout } from "@/lib/services/mailer"
-import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
+import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
 import {
   createDrawingSheet,
   createSheetVersion,
@@ -76,8 +76,9 @@ export const runtime = "nodejs"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const MAX_RETRIES = 3
-// This endpoint can end up doing heavy work (tile generation). Keep batches small.
-const BATCH_SIZE = 5
+// Mostly lightweight email delivery now (heavy tile work is delegated to the
+// Cloud Run worker), so process a healthy batch per run to keep the queue drained.
+const BATCH_SIZE = 50
 const SUPABASE_FUNCTION_TIMEOUT_MS = 120_000
 
 function isAuthorizedCronRequest(request: NextRequest) {
@@ -264,9 +265,10 @@ async function createVisibleTestImage(orgId: string, supabase: any) {
 
 // Temporary test endpoint to queue tile generation for all sheets that need it
 export async function GET(request: NextRequest) {
-  // Debug-only endpoint (queues jobs for everything). Keep it out of prod.
+  // Vercel Cron invokes this route with GET in production — run the outbox
+  // processor. (The block below is a local-dev-only debug surface.)
   if (process.env.NODE_ENV === "production") {
-    return NextResponse.json({ error: "Not found" }, { status: 404 })
+    return processOutboxQueue(request)
   }
 
   const supabase = createServiceSupabaseClient()
@@ -446,7 +448,7 @@ type TileManifest = {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function processOutboxQueue(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -571,6 +573,10 @@ export async function POST(request: NextRequest) {
   return NextResponse.json(isDev ? { processed, failed, failures } : { processed, failed })
 }
 
+export async function POST(request: NextRequest) {
+  return processOutboxQueue(request)
+}
+
 async function deliverNotificationJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   const payload = job.payload ?? {}
   const notificationId =
@@ -589,6 +595,12 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
 
   if (notifError || !notification) {
     throw new Error(`Notification not found (${notifError?.message ?? "unknown error"})`)
+  }
+
+  // Email is an allowlist: non-eligible types are in-app only, regardless of
+  // whether the user has a prefs row. Bail before sending anything.
+  if (!isEmailEligibleNotificationType(notification.notification_type)) {
+    return
   }
 
   const { data: prefs } = await supabase

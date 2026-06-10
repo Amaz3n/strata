@@ -432,12 +432,14 @@ export async function invoiceDrawSchedule({
         },
       ]
 
+  const isDeposit = Boolean((draw.metadata as any)?.is_deposit) || draw.draw_number === 0
+
   const invoice = await createInvoice({
     input: {
       project_id: draw.project_id,
       invoice_number,
       reservation_id,
-      title: `Draw ${draw.draw_number}: ${draw.title}`,
+      title: isDeposit ? draw.title : `Draw ${draw.draw_number}: ${draw.title}`,
       status: "saved",
       issue_date,
       due_date: due_date ?? draw.due_date ?? undefined,

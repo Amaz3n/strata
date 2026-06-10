@@ -468,7 +468,14 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
                   className="h-8 w-40 justify-between rounded-none text-xs px-3 font-normal"
                   disabled={loading || importing}
                 >
-                  <span className="truncate">
+                  <span
+                    className="truncate"
+                    title={
+                      projectFilter === "all"
+                        ? "All projects"
+                        : projectFilterOptions.find((option) => option.id === projectFilter)?.name ?? projectFilter
+                    }
+                  >
                     {projectFilter === "all"
                       ? "All projects"
                       : projectFilterOptions.find((option) => option.id === projectFilter)?.name ?? projectFilter}
@@ -514,7 +521,9 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
                               projectFilter === option.id ? "opacity-100" : "opacity-0"
                             )}
                           />
-                          <span className="truncate">{option.name}</span>
+                          <span className="truncate" title={option.name}>
+                            {option.name}
+                          </span>
                         </CommandItem>
                       ))}
                     </CommandGroup>
@@ -803,7 +812,7 @@ function LineAllocationRow({
               unassigned && "border-amber-500 text-amber-700"
             )}
           >
-            <span className="truncate">
+            <span className="truncate" title={currentProjectName ?? "Choose project…"}>
               {currentProjectName ?? "Choose project…"}
             </span>
             <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
@@ -831,7 +840,9 @@ function LineAllocationRow({
                         current === project.id ? "opacity-100" : "opacity-0"
                       )}
                     />
-                    <span className="truncate">{project.name}</span>
+                    <span className="truncate" title={project.name}>
+                      {project.name}
+                    </span>
                   </CommandItem>
                 ))}
               </CommandGroup>

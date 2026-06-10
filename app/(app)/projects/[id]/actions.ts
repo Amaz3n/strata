@@ -597,6 +597,7 @@ export async function listProjectDrawsAction(projectId: string) {
 
 const drawUpsertSchema = z.object({
   draw_number: z.number().int().positive().optional(),
+  is_deposit: z.boolean().optional(),
   title: z.string().min(1),
   description: z.string().optional(),
   amount_cents: z.number().int().nonnegative(),
@@ -650,32 +651,54 @@ export async function createProjectDrawAction(projectId: string, input: unknown)
     throw new Error("A contract is required before creating percent-based draws.")
   }
 
-  let drawNumber = parsed.draw_number
-  if (!drawNumber) {
-    const { data: last } = await supabase
+  // A deposit is modeled as the up-front "Draw 0" so it reuses the full draw
+  // pipeline (invoicing, linking, payment tracking) while sorting ahead of the
+  // numbered draws. Only one deposit is allowed per project.
+  let drawNumber: number
+  if (parsed.is_deposit) {
+    const { data: existingDeposit } = await supabase
       .from("draw_schedules")
-      .select("draw_number")
+      .select("id")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
-      .order("draw_number", { ascending: false })
-      .limit(1)
+      .eq("draw_number", 0)
       .maybeSingle()
-    drawNumber = (last?.draw_number ?? 0) + 1
-  }
 
-  const { data: dup } = await supabase
-    .from("draw_schedules")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("draw_number", drawNumber)
-    .maybeSingle()
+    if (existingDeposit?.id) {
+      throw new Error("This project already has a deposit.")
+    }
+    drawNumber = 0
+  } else {
+    drawNumber = parsed.draw_number ?? 0
+    if (!drawNumber) {
+      const { data: last } = await supabase
+        .from("draw_schedules")
+        .select("draw_number")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .order("draw_number", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      drawNumber = (last?.draw_number ?? 0) + 1
+    }
 
-  if (dup?.id) {
-    throw new Error(`Draw #${drawNumber} already exists on this project.`)
+    const { data: dup } = await supabase
+      .from("draw_schedules")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("draw_number", drawNumber)
+      .maybeSingle()
+
+    if (dup?.id) {
+      throw new Error(`Draw #${drawNumber} already exists on this project.`)
+    }
   }
 
   const metadata: Record<string, any> = {}
+  if (parsed.is_deposit) {
+    metadata.is_deposit = true
+  }
   if (parsed.due_trigger === "approval" && parsed.due_trigger_label) {
     metadata.due_trigger_label = parsed.due_trigger_label
   }

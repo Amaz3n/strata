@@ -31,6 +31,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
@@ -86,6 +87,10 @@ function parseDollarsToCents(value: string) {
   const parsed = Number.parseFloat(normalized)
   if (!Number.isFinite(parsed) || parsed < 0) return 0
   return Math.round(parsed * 100)
+}
+
+function isDepositDraw(draw: Pick<DrawSchedule, "draw_number" | "metadata">) {
+  return Boolean((draw.metadata as any)?.is_deposit) || draw.draw_number === 0
 }
 
 export function DrawScheduleManager({
@@ -171,6 +176,8 @@ export function DrawScheduleManager({
     return false
   })
 
+  const hasDeposit = useMemo(() => draws.some((draw) => isDepositDraw(draw)), [draws])
+
   function openCreate() {
     setEditing(null)
     setIsDialogOpen(true)
@@ -237,6 +244,7 @@ export function DrawScheduleManager({
 
   async function handleSave(input: {
     draw_number?: number
+    is_deposit?: boolean
     title: string
     description?: string
     amount_mode: AmountMode
@@ -257,6 +265,7 @@ export function DrawScheduleManager({
 
         const payload = {
           draw_number: input.draw_number,
+          is_deposit: input.is_deposit,
           title: input.title,
           description: input.description,
           amount_cents,
@@ -301,11 +310,15 @@ export function DrawScheduleManager({
   }
 
   async function handleMove(draw: DrawSchedule, direction: "up" | "down") {
-    const idx = draws.findIndex((d) => d.id === draw.id)
+    // The deposit ("Draw 0") is pinned first and excluded from reordering so the
+    // renumber-to-1..n in the action never clobbers its number.
+    if (isDepositDraw(draw)) return
+    const movable = draws.filter((d) => !isDepositDraw(d))
+    const idx = movable.findIndex((d) => d.id === draw.id)
     const nextIdx = direction === "up" ? idx - 1 : idx + 1
-    if (idx < 0 || nextIdx < 0 || nextIdx >= draws.length) return
+    if (idx < 0 || nextIdx < 0 || nextIdx >= movable.length) return
 
-    const ordered = [...draws]
+    const ordered = [...movable]
     const [moved] = ordered.splice(idx, 1)
     ordered.splice(nextIdx, 0, moved)
 
@@ -401,6 +414,10 @@ export function DrawScheduleManager({
     return draws.filter((d) => d.title?.toLowerCase().includes(s) || d.description?.toLowerCase().includes(s))
   }, [draws, search])
 
+  const movableDraws = useMemo(() => draws.filter((d) => !isDepositDraw(d)), [draws])
+  const firstMovableId = movableDraws[0]?.id
+  const lastMovableId = movableDraws[movableDraws.length - 1]?.id
+
   function drawDueLabel(draw: DrawSchedule) {
     const milestone = draw.milestone_id ? milestonesById.get(draw.milestone_id) : undefined
     if (draw.due_trigger === "milestone") {
@@ -479,7 +496,7 @@ export function DrawScheduleManager({
               <div className="text-right" />
             </div>
 
-            {filteredDraws.map((draw, index) => {
+            {filteredDraws.map((draw) => {
               const status = statusMap[draw.status] ?? statusMap.pending
               const amount = effectiveAmountCents(draw)
               const dueLabel = drawDueLabel(draw)
@@ -488,6 +505,7 @@ export function DrawScheduleManager({
               const canInvoice = draw.status === "pending" && !hasInvoice
               const canDelete = draw.status === "pending" && !hasInvoice
               const locked = hasInvoice || draw.status !== "pending"
+              const deposit = isDepositDraw(draw)
 
               return (
                 <div
@@ -504,8 +522,13 @@ export function DrawScheduleManager({
                   className="grid cursor-pointer gap-2 border-b px-4 py-3 transition-colors last:border-b-0 hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-6 lg:grid-cols-[72px_minmax(180px,1fr)_minmax(220px,1.15fr)_minmax(150px,.75fr)_112px_120px_132px] lg:items-center lg:px-8"
                 >
                   <div className="flex items-center gap-3 lg:block">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md border bg-muted/40 text-sm font-semibold tabular-nums">
-                      {draw.draw_number}
+                    <div
+                      className={cn(
+                        "flex h-8 w-8 items-center justify-center rounded-md border text-sm font-semibold tabular-nums",
+                        deposit ? "border-primary/30 bg-primary/10 text-primary" : "bg-muted/40",
+                      )}
+                    >
+                      {deposit ? <ReceiptText className="h-4 w-4" /> : draw.draw_number}
                     </div>
                     <Badge className={cn("lg:hidden", status.tone)} variant="secondary">
                       {status.label}
@@ -515,6 +538,11 @@ export function DrawScheduleManager({
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="truncate text-sm font-semibold">{draw.title}</p>
+                      {deposit ? (
+                        <Badge variant="outline" className="rounded-sm border-primary/30 text-primary">
+                          Deposit
+                        </Badge>
+                      ) : null}
                       {locked ? (
                         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
                           <LockKeyhole className="h-3 w-3" />
@@ -564,11 +592,11 @@ export function DrawScheduleManager({
                           <FileText className="mr-2 h-4 w-4" />
                           Edit draw
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleMove(draw, "up")} disabled={saving || index === 0}>
+                        <DropdownMenuItem onClick={() => handleMove(draw, "up")} disabled={saving || deposit || draw.id === firstMovableId}>
                           <ArrowUp className="mr-2 h-4 w-4" />
                           Move up
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleMove(draw, "down")} disabled={saving || index === filteredDraws.length - 1}>
+                        <DropdownMenuItem onClick={() => handleMove(draw, "down")} disabled={saving || deposit || draw.id === lastMovableId}>
                           <ArrowDown className="mr-2 h-4 w-4" />
                           Move down
                         </DropdownMenuItem>
@@ -665,6 +693,7 @@ export function DrawScheduleManager({
           if (!next) setEditing(null)
         }}
         saving={saving}
+        depositExists={hasDeposit}
         defaultDraw={editing}
         revisedContractCents={revisedContractCents}
         scheduleItems={normalizedScheduleItems}
@@ -720,6 +749,7 @@ function DrawDetailSheet({
   const canInvoice = draw?.status === "pending" && !hasInvoice
   const canDelete = draw?.status === "pending" && !hasInvoice
   const locked = Boolean(draw && (hasInvoice || draw.status !== "pending"))
+  const deposit = Boolean(draw && isDepositDraw(draw))
   const linkedInvoiceTotal = linkedInvoice?.total_cents ?? linkedInvoice?.totals?.total_cents ?? 0
   const linkedInvoiceBalance =
     linkedInvoice?.balance_due_cents ?? linkedInvoice?.totals?.balance_due_cents ?? linkedInvoiceTotal
@@ -733,9 +763,19 @@ function DrawDetailSheet({
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="mb-2 flex items-center gap-2">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-md border bg-background font-semibold tabular-nums">
-                      {draw.draw_number}
+                    <span
+                      className={cn(
+                        "flex h-8 w-8 items-center justify-center rounded-md border font-semibold tabular-nums",
+                        deposit ? "border-primary/30 bg-primary/10 text-primary" : "bg-background",
+                      )}
+                    >
+                      {deposit ? <ReceiptText className="h-4 w-4" /> : draw.draw_number}
                     </span>
+                    {deposit ? (
+                      <Badge variant="outline" className="rounded-sm border-primary/30 text-primary">
+                        Deposit
+                      </Badge>
+                    ) : null}
                     <Badge className={cn("rounded-sm", status.tone)} variant="secondary">
                       {status.label}
                     </Badge>
@@ -1004,6 +1044,7 @@ function DrawDialog({
   open,
   onOpenChange,
   saving,
+  depositExists,
   defaultDraw,
   revisedContractCents,
   scheduleItems,
@@ -1013,12 +1054,14 @@ function DrawDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   saving: boolean
+  depositExists: boolean
   defaultDraw: DrawSchedule | null
   revisedContractCents: number
   scheduleItems: ScheduleItem[]
   costCodes: CostCode[]
   onSave: (input: {
     draw_number?: number
+    is_deposit?: boolean
     title: string
     description?: string
     amount_mode: AmountMode
@@ -1043,6 +1086,20 @@ function DrawDialog({
   const [milestoneId, setMilestoneId] = useState<string>("")
   const [triggerLabel, setTriggerLabel] = useState<string>("")
   const [allocations, setAllocations] = useState<{ id: string; cost_code_id: string; amount_dollars: string; description: string }[]>([])
+  const [markAsDeposit, setMarkAsDeposit] = useState(false)
+
+  // Toggling the deposit switch on a fresh draw seeds sensible deposit defaults
+  // (title/timing) without clobbering anything the user already typed.
+  function handleToggleDeposit(next: boolean) {
+    setMarkAsDeposit(next)
+    if (next) {
+      setTitle((current) => current.trim() || "Deposit")
+      setDueMode("approval")
+      setTriggerLabel((current) => current.trim() || "On contract signing")
+    }
+  }
+
+  const editingDeposit = Boolean(defaultDraw && isDepositDraw(defaultDraw))
 
   useEffect(() => {
     if (!open) return
@@ -1058,8 +1115,10 @@ function DrawDialog({
       setMilestoneId("")
       setTriggerLabel("")
       setAllocations([])
+      setMarkAsDeposit(false)
       return
     }
+    setMarkAsDeposit(isDepositDraw(defaultDraw))
 
     setDrawNumber(String(defaultDraw.draw_number ?? ""))
     setTitle(defaultDraw.title ?? "")
@@ -1115,19 +1174,42 @@ function DrawDialog({
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
             <Plus className="h-5 w-5 text-primary" />
-            {defaultDraw ? "Edit Draw" : "Add Draw"}
+            {markAsDeposit ? (defaultDraw ? "Edit Deposit" : "Add Deposit") : defaultDraw ? "Edit Draw" : "Add Draw"}
           </SheetTitle>
           <SheetDescription>
-            Configure the amount, timing, and cost code allocations for this draw.
+            {markAsDeposit
+              ? "The deposit is recorded as the up-front “Draw 0” and invoiced like any other draw."
+              : "Configure the amount, timing, and cost code allocations for this draw."}
           </SheetDescription>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-8">
+          {/* Deposit toggle — only when creating, and only if no deposit exists yet */}
+          {!defaultDraw && !depositExists ? (
+            <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/20 px-4 py-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="draw-is-deposit" className="text-sm font-medium">
+                  Record as deposit
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Pins it ahead of the schedule as the up-front “Draw 0”. One deposit per project.
+                </p>
+              </div>
+              <Switch id="draw-is-deposit" checked={markAsDeposit} onCheckedChange={handleToggleDeposit} />
+            </div>
+          ) : null}
+          {editingDeposit ? (
+            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary">
+              <ReceiptText className="h-4 w-4" />
+              This is the project deposit (Draw 0).
+            </div>
+          ) : null}
+
           {/* Main Info */}
           <div className="space-y-4">
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Details</Label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g., Foundation Complete" className="h-10" />
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={markAsDeposit ? "e.g., Deposit" : "e.g., Foundation Complete"} className="h-10" />
             </div>
 
             <div className="space-y-2">
@@ -1392,6 +1474,7 @@ function DrawDialog({
 
               onSave({
                 draw_number: drawNumber ? Number.parseInt(drawNumber, 10) : undefined,
+                is_deposit: markAsDeposit || undefined,
                 title: title.trim(),
                 description: description.trim() || undefined,
                 amount_mode: amountMode,

@@ -1,201 +1,236 @@
-import { Document, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
+import fs from "node:fs"
+import path from "node:path"
+
+import { Document, Font, Image, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
+import sharp from "sharp"
 
 import type { ProfitabilitySection, ProjectProfitabilityReport } from "@/lib/services/reports/project-profitability"
 
-function formatCurrency(cents: number) {
-  const dollars = cents / 100
-  return dollars.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
+/* Fonts — bundled DM Sans, with a Helvetica fallback. */
+let resolvedFamily = "Helvetica"
+let fontsInitialized = false
+function ensureFonts(): string {
+  if (fontsInitialized) return resolvedFamily
+  fontsInitialized = true
+  try {
+    const dir = path.join(process.cwd(), "lib/pdfs/fonts")
+    const regular = path.join(dir, "DMSans-Regular.ttf")
+    if (fs.existsSync(regular)) {
+      Font.register({
+        family: "DM Sans",
+        fonts: [
+          { src: regular, fontWeight: 400 },
+          { src: path.join(dir, "DMSans-Medium.ttf"), fontWeight: 500 },
+          { src: path.join(dir, "DMSans-Bold.ttf"), fontWeight: 700 },
+        ],
+      })
+      Font.registerHyphenationCallback((word) => [word])
+      resolvedFamily = "DM Sans"
+    }
+  } catch {
+    resolvedFamily = "Helvetica"
+  }
+  return resolvedFamily
 }
 
-function formatRange(report: ProjectProfitabilityReport) {
-  if (!report.from && !report.to) return "All dates"
-  const fmt = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+/* Amounts: line items plain, totals prefixed with $ — matching a QBO P&L. */
+function plain(cents: number) {
+  const value = cents / 100
+  const formatted = Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return value < 0 ? `(${formatted})` : formatted
+}
+function money(cents: number) {
+  const value = cents / 100
+  const formatted = Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return value < 0 ? `$(${formatted})` : `$${formatted}`
+}
+
+function periodLabel(report: ProjectProfitabilityReport) {
+  const fmt = (d: string) =>
+    new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+  if (!report.from && !report.to) return "Project to date"
   if (report.from && report.to) return `${fmt(report.from)} – ${fmt(report.to)}`
-  if (report.from) return `From ${fmt(report.from)}`
+  if (report.from) return `Since ${fmt(report.from)}`
   return `Through ${fmt(report.to as string)}`
 }
 
-const ink = "#0f172a"
-const muted = "#64748b"
-const line = "#e2e8f0"
-const positive = "#047857"
-const negative = "#b91c1c"
+const INK = "#1a1a1a"
+const MUTED = "#6b7280"
+const RULE = "#1a1a1a"
+const HAIRLINE = "#d4d4d4"
 
 const styles = StyleSheet.create({
-  page: { paddingTop: 40, paddingBottom: 48, paddingHorizontal: 44, fontSize: 10, fontFamily: "Helvetica", color: ink },
-  brandRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
-  org: { fontSize: 11, fontWeight: 700, color: ink },
-  title: { fontSize: 20, fontWeight: 700, marginTop: 18 },
-  subtitle: { marginTop: 3, color: muted, fontSize: 10 },
-  meta: { color: muted, fontSize: 9, textAlign: "right" },
-  kpis: { flexDirection: "row", gap: 10, marginTop: 22 },
-  kpi: { flex: 1, borderWidth: 1, borderColor: line, borderRadius: 6, padding: 10 },
-  kpiLabel: { fontSize: 8, color: muted, textTransform: "uppercase", letterSpacing: 0.4 },
-  kpiValue: { fontSize: 15, fontWeight: 700, marginTop: 4 },
-  kpiSub: { fontSize: 8, color: muted, marginTop: 2 },
-  table: { marginTop: 24 },
-  sectionHeader: { flexDirection: "row", backgroundColor: "#f1f5f9", paddingVertical: 5, paddingHorizontal: 8, borderTopWidth: 1, borderTopColor: line, marginTop: 14 },
-  sectionTitle: { flex: 1, fontWeight: 700, fontSize: 10 },
-  row: { flexDirection: "row", paddingVertical: 4, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: line },
-  cellLabel: { flex: 1, color: ink },
-  cellNum: { width: 90, textAlign: "right" },
-  cellNumSmall: { width: 70, textAlign: "right", color: muted, fontSize: 9 },
-  totalRow: { flexDirection: "row", paddingVertical: 5, paddingHorizontal: 8, borderBottomWidth: 1.5, borderBottomColor: ink },
+  page: { paddingTop: 54, paddingBottom: 54, paddingHorizontal: 56, fontSize: 10, color: INK },
+
+  header: { alignItems: "center", marginBottom: 26 },
+  logo: { height: 34, maxWidth: 200, objectFit: "contain", marginBottom: 12 },
+  orgName: { fontSize: 12, fontWeight: 700, marginBottom: 10 },
+  projectName: { fontSize: 17, fontWeight: 700, textAlign: "center" },
+  reportType: { fontSize: 11, color: MUTED, marginTop: 4 },
+  period: { fontSize: 10, color: MUTED, marginTop: 2 },
+
+  totalHeadRow: { flexDirection: "row", justifyContent: "flex-end", paddingBottom: 5 },
+  totalHead: { fontSize: 8.5, fontWeight: 700, color: MUTED, letterSpacing: 0.8 },
+  topRule: { borderBottomWidth: 1, borderBottomColor: RULE },
+
+  sectionLabel: { fontSize: 10.5, fontWeight: 500, marginTop: 12, marginBottom: 2 },
+
+  row: { flexDirection: "row", alignItems: "center", paddingVertical: 3 },
+  itemLabel: { flex: 1, paddingLeft: 16, color: INK },
+  amount: { width: 130, textAlign: "right" },
+
+  totalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: 4,
+    paddingBottom: 4,
+    marginTop: 2,
+    borderTopWidth: 1,
+    borderTopColor: HAIRLINE,
+  },
   totalLabel: { flex: 1, fontWeight: 700 },
-  totalNum: { width: 90, textAlign: "right", fontWeight: 700 },
-  totalNumSmall: { width: 70, textAlign: "right", fontWeight: 700, fontSize: 9 },
-  resultRow: { flexDirection: "row", paddingVertical: 7, paddingHorizontal: 8, backgroundColor: "#f8fafc", marginTop: 2 },
-  resultLabel: { flex: 1, fontWeight: 700, fontSize: 11 },
-  resultNum: { width: 90, textAlign: "right", fontWeight: 700, fontSize: 11 },
-  colHead: { flexDirection: "row", paddingVertical: 4, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: line },
-  colHeadLabel: { flex: 1, fontSize: 8, color: muted, textTransform: "uppercase", letterSpacing: 0.4 },
-  colHeadNum: { width: 90, textAlign: "right", fontSize: 8, color: muted, textTransform: "uppercase", letterSpacing: 0.4 },
-  colHeadNumSmall: { width: 70, textAlign: "right", fontSize: 8, color: muted, textTransform: "uppercase", letterSpacing: 0.4 },
-  footer: { position: "absolute", bottom: 24, left: 44, right: 44, flexDirection: "row", justifyContent: "space-between", color: muted, fontSize: 8 },
+  totalAmount: { width: 130, textAlign: "right", fontWeight: 700 },
+
+  grossRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 6,
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: RULE,
+  },
+  netRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: 6,
+    paddingBottom: 4,
+    marginTop: 2,
+    borderTopWidth: 1,
+    borderTopColor: RULE,
+  },
+  emphLabel: { flex: 1, fontWeight: 700, fontSize: 11 },
+  emphAmount: { width: 130, textAlign: "right", fontWeight: 700, fontSize: 11 },
+  // Accounting grand-total: tight double underline beneath Net Income.
+  doubleUnderline: { borderTopWidth: 1, borderTopColor: RULE },
+  doubleUnderlineLower: { borderTopWidth: 1, borderTopColor: RULE, marginTop: 1.5 },
+
+  footer: {
+    position: "absolute",
+    bottom: 30,
+    left: 56,
+    right: 56,
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  footerText: { fontSize: 8, color: MUTED },
 })
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Section({ section }: { section: ProfitabilitySection }) {
   return (
-    <View style={styles.kpi}>
-      <Text style={styles.kpiLabel}>{label}</Text>
-      <Text style={styles.kpiValue}>{value}</Text>
-      {sub ? <Text style={styles.kpiSub}>{sub}</Text> : null}
-    </View>
-  )
-}
-
-function CostSection({ section }: { section: ProfitabilitySection }) {
-  const hasBudget = section.budget_total_cents != null
-  return (
-    <View>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{section.label}</Text>
-      </View>
-      {hasBudget ? (
-        <View style={styles.colHead}>
-          <Text style={styles.colHeadLabel}>Category</Text>
-          <Text style={styles.colHeadNumSmall}>Budget</Text>
-          <Text style={styles.colHeadNumSmall}>Variance</Text>
-          <Text style={styles.colHeadNum}>Actual</Text>
-        </View>
-      ) : null}
-      {section.lines.map((l) => (
-        <View key={l.key} style={styles.row}>
-          <Text style={styles.cellLabel}>{l.label}</Text>
-          {hasBudget ? (
-            <>
-              <Text style={styles.cellNumSmall}>{l.budget_cents != null ? formatCurrency(l.budget_cents) : "—"}</Text>
-              <Text style={[styles.cellNumSmall, { color: (l.variance_cents ?? 0) >= 0 ? positive : negative }]}>
-                {l.variance_cents != null ? formatCurrency(l.variance_cents) : "—"}
-              </Text>
-            </>
-          ) : null}
-          <Text style={styles.cellNum}>{formatCurrency(l.amount_cents)}</Text>
+    <View wrap={false}>
+      <Text style={styles.sectionLabel}>{section.label}</Text>
+      {section.lines.map((line) => (
+        <View key={line.key} style={styles.row}>
+          <Text style={styles.itemLabel}>{line.label}</Text>
+          <Text style={styles.amount}>{plain(line.amount_cents)}</Text>
         </View>
       ))}
       <View style={styles.totalRow}>
-        <Text style={styles.totalLabel}>Total {section.label.toLowerCase()}</Text>
-        {hasBudget ? (
-          <>
-            <Text style={styles.totalNumSmall}>{formatCurrency(section.budget_total_cents ?? 0)}</Text>
-            <Text style={[styles.totalNumSmall, { color: (section.variance_total_cents ?? 0) >= 0 ? positive : negative }]}>
-              {formatCurrency(section.variance_total_cents ?? 0)}
-            </Text>
-          </>
-        ) : null}
-        <Text style={styles.totalNum}>{formatCurrency(section.total_cents)}</Text>
+        <Text style={styles.totalLabel}>Total for {section.label}</Text>
+        <Text style={styles.totalAmount}>{money(section.total_cents)}</Text>
       </View>
     </View>
   )
 }
 
-function IncomeSection({ section }: { section: ProfitabilitySection }) {
-  return (
-    <View>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{section.label}</Text>
-      </View>
-      {section.lines.length === 0 ? (
-        <View style={styles.row}>
-          <Text style={[styles.cellLabel, { color: muted }]}>No billings in this period</Text>
-          <Text style={styles.cellNum}>{formatCurrency(0)}</Text>
-        </View>
-      ) : (
-        section.lines.map((l) => (
-          <View key={l.key} style={styles.row}>
-            <Text style={styles.cellLabel}>{l.label}</Text>
-            <Text style={styles.cellNum}>{formatCurrency(l.amount_cents)}</Text>
-          </View>
-        ))
-      )}
-      <View style={styles.totalRow}>
-        <Text style={styles.totalLabel}>Total {section.label.toLowerCase()}</Text>
-        <Text style={styles.totalNum}>{formatCurrency(section.total_cents)}</Text>
-      </View>
-    </View>
-  )
-}
+function ProfitabilityDocument({
+  report,
+  logo,
+  family,
+}: {
+  report: ProjectProfitabilityReport
+  logo: string | null
+  family: string
+}) {
+  const generated = new Date(report.generated_at).toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  })
 
-function ProfitabilityDocument({ report }: { report: ProjectProfitabilityReport }) {
-  const margin = report.net_margin_percent
-  const budgetedMargin = report.budgeted_margin_percent
   return (
     <Document title={`Project Profitability — ${report.project_name}`}>
-      <Page size="LETTER" style={styles.page}>
-        <View style={styles.brandRow}>
-          <Text style={styles.org}>{report.org_name ?? "Arc"}</Text>
-          <Text style={styles.meta}>
-            {report.basis === "cash" ? "Cash basis" : "Accrual basis"}
-            {"\n"}
-            {new Date(report.generated_at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
-          </Text>
+      <Page size="LETTER" style={[styles.page, { fontFamily: family }]}>
+        <View style={styles.header}>
+          {logo ? (
+            // eslint-disable-next-line jsx-a11y/alt-text -- @react-pdf Image has no alt prop
+            <Image src={logo} style={styles.logo} />
+          ) : report.org_name ? (
+            <Text style={styles.orgName}>{report.org_name}</Text>
+          ) : null}
+          <Text style={styles.projectName}>{report.project_name}</Text>
+          <Text style={styles.reportType}>Project profitability</Text>
+          <Text style={styles.period}>{periodLabel(report)}</Text>
         </View>
 
-        <Text style={styles.title}>Project Profitability</Text>
-        <Text style={styles.subtitle}>{report.project_name}</Text>
-        <Text style={styles.subtitle}>
-          {formatRange(report)} · Costs {report.group_by === "account" ? "by QuickBooks account" : "by cost code"}
-        </Text>
+        <View style={styles.totalHeadRow}>
+          <Text style={styles.totalHead}>TOTAL</Text>
+        </View>
+        <View style={styles.topRule} />
 
-        <View style={styles.kpis}>
-          <Kpi label="Net profit" value={formatCurrency(report.net_profit_cents)} sub={`${margin}% margin`} />
-          <Kpi label="Income" value={formatCurrency(report.total_income_cents)} sub={report.percent_billed != null ? `${report.percent_billed}% of contract` : undefined} />
-          <Kpi label="Cost of work" value={formatCurrency(report.total_cost_cents)} sub={report.percent_budget_spent != null ? `${report.percent_budget_spent}% of budget` : undefined} />
-          <Kpi
-            label="Margin vs. plan"
-            value={budgetedMargin != null ? `${margin}% / ${budgetedMargin}%` : `${margin}%`}
-            sub={budgetedMargin != null ? "actual / budgeted" : "actual"}
-          />
+        <Section section={report.income} />
+        <Section section={report.cost_of_work} />
+
+        <View style={styles.grossRow}>
+          <Text style={styles.emphLabel}>Gross Profit</Text>
+          <Text style={styles.emphAmount}>{money(report.gross_profit_cents)}</Text>
         </View>
 
-        <View style={styles.table}>
-          <IncomeSection section={report.income} />
-          <CostSection section={report.cost_of_work} />
-
-          <View style={styles.resultRow}>
-            <Text style={styles.resultLabel}>Gross profit</Text>
-            <Text style={[styles.resultNum, { color: report.gross_profit_cents >= 0 ? positive : negative }]}>
-              {formatCurrency(report.gross_profit_cents)}
-            </Text>
-          </View>
-          <View style={styles.resultRow}>
-            <Text style={styles.resultLabel}>Net profit ({margin}% margin)</Text>
-            <Text style={[styles.resultNum, { color: report.net_profit_cents >= 0 ? positive : negative }]}>
-              {formatCurrency(report.net_profit_cents)}
-            </Text>
-          </View>
+        <View style={styles.netRow}>
+          <Text style={styles.emphLabel}>Net Income</Text>
+          <Text style={styles.emphAmount}>{money(report.net_profit_cents)}</Text>
         </View>
+        <View style={styles.doubleUnderline} />
+        <View style={styles.doubleUnderlineLower} />
 
         <View style={styles.footer} fixed>
-          <Text>Generated by Arc</Text>
-          <Text render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
+          <Text style={styles.footerText}>
+            {report.basis === "cash" ? "Cash" : "Accrual"} basis · {generated}
+          </Text>
+          <Text style={styles.footerText} render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
         </View>
       </Page>
     </Document>
   )
 }
 
+/**
+ * @react-pdf mis-renders PNG logos with an alpha channel (ghosting/duplication).
+ * Flatten onto white and re-encode to a clean PNG. Returns null on any failure.
+ */
+async function flattenLogoForPdf(logoUrl?: string | null): Promise<string | null> {
+  if (!logoUrl) return null
+  try {
+    let input: Buffer
+    if (logoUrl.startsWith("data:")) {
+      input = Buffer.from(logoUrl.split(",")[1] ?? "", "base64")
+    } else {
+      const res = await fetch(logoUrl)
+      if (!res.ok) return null
+      if ((res.headers.get("content-type") ?? "").includes("svg")) return null
+      input = Buffer.from(await res.arrayBuffer())
+    }
+    const flattened = await sharp(input).flatten({ background: "#ffffff" }).png().toBuffer()
+    return `data:image/png;base64,${flattened.toString("base64")}`
+  } catch {
+    return null
+  }
+}
+
 export async function renderProjectProfitabilityPdf(report: ProjectProfitabilityReport): Promise<Buffer> {
-  const pdf = await renderToBuffer(<ProfitabilityDocument report={report} />)
+  const family = ensureFonts()
+  const logo = await flattenLogoForPdf(report.org_logo_url)
+  const pdf = await renderToBuffer(<ProfitabilityDocument report={report} logo={logo} family={family} />)
   return Buffer.from(pdf)
 }

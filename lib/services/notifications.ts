@@ -58,8 +58,11 @@ export class NotificationService {
       throw new Error(`Failed to create notification: ${error.message}`)
     }
 
-    // Queue delivery for all channels
-    await this.queueDelivery(notification.id, input.orgId)
+    // Only queue email delivery for email-eligible types. Everything else stays
+    // in-app only — email notifications are reserved for important events.
+    if (isEmailEligibleNotificationType(input.type)) {
+      await this.queueDelivery(notification.id, input.orgId)
+    }
 
     return notification.id
   }
@@ -223,12 +226,18 @@ export function normalizeEmailTypeSettings(input: unknown): EmailNotificationTyp
   ) as EmailNotificationTypeSettings
 }
 
+// Email notifications are an allowlist: only the curated EMAIL_NOTIFICATION_TYPES
+// can ever generate an email. Any type outside that list is in-app only.
+export function isEmailEligibleNotificationType(notificationType: string | null | undefined): boolean {
+  if (!notificationType) return false
+  return EMAIL_NOTIFICATION_TYPES.some((type) => type.key === notificationType)
+}
+
 export function isEmailNotificationTypeEnabled(
   settings: unknown,
   notificationType: string | null | undefined,
 ): boolean {
-  if (!notificationType) return true
-  if (!EMAIL_NOTIFICATION_TYPES.some((type) => type.key === notificationType)) return true
+  if (!isEmailEligibleNotificationType(notificationType)) return false
   return normalizeEmailTypeSettings(settings)[notificationType as keyof EmailNotificationTypeSettings] !== false
 }
 

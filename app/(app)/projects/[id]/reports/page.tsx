@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ArrowRight, BarChart3, Receipt, TrendingUp, Wallet } from "lucide-react"
+import { ArrowRight, BarChart3, Receipt, TrendingUp, Wallet, Wrench } from "lucide-react"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { Card } from "@/components/ui/card"
@@ -65,6 +65,13 @@ export default async function ProjectReportsPage({ params }: PageProps) {
       fullBleed
     >
       <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 sm:px-6 lg:px-8">
+        <div className="flex items-start gap-3 rounded-lg border border-amber-300/60 bg-amber-50 px-4 py-3 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <Wrench className="mt-0.5 size-4 shrink-0" />
+          <p className="text-sm">
+            <span className="font-medium">Reports are still in development.</span> Numbers should be verified against your
+            accounting system before sharing. Expect more report types and refinements soon.
+          </p>
+        </div>
         <p className="text-sm text-muted-foreground">
           Quick financial reports for <span className="font-medium text-foreground">{project.name}</span>. Pick a report to
           view, filter, and export.
