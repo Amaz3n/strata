@@ -320,6 +320,31 @@ async function listDrawingSheetsOptimized(
   return (data ?? []).map(mapDrawingSheet)
 }
 
+/**
+ * Register "as of" a chosen revision: returns each sheet's version that was
+ * current at that revision's point in time (sheets introduced later are
+ * omitted). Backed by the drawing_register_snapshot RPC; rows mirror the
+ * sheets-list shape so they map with mapDrawingSheet and render unchanged.
+ */
+export async function getDrawingRegisterSnapshot(
+  drawingSetId: string,
+  revisionId: string,
+  orgId?: string
+): Promise<DrawingSheet[]> {
+  const { supabase } = await requireOrgContext(orgId)
+
+  const { data, error } = await supabase.rpc("drawing_register_snapshot", {
+    p_set_id: drawingSetId,
+    p_revision_id: revisionId,
+  })
+
+  if (error) {
+    throw new Error(`Failed to load register snapshot: ${error.message}`)
+  }
+
+  return (data ?? []).map(mapDrawingSheet)
+}
+
 function mapDrawingSheetVersion(row: any): DrawingSheetVersion {
   const thumbPath = row.thumb_path ?? row.image_thumbnail_path ?? row.image_thumb_path ?? null
   const mediumPath = row.medium_path ?? row.image_medium_path ?? null

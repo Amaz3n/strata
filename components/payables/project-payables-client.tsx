@@ -23,7 +23,8 @@ import { PayablesWorkspace } from "./payables-workspace"
 import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string; account_type?: string; account_sub_type?: string }
-type ProjectOption = { id: string; name: string }
+type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
+type ProjectOption = { id: string; name: string; billingModel: ProjectBillingModel }
 
 function getPayableSyncBlockReason(bill: VendorBillSummary) {
   if (isVendorCredit(bill)) return "Imported vendor credits are read-only in QuickBooks."
@@ -40,6 +41,7 @@ export function ProjectPayablesClient({
   vendorBills,
   costCodes,
   costCodesEnabled = true,
+  billingModel,
   complianceRules,
   complianceStatusByCompanyId,
   toolbarLeading,
@@ -49,6 +51,7 @@ export function ProjectPayablesClient({
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
   costCodesEnabled?: boolean
+  billingModel: ProjectBillingModel
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   toolbarLeading?: ReactNode
@@ -117,13 +120,26 @@ export function ProjectPayablesClient({
     listProjectsAction()
       .then((rows) => {
         if (cancelled) return
-        setProjects((rows ?? []).map((project: any) => ({ id: project.id, name: project.name })))
+        setProjects(
+          (rows ?? []).map((project: any) => ({
+            id: project.id,
+            name: project.name,
+            billingModel: project.financial_settings?.billing_model ?? "fixed_price",
+          })),
+        )
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    setProjects((current) => {
+      if (current.some((project) => project.id === projectId)) return current
+      return [{ id: projectId, name: "Current project", billingModel }, ...current]
+    })
+  }, [billingModel, projectId])
 
   const approveBill = (bill: VendorBillSummary) => {
     if (isVendorCredit(bill)) return

@@ -19,6 +19,7 @@ import {
   deleteDrawingRevision,
   listDrawingSheets,
   listDrawingSheetsWithUrls,
+  getDrawingRegisterSnapshot,
   getDrawingSheet,
   createDrawingSheet,
   updateDrawingSheet,
@@ -571,6 +572,16 @@ export async function listDrawingSheetsWithUrlsAction(
   filters: Partial<DrawingSheetListFilters> = {}
 ): Promise<DrawingSheet[]> {
   return listDrawingSheetsWithUrls(filters)
+}
+
+/**
+ * Get the register as it stood at a chosen revision (one version per sheet).
+ */
+export async function getDrawingRegisterSnapshotAction(
+  drawingSetId: string,
+  revisionId: string
+): Promise<DrawingSheet[]> {
+  return getDrawingRegisterSnapshot(drawingSetId, revisionId)
 }
 
 /**

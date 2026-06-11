@@ -802,6 +802,168 @@ export async function approveChangeOrder({
   return mapChangeOrderRow(data as ChangeOrderRow)
 }
 
+/**
+ * Void (reverse) an approved change order. Approved change orders cannot be
+ * edited or deleted — they've altered the contract value, GMP, budget, and draw
+ * schedule. Voiding is the safe way to back one out: it flips the status to
+ * `cancelled`, reverses every financial posting, and preserves the record + an
+ * audit trail rather than destroying it.
+ *
+ * Reversal mechanics:
+ * - Contract total / revised GMP / pending draw amounts are recomputed by
+ *   `applyChangeOrderFinancialImpact`, which sums only `approved` change orders.
+ *   The just-voided CO is now `cancelled`, so it drops out automatically.
+ * - The posted budget revision (if any) is marked `voided`; budget and GMP
+ *   consumers only count `posted` revisions, so its impact disappears.
+ *
+ * Guarded: if a non-void invoice is still linked, the change has been billed to
+ * the client. We refuse to void until that invoice is voided or unlinked, so the
+ * contract value and outstanding receivables never disagree.
+ */
+export async function voidChangeOrder({
+  changeOrderId,
+  reason,
+  orgId,
+}: {
+  changeOrderId: string
+  reason?: string | null
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) {
+    throw new Error("Change order not found")
+  }
+
+  await requireAuthorization({
+    permission: "change_order.approve",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+
+  if (existing.status === "cancelled") {
+    throw new Error("This change order is already voided.")
+  }
+
+  if (existing.status !== "approved") {
+    throw new Error("Only approved change orders can be voided. Edit or delete unapproved change orders instead.")
+  }
+
+  const { data: linkedInvoices, error: linkedInvoicesError } = await supabase
+    .from("invoices")
+    .select("id, invoice_number")
+    .eq("org_id", resolvedOrgId)
+    .eq("metadata->>source_change_order_id", changeOrderId)
+    .neq("status", "void")
+
+  if (linkedInvoicesError) {
+    throw new Error(`Failed to check linked invoices: ${linkedInvoicesError.message}`)
+  }
+
+  if (linkedInvoices && linkedInvoices.length > 0) {
+    const labels = linkedInvoices.map((invoice) => `#${invoice.invoice_number}`).join(", ")
+    throw new Error(
+      `This change order has been billed (invoice ${labels}). Void or unlink the invoice before voiding the change order.`,
+    )
+  }
+
+  const nowIso = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from("change_orders")
+    .update({
+      status: "cancelled",
+      metadata: {
+        ...(existing.metadata ?? {}),
+        voided_at: nowIso,
+        voided_by: userId,
+        void_reason: reason ?? null,
+        financial_impact: {
+          ...(existing.metadata?.financial_impact ?? {}),
+          reversed_at: nowIso,
+        },
+      },
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+    .select(
+      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+    )
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to void change order: ${error?.message}`)
+  }
+
+  // Reverse the posted budget revision, if one was created at approval time.
+  // Budget/GMP consumers only count revisions with status "posted", so flipping
+  // it to "voided" removes its impact while keeping the record.
+  const { data: revisions, error: revisionsError } = await supabase
+    .from("budget_revisions")
+    .select("id, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("change_order_id", changeOrderId)
+    .eq("status", "posted")
+
+  if (revisionsError) {
+    throw new Error(`Failed to load budget revision: ${revisionsError.message}`)
+  }
+
+  for (const revision of revisions ?? []) {
+    const { error: voidRevisionError } = await supabase
+      .from("budget_revisions")
+      .update({
+        status: "voided",
+        metadata: {
+          ...((revision.metadata as Record<string, any> | null) ?? {}),
+          voided_at: nowIso,
+          voided_by: userId,
+        },
+      })
+      .eq("id", revision.id)
+      .eq("org_id", resolvedOrgId)
+
+    if (voidRevisionError) {
+      throw new Error(`Failed to reverse budget revision: ${voidRevisionError.message}`)
+    }
+  }
+
+  // Recompute contract total, revised GMP, and pending draw amounts from the
+  // change orders that remain approved (the voided one no longer qualifies).
+  await applyChangeOrderFinancialImpact({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: data.project_id,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_voided",
+    entityType: "change_order",
+    entityId: data.id,
+    payload: { project_id: data.project_id, reason: reason ?? null },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "change_order",
+    entityId: data.id,
+    before: existing,
+    after: data,
+    source: "change_order.void",
+  })
+
+  return mapChangeOrderRow(data as ChangeOrderRow)
+}
+
 async function applyChangeOrderFinancialImpact({
   supabase,
   orgId,

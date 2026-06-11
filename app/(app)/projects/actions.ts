@@ -3,14 +3,23 @@
 import { revalidatePath } from "next/cache"
 
 import { createProject, listProjects, updateProject, archiveProject, deleteProject } from "@/lib/services/projects"
+import { getProjectScheduleSummaries, listScheduleItemsByProject } from "@/lib/services/schedule"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
 import { QBOClient, type QBOClassOption } from "@/lib/integrations/accounting/qbo-api"
-import type { Contact } from "@/lib/types"
+import type { Contact, ProjectScheduleSummary, ScheduleItem } from "@/lib/types"
 
 export async function listProjectsAction() {
   const context = await requireOrgContext()
   return listProjects(undefined, context)
+}
+
+export async function listProjectScheduleSummariesAction(): Promise<Record<string, ProjectScheduleSummary>> {
+  return getProjectScheduleSummaries()
+}
+
+export async function getProjectScheduleItemsAction(projectId: string): Promise<ScheduleItem[]> {
+  return listScheduleItemsByProject(projectId)
 }
 
 export async function listProjectClientContactsAction(): Promise<Contact[]> {

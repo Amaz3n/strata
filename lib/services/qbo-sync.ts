@@ -109,6 +109,15 @@ interface VendorBillForSync {
   }>
 }
 
+function isCostDrivenBillingModel(billingModel?: string | null) {
+  return (
+    billingModel === "cost_plus_percent" ||
+    billingModel === "cost_plus_fixed_fee" ||
+    billingModel === "cost_plus_gmp" ||
+    billingModel === "time_and_materials"
+  )
+}
+
 function vendorBillHasQboExpenseCoding(bill: Pick<VendorBillForSync, "qbo_expense_account_id" | "bill_lines">) {
   if (bill.qbo_expense_account_id) return true
   const lines = bill.bill_lines ?? []
@@ -191,6 +200,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       : ((connection?.settings as any)?.default_income_account_id as string | undefined)
   let existingSync: any = null
   let qboInvoice: any = null
+  let invoiceIsUpdate = false
 
   try {
     existingSync = await supabase
@@ -287,9 +297,20 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       }),
     )
 
+    // Resolve a usable SyncToken before updating: invoices imported from QBO
+    // (or with a token that drifted) carry a qbo_id but no cached token, which
+    // would otherwise fail with "Invoice Id and SyncToken required for update".
+    const invoiceTarget = await resolveQBOSyncTarget({
+      client,
+      entityType: "invoice",
+      qboId: existingSync.data?.qbo_id ?? typedInvoice.qbo_id,
+      cachedSyncToken: existingSync.data?.qbo_sync_token,
+      logContext: { orgId, invoiceId },
+    })
+    invoiceIsUpdate = invoiceTarget.mode === "update"
+
     qboInvoice = {
-      Id: existingSync.data?.qbo_id,
-      SyncToken: existingSync.data?.qbo_sync_token,
+      ...(invoiceTarget.mode === "update" ? { Id: invoiceTarget.id, SyncToken: invoiceTarget.syncToken } : {}),
       DocNumber: typedInvoice.invoice_number,
       TxnDate: typedInvoice.issue_date ?? new Date().toISOString().split("T")[0],
       DueDate: typedInvoice.due_date ?? undefined,
@@ -298,7 +319,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       PrivateNote: typedInvoice.title ?? undefined,
     }
 
-    const result = existingSync.data?.qbo_id
+    const result = invoiceIsUpdate
       ? await client.updateInvoice(qboInvoice as any)
       : await client.createInvoice(qboInvoice as any)
 
@@ -420,7 +441,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
           DocNumber: nextNumber,
         }
 
-        const retryResult = existingSync.data?.qbo_id
+        const retryResult = invoiceIsUpdate
           ? await client.updateInvoice(retryInvoice as any)
           : await client.createInvoice(retryInvoice as any)
 
@@ -765,44 +786,34 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
       .eq("entity_id", expenseId)
       .maybeSingle()
 
-    const baseTxn = {
-      Id: existingSync?.qbo_id ?? typedExpense.qbo_id ?? undefined,
-      SyncToken: existingSync?.qbo_sync_token ?? undefined,
+    const basePayload = {
       TxnDate: typedExpense.expense_date,
       PrivateNote: typedExpense.description ?? undefined,
       Line: qboLines,
+      ...(transactionType === "bill"
+        ? {
+            VendorRef: { value: vendor.Id!, name: vendor.DisplayName },
+            APAccountRef: typedExpense.qbo_ap_account_id
+              ? { value: typedExpense.qbo_ap_account_id, name: typedExpense.qbo_ap_account_name ?? undefined }
+              : undefined,
+          }
+        : {
+            EntityRef: { type: "Vendor", value: vendor.Id!, name: vendor.DisplayName },
+            AccountRef: { value: typedExpense.qbo_payment_account_id!, name: typedExpense.qbo_payment_account_name ?? undefined },
+            PaymentType: resolvePurchasePaymentType(typedExpense.payment_method),
+          }),
     }
 
-    const result =
-      transactionType === "bill"
-        ? existingSync?.qbo_id || typedExpense.qbo_id
-          ? await client.updateBill({
-              ...baseTxn,
-              VendorRef: { value: vendor.Id!, name: vendor.DisplayName },
-              APAccountRef: typedExpense.qbo_ap_account_id
-                ? { value: typedExpense.qbo_ap_account_id, name: typedExpense.qbo_ap_account_name ?? undefined }
-                : undefined,
-            })
-          : await client.createBill({
-              ...baseTxn,
-              VendorRef: { value: vendor.Id!, name: vendor.DisplayName },
-              APAccountRef: typedExpense.qbo_ap_account_id
-                ? { value: typedExpense.qbo_ap_account_id, name: typedExpense.qbo_ap_account_name ?? undefined }
-                : undefined,
-            })
-        : existingSync?.qbo_id || typedExpense.qbo_id
-          ? await client.updatePurchase({
-              ...baseTxn,
-              EntityRef: { type: "Vendor", value: vendor.Id!, name: vendor.DisplayName },
-              AccountRef: { value: typedExpense.qbo_payment_account_id!, name: typedExpense.qbo_payment_account_name ?? undefined },
-              PaymentType: resolvePurchasePaymentType(typedExpense.payment_method),
-            })
-          : await client.createPurchase({
-              ...baseTxn,
-              EntityRef: { type: "Vendor", value: vendor.Id!, name: vendor.DisplayName },
-              AccountRef: { value: typedExpense.qbo_payment_account_id!, name: typedExpense.qbo_payment_account_name ?? undefined },
-              PaymentType: resolvePurchasePaymentType(typedExpense.payment_method),
-            })
+    const result = await createOrUpdateQBOEntity({
+      client,
+      entityType: transactionType === "bill" ? "bill" : "purchase",
+      qboId: existingSync?.qbo_id ?? typedExpense.qbo_id,
+      cachedSyncToken: existingSync?.qbo_sync_token,
+      payload: basePayload,
+      create: (p) => (transactionType === "bill" ? client.createBill(p) : client.createPurchase(p)),
+      update: (p) => (transactionType === "bill" ? client.updateBill(p) : client.updatePurchase(p)),
+      logContext: { orgId, expenseId, transactionType },
+    })
 
     await upsertSyncRecord({
       orgId,
@@ -942,7 +953,8 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       if (pid && line.project) projectInfoById.set(pid, line.project)
     }
     const customerByProject = new Map<string, { Id?: string; DisplayName?: string } | null>()
-    for (const pid of new Set(sourceLines.map((line) => line.project_id ?? typedBill.project_id))) {
+    const sourceProjectIds = Array.from(new Set(sourceLines.map((line) => line.project_id ?? typedBill.project_id).filter(Boolean)))
+    for (const pid of sourceProjectIds) {
       if (!pid || customerByProject.has(pid)) continue
       customerByProject.set(
         pid,
@@ -955,11 +967,25 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
         }),
       )
     }
+    const { data: projectSettings, error: projectSettingsError } = await supabase
+      .from("project_financial_settings")
+      .select("project_id, billing_model")
+      .eq("org_id", orgId)
+      .in("project_id", sourceProjectIds)
+    if (projectSettingsError) {
+      throw new Error(`Failed to load project billing settings: ${projectSettingsError.message}`)
+    }
+    const billingModelByProject = new Map(
+      (projectSettings ?? []).map((settings) => [settings.project_id, settings.billing_model]),
+    )
 
     const qboLines = sourceLines.map((line) => {
       const amount = ((line.unit_cost_cents ?? 0) * (line.quantity ?? 1)) / 100
       const metadata = (line.metadata as Record<string, any> | null) ?? {}
       const lineProjectId = line.project_id ?? typedBill.project_id
+      const billableToCustomer =
+        isCostDrivenBillingModel(billingModelByProject.get(lineProjectId)) &&
+        metadata.billable_to_customer === true
       const lineCustomer = lineProjectId ? customerByProject.get(lineProjectId) : null
       const lineProject = (lineProjectId ? projectInfoById.get(lineProjectId) : null) ?? typedBill.project
       const lineAccountId =
@@ -994,7 +1020,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
                 name: lineCustomer.DisplayName,
               }
             : undefined,
-          BillableStatus: "Billable",
+          BillableStatus: billableToCustomer ? "Billable" : "NotBillable",
           ClassRef: classRef,
         },
       }
@@ -1007,13 +1033,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       .eq("entity_type", "bill")
       .eq("entity_id", billId)
       .maybeSingle()
-    const existingQboId = existingSync?.qbo_id ?? typedBill.qbo_id ?? undefined
-    const existingQboBill =
-      existingQboId && !existingSync?.qbo_sync_token ? await client.getBillById(existingQboId).catch(() => null) : null
-
     const qboBill = {
-      Id: existingQboId,
-      SyncToken: existingSync?.qbo_sync_token ?? existingQboBill?.SyncToken ?? undefined,
       DocNumber: typedBill.bill_number ?? undefined,
       TxnDate: typedBill.bill_date ?? new Date().toISOString().slice(0, 10),
       DueDate: typedBill.due_date ?? undefined,
@@ -1025,26 +1045,16 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       Line: qboLines,
     }
 
-    let result: any
-    try {
-      result = existingQboId
-        ? await client.updateBill(qboBill as any)
-        : await client.createBill(qboBill as any)
-    } catch (syncErr: any) {
-      // QBO uses optimistic concurrency: if the bill was edited directly in
-      // QuickBooks since we last synced, our stored SyncToken is stale (fault
-      // 5010). Refresh the token from QBO and retry the update once.
-      if (syncErr instanceof QBOError && isStaleObjectError(syncErr) && existingQboId) {
-        const latestBill = await client.getBillById(existingQboId)
-        if (!latestBill?.SyncToken) {
-          throw new Error("Unable to refresh QuickBooks bill sync token")
-        }
-        result = await client.updateBill({ ...qboBill, SyncToken: latestBill.SyncToken } as any)
-        logQBO("warn", "vendor_bill_sync_stale_token_retried", { orgId, billId, qboId: result.Id })
-      } else {
-        throw syncErr
-      }
-    }
+    const result = await createOrUpdateQBOEntity({
+      client,
+      entityType: "bill",
+      qboId: existingSync?.qbo_id ?? typedBill.qbo_id,
+      cachedSyncToken: existingSync?.qbo_sync_token,
+      payload: qboBill,
+      create: (p) => client.createBill(p as any),
+      update: (p) => client.updateBill(p as any),
+      logContext: { orgId, billId },
+    })
 
     await upsertSyncRecord({
       orgId,
@@ -1957,4 +1967,101 @@ function isDuplicateDocNumber(error: QBOError) {
 function isStaleObjectError(error: QBOError) {
   const detail = JSON.stringify(error.qboError ?? {}).toLowerCase()
   return error.faultCode === "5010" || detail.includes("stale object")
+}
+
+type QBOUpdatableEntityType = "purchase" | "bill" | "invoice"
+
+function fetchQBOEntityById(
+  client: QBOClient,
+  entityType: QBOUpdatableEntityType,
+  qboId: string,
+): Promise<{ Id?: string; SyncToken?: string } | null> {
+  switch (entityType) {
+    case "purchase":
+      return client.getPurchaseById(qboId)
+    case "bill":
+      return client.getBillById(qboId)
+    case "invoice":
+      return client.getInvoiceById(qboId) as Promise<{ Id?: string; SyncToken?: string } | null>
+  }
+}
+
+/**
+ * Decide whether a push should create or update a QuickBooks entity, always
+ * returning a usable SyncToken for updates.
+ *
+ * QBO uses optimistic concurrency, so every update needs the record's current
+ * SyncToken. Two situations leave us without a usable token:
+ *   1. The record was imported FROM QuickBooks — it has a qbo_id but we never
+ *      stored a SyncToken (the original "Id and SyncToken required" failure).
+ *   2. The record was deleted in QuickBooks after we cached its id.
+ * When the cached token is missing we fetch the live record to recover it; if
+ * the record is gone we fall back to create so the entity can't get stuck.
+ */
+async function resolveQBOSyncTarget(params: {
+  client: QBOClient
+  entityType: QBOUpdatableEntityType
+  qboId?: string | null
+  cachedSyncToken?: string | null
+  logContext?: Record<string, unknown>
+}): Promise<{ mode: "create" } | { mode: "update"; id: string; syncToken: string }> {
+  const qboId = params.qboId?.toString().trim() || undefined
+  if (!qboId) return { mode: "create" }
+
+  const cachedToken = params.cachedSyncToken?.toString().trim() || undefined
+  if (cachedToken) return { mode: "update", id: qboId, syncToken: cachedToken }
+
+  const latest = await fetchQBOEntityById(params.client, params.entityType, qboId)
+  if (!latest) {
+    // Record was deleted in QuickBooks; recreate it instead of erroring forever.
+    logQBO("warn", "qbo_entity_recreated_after_delete", { entityType: params.entityType, qboId, ...params.logContext })
+    return { mode: "create" }
+  }
+  if (!latest.SyncToken) {
+    throw new Error(`Unable to resolve QuickBooks ${params.entityType} sync token`)
+  }
+  return { mode: "update", id: qboId, syncToken: latest.SyncToken }
+}
+
+/**
+ * Create-or-update a QuickBooks entity with full SyncToken safety: resolves a
+ * usable token up front (see {@link resolveQBOSyncTarget}) and, if the token
+ * goes stale because the record was edited directly in QBO (fault 5010),
+ * refreshes it and retries the update once.
+ */
+async function createOrUpdateQBOEntity<T extends Record<string, any>>(params: {
+  client: QBOClient
+  entityType: QBOUpdatableEntityType
+  qboId?: string | null
+  cachedSyncToken?: string | null
+  payload: T
+  create: (payload: T) => Promise<any>
+  update: (payload: T & { Id: string; SyncToken: string }) => Promise<any>
+  logContext?: Record<string, unknown>
+}): Promise<any> {
+  const target = await resolveQBOSyncTarget({
+    client: params.client,
+    entityType: params.entityType,
+    qboId: params.qboId,
+    cachedSyncToken: params.cachedSyncToken,
+    logContext: params.logContext,
+  })
+
+  if (target.mode === "create") {
+    return params.create(params.payload)
+  }
+
+  try {
+    return await params.update({ ...params.payload, Id: target.id, SyncToken: target.syncToken })
+  } catch (err) {
+    if (err instanceof QBOError && isStaleObjectError(err)) {
+      const latest = await fetchQBOEntityById(params.client, params.entityType, target.id)
+      if (!latest?.SyncToken) {
+        throw new Error(`Unable to refresh QuickBooks ${params.entityType} sync token`)
+      }
+      logQBO("warn", "qbo_entity_stale_token_retried", { entityType: params.entityType, qboId: target.id, ...params.logContext })
+      return params.update({ ...params.payload, Id: target.id, SyncToken: latest.SyncToken })
+    }
+    throw err
+  }
 }

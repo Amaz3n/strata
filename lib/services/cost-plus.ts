@@ -564,7 +564,7 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
   const { data: line, error } = await supabase
     .from("bill_lines")
     .select(`
-      id, org_id, bill_id, cost_code_id, description, quantity, unit_cost_cents,
+      id, org_id, bill_id, project_id, cost_code_id, description, quantity, unit_cost_cents, metadata,
       cost_code:cost_codes(id, category, is_reimbursable_default),
       bill:vendor_bills(id, org_id, project_id, bill_number, bill_date, status, commitment:commitments(company_id))
     `)
@@ -574,9 +574,10 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
 
   if (error || !line) throw new Error("Bill line not found")
   const bill = (line as any).bill
-  if (!bill?.project_id) throw new Error("Bill line is missing project context")
+  const projectId = (line as any).project_id ?? bill?.project_id
+  if (!projectId) throw new Error("Bill line is missing project context")
 
-  const contract = await getProjectCostContract(supabase, resolvedOrgId, bill.project_id)
+  const contract = await getProjectCostContract(supabase, resolvedOrgId, projectId)
   if (!isCostPlusContract(contract)) throw new Error("Project contract is not cost-plus or T&M")
   assertCostSourceCanEnterBillableLedger({
     billingModel: contract.contract_type === "time_materials" ? "time_and_materials" : contract.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent",
@@ -593,14 +594,16 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
     costCodeCategory: (line as any).cost_code?.category ?? null,
     occurredOn: new Date(bill.bill_date ?? new Date()),
   })
-  const isBillable = (line as any).cost_code?.is_reimbursable_default !== false
+  const isBillable =
+    (line as any).metadata?.billable_to_customer === true &&
+    (line as any).cost_code?.is_reimbursable_default !== false
 
   return insertOrReturnBillableCost(
     supabase,
     resolvedOrgId,
     {
       org_id: resolvedOrgId,
-      project_id: bill.project_id,
+      project_id: projectId,
       cost_code_id: line.cost_code_id ?? null,
       source_type: "vendor_bill_line",
       source_id: line.id,

@@ -190,6 +190,7 @@ export interface AuditLogEntry {
   createdAt: string
   orgId: string | null
   orgName: string | null
+  projectName: string | null
   beforeData: any
   afterData: any
 }
@@ -496,6 +497,31 @@ export async function getAuditLogs({
 
   if (error) throw error
 
+  const projectIds = new Set<string>()
+  auditData?.forEach(log => {
+    if (log.entity_type === "project" && log.entity_id) {
+      projectIds.add(log.entity_id)
+    }
+    if (log.after_data?.project_id) {
+      projectIds.add(log.after_data.project_id)
+    }
+    if (log.before_data?.project_id) {
+      projectIds.add(log.before_data.project_id)
+    }
+  })
+
+  const projectNames: Record<string, string> = {}
+  if (projectIds.size > 0) {
+    const { data: projects } = await supabase
+      .from("projects")
+      .select("id, name")
+      .in("id", Array.from(projectIds))
+
+    projects?.forEach(p => {
+      projectNames[p.id] = p.name
+    })
+  }
+
   const auditLogs: AuditLogEntry[] = (auditData || []).map(log => ({
     id: log.id.toString(),
     action: log.action,
@@ -508,6 +534,10 @@ export async function getAuditLogs({
     createdAt: log.created_at,
     orgId: (log.org as any)?.id || null,
     orgName: (log.org as any)?.name || null,
+    projectName: (log.entity_type === "project" ? projectNames[log.entity_id as string] : null) 
+      || (log.after_data?.project_id ? projectNames[log.after_data.project_id] : null)
+      || (log.before_data?.project_id ? projectNames[log.before_data.project_id] : null)
+      || null,
     beforeData: log.before_data,
     afterData: log.after_data,
   }))

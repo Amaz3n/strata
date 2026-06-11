@@ -28,7 +28,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Plus, Search, MoreHorizontal, FolderOpen, X, SlidersHorizontal, Edit, Trash2, Check } from "@/components/icons"
+import { Plus, Search, MoreHorizontal, FolderOpen, X, SlidersHorizontal, Edit, Trash2, Check, ArrowUp, ArrowDown, ArrowUpDown } from "@/components/icons"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command"
@@ -36,7 +36,9 @@ import { Spinner } from "@/components/ui/spinner"
 import { toast } from "sonner"
 import { useForm, type UseFormReturn } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import type { Contact, Project, ProjectStatus } from "@/lib/types"
+import type { Contact, Project, ProjectScheduleSummary, ProjectStatus } from "@/lib/types"
+import { Progress } from "@/components/ui/progress"
+import { ProjectScheduleSheet } from "@/components/projects/project-schedule-sheet"
 import {
   createProjectAction,
   updateProjectAction,
@@ -101,6 +103,16 @@ const filterStatusOptions: { value: ProjectStatus | "all"; label: string }[] = [
 interface ProjectsClientProps {
   projects: Project[]
   clientContacts: Contact[]
+  scheduleSummaries: Record<string, ProjectScheduleSummary>
+}
+
+type SortKey = "name" | "client" | "status" | "schedule" | "progress" | "value"
+type SortDir = "asc" | "desc"
+
+function projectValueCents(project: Project): number | null {
+  if (typeof project.billing_contract?.total_cents === "number") return project.billing_contract.total_cents
+  if (typeof project.total_value === "number") return project.total_value * 100
+  return null
 }
 
 function toOperationalProjectStatus(status: ProjectStatus): ProjectStatus {
@@ -139,8 +151,24 @@ function normalizeProjectInput(values: ProjectInput): ProjectInput {
   }
 }
 
-export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps) {
+export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: ProjectsClientProps) {
   const [projectsState, setProjectsState] = useState<Project[]>(projects)
+
+  // Sorting (client-side; all projects are already loaded)
+  const [sortKey, setSortKey] = useState<SortKey>("name")
+  const [sortDir, setSortDir] = useState<SortDir>("asc")
+
+  // Schedule progress sheet
+  const [scheduleSheetProject, setScheduleSheetProject] = useState<Project | null>(null)
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    } else {
+      setSortKey(key)
+      setSortDir("asc")
+    }
+  }
 
   // Create sheet
   const [createSheetOpen, setCreateSheetOpen] = useState(false)
@@ -351,6 +379,36 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
   const clientById = new Map(clientContacts.map((contact) => [contact.id, contact]))
   const activeFilters = statusFilter !== "all" ? 1 : 0
 
+  const sortedProjects = [...filteredProjects].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1
+    let cmp = 0
+    switch (sortKey) {
+      case "name":
+        cmp = a.name.localeCompare(b.name)
+        break
+      case "client":
+        cmp = (clientById.get(a.client_id ?? "")?.full_name ?? "").localeCompare(
+          clientById.get(b.client_id ?? "")?.full_name ?? "",
+        )
+        break
+      case "status":
+        cmp = a.status.localeCompare(b.status)
+        break
+      case "schedule":
+        // Sort by start date; projects without a start date sink to the bottom.
+        cmp = (a.start_date ?? "9999-99-99").localeCompare(b.start_date ?? "9999-99-99")
+        break
+      case "progress":
+        cmp = (scheduleSummaries[a.id]?.percent ?? -1) - (scheduleSummaries[b.id]?.percent ?? -1)
+        break
+      case "value":
+        cmp = (projectValueCents(a) ?? -1) - (projectValueCents(b) ?? -1)
+        break
+    }
+    if (cmp === 0) cmp = a.name.localeCompare(b.name)
+    return cmp * dir
+  })
+
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background">
       {/* Toolbar */}
@@ -440,7 +498,7 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
           <>
             {/* Mobile list */}
             <div className="md:hidden divide-y">
-              {filteredProjects.map((project) => (
+              {sortedProjects.map((project) => (
                 <div key={project.id} className="flex items-start justify-between gap-2 px-4 py-3">
                   <Link
                     href={`/projects/${project.id}`}
@@ -466,18 +524,20 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="pl-6 w-[24%]">Project</TableHead>
-                    <TableHead className="w-[18%]">Client</TableHead>
+                    <SortHeader label="Project" column="name" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="pl-6 w-[22%]" />
+                    <SortHeader label="Client" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[16%]" />
                     <TableHead>Address</TableHead>
-                    <TableHead className="w-[12%]">Status</TableHead>
-                    <TableHead className="w-[18%]">Schedule</TableHead>
-                    <TableHead className="text-right w-[12%]">Value</TableHead>
+                    <SortHeader label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[11%]" />
+                    <SortHeader label="Schedule" column="schedule" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[15%]" />
+                    <SortHeader label="Progress" column="progress" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[13%]" />
+                    <SortHeader label="Value" column="value" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[11%]" align="right" />
                     <TableHead className="w-[52px] pr-4" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredProjects.map((project) => {
+                  {sortedProjects.map((project) => {
                     const client = project.client_id ? clientById.get(project.client_id) : null
+                    const summary = scheduleSummaries[project.id] ?? null
 
                     return (
                       <TableRow key={project.id}>
@@ -509,9 +569,26 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
                                 ? `Ends ${new Date(project.end_date).toLocaleDateString()}`
                                 : "No schedule"}
                         </TableCell>
+                        <TableCell className="py-3">
+                          {summary && summary.total > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setScheduleSheetProject(project)}
+                              className="group flex w-full items-center gap-2 text-left"
+                              title="View schedule progress"
+                            >
+                              <Progress value={summary.percent} className="h-1.5 flex-1" />
+                              <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground group-hover:text-foreground">
+                                {summary.percent}%
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right text-sm py-3">
-                          {typeof (project.billing_contract?.total_cents ?? (typeof project.total_value === "number" ? project.total_value * 100 : undefined)) === "number"
-                            ? `$${((project.billing_contract?.total_cents ?? project.total_value! * 100) / 100).toLocaleString()}`
+                          {projectValueCents(project) !== null
+                            ? `$${(projectValueCents(project)! / 100).toLocaleString()}`
                             : "—"}
                         </TableCell>
                         <TableCell className="pr-4 py-3">
@@ -569,6 +646,17 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         }}
       />
 
+      {/* Schedule progress */}
+      <ProjectScheduleSheet
+        open={scheduleSheetProject !== null}
+        onOpenChange={(open) => {
+          if (!open) setScheduleSheetProject(null)
+        }}
+        projectId={scheduleSheetProject?.id ?? null}
+        projectName={scheduleSheetProject?.name ?? ""}
+        summary={scheduleSheetProject ? scheduleSummaries[scheduleSheetProject.id] ?? null : null}
+      />
+
       {/* Delete confirmation */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
@@ -593,6 +681,46 @@ export function ProjectsClient({ projects, clientContacts }: ProjectsClientProps
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  )
+}
+
+function SortHeader({
+  label,
+  column,
+  sortKey,
+  sortDir,
+  onSort,
+  className,
+  align,
+}: {
+  label: string
+  column: SortKey
+  sortKey: SortKey
+  sortDir: SortDir
+  onSort: (key: SortKey) => void
+  className?: string
+  align?: "right"
+}) {
+  const active = sortKey === column
+  return (
+    <TableHead className={className}>
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className={cn(
+          "inline-flex items-center gap-1 transition-colors hover:text-foreground",
+          align === "right" && "flex-row-reverse",
+          active ? "text-foreground" : "",
+        )}
+      >
+        {label}
+        {active ? (
+          sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-40" />
+        )}
+      </button>
+    </TableHead>
   )
 }
 

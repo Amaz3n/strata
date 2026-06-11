@@ -1,5 +1,5 @@
 import { Suspense } from "react"
-import { listProjectClientContactsAction, listProjectsAction } from "./actions"
+import { listProjectClientContactsAction, listProjectScheduleSummariesAction, listProjectsAction } from "./actions"
 import { ProjectsClient } from "./projects-client"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -10,12 +10,20 @@ export const dynamic = 'force-dynamic'
 
 async function ProjectsData() {
   const { orgId } = await requireOrgContext()
-  const [projects, clientContacts] = await Promise.all([
+  const [projects, clientContacts, scheduleSummaries] = await Promise.all([
     listProjectsAction(),
     listProjectClientContactsAction(),
+    listProjectScheduleSummariesAction(),
   ])
 
-  return <ProjectsClient key={orgId} projects={projects} clientContacts={clientContacts} />
+  return (
+    <ProjectsClient
+      key={orgId}
+      projects={projects}
+      clientContacts={clientContacts}
+      scheduleSummaries={scheduleSummaries}
+    />
+  )
 }
 
 export default function ProjectsPage() {

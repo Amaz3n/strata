@@ -12,6 +12,7 @@ import {
   unlinkInvoiceFromChangeOrder,
   updateChangeOrder,
   deleteChangeOrder,
+  voidChangeOrder,
 } from "@/lib/services/change-orders"
 import { listInvoices } from "@/lib/services/invoices"
 import { requireOrgContext } from "@/lib/services/context"
@@ -166,6 +167,23 @@ export async function deleteChangeOrderAction(changeOrderId: string) {
     revalidatePath("/change-orders")
     if (changeOrder.project_id) {
       revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+    }
+    return changeOrder
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function voidChangeOrderAction(changeOrderId: string, reason?: string) {
+  try {
+    const trimmed = typeof reason === "string" ? reason.trim() : ""
+    const changeOrder = await voidChangeOrder({ changeOrderId, reason: trimmed.length > 0 ? trimmed : null })
+    revalidatePath("/change-orders")
+    if (changeOrder.project_id) {
+      revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+      revalidatePath(`/projects/${changeOrder.project_id}/financials/receivables`)
+      revalidatePath(`/projects/${changeOrder.project_id}/budget`)
+      revalidatePath(`/projects/${changeOrder.project_id}`)
     }
     return changeOrder
   } catch (error) {

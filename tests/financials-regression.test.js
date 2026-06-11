@@ -87,6 +87,22 @@ test("cost-driven projects can promote approved sources into the billable ledger
   )
 })
 
+test("vendor bill billability is explicit and fixed-price allocations remain blocked", () => {
+  const vendorBillSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/vendor-bills.ts"),
+    "utf8",
+  )
+  const costPlusSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/cost-plus.ts"),
+    "utf8",
+  )
+
+  assert.match(vendorBillSource, /billingModelByProject[\s\S]*line\.billable_to_customer === true/)
+  assert.match(costPlusSource, /metadata\?\.billable_to_customer === true/)
+  assert.match(vendorBillSource, /voidBillableCostsForVendorBill[\s\S]*replaceBillLineCoding/)
+  assert.match(vendorBillSource, /voidJobCostEntriesForVendorBill[\s\S]*replaceBillLineCoding/)
+})
+
 test("approved-cost invoice idempotency key is stable, sorted, and sensitive to invoice facts", () => {
   const preview = {
     lines: [],

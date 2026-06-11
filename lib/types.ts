@@ -196,6 +196,16 @@ export interface Project {
   updated_at: string
 }
 
+// Lightweight, duration-weighted schedule rollup used by the projects list "Progress" column.
+// Computed on the fly from schedule_items (cancelled items excluded); not persisted.
+export interface ProjectScheduleSummary {
+  percent: number // 0-100, duration-weighted completion as of today
+  total: number // count of non-cancelled items
+  completed: number
+  in_progress: number // in_progress | at_risk | blocked
+  upcoming: number // planned
+}
+
 export interface ProjectFinancialSettings {
   id: string
   org_id: string

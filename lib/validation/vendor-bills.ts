@@ -21,6 +21,7 @@ export const vendorBillStatusUpdateSchema = z.object({
         description: z.string().min(1).max(500).optional(),
         amount_cents: z.number().int(),
         project_id: z.string().uuid("Invalid project").nullable().optional(),
+        billable_to_customer: z.boolean().optional(),
         qbo_expense_account_id: z.string().optional(),
         qbo_expense_account_name: z.string().optional(),
         qbo_ap_account_id: z.string().optional(),

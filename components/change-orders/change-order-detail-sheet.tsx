@@ -18,10 +18,12 @@ import { Separator } from "@/components/ui/separator"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Clock, Sparkles } from "@/components/icons"
+import { Textarea } from "@/components/ui/textarea"
+import { Clock, Sparkles, Ban } from "@/components/icons"
 import { Link2, Loader2, Receipt, Unlink } from "lucide-react"
 import {
   approveChangeOrderAction,
+  voidChangeOrderAction,
   unlinkInvoiceFromChangeOrderAction,
   getChangeOrderLinkedInvoicesAction,
   linkInvoiceToChangeOrderAction,
@@ -107,6 +109,9 @@ export function ChangeOrderDetailSheet({
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
   const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
+  const [voidDialogOpen, setVoidDialogOpen] = useState(false)
+  const [voidReason, setVoidReason] = useState("")
+  const [voiding, setVoiding] = useState(false)
 
   const [linkedInvoices, setLinkedInvoices] = useState<LinkedInvoice[]>([])
   const [linkedInvoicesLoading, setLinkedInvoicesLoading] = useState(false)
@@ -260,7 +265,9 @@ export function ChangeOrderDetailSheet({
   }
 
   const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
-  const canApprove = changeOrder.status !== "approved"
+  const isVoided = changeOrder.status === "cancelled"
+  const canApprove = changeOrder.status !== "approved" && !isVoided
+  const canVoid = changeOrder.status === "approved"
   const financialImpact = changeOrder.metadata?.financial_impact as
     | {
         budget_revision_cents?: number
@@ -294,6 +301,24 @@ export function ChangeOrderDetailSheet({
       toast.error("Failed to approve", { description: error?.message ?? "Please try again." })
     } finally {
       setApproving(false)
+    }
+  }
+
+  const handleVoid = async () => {
+    if (!canVoid) return
+    setVoiding(true)
+    try {
+      const updated = await voidChangeOrderAction(changeOrder.id, voidReason)
+      onUpdate?.(updated)
+      setVoidDialogOpen(false)
+      setVoidReason("")
+      toast.success("Change order voided", {
+        description: "Its impact on the contract value, GMP, budget, and draws has been reversed.",
+      })
+    } catch (error: any) {
+      toast.error("Could not void change order", { description: error?.message ?? "Please try again." })
+    } finally {
+      setVoiding(false)
     }
   }
 
@@ -602,32 +627,96 @@ export function ChangeOrderDetailSheet({
 
         {/* Footer */}
           <div className="flex-shrink-0 border-t bg-muted/30 p-4">
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="default"
-                onClick={() => setSignatureWizardOpen(true)}
-                className={canApprove ? "flex-1" : "w-1/2"}
-                disabled={!changeOrder.project_id}
-              >
-                Send for signature
-              </Button>
-              {canApprove && (
-                <Button onClick={handleApprove} disabled={approving} variant="outline" className="flex-1">
-                  {approving ? "Recording..." : "Record offline approval"}
+            {isVoided ? (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                  <Ban className="mt-0.5 h-4 w-4 shrink-0" />
+                  <div>
+                    <p className="font-medium">This change order has been voided.</p>
+                    <p className="text-xs text-destructive/80">
+                      Its impact on the contract value, GMP, budget, and draw schedule was reversed.
+                      {changeOrder.metadata?.void_reason ? ` Reason: ${changeOrder.metadata.void_reason}` : ""}
+                    </p>
+                  </div>
+                </div>
+                <Button variant="outline" onClick={() => onOpenChange(false)} className="w-full">
+                  Close
                 </Button>
-              )}
-              <Button
-                variant="outline"
-                onClick={() => onOpenChange(false)}
-                className={canApprove ? "flex-1" : "w-1/2"}
-              >
-                Close
-              </Button>
-            </div>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="default"
+                  onClick={() => setSignatureWizardOpen(true)}
+                  className="flex-1"
+                  disabled={!changeOrder.project_id}
+                >
+                  Send for signature
+                </Button>
+                {canApprove && (
+                  <Button onClick={handleApprove} disabled={approving} variant="outline" className="flex-1">
+                    {approving ? "Recording..." : "Record offline approval"}
+                  </Button>
+                )}
+                {canVoid && (
+                  <Button
+                    onClick={() => setVoidDialogOpen(true)}
+                    variant="outline"
+                    className="flex-1 text-destructive hover:text-destructive"
+                  >
+                    <Ban className="mr-2 h-4 w-4" />
+                    Void
+                  </Button>
+                )}
+                <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">
+                  Close
+                </Button>
+              </div>
+            )}
           </div>
         </SheetContent>
       </Sheet>
+
+      <Dialog
+        open={voidDialogOpen}
+        onOpenChange={(open) => {
+          setVoidDialogOpen(open)
+          if (!open) setVoidReason("")
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Void this change order?</DialogTitle>
+            <DialogDescription>
+              Voiding reverses {changeOrder.title}&apos;s impact on the contract value, GMP, budget, and pending draws.
+              The change order is kept for the record but marked cancelled. This is the right way to back out an
+              approved change order — it can&apos;t be deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="void-reason" className="text-sm font-medium">
+              Reason <span className="font-normal text-muted-foreground">(optional)</span>
+            </label>
+            <Textarea
+              id="void-reason"
+              value={voidReason}
+              onChange={(event) => setVoidReason(event.target.value)}
+              placeholder="e.g. Approved by mistake, scope no longer applies…"
+              rows={3}
+            />
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setVoidDialogOpen(false)} disabled={voiding}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleVoid} disabled={voiding}>
+              {voiding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Void change order
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={linkPickerOpen} onOpenChange={(open) => {
         setLinkPickerOpen(open)

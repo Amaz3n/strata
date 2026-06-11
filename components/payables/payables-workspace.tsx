@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import {
   DropdownMenu,
@@ -51,6 +52,7 @@ import {
 } from "@/app/(app)/documents/actions"
 import {
   ensureProjectVendorCompanyForPayableAction,
+  reassignProjectVendorCreditAction,
   syncProjectVendorBillToQBOAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
@@ -61,7 +63,12 @@ import { filterPayables, payableQueueCounts, type PayableQueue } from "./payable
 import { PayableDocumentPane } from "./payable-document-pane"
 
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string }
-type ProjectOption = { id: string; name: string }
+type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
+type ProjectOption = { id: string; name: string; billingModel: ProjectBillingModel }
+
+function supportsBillableCosts(billingModel?: ProjectBillingModel) {
+  return Boolean(billingModel && billingModel !== "fixed_price")
+}
 
 interface PayablesWorkspaceProps {
   projectId: string
@@ -88,6 +95,7 @@ type SplitLine = {
   amountDollars: string
   qboExpenseAccountId?: string
   qboApAccountId?: string
+  billableToCustomer: boolean
 }
 
 export function PayablesWorkspace({
@@ -124,6 +132,7 @@ export function PayablesWorkspace({
   const [isChangingVendor, setIsChangingVendor] = useState(false)
   const [vendorPickerOpen, setVendorPickerOpen] = useState(false)
   const [searchVendor, setSearchVendor] = useState("")
+  const [creditProjectId, setCreditProjectId] = useState("")
 
   useEffect(() => {
     let cancelled = false
@@ -295,6 +304,7 @@ export function PayablesWorkspace({
     setBillNumber(selectedBill.bill_number ?? "")
     setBillDate(selectedBill.bill_date ?? "")
     setDueDate(selectedBill.due_date ?? "")
+    setCreditProjectId(selectedBill.project_id)
 
     const existing = selectedBill.actual_lines ?? []
     setSplitLines(
@@ -307,6 +317,7 @@ export function PayablesWorkspace({
             amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
             qboExpenseAccountId: line.qbo_expense_account_id ?? selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
             qboApAccountId: line.qbo_ap_account_id ?? selectedBill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
+            billableToCustomer: line.billable_to_customer === true,
           }))
         : [
             {
@@ -317,6 +328,7 @@ export function PayablesWorkspace({
               amountDollars: ((selectedBill.total_cents ?? 0) / 100).toFixed(2),
               qboExpenseAccountId: selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
               qboApAccountId: selectedBill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
+              billableToCustomer: false,
             },
           ],
     )
@@ -438,6 +450,7 @@ export function PayablesWorkspace({
       cost_code_id: costCodesEnabled ? line.costCodeId || null : null,
       description: line.description.trim() || billNumber || "Vendor bill",
       amount_cents: dollarsToCents(line.amountDollars),
+      billable_to_customer: line.billableToCustomer,
       qbo_expense_account_id: line.qboExpenseAccountId || qboExpenseAccountId || undefined,
       qbo_expense_account_name: getExpenseAccountName(line.qboExpenseAccountId || qboExpenseAccountId),
       qbo_ap_account_id: line.qboApAccountId || qboApAccountId || undefined,
@@ -475,6 +488,20 @@ export function PayablesWorkspace({
           qbo_ap_account_name: getApAccountName(qboApAccountId),
         })
         toast.success("Payable saved")
+        onChanged()
+      } catch (error) {
+        toast.error((error as Error).message)
+      }
+    })
+  }
+
+  const reassignCredit = () => {
+    if (!selectedBill || !selectedIsVendorCredit || !creditProjectId || creditProjectId === selectedBill.project_id) return
+    startTransition(async () => {
+      try {
+        const result = await reassignProjectVendorCreditAction(projectId, selectedBill.id, creditProjectId)
+        toast.success("Vendor credit reassigned")
+        router.push(`/projects/${result.projectId}/financials/payables?bill=${selectedBill.id}`)
         onChanged()
       } catch (error) {
         toast.error((error as Error).message)
@@ -975,6 +1002,7 @@ export function PayablesWorkspace({
                       amountDollars: "0.00",
                       qboExpenseAccountId: qboExpenseAccountId,
                       qboApAccountId: qboApAccountId,
+                      billableToCustomer: false,
                     },
                   ])
                 }
@@ -1000,7 +1028,25 @@ export function PayablesWorkspace({
                       <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Project</Label>
                       <Select
                         value={line.projectId}
-                        onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, projectId: value } : item)))}
+                        disabled={selectedIsVendorCredit}
+                        onValueChange={(value) =>
+                          setSplitLines((prev) =>
+                            prev.map((item) =>
+                              item.id === line.id
+                                ? {
+                                    ...item,
+                                    projectId: value,
+                                    billableToCustomer:
+                                      supportsBillableCosts(
+                                        projects.find((project) => project.id === value)?.billingModel,
+                                      )
+                                        ? item.billableToCustomer
+                                        : false,
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
                       >
                         <SelectTrigger className="h-9 w-full text-xs"><SelectValue placeholder="Select project" /></SelectTrigger>
                         <SelectContent>
@@ -1009,6 +1055,11 @@ export function PayablesWorkspace({
                           ))}
                         </SelectContent>
                       </Select>
+                      {selectedIsVendorCredit ? (
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          Use Reassign below to move the full QuickBooks credit safely.
+                        </p>
+                      ) : null}
                     </div>
 
                     <div>
@@ -1068,6 +1119,36 @@ export function PayablesWorkspace({
                       />
                     </div>
                   </div>
+
+                  {!selectedIsVendorCredit ? (
+                    <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/20 px-3 py-2.5">
+                      <div className="min-w-0">
+                        <Label htmlFor={`billable-${line.id}`} className="text-xs font-semibold">
+                          Billable to customer
+                        </Label>
+                        <p className="text-[11px] text-muted-foreground">
+                          {supportsBillableCosts(projects.find((project) => project.id === line.projectId)?.billingModel)
+                            ? "Include this cost in customer billing and mark it billable in QuickBooks."
+                            : "Available only for cost-plus and time-and-materials projects."}
+                        </p>
+                      </div>
+                      <Switch
+                        id={`billable-${line.id}`}
+                        checked={
+                          supportsBillableCosts(projects.find((project) => project.id === line.projectId)?.billingModel) &&
+                          line.billableToCustomer
+                        }
+                        disabled={
+                          !supportsBillableCosts(projects.find((project) => project.id === line.projectId)?.billingModel)
+                        }
+                        onCheckedChange={(checked) =>
+                          setSplitLines((prev) =>
+                            prev.map((item) => (item.id === line.id ? { ...item, billableToCustomer: checked } : item)),
+                          )
+                        }
+                      />
+                    </div>
+                  ) : null}
 
                   {/* Third row: QuickBooks Coding (if accounting enabled) */}
                   {accountingEnabled && (
@@ -1140,7 +1221,28 @@ export function PayablesWorkspace({
         {/* Footer actions */}
         <div className="flex items-center justify-between gap-3 border-t bg-muted/10 px-4 py-3 sm:px-6">
           {selectedIsVendorCredit ? (
-            <span className="text-xs font-medium text-muted-foreground">Inbound from QuickBooks</span>
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="shrink-0 text-xs font-medium text-muted-foreground">Assigned project</span>
+              <Select value={creditProjectId} onValueChange={setCreditProjectId}>
+                <SelectTrigger className="h-9 max-w-xs">
+                  <SelectValue placeholder="Select project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                disabled={isPending || !creditProjectId || creditProjectId === selectedBill.project_id}
+                onClick={reassignCredit}
+              >
+                {isPending ? "Moving..." : "Reassign"}
+              </Button>
+            </div>
           ) : (
             <Button variant="ghost" disabled={isPending || effectiveSyncStatus === "synced"} onClick={syncToQbo}>
               <ExternalLink className="mr-2 h-4 w-4" />

@@ -2,7 +2,13 @@
 
 import { revalidatePath } from "next/cache"
 import { vendorBillStatusUpdateSchema, vendorBillCreateSchema } from "@/lib/validation/vendor-bills"
-import { updateVendorBillStatus, listVendorBillsForProject, mapVendorBill, deleteVendorBill } from "@/lib/services/vendor-bills"
+import {
+  updateVendorBillStatus,
+  listVendorBillsForProject,
+  mapVendorBill,
+  deleteVendorBill,
+  reassignImportedVendorCredit,
+} from "@/lib/services/vendor-bills"
 import { listProjectCommitments } from "@/lib/services/commitments"
 import { createCompany, getCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
@@ -337,6 +343,17 @@ export async function deleteProjectVendorBillAction(projectId: string, billId: s
     await deleteVendorBill({ billId })
     revalidatePayablesPages(projectId)
     return { success: true }
+  } catch (error) {
+    cleanAndRethrowError(error)
+  }
+}
+
+export async function reassignProjectVendorCreditAction(projectId: string, billId: string, targetProjectId: string) {
+  try {
+    const result = await reassignImportedVendorCredit({ billId, targetProjectId })
+    revalidatePayablesPages(projectId)
+    revalidatePayablesPages(targetProjectId)
+    return result
   } catch (error) {
     cleanAndRethrowError(error)
   }

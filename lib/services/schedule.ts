@@ -9,6 +9,7 @@ import type {
   ScheduleItemChangeOrder,
   DrawSchedule,
   ChangeOrder,
+  ProjectScheduleSummary,
 } from "@/lib/types"
 import type { 
   ScheduleItemInput, 
@@ -131,6 +132,70 @@ export async function listScheduleItemsWithClient(supabase: SupabaseClient, orgI
   }
 
   return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+}
+
+// Duration-weighted completion rollup per project, computed from a single lightweight
+// org-wide query. Longer schedule items count proportionally more than short ones; items
+// with missing/zero duration fall back to a weight of one day so they still contribute.
+export async function getProjectScheduleSummaries(
+  orgId?: string,
+): Promise<Record<string, ProjectScheduleSummary>> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  return getProjectScheduleSummariesWithClient(supabase, resolvedOrgId)
+}
+
+export async function getProjectScheduleSummariesWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<Record<string, ProjectScheduleSummary>> {
+  const { data, error } = await supabase
+    .from("schedule_items")
+    .select("project_id, status, start_date, end_date, progress")
+    .eq("org_id", orgId)
+
+  if (error) {
+    throw new Error(`Failed to load schedule summaries: ${error.message}`)
+  }
+
+  type Acc = { weighted: number; weight: number; summary: ProjectScheduleSummary }
+  const byProject = new Map<string, Acc>()
+  const DAY_MS = 24 * 60 * 60 * 1000
+
+  for (const row of data ?? []) {
+    const projectId = row.project_id as string | null
+    if (!projectId) continue
+    const status = (row.status as string) ?? "planned"
+    if (status === "cancelled") continue
+
+    let acc = byProject.get(projectId)
+    if (!acc) {
+      acc = { weighted: 0, weight: 0, summary: { percent: 0, total: 0, completed: 0, in_progress: 0, upcoming: 0 } }
+      byProject.set(projectId, acc)
+    }
+
+    acc.summary.total += 1
+    if (status === "completed") acc.summary.completed += 1
+    else if (status === "in_progress" || status === "at_risk" || status === "blocked") acc.summary.in_progress += 1
+    else if (status === "planned") acc.summary.upcoming += 1
+
+    const value = status === "completed" ? 100 : Math.min(100, Math.max(0, Number(row.progress) || 0))
+
+    let durationDays = 1
+    if (row.start_date && row.end_date) {
+      const span = (new Date(row.end_date as string).getTime() - new Date(row.start_date as string).getTime()) / DAY_MS
+      if (Number.isFinite(span) && span > 0) durationDays = span
+    }
+
+    acc.weighted += durationDays * value
+    acc.weight += durationDays * 100
+  }
+
+  const result: Record<string, ProjectScheduleSummary> = {}
+  for (const [projectId, acc] of byProject) {
+    acc.summary.percent = acc.weight > 0 ? Math.round((acc.weighted / acc.weight) * 100) : 0
+    result[projectId] = acc.summary
+  }
+  return result
 }
 
 export async function listScheduleItemsByProject(projectId: string, orgId?: string): Promise<ScheduleItem[]> {

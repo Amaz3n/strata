@@ -376,10 +376,11 @@ export function AuditLogClient({
               <Table>
                 <TableHeader className="bg-muted/40 sticky top-0 z-10 border-b">
                   <TableRow>
-                    <TableHead className="pl-6 w-[20%]">User</TableHead>
-                    <TableHead className="w-[18%]">Organization</TableHead>
+                    <TableHead className="pl-6 w-[15%]">User</TableHead>
+                    <TableHead className="w-[15%]">Organization</TableHead>
+                    <TableHead className="w-[15%]">Project</TableHead>
                     <TableHead className="w-[10%]">Action</TableHead>
-                    <TableHead className="w-[18%]">Entity</TableHead>
+                    <TableHead className="w-[15%]">Entity</TableHead>
                     <TableHead>Details</TableHead>
                     <TableHead className="w-[15%]">Timestamp</TableHead>
                     <TableHead className="w-[50px] pr-4" />
@@ -422,6 +423,15 @@ export function AuditLogClient({
                             </Badge>
                           )}
                         </div>
+                      </TableCell>
+                      <TableCell className="py-3">
+                        {log.projectName ? (
+                          <span className="text-sm truncate max-w-[140px] text-muted-foreground" title={log.projectName}>
+                            {log.projectName}
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted-foreground/50">-</span>
+                        )}
                       </TableCell>
                       <TableCell className="py-3">
                         <Badge variant={getActionVariant(log.action)} className="capitalize text-[10px] px-2 py-0.5 font-medium shrink-0">
@@ -490,6 +500,11 @@ export function AuditLogClient({
                       {log.orgName && (
                         <span className="text-xs text-muted-foreground flex items-center gap-1">
                           • <Building2 className="h-3 w-3" /> {log.orgName}
+                        </span>
+                      )}
+                      {log.projectName && (
+                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                          • {log.projectName}
                         </span>
                       )}
                     </div>
@@ -586,6 +601,13 @@ export function AuditLogClient({
                   {selectedLog.orgId && (
                     <div className="text-[10px] text-muted-foreground font-mono break-all">{selectedLog.orgId}</div>
                   )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+                    Project
+                  </div>
+                  <div className="font-semibold text-sm">{selectedLog.projectName || "-"}</div>
                 </div>
 
                 <div className="space-y-1">

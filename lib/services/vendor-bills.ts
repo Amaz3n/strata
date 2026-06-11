@@ -106,6 +106,7 @@ export interface VendorBillActualLine {
   amount_cents: number
   project_id?: string | null
   project_name?: string
+  billable_to_customer: boolean
   qbo_expense_account_id?: string
   qbo_expense_account_name?: string
   qbo_ap_account_id?: string
@@ -139,6 +140,7 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     amount_cents: (line.unit_cost_cents ?? 0) * (line.quantity ?? 1),
     project_id: line.project_id ?? null,
     project_name: line.project?.name ?? undefined,
+    billable_to_customer: line.metadata?.billable_to_customer === true,
     qbo_expense_account_id: line.metadata?.qbo_expense_account_id ?? undefined,
     qbo_expense_account_name: line.metadata?.qbo_expense_account_name ?? undefined,
     qbo_ap_account_id: line.metadata?.qbo_ap_account_id ?? undefined,
@@ -273,6 +275,7 @@ async function replaceBillLineCoding(
       description: string
       amount_cents: number
       project_id?: string | null
+      billable_to_customer?: boolean
       qbo_expense_account_id?: string
       qbo_expense_account_name?: string
       qbo_ap_account_id?: string
@@ -283,6 +286,25 @@ async function replaceBillLineCoding(
   },
 ) {
   if (lines.length === 0) return
+
+  const projectIds = Array.from(
+    new Set(lines.map((line) => line.project_id).filter((id): id is string => typeof id === "string" && id.length > 0)),
+  )
+  const { data: projectSettings, error: projectSettingsError } =
+    projectIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("project_financial_settings")
+          .select("project_id, billing_model")
+          .eq("org_id", orgId)
+          .in("project_id", projectIds)
+
+  if (projectSettingsError) {
+    throw new Error(`Failed to load project billing settings: ${projectSettingsError.message}`)
+  }
+  const billingModelByProject = new Map(
+    (projectSettings ?? []).map((settings) => [settings.project_id, settings.billing_model]),
+  )
 
   const costCodeIds = Array.from(new Set(lines.map((line) => line.cost_code_id))).filter(
     (id): id is string => typeof id === "string" && id.length > 0,
@@ -322,6 +344,10 @@ async function replaceBillLineCoding(
     sort_order: index,
     metadata: {
       source: "ap_review",
+      billable_to_customer:
+        billingModelByProject.get(line.project_id ?? "") !== "fixed_price" &&
+        Boolean(billingModelByProject.get(line.project_id ?? "")) &&
+        line.billable_to_customer === true,
       qbo_expense_account_id: line.qbo_expense_account_id,
       qbo_expense_account_name: line.qbo_expense_account_name,
       qbo_ap_account_id: line.qbo_ap_account_id,
@@ -678,6 +704,7 @@ export async function updateVendorBillStatus({
         description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
         amount_cents: line.amount_cents,
         project_id: line.project_id ?? existing.project_id ?? null,
+        billable_to_customer: line.billable_to_customer === true,
         qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
         qbo_expense_account_name: line.qbo_expense_account_name ?? parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
         qbo_ap_account_id: line.qbo_ap_account_id ?? parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
@@ -714,6 +741,7 @@ export async function updateVendorBillStatus({
           description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
           amount_cents: totalCents,
           project_id: existing.project_id ?? null,
+          billable_to_customer: false,
           qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
           qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
           qbo_ap_account_id: parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
@@ -740,6 +768,11 @@ export async function updateVendorBillStatus({
     if (!isVendorCredit && isApprovedOrReleased && !updateData.qbo_expense_account_id && linesHaveQboExpenseCoding(actualLines)) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
+    }
+
+    if (["approved", "partial", "paid"].includes(String(existing.status))) {
+      await voidBillableCostsForVendorBill({ billId, orgId: resolvedOrgId })
+      await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
     }
 
     await replaceBillLineCoding(supabase, {
@@ -1160,4 +1193,155 @@ export async function deleteVendorBill({
   })
 
   return { projectId: existing.project_id }
+}
+
+export async function reassignImportedVendorCredit({
+  billId,
+  targetProjectId,
+  orgId,
+}: {
+  billId: string
+  targetProjectId: string
+  orgId?: string
+}): Promise<{ previousProjectId: string; projectId: string }> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: existingError } = await supabase
+    .from("vendor_bills")
+    .select("id, org_id, project_id, bill_number, total_cents, status, metadata, qbo_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+    .maybeSingle()
+
+  if (existingError || !existing) throw new Error("Vendor credit not found")
+  const metadata = (existing.metadata as Record<string, any> | null) ?? {}
+  if (metadata.source !== "vendor_credit" || metadata.imported_from_qbo !== true || !existing.qbo_id) {
+    throw new Error("Only vendor credits imported from QuickBooks can be reassigned")
+  }
+  if (!existing.project_id) throw new Error("Vendor credit is missing its current project")
+  if (existing.project_id === targetProjectId) {
+    return { previousProjectId: existing.project_id, projectId: targetProjectId }
+  }
+
+  await requireAuthorization({
+    permission: "bill.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "vendor_bill",
+    resourceId: billId,
+  })
+  await requireAuthorization({
+    permission: "bill.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: targetProjectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: targetProjectId,
+  })
+
+  const { data: targetProject, error: targetProjectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", targetProjectId)
+    .maybeSingle()
+  if (targetProjectError || !targetProject) throw new Error("Target project not found")
+
+  const { count: paymentCount, error: paymentsError } = await supabase
+    .from("payments")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", resolvedOrgId)
+    .eq("bill_id", billId)
+  if (paymentsError) throw new Error(`Failed to check credit dependencies: ${paymentsError.message}`)
+  if ((paymentCount ?? 0) > 0) {
+    throw new Error("This vendor credit cannot be reassigned because it is linked to a payment")
+  }
+
+  const previousProjectId = existing.project_id
+  await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
+
+  const { error: lineUpdateError } = await supabase
+    .from("bill_lines")
+    .update({ project_id: targetProjectId })
+    .eq("org_id", resolvedOrgId)
+    .eq("bill_id", billId)
+  if (lineUpdateError) {
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
+    throw new Error(`Failed to reassign vendor credit lines: ${lineUpdateError.message}`)
+  }
+
+  const { error: billUpdateError } = await supabase
+    .from("vendor_bills")
+    .update({
+      project_id: targetProjectId,
+      commitment_id: null,
+      metadata: {
+        ...metadata,
+        reassigned_from_project_id: previousProjectId,
+        reassigned_at: new Date().toISOString(),
+        reassigned_by: userId,
+      },
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+
+  if (billUpdateError) {
+    await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
+    throw new Error(`Failed to reassign vendor credit: ${billUpdateError.message}`)
+  }
+
+  try {
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
+  } catch (error) {
+    await supabase
+      .from("vendor_bills")
+      .update({ project_id: previousProjectId, metadata })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", billId)
+    await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId }).catch(() => {})
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Vendor credit was not reassigned because job costs could not be updated: ${message}`)
+  }
+
+  const { error: fileLinksError } = await supabase
+    .from("file_links")
+    .update({ project_id: targetProjectId })
+    .eq("org_id", resolvedOrgId)
+    .eq("entity_type", "vendor_bill")
+    .eq("entity_id", billId)
+  if (fileLinksError) {
+    console.warn("Vendor credit reassigned but its file links could not be moved", fileLinksError)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "vendor_bill",
+    entityId: billId,
+    before: existing,
+    after: { ...existing, project_id: targetProjectId },
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "vendor_credit_reassigned",
+    entityType: "vendor_bill",
+    entityId: billId,
+    payload: {
+      qbo_id: existing.qbo_id,
+      previous_project_id: previousProjectId,
+      project_id: targetProjectId,
+      total_cents: existing.total_cents,
+    },
+  })
+
+  return { previousProjectId, projectId: targetProjectId }
 }

@@ -12,8 +12,9 @@ import {
   createChangeOrderAction,
   updateChangeOrderAction,
   deleteChangeOrderAction,
+  voidChangeOrderAction,
 } from "@/app/(app)/change-orders/actions"
-import { Pencil, Trash2 } from "lucide-react"
+import { Ban, Pencil, Trash2 } from "lucide-react"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
@@ -189,6 +190,31 @@ const [sheetOpen, setSheetOpen] = useState(false)
           editingChangeOrder ? "Could not update change order" : "Could not save change order",
           { description: error?.message ?? "Please try again." }
         )
+      }
+    })
+  }
+
+  async function handleVoid(changeOrder: ChangeOrder) {
+    const confirmed = window.confirm(
+      `Void "${changeOrder.title}"? This reverses its impact on the contract value, GMP, budget, and pending draws. The change order is kept on record as cancelled.`
+    )
+    if (!confirmed) return
+
+    startTransition(async () => {
+      try {
+        const updated = await voidChangeOrderAction(changeOrder.id)
+        setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+        if (selectedChangeOrder?.id === updated.id) {
+          setSelectedChangeOrder(updated)
+        }
+        toast.success("Change order voided", {
+          description: "Its financial impact has been reversed.",
+        })
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Could not void change order", {
+          description: error?.message ?? "Please try again.",
+        })
       }
     })
   }
@@ -445,6 +471,15 @@ const [sheetOpen, setSheetOpen] = useState(false)
                                 <PenLine className="mr-2 h-4 w-4" />
                                 Send for signature
                               </DropdownMenuItem>
+                              {changeOrder.status === "approved" && (
+                                <DropdownMenuItem
+                                  onClick={() => handleVoid(changeOrder)}
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                >
+                                  <Ban className="mr-2 h-4 w-4" />
+                                  Void
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem
                                 onClick={() => handleDelete(changeOrder)}
                                 disabled={changeOrder.status === "approved" || changeOrder.esign_status === "sent" || changeOrder.esign_status === "signed"}

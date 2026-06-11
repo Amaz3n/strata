@@ -92,6 +92,7 @@ import {
   listDrawingPinsWithEntitiesAction,
   listDrawingSetsAction,
   listDrawingSheetsAction,
+  getDrawingRegisterSnapshotAction,
   retryProcessingAction,
   updateDrawingSheetAction,
   listDrawingRevisionsAction,
@@ -292,6 +293,12 @@ export function DrawingsSetsView({
     buildSheetsBySet(initialSheets),
   )
   const [sheetsLoading, setSheetsLoading] = useState(false)
+  // Revision filter: "current" shows each sheet's latest version (default);
+  // a revision id scopes the register to that revision's snapshot.
+  const [revisionFilter, setRevisionFilter] = useState<string>("current")
+  const [registerRevisions, setRegisterRevisions] = useState<DrawingRevision[]>([])
+  const [snapshotSheets, setSnapshotSheets] = useState<DrawingSheet[]>([])
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [isDragActive, setIsDragActive] = useState(false)
   const [processingMessageIndex, setProcessingMessageIndex] = useState(0)
   const dragCounterRef = useRef(0)
@@ -541,10 +548,63 @@ export function DrawingsSetsView({
       updated_at: "",
     } as DrawingSet)
   }, [selectedProjectId, uploadFile?.name, uploadSetId, uploadStatus])
-  const activeSheets = useMemo(
+  const liveSheets = useMemo(
     () => (selectedSetId ? sheetsBySet.get(selectedSetId) ?? [] : []),
     [selectedSetId, sheetsBySet],
   )
+  // When a past revision is selected, render its snapshot instead of the live set.
+  const activeSheets = revisionFilter === "current" ? liveSheets : snapshotSheets
+
+  // Load the set's published revisions for the revision filter. Reset the filter
+  // to "current" whenever the selected set changes.
+  useEffect(() => {
+    setRevisionFilter("current")
+    setSnapshotSheets([])
+    if (!selectedSetId || !selectedProjectId) {
+      setRegisterRevisions([])
+      return
+    }
+    let cancelled = false
+    listDrawingRevisionsAction({
+      project_id: selectedProjectId,
+      drawing_set_id: selectedSetId,
+      limit: 100,
+    })
+      .then((revs) => {
+        if (!cancelled) setRegisterRevisions(revs)
+      })
+      .catch((err) => {
+        console.error("Failed to load revisions for filter:", err)
+        if (!cancelled) setRegisterRevisions([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedSetId, selectedProjectId])
+
+  // Load the register snapshot for the chosen revision.
+  useEffect(() => {
+    if (revisionFilter === "current" || !selectedSetId) return
+    let cancelled = false
+    setSnapshotLoading(true)
+    getDrawingRegisterSnapshotAction(selectedSetId, revisionFilter)
+      .then((sheets) => {
+        if (!cancelled) setSnapshotSheets(sheets)
+      })
+      .catch((err) => {
+        console.error("Failed to load register snapshot:", err)
+        if (!cancelled) {
+          setSnapshotSheets([])
+          toast.error("Could not load that revision")
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSnapshotLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [revisionFilter, selectedSetId])
 
   const filteredSheets = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -1421,6 +1481,30 @@ export function DrawingsSetsView({
             )}
           </div>
 
+          {/* Revision filter: scope the register to a single revision so only
+              one version of each sheet shows at a time. Only meaningful once the
+              set has more than one revision. */}
+          {activeSet && registerRevisions.length > 1 && (
+            <div className="hidden items-center gap-2 sm:flex">
+              <span className="whitespace-nowrap text-xs text-muted-foreground">
+                Showing
+              </span>
+              <Select value={revisionFilter} onValueChange={setRevisionFilter}>
+                <SelectTrigger className="h-9 w-[200px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="current">Current (latest)</SelectItem>
+                  {registerRevisions.map((rev) => (
+                    <SelectItem key={rev.id} value={rev.id}>
+                      {rev.revision_label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           {/* Upload is desktop-only — mobile is a read/review surface. */}
           <div className="ml-auto hidden items-center gap-2 sm:flex">
             <Button
@@ -1456,6 +1540,29 @@ export function DrawingsSetsView({
           )}
         </div>
       </div>
+
+      {/* Viewing a past revision (read-only snapshot of the register). */}
+      {revisionFilter !== "current" && (
+        <div className="flex items-center gap-3 border-b bg-blue-500/10 px-4 py-2 text-xs">
+          <History className="h-4 w-4 shrink-0 text-blue-600" />
+          <div className="min-w-0 flex-1 text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {registerRevisions.find((r) => r.id === revisionFilter)?.revision_label ??
+                "Revision"}
+            </span>
+            {" — showing each sheet as of this revision."}
+            {snapshotLoading && " Loading…"}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7"
+            onClick={() => setRevisionFilter("current")}
+          >
+            Back to current
+          </Button>
+        </div>
+      )}
 
       {/* Pending draft revision banner */}
       {pendingDraft && (

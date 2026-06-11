@@ -117,3 +117,34 @@ test("vendor-credit payables are blocked from outbound bill sync at both guard l
   assert.match(syncSource, /isSyncPushBlocked\(supabase, orgId, "vendor_credit", billId\)/)
   assert.match(syncSource, /metadata[\s\S]*source === "vendor_credit"/)
 })
+
+test("outbound vendor bills preserve job costing without creating billable customer charges", () => {
+  const syncSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/qbo-sync.ts"),
+    "utf8",
+  )
+  const vendorBillSync = syncSource.slice(
+    syncSource.indexOf("export async function syncVendorBillToQBO"),
+    syncSource.indexOf("export async function syncBillPaymentToQBO"),
+  )
+
+  assert.match(vendorBillSync, /CustomerRef:/)
+  assert.match(vendorBillSync, /isCostDrivenBillingModel/)
+  assert.match(vendorBillSync, /metadata\.billable_to_customer === true/)
+  assert.match(vendorBillSync, /BillableStatus: billableToCustomer \? "Billable" : "NotBillable"/)
+})
+
+test("imported vendor credits can be reassigned without deleting their QBO mapping", () => {
+  const source = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/vendor-bills.ts"),
+    "utf8",
+  )
+  const reassign = source.slice(source.indexOf("export async function reassignImportedVendorCredit"))
+
+  assert.match(reassign, /metadata\.source !== "vendor_credit"/)
+  assert.match(reassign, /voidJobCostEntriesForVendorBill/)
+  assert.match(reassign, /from\("bill_lines"\)[\s\S]*project_id: targetProjectId/)
+  assert.match(reassign, /from\("vendor_bills"\)[\s\S]*project_id: targetProjectId/)
+  assert.match(reassign, /propagateApprovalToLedger/)
+  assert.doesNotMatch(reassign, /from\("qbo_sync_records"\)[\s\S]*delete/)
+})

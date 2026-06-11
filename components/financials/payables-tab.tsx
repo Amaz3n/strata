@@ -5,11 +5,14 @@ import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ProjectPayablesClient } from "@/components/payables/project-payables-client"
 import { AlertTriangle } from "lucide-react"
 
+type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
+
 interface PayablesTabProps {
   projectId: string
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
   costCodesEnabled?: boolean
+  billingModel: ProjectBillingModel
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   loadErrors?: string[]
@@ -20,6 +23,7 @@ export function PayablesTab({
   vendorBills,
   costCodes,
   costCodesEnabled = true,
+  billingModel,
   complianceRules,
   complianceStatusByCompanyId,
   loadErrors = [],
@@ -43,6 +47,7 @@ export function PayablesTab({
         vendorBills={vendorBills}
         costCodes={costCodesEnabled ? costCodes : []}
         costCodesEnabled={costCodesEnabled}
+        billingModel={billingModel}
         complianceRules={complianceRules}
         complianceStatusByCompanyId={complianceStatusByCompanyId}
         fullBleed
