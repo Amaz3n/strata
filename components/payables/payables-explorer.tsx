@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import { isVendorCredit, summarizePayables } from "@/lib/financials/payables-rules"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
 
@@ -97,6 +98,7 @@ export function PayablesExplorer({
     () => payableQueueCounts(vendorBills, costCodesEnabled),
     [costCodesEnabled, vendorBills],
   )
+  const totals = useMemo(() => summarizePayables(vendorBills), [vendorBills])
 
   const visibleIds = filtered.map((bill) => bill.id)
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
@@ -210,7 +212,9 @@ export function PayablesExplorer({
                   </div>
                 </TableCell>
                 <TableCell className="px-4 py-2 text-center cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
-                  {billBadge(bill.status)}
+                  <div className="flex items-center justify-center gap-1.5">
+                    {isVendorCredit(bill) ? payableTypeBadge(bill) : billBadge(bill.status)}
+                  </div>
                 </TableCell>
                 <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>{bill.due_date ? format(new Date(`${bill.due_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
                 <TableCell className="px-4 py-2 text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
@@ -272,7 +276,7 @@ export function PayablesExplorer({
                         "h-9 w-9 rounded-md bg-background",
                         bill.status === "pending" ? "border-emerald-600 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700" : "border-muted text-muted-foreground opacity-70",
                       )}
-                      disabled={bill.status !== "pending"}
+                      disabled={bill.status !== "pending" || isVendorCredit(bill)}
                       onClick={() => onApprove?.(bill)}
                     >
                       <Check className="h-5 w-5" />
@@ -305,8 +309,9 @@ export function PayablesExplorer({
       <div className="h-10 shrink-0 border-t bg-muted/10 px-4 flex items-center justify-between text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
         <div>{filtered.length} records showing</div>
         <div className="flex gap-4">
-          <span>Unpaid: {formatCurrency(vendorBills.reduce((sum, bill) => sum + ((bill.total_cents ?? 0) - (bill.paid_cents ?? 0)), 0))}</span>
-          <span>Paid: {formatCurrency(vendorBills.reduce((sum, bill) => sum + (bill.paid_cents ?? 0), 0))}</span>
+          <span>Outstanding: {formatCurrency(totals.outstandingCents)}</span>
+          <span>Settled: {formatCurrency(totals.settledCents)}</span>
+          <span>Vendor credits: {formatCurrency(totals.vendorCreditsCents)}</span>
         </div>
       </div>
     </div>
@@ -491,7 +496,7 @@ function RowActions({
         <DropdownMenuItem onClick={() => onEdit?.(bill)}>Edit</DropdownMenuItem>
         <DropdownMenuItem onClick={() => onViewFiles?.(bill)}>View attachments</DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => onSyncQbo?.(bill)} disabled={bill.qbo_sync_status === "synced"}>
+        <DropdownMenuItem onClick={() => onSyncQbo?.(bill)} disabled={bill.qbo_sync_status === "synced" || isVendorCredit(bill)}>
           Sync to QuickBooks
         </DropdownMenuItem>
         <DropdownMenuSeparator />
@@ -514,6 +519,11 @@ function billBadge(status?: string) {
   }
   const config = map[normalized] ?? map.pending
   return <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-tight ${config.tone}`}>{config.label}</Badge>
+}
+
+function payableTypeBadge(bill: VendorBillSummary) {
+  if (!isVendorCredit(bill)) return null
+  return <Badge variant="outline" className="border-violet-500/20 bg-violet-500/10 text-[10px] font-bold uppercase tracking-tight text-violet-700 dark:text-violet-400">Vendor credit</Badge>
 }
 
 function vendorLabel(bill: VendorBillSummary) {

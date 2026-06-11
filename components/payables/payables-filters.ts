@@ -1,9 +1,11 @@
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import { isVendorCredit } from "@/lib/financials/payables-rules"
 
 export type PayableQueue = "all" | "needs_review" | "ready" | "synced"
 
 /** A payable still needs coding before it can sync to QuickBooks. */
 export function billNeedsReview(bill: VendorBillSummary, costCodesEnabled: boolean): boolean {
+  if (isVendorCredit(bill)) return false
   return (
     bill.status === "pending" ||
     !bill.qbo_vendor_id ||
@@ -14,6 +16,7 @@ export function billNeedsReview(bill: VendorBillSummary, costCodesEnabled: boole
 
 /** A coded, approved payable that hasn't been pushed to QuickBooks yet. */
 export function billReadyToSync(bill: VendorBillSummary, costCodesEnabled: boolean): boolean {
+  if (isVendorCredit(bill)) return false
   return bill.status !== "pending" && !billNeedsReview(bill, costCodesEnabled) && bill.qbo_sync_status !== "synced"
 }
 
@@ -23,6 +26,7 @@ function matchesSearch(bill: VendorBillSummary, query: string, costCodesEnabled:
     bill.company_name?.toLowerCase().includes(query) ||
       bill.qbo_vendor_name?.toLowerCase().includes(query) ||
       bill.bill_number?.toLowerCase().includes(query) ||
+      (isVendorCredit(bill) && "vendor credit".includes(query)) ||
       bill.commitment_title?.toLowerCase().includes(query) ||
       (costCodesEnabled && bill.actual_cost_code_code?.toLowerCase().includes(query)) ||
       (costCodesEnabled && bill.actual_cost_code_name?.toLowerCase().includes(query)),

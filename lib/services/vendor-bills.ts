@@ -19,6 +19,19 @@ import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals
 import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qbo-sync"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
+export type PayableKind = "bill" | "vendor_credit"
+
+export interface VendorBillPaymentSummary {
+  id: string
+  amount_cents: number
+  method?: string
+  reference?: string
+  received_at?: string
+  provider?: string
+  status?: string
+  qbo_id?: string
+  vendor_credit_applied?: boolean
+}
 
 export interface VendorBillSummary {
   id: string
@@ -73,6 +86,9 @@ export interface VendorBillSummary {
   is_shared?: boolean
   /** Every project this bill touches (incl. the viewing one), with that project's share. */
   shared_projects?: VendorBillProjectShare[]
+  payable_type: PayableKind
+  qbo_pushable: boolean
+  payments: VendorBillPaymentSummary[]
 }
 
 export interface VendorBillProjectShare {
@@ -109,8 +125,9 @@ function pickSharedLineValue(values: Array<string | null | undefined>): string |
   return distinct.size === 1 ? [...distinct][0] : undefined
 }
 
-export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: string): VendorBillSummary {
+export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: string, paymentRows?: any[]): VendorBillSummary {
   const metadata = row?.metadata ?? {}
+  const payableType: PayableKind = metadata.source === "vendor_credit" ? "vendor_credit" : "bill"
   const company = row?.company ?? row?.commitment?.company ?? {}
   const lines = Array.isArray(billLines) ? billLines : []
   const actualLines = lines.map((line) => ({
@@ -223,6 +240,22 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     project_amount_cents: projectAmountCents,
     is_shared: isShared,
     shared_projects: sharedProjects,
+    payable_type: payableType,
+    qbo_pushable: payableType === "bill",
+    payments: (paymentRows ?? []).map((payment) => {
+      const paymentMetadata = (payment.metadata as Record<string, any> | null) ?? {}
+      return {
+        id: payment.id,
+        amount_cents: Number(payment.amount_cents ?? 0),
+        method: payment.method ?? undefined,
+        reference: payment.reference ?? undefined,
+        received_at: payment.received_at ?? undefined,
+        provider: payment.provider ?? undefined,
+        status: payment.status ?? undefined,
+        qbo_id: typeof paymentMetadata.qbo_id === "string" ? paymentMetadata.qbo_id : undefined,
+        vendor_credit_applied: paymentMetadata.vendor_credit_applied === true,
+      }
+    }),
   }
 }
 
@@ -429,7 +462,31 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     linesByBillId.set(line.bill_id, current)
   }
 
-  return bills.map((bill: any) => mapVendorBill(bill, linesByBillId.get(bill.id), projectId))
+  const { data: paymentRows, error: paymentsError } =
+    billIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("payments")
+          .select("id, bill_id, amount_cents, method, reference, received_at, provider, status, metadata")
+          .eq("org_id", resolvedOrgId)
+          .in("bill_id", billIds)
+          .eq("status", "succeeded")
+          .order("received_at", { ascending: false })
+
+  if (paymentsError) {
+    throw new Error(`Failed to load bill payments: ${paymentsError.message}`)
+  }
+
+  const paymentsByBillId = new Map<string, any[]>()
+  for (const payment of paymentRows ?? []) {
+    const current = paymentsByBillId.get(payment.bill_id) ?? []
+    current.push(payment)
+    paymentsByBillId.set(payment.bill_id, current)
+  }
+
+  return bills.map((bill: any) =>
+    mapVendorBill(bill, linesByBillId.get(bill.id), projectId, paymentsByBillId.get(bill.id)),
+  )
 }
 
 export async function updateVendorBillStatus({
@@ -454,9 +511,25 @@ export async function updateVendorBillStatus({
   if (existingError || !existing) {
     throw new Error("Vendor bill not found")
   }
+  const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
+  const isVendorCredit = existingMetadata.source === "vendor_credit"
+
+  if (isVendorCredit && parsed.status !== existing.status) {
+    throw new Error("Vendor credits do not have a payment status lifecycle")
+  }
+  if (
+    isVendorCredit &&
+    (parsed.payment_amount_cents !== undefined ||
+      parsed.payment_method !== undefined ||
+      parsed.payment_reference !== undefined)
+  ) {
+    throw new Error("Payments cannot be recorded against a vendor credit")
+  }
 
   const requiredPermission =
-    parsed.status === "approved"
+    isVendorCredit
+      ? "bill.write"
+      : parsed.status === "approved"
       ? "bill.approve"
       : parsed.status === "paid" || parsed.status === "partial"
         ? "payment.release"
@@ -546,7 +619,7 @@ export async function updateVendorBillStatus({
   if (parsed.qbo_expense_account_id !== undefined) {
     updateData.qbo_expense_account_id = parsed.qbo_expense_account_id || null
     updateData.qbo_expense_account_name = parsed.qbo_expense_account_name || null
-    if (existing.qbo_expense_account_id !== parsed.qbo_expense_account_id) {
+    if (!isVendorCredit && existing.qbo_expense_account_id !== parsed.qbo_expense_account_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
     }
@@ -555,7 +628,7 @@ export async function updateVendorBillStatus({
   if (parsed.qbo_ap_account_id !== undefined) {
     updateData.qbo_ap_account_id = parsed.qbo_ap_account_id || null
     updateData.qbo_ap_account_name = parsed.qbo_ap_account_name || null
-    if (existing.qbo_ap_account_id !== parsed.qbo_ap_account_id) {
+    if (!isVendorCredit && existing.qbo_ap_account_id !== parsed.qbo_ap_account_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
     }
@@ -577,7 +650,7 @@ export async function updateVendorBillStatus({
       updateData.qbo_vendor_id = null
       updateData.qbo_vendor_name = null
     }
-    if (existing.company_id !== parsed.company_id) {
+    if (!isVendorCredit && existing.company_id !== parsed.company_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
     }
@@ -586,7 +659,7 @@ export async function updateVendorBillStatus({
   if (parsed.qbo_vendor_id !== undefined) {
     updateData.qbo_vendor_id = parsed.qbo_vendor_id || null
     updateData.qbo_vendor_name = parsed.qbo_vendor_name || null
-    if (existing.qbo_vendor_id !== parsed.qbo_vendor_id) {
+    if (!isVendorCredit && existing.qbo_vendor_id !== parsed.qbo_vendor_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
     }
@@ -653,12 +726,18 @@ export async function updateVendorBillStatus({
   }
 
   if (actualLines.length > 0) {
+    const hasInvalidSign = isVendorCredit
+      ? actualLines.some((line) => line.amount_cents > 0)
+      : actualLines.some((line) => line.amount_cents < 0)
+    if (hasInvalidSign) {
+      throw new Error(isVendorCredit ? "Vendor credit lines cannot be positive" : "Bill lines cannot be negative")
+    }
     const actualTotal = actualLines.reduce((sum, line) => sum + line.amount_cents, 0)
     if (actualTotal !== totalCents) {
       throw new Error("Bill coding must equal the bill amount")
     }
 
-    if (isApprovedOrReleased && !updateData.qbo_expense_account_id && linesHaveQboExpenseCoding(actualLines)) {
+    if (!isVendorCredit && isApprovedOrReleased && !updateData.qbo_expense_account_id && linesHaveQboExpenseCoding(actualLines)) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
     }
@@ -783,7 +862,7 @@ export async function updateVendorBillStatus({
     throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
   }
 
-  if (["approved", "partial", "paid"].includes(String(finalStatus))) {
+  if (!isVendorCredit && ["approved", "partial", "paid"].includes(String(finalStatus))) {
     await enqueueVendorBillSync(billId, resolvedOrgId)
   }
 
@@ -1082,4 +1161,3 @@ export async function deleteVendorBill({
 
   return { projectId: existing.project_id }
 }
-

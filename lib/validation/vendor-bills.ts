@@ -19,7 +19,7 @@ export const vendorBillStatusUpdateSchema = z.object({
       z.object({
         cost_code_id: z.string().uuid("Invalid cost code").nullable().optional(),
         description: z.string().min(1).max(500).optional(),
-        amount_cents: z.number().int().min(0),
+        amount_cents: z.number().int(),
         project_id: z.string().uuid("Invalid project").nullable().optional(),
         qbo_expense_account_id: z.string().optional(),
         qbo_expense_account_name: z.string().optional(),

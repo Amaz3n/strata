@@ -16,6 +16,7 @@ import { getProjectAccountingCustomerPreviewAction } from "@/app/(app)/projects/
 import { listProjectsAction } from "@/app/(app)/projects/actions"
 
 import { cn } from "@/lib/utils"
+import { isVendorCredit } from "@/lib/financials/payables-rules"
 import { PayablesExplorer } from "./payables-explorer"
 import { AddPayableSheet } from "./add-payable-sheet"
 import { PayablesWorkspace } from "./payables-workspace"
@@ -25,6 +26,7 @@ type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string;
 type ProjectOption = { id: string; name: string }
 
 function getPayableSyncBlockReason(bill: VendorBillSummary) {
+  if (isVendorCredit(bill)) return "Imported vendor credits are read-only in QuickBooks."
   if (bill.status === "pending") return "Approve the payable before syncing it to QuickBooks."
   if (!bill.qbo_vendor_id) return "Link this Arc vendor to QuickBooks before syncing."
   const hasLineExpenseCoding =
@@ -124,6 +126,7 @@ export function ProjectPayablesClient({
   }, [])
 
   const approveBill = (bill: VendorBillSummary) => {
+    if (isVendorCredit(bill)) return
     startTransition(async () => {
       try {
         const updated = await updateProjectVendorBillStatusAction(projectId, bill.id, {

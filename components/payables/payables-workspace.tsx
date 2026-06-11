@@ -55,6 +55,7 @@ import {
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
 import type { Company, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
 import { PayableDocumentPane } from "./payable-document-pane"
@@ -244,6 +245,7 @@ export function PayablesWorkspace({
     () => bills.find((bill) => bill.id === selectedBillId) ?? null,
     [bills, selectedBillId],
   )
+  const selectedIsVendorCredit = selectedBill ? isVendorCredit(selectedBill) : false
 
   const filtered = useMemo(
     () => filterPayables(bills, { search, queue: queueFilter, costCodesEnabled }),
@@ -435,13 +437,20 @@ export function PayablesWorkspace({
       project_id: line.projectId || selectedBill.project_id,
       cost_code_id: costCodesEnabled ? line.costCodeId || null : null,
       description: line.description.trim() || billNumber || "Vendor bill",
-      amount_cents: dollarsToCents(line.amountDollars) ?? -1,
+      amount_cents: dollarsToCents(line.amountDollars),
       qbo_expense_account_id: line.qboExpenseAccountId || qboExpenseAccountId || undefined,
       qbo_expense_account_name: getExpenseAccountName(line.qboExpenseAccountId || qboExpenseAccountId),
       qbo_ap_account_id: line.qboApAccountId || qboApAccountId || undefined,
       qbo_ap_account_name: getApAccountName(line.qboApAccountId || qboApAccountId),
     }))
-    if (actualLines.some((line) => !line.project_id || (costCodesEnabled && !line.cost_code_id) || line.amount_cents < 0)) {
+    const hasInvalidLine = actualLines.some(
+      (line) =>
+        !line.project_id ||
+        (costCodesEnabled && !line.cost_code_id) ||
+        line.amount_cents == null ||
+        (selectedIsVendorCredit ? line.amount_cents > 0 : line.amount_cents < 0),
+    )
+    if (hasInvalidLine) {
       toast.error(costCodesEnabled ? "Each split needs a project, cost code, and amount." : "Each split needs a project and amount.")
       return
     }
@@ -457,7 +466,7 @@ export function PayablesWorkspace({
           bill_number: billNumber.trim() || undefined,
           bill_date: billDate || undefined,
           due_date: dueDate || null,
-          actual_lines: actualLines,
+          actual_lines: actualLines.map((line) => ({ ...line, amount_cents: line.amount_cents! })),
           retainage_percent: retainagePercent,
           lien_waiver_status: normalizeLienWaiverStatus(lienWaiver) as any,
           qbo_expense_account_id: qboExpenseAccountId || undefined,
@@ -493,7 +502,7 @@ export function PayablesWorkspace({
     })
   }
 
-  const balanceCents = Math.max(0, billTotalCents - (selectedBill.paid_cents ?? 0))
+  const balanceCents = payableOutstandingCents(selectedBill)
 
   const parseDate = (str?: string) => {
     if (!str) return undefined
@@ -602,7 +611,13 @@ export function PayablesWorkspace({
             </Button>
             <div className="min-w-0">
               <h2 className="truncate text-lg font-semibold leading-tight">
-                {selectedBill.bill_number ? `Bill ${selectedBill.bill_number}` : "Payable"}
+                {selectedIsVendorCredit
+                  ? selectedBill.bill_number
+                    ? `Vendor credit ${selectedBill.bill_number}`
+                    : "Vendor credit"
+                  : selectedBill.bill_number
+                    ? `Bill ${selectedBill.bill_number}`
+                    : "Payable"}
               </h2>
               <p className="truncate text-xs text-muted-foreground">
                 {vendorLabel(selectedBill)}
@@ -625,10 +640,19 @@ export function PayablesWorkspace({
                 <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight">{formatMoneyFromCents(billTotalCents)}</p>
               </div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-right">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Paid</span>
-                <span className="text-sm font-semibold tabular-nums text-emerald-600">{formatMoneyFromCents(selectedBill.paid_cents ?? 0)}</span>
-                <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Balance</span>
-                <span className="text-sm font-semibold tabular-nums text-amber-600">{formatMoneyFromCents(balanceCents)}</span>
+                {selectedIsVendorCredit ? (
+                  <>
+                    <span className="col-span-2 text-[10px] font-bold uppercase tracking-widest text-violet-700">Reduces project cost</span>
+                    <span className="col-span-2 text-sm font-semibold text-muted-foreground">Managed in QuickBooks</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Paid</span>
+                    <span className="text-sm font-semibold tabular-nums text-emerald-600">{formatMoneyFromCents(selectedBill.paid_cents ?? 0)}</span>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Balance</span>
+                    <span className="text-sm font-semibold tabular-nums text-amber-600">{formatMoneyFromCents(balanceCents)}</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -638,7 +662,7 @@ export function PayablesWorkspace({
                   <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Sync status:</span>
                   {qboBadge(effectiveSyncStatus, selectedBill.qbo_sync_error)}
                   {selectedBill.qbo_id ? (
-                    <a href={qboBillUrl(selectedBill.qbo_id)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+                    <a href={qboTransactionUrl(selectedBill)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
                       Open in QuickBooks <ExternalLink className="h-3 w-3" />
                     </a>
                   ) : null}
@@ -734,10 +758,10 @@ export function PayablesWorkspace({
 
           {/* Bill Details Section (Editable) */}
           <section className="space-y-4 rounded-xl border bg-muted/5 p-4">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Bill details</h3>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{selectedIsVendorCredit ? "Credit details" : "Bill details"}</h3>
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-1.5">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Invoice / Bill #</Label>
+                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{selectedIsVendorCredit ? "Credit #" : "Invoice / Bill #"}</Label>
                 <Input value={billNumber} onChange={(e) => setBillNumber(e.target.value)} placeholder="e.g. INV-12345" className="h-10 text-sm font-semibold" />
               </div>
               <div className="space-y-1.5 flex flex-col">
@@ -829,7 +853,7 @@ export function PayablesWorkspace({
           ) : null}
 
           {/* Workflow actions */}
-          {selectedBill.status === "pending" ? (
+          {!selectedIsVendorCredit && selectedBill.status === "pending" ? (
             <Button variant="outline" className="group h-11 w-full justify-between" disabled={isPending} onClick={() => setStatus("approved")}>
               <span className="flex items-center gap-2">
                 <CheckCircle2 className="h-4 w-4 text-emerald-500" />
@@ -840,7 +864,37 @@ export function PayablesWorkspace({
           ) : null}
 
           {/* Payment Details */}
-          {selectedBill.status === "paid" || selectedBill.status === "partial" ? (
+          {!selectedIsVendorCredit && selectedBill.payments.length > 0 ? (
+            <div className="space-y-4 rounded-xl border border-emerald-100 bg-emerald-50/30 p-5 dark:border-emerald-900/30 dark:bg-emerald-950/10">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Payment history
+              </div>
+              <div className="divide-y rounded-lg border bg-background">
+                {selectedBill.payments.map((payment) => (
+                  <div key={payment.id} className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm">
+                    <div className="min-w-0">
+                      <p className="font-semibold">
+                        {payment.vendor_credit_applied ? "Vendor credit applied" : payment.provider === "qbo" ? "QuickBooks payment" : "Payment"}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {payment.received_at ? format(new Date(payment.received_at), "MMM d, yyyy") : "No date"}
+                        {payment.reference ? ` • ${payment.reference}` : ""}
+                        {payment.qbo_id ? ` • QBO ${payment.qbo_id}` : ""}
+                      </p>
+                    </div>
+                    <span className="shrink-0 font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
+                      {formatMoneyFromCents(payment.amount_cents)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {!selectedIsVendorCredit &&
+          selectedBill.payments.length === 0 &&
+          (selectedBill.status === "paid" || selectedBill.status === "partial") ? (
             <div className="space-y-4 rounded-xl border border-emerald-100 bg-emerald-50/30 p-5 dark:border-emerald-900/30 dark:bg-emerald-950/10">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
                 <CheckCircle2 className="h-3.5 w-3.5" />
@@ -848,7 +902,7 @@ export function PayablesWorkspace({
               </div>
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount Paid</span>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount paid</span>
                   <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">{formatMoneyFromCents(selectedBill.paid_cents ?? billTotalCents)}</p>
                 </div>
                 <div className="space-y-1">
@@ -863,7 +917,7 @@ export function PayablesWorkspace({
             </div>
           ) : null}
 
-          {selectedBill.status === "approved" || selectedBill.status === "partial" ? (
+          {!selectedIsVendorCredit && (selectedBill.status === "approved" || selectedBill.status === "partial") ? (
             <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/30 p-5 dark:border-blue-900/30 dark:bg-blue-950/10">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">
                 <Receipt className="h-3.5 w-3.5" />
@@ -1064,7 +1118,7 @@ export function PayablesWorkspace({
           </section>
 
           {/* Terms */}
-          <div className="grid grid-cols-2 gap-6">
+          {!selectedIsVendorCredit ? <div className="grid grid-cols-2 gap-6">
             <div className="space-y-1.5">
               <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Retainage %</Label>
               <Input type="number" step="0.1" value={retainage} onChange={(event) => setRetainage(event.target.value)} placeholder="0" className="h-10 font-semibold" />
@@ -1080,15 +1134,19 @@ export function PayablesWorkspace({
                 </SelectContent>
               </Select>
             </div>
-          </div>
+          </div> : null}
         </div>
 
         {/* Footer actions */}
         <div className="flex items-center justify-between gap-3 border-t bg-muted/10 px-4 py-3 sm:px-6">
-          <Button variant="ghost" disabled={isPending || effectiveSyncStatus === "synced"} onClick={syncToQbo}>
-            <ExternalLink className="mr-2 h-4 w-4" />
-            Sync to QuickBooks
-          </Button>
+          {selectedIsVendorCredit ? (
+            <span className="text-xs font-medium text-muted-foreground">Inbound from QuickBooks</span>
+          ) : (
+            <Button variant="ghost" disabled={isPending || effectiveSyncStatus === "synced"} onClick={syncToQbo}>
+              <ExternalLink className="mr-2 h-4 w-4" />
+              Sync to QuickBooks
+            </Button>
+          )}
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => onSelectBill(null)}>Close</Button>
             <Button disabled={isPending} onClick={saveDetails}>{isPending ? "Saving..." : "Save changes"}</Button>
@@ -1209,8 +1267,10 @@ function dollarsToCents(input: string) {
   return Math.round(amount * 100)
 }
 
-function qboBillUrl(qboId?: string | null) {
-  return qboId ? `https://qbo.intuit.com/app/bill?txnId=${encodeURIComponent(qboId)}` : null
+function qboTransactionUrl(bill: VendorBillSummary) {
+  if (!bill.qbo_id) return null
+  const page = isVendorCredit(bill) ? "vendorcredit" : "bill"
+  return `https://qbo.intuit.com/app/${page}?txnId=${encodeURIComponent(bill.qbo_id)}`
 }
 
 function normalizeLienWaiverStatus(status?: string | null) {
@@ -1220,6 +1280,7 @@ function normalizeLienWaiverStatus(status?: string | null) {
 }
 
 function getPayableSyncBlockReason(bill: VendorBillSummary) {
+  if (isVendorCredit(bill)) return "Imported vendor credits are read-only in QuickBooks."
   if (bill.status === "pending") return "Approve the payable before syncing it to QuickBooks."
   if (!bill.qbo_vendor_id) return "Link this Arc vendor to QuickBooks before syncing."
   const hasLineExpenseCoding =

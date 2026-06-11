@@ -119,7 +119,7 @@ function vendorBillHasQboExpenseCoding(bill: Pick<VendorBillForSync, "qbo_expens
   })
 }
 
-type SyncRecordEntityType = "invoice" | "payment" | "project_expense" | "bill" | "bill_payment"
+type SyncRecordEntityType = "invoice" | "payment" | "project_expense" | "bill" | "vendor_credit" | "bill_payment"
 
 /**
  * Inbound-only ("shadow") records — e.g. expenses projected from a QBO journal entry, or one QBO
@@ -865,6 +865,9 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
 
 export async function syncVendorBillToQBO(billId: string, orgId: string) {
   const supabase = createServiceSupabaseClient()
+  if (await isSyncPushBlocked(supabase, orgId, "vendor_credit", billId)) {
+    return { success: true, skipped: true }
+  }
   const client = await QBOClient.forOrg(orgId)
 
   if (!client) {
@@ -899,6 +902,9 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
   }
 
   const typedBill = bill as VendorBillForSync
+  if ((typedBill.metadata as Record<string, any> | null)?.source === "vendor_credit") {
+    return { success: true, skipped: true }
+  }
   if (!vendorBillHasQboExpenseCoding(typedBill)) {
     await markVendorBillNeedsReview(orgId, billId, "Choose a QuickBooks expense/category account before syncing this payable.")
     return { success: false, error: "Missing QuickBooks expense account" }
