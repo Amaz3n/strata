@@ -154,6 +154,7 @@ export function QboImportSheet({ open, onOpenChange, projectId, projectName }: P
 
 export function QboImportPanel({ active = true, projectId, projectName, onCancel }: QboImportPanelProps) {
   const [records, setRecords] = useState<QboImportRecord[]>([])
+  const [alreadyImportedCounts, setAlreadyImportedCounts] = useState<Partial<Record<QboImportEntityType, number>>>({})
   const [connected, setConnected] = useState(true)
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -183,6 +184,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       const listing = await listQboImportRecordsAction({ sinceDate: sinceDateFor(lookbackValue) })
       if (requestId !== loadRequestId.current) return
       setRecords(listing.records)
+      setAlreadyImportedCounts(listing.alreadyImportedCounts ?? {})
       setConnected(listing.connected)
       setSelected(new Set())
       // A QBO query for one entity type can fail while the rest succeed. Warn rather than silently
@@ -506,7 +508,8 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
               <SelectSeparator />
               {SECTIONS.map((section) => (
                 <SelectItem key={section.key} value={section.key}>
-                  {section.label} ({typeCounts[section.key]})
+                  {section.label} ({typeCounts[section.key]} new
+                  {alreadyImportedCounts[section.key] ? `, ${alreadyImportedCounts[section.key]} in Arc` : ""})
                 </SelectItem>
               ))}
             </SelectContent>
@@ -623,13 +626,21 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
           <EmptyState
             icon={<Download className="size-5" />}
             title="Nothing to import"
-            body="Every QuickBooks transaction in this window already exists in Arc. Widen the date range to look further back."
+            body={
+              Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0) > 0
+                ? `No new QuickBooks transactions in this window. ${Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0)} already ${Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0) === 1 ? "exists" : "exist"} in Arc.`
+                : "No QuickBooks transactions were returned in this window. Widen the date range or reload the connection."
+            }
           />
         ) : sections.length === 0 ? (
           <EmptyState
             icon={<Search className="size-5" />}
             title="No matches"
-            body="No transactions match your search or filter. Try clearing them."
+            body={
+              typeFilter !== "all" && (alreadyImportedCounts[typeFilter] ?? 0) > 0
+                ? `No new ${SECTIONS.find((section) => section.key === typeFilter)?.label.toLowerCase() ?? "records"} to import. ${alreadyImportedCounts[typeFilter]} already ${alreadyImportedCounts[typeFilter] === 1 ? "exists" : "exist"} in Arc.`
+                : "No transactions match your search or filter. Try clearing them."
+            }
           />
         ) : (
           <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full">

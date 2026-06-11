@@ -7,6 +7,10 @@ export function qboImportCents(value: unknown): number {
   return 0
 }
 
+export function qboVendorCreditCents(value: unknown): number {
+  return -Math.abs(qboImportCents(value))
+}
+
 export function extractLinkedQboIds(transaction: any, txnType: "invoice" | "bill"): string[] {
   const ids = new Set<string>()
   for (const line of (transaction?.Line ?? []) as any[]) {

@@ -8,6 +8,7 @@ const {
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
   qboImportProviderPaymentId,
+  qboVendorCreditCents,
 } = require("../lib/integrations/accounting/qbo-import-rules")
 
 test("credit-only QBO bill payments retain the bill and vendor-credit settlement amounts", () => {
@@ -72,4 +73,10 @@ test("QBO payment provider ids are stable across retries and distinct for credit
     }),
     "qbo_billpayment_42_line-7_vc",
   )
+})
+
+test("vendor credits are negative exactly once regardless of QBO amount sign", () => {
+  assert.equal(qboVendorCreditCents(7.21), -721)
+  assert.equal(qboVendorCreditCents(-7.21), -721)
+  assert.equal(qboVendorCreditCents("7.21"), -721)
 })

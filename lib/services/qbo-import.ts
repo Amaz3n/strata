@@ -7,6 +7,7 @@ import {
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
   qboImportProviderPaymentId,
+  qboVendorCreditCents,
 } from "@/lib/integrations/accounting/qbo-import-rules"
 import { recordEvent } from "@/lib/services/events"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
@@ -132,6 +133,7 @@ export type QboImportLine = {
 export type QboImportListing = {
   connected: boolean
   records: QboImportRecord[]
+  alreadyImportedCounts?: Partial<Record<QboImportEntityType, number>>
   /**
    * Per-entity-type fetch failures. A QBO query for one entity (e.g. VendorCredit) can 400/timeout
    * while the others succeed; rather than silently showing zero of that type, we surface which types
@@ -537,6 +539,7 @@ export async function listImportableQboRecords({
   }
 
   const records: QboImportRecord[] = []
+  const alreadyImportedCounts: Partial<Record<QboImportEntityType, number>> = {}
   const billCustomersByQboId = new Map<string, { id: string; name: string | null }[]>()
   for (const result of results) {
     if (result.type !== "bill") continue
@@ -548,7 +551,11 @@ export async function listImportableQboRecords({
   for (const { type, rows } of results) {
     for (const row of rows) {
       const qboId = row?.Id ? String(row.Id) : null
-      if (!qboId || linked[type].has(qboId)) continue
+      if (!qboId) continue
+      if (linked[type].has(qboId)) {
+        alreadyImportedCounts[type] = (alreadyImportedCounts[type] ?? 0) + 1
+        continue
+      }
 
       if (type === "journal_entry") {
         const customerIdsForLines = (lines: any[]) => {
@@ -683,7 +690,7 @@ export async function listImportableQboRecords({
           .filter((line) => line?.AccountBasedExpenseLineDetail || line?.ItemBasedExpenseLineDetail)
           .map((line) => {
             const mapped = expenseLineToImportLine(line)
-            return { ...mapped, amountCents: -mapped.amountCents }
+            return { ...mapped, amountCents: qboVendorCreditCents(line.Amount) }
           })
         records.push({
           qboId,
@@ -691,7 +698,7 @@ export async function listImportableQboRecords({
           docNumber: row.DocNumber ? String(row.DocNumber) : null,
           counterparty: refName(row.VendorRef),
           date: normalizeDate(row.TxnDate),
-          amountCents: -toCents(row.TotalAmt),
+          amountCents: qboVendorCreditCents(row.TotalAmt),
           balanceCents: null,
           hasLinks: false,
           qboCustomerId: refValue(lineCustomer),
@@ -950,7 +957,12 @@ export async function listImportableQboRecords({
       a.entityType.localeCompare(b.entityType) ||
       a.qboId.localeCompare(b.qboId),
   )
-  return { connected: true, records, loadErrors: loadErrors.length > 0 ? loadErrors : undefined }
+  return {
+    connected: true,
+    records,
+    alreadyImportedCounts,
+    loadErrors: loadErrors.length > 0 ? loadErrors : undefined,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1665,7 +1677,7 @@ async function importVendorCredit(
   const qbo = await client.getVendorCreditById(qboId)
   if (!qbo) throw new Error("Vendor credit not found in QuickBooks")
 
-  const totalCents = -toCents(qbo.TotalAmt)
+  const totalCents = qboVendorCreditCents(qbo.TotalAmt)
   const txnDate = normalizeDate(qbo.TxnDate)
   const vendorRef = qbo.VendorRef
   const accountLine = (qbo.Line ?? []).find((line: any) => expenseLineDetail(line))
@@ -1756,7 +1768,7 @@ async function importVendorCredit(
         quantity: 1,
         unit: "LS",
         // Negative so the credit reduces the project's job cost.
-        unit_cost_cents: -toCents(line.Amount),
+        unit_cost_cents: qboVendorCreditCents(line.Amount),
         sort_order: index,
         metadata: {
           source: "vendor_credit",
