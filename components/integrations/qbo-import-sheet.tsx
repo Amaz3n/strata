@@ -96,6 +96,13 @@ const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
 
 type TypeFilter = "all" | QboImportEntityType
 
+// cmdk's default matcher is a loose subsequence fuzzy match — typing "abc" matches any item with an
+// a, b and c in order, which surfaces results that don't actually contain the typed text. Require a
+// contiguous, case-insensitive substring match so the project search only shows real matches.
+function substringFilter(value: string, search: string) {
+  return value.toLowerCase().includes(search.trim().toLowerCase()) ? 1 : 0
+}
+
 function rowKey(record: { entityType: QboImportEntityType; qboId: string }) {
   return `${record.entityType}:${record.qboId}`
 }
@@ -174,6 +181,16 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       setRecords(listing.records)
       setConnected(listing.connected)
       setSelected(new Set())
+      // A QBO query for one entity type can fail while the rest succeed. Warn rather than silently
+      // showing zero of that type (e.g. vendor credits "disappearing" when their query 400s).
+      if (listing.loadErrors && listing.loadErrors.length > 0) {
+        const labels = listing.loadErrors
+          .map((error) => SECTIONS.find((section) => section.key === error.entityType)?.label ?? error.entityType)
+          .join(", ")
+        toast.warning(`Couldn't load some QuickBooks records: ${labels}`, {
+          description: listing.loadErrors[0]?.message ?? "Try reloading or narrowing the date range.",
+        })
+      }
     } catch (error: any) {
       toast.error("Couldn't load QuickBooks records", { description: error?.message ?? "Try again." })
     } finally {
@@ -503,7 +520,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-48 p-0" align="end">
-                <Command>
+                <Command filter={substringFilter}>
                   <CommandInput placeholder="Search project..." className="h-8" />
                   <CommandList>
                     <CommandEmpty>No project found.</CommandEmpty>
@@ -640,6 +657,12 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
                               onChange={(lineId, projectId) => setLineAllocation(item, lineId, projectId)}
                             />
                           ) : null}
+                          {/* Read-only breakdown for payments: shows how the payment splits across the
+                              QBO invoices/bills it pays and which project each portion lands in. The
+                              project is the linked document's project, so there's nothing to choose. */}
+                          {selected.has(rowKey(item)) && item.linkedDocs && item.linkedDocs.length > 0 ? (
+                            <LinkedDocsBreakdown record={item} />
+                          ) : null}
                         </li>
                       ))}
                     </ul>
@@ -759,6 +782,33 @@ function ImportRow({
   )
 }
 
+function LinkedDocsBreakdown({ record }: { record: QboImportRecord }) {
+  const docs = record.linkedDocs ?? []
+  const isInvoice = record.linkedEntityType === "invoice"
+  return (
+    <div className="border-t bg-muted/20 py-2.5 pl-12 pr-6">
+      <p className="mb-2 text-xs font-medium text-muted-foreground">
+        Splits across {docs.length} {isInvoice ? (docs.length === 1 ? "invoice" : "invoices") : docs.length === 1 ? "bill" : "bills"}
+      </p>
+      <ul className="space-y-1.5">
+        {docs.map((doc) => (
+          <li key={doc.qboId} className="flex items-center gap-3 text-xs">
+            <span className="min-w-0 flex-1 truncate">
+              <span className="text-foreground">{doc.docLabel ?? `${isInvoice ? "Invoice" : "Bill"} ${doc.qboId}`}</span>
+              {doc.inArc ? (
+                <span className="text-muted-foreground"> → {doc.projectName ?? "No project"}</span>
+              ) : (
+                <span className="text-amber-700 dark:text-amber-400"> · import {isInvoice ? "invoice" : "bill"} first</span>
+              )}
+            </span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">{formatMoney(doc.amountCents)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function LineAllocationEditor({
   record,
   projects,
@@ -838,7 +888,7 @@ function LineAllocationRow({
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-56 p-0" align="end">
-          <Command>
+          <Command filter={substringFilter}>
             <CommandInput placeholder="Search project..." className="h-8" />
             <CommandList>
               <CommandEmpty>No project found.</CommandEmpty>

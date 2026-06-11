@@ -92,6 +92,23 @@ export type QboImportRecord = {
    * override where any line lands. Absent for single-document types (invoices, payments).
    */
   lines?: QboImportLine[]
+  /**
+   * Read-only allocation breakdown for payments / bill payments: how the payment is split across the
+   * QBO invoices/bills it pays, and which Arc project each portion lands in. Payments aren't manually
+   * re-allocated — the project is always the linked document's project — so this is purely for display.
+   * `projectName` is null until the linked document has been imported into Arc.
+   */
+  linkedDocs?: QboImportLinkedDoc[]
+}
+
+export type QboImportLinkedDoc = {
+  qboId: string
+  /** Invoice/bill number once imported, else the QBO id. */
+  docLabel: string | null
+  amountCents: number
+  projectName: string | null
+  /** True when the linked invoice/bill already exists in Arc (so its project is known). */
+  inArc: boolean
 }
 
 /** One costed line of a multi-line importable record, for the per-line project allocation UI. */
@@ -109,6 +126,12 @@ export type QboImportLine = {
 export type QboImportListing = {
   connected: boolean
   records: QboImportRecord[]
+  /**
+   * Per-entity-type fetch failures. A QBO query for one entity (e.g. VendorCredit) can 400/timeout
+   * while the others succeed; rather than silently showing zero of that type, we surface which types
+   * failed so the UI can warn the user instead of implying "nothing to import".
+   */
+  loadErrors?: { entityType: QboImportEntityType; message: string }[]
 }
 
 export type QboImportResult = {
@@ -214,6 +237,20 @@ function extractLinkedInvoiceQboIds(payment: any): string[] {
     }
   }
   return Array.from(ids)
+}
+
+/** Per-linked-document amounts for a payment, e.g. how much of a payment was applied to each invoice. */
+function extractLinkedDocAmounts(payment: any, txnType: "invoice" | "bill"): { qboId: string; amountCents: number }[] {
+  const byId = new Map<string, number>()
+  for (const line of (payment?.Line ?? []) as any[]) {
+    for (const linked of (line?.LinkedTxn ?? []) as any[]) {
+      if (String(linked?.TxnType ?? "").toLowerCase() !== txnType) continue
+      if (!linked?.TxnId) continue
+      const id = String(linked.TxnId)
+      byId.set(id, (byId.get(id) ?? 0) + toCents(line?.Amount))
+    }
+  }
+  return Array.from(byId, ([qboId, amountCents]) => ({ qboId, amountCents }))
 }
 
 function extractLinkedBillQboIds(billPayment: any): string[] {
@@ -412,6 +449,7 @@ export async function listImportableQboRecords({
     new Set(wanted.map((type) => (type === "client_deposit" ? "journal_entry" : type))),
   ) as QboImportEntityType[]
 
+  const loadErrors: { entityType: QboImportEntityType; message: string }[] = []
   const [linked, ...results] = await Promise.all([
     collectLinkedQboIds(supabase, resolvedOrgId),
     ...fetchTypes.map((type) =>
@@ -419,11 +457,19 @@ export async function listImportableQboRecords({
         .listTransactionsForImport(QBO_ENTITY_BY_TYPE[type], { sinceDate })
         .then((rows) => ({ type, rows }))
         .catch((error) => {
+          const message = error?.message ?? String(error)
           logQBO("warn", "qbo_import_list_failed", {
             orgId: resolvedOrgId,
             entity: QBO_ENTITY_BY_TYPE[type],
-            error: error?.message ?? String(error),
+            error: message,
           })
+          // Surface the failure instead of silently showing zero of this type. `journal_entry` is the
+          // fetched entity behind both journal_entry and client_deposit records, so attribute it to
+          // every wanted type it backs.
+          for (const wantedType of wanted) {
+            const fetchType = wantedType === "client_deposit" ? "journal_entry" : wantedType
+            if (fetchType === type) loadErrors.push({ entityType: wantedType, message })
+          }
           return { type, rows: [] as any[] }
         }),
     ),
@@ -679,6 +725,7 @@ export async function listImportableQboRecords({
         })
       } else if (type === "payment") {
         const linkedQboIds = extractLinkedInvoiceQboIds(row)
+        const docAmounts = extractLinkedDocAmounts(row, "invoice")
         records.push({
           qboId,
           entityType: type,
@@ -692,9 +739,18 @@ export async function listImportableQboRecords({
           linkedQboIds,
           qboCustomerId: refValue(row.CustomerRef),
           qboCustomerName: refName(row.CustomerRef),
+          // Project/doc labels are filled in the resolve pass below; amounts come straight from QBO.
+          linkedDocs: docAmounts.map((doc) => ({
+            qboId: doc.qboId,
+            docLabel: null,
+            amountCents: doc.amountCents,
+            projectName: null,
+            inArc: false,
+          })),
         })
       } else if (type === "bill_payment") {
         const linkedQboIds = extractLinkedBillQboIds(row)
+        const docAmounts = extractLinkedDocAmounts(row, "bill")
         const appliedVendorCreditQboIds = extractAppliedVendorCredits(row).map((c) => c.qboId)
         records.push({
           qboId,
@@ -708,6 +764,13 @@ export async function listImportableQboRecords({
           linkedEntityType: "bill",
           linkedQboIds,
           appliedVendorCreditQboIds: appliedVendorCreditQboIds.length > 0 ? appliedVendorCreditQboIds : undefined,
+          linkedDocs: docAmounts.map((doc) => ({
+            qboId: doc.qboId,
+            docLabel: null,
+            amountCents: doc.amountCents,
+            projectName: null,
+            inArc: false,
+          })),
         })
       }
     }
@@ -813,8 +876,74 @@ export async function listImportableQboRecords({
     }
   }
 
+  // Resolve the read-only payment breakdown: map each linked invoice/bill QBO id to its Arc doc
+  // number and project, so a payment shows where each portion of it lands.
+  const linkedInvoiceQboIds = new Set<string>()
+  const linkedBillQboIds = new Set<string>()
+  for (const record of records) {
+    if (!record.linkedDocs) continue
+    const target = record.linkedEntityType === "invoice" ? linkedInvoiceQboIds : linkedBillQboIds
+    for (const doc of record.linkedDocs) target.add(doc.qboId)
+  }
+
+  if (linkedInvoiceQboIds.size > 0 || linkedBillQboIds.size > 0) {
+    const [linkedInvoiceRows, linkedBillRows] = await Promise.all([
+      linkedInvoiceQboIds.size > 0
+        ? supabase
+            .from("invoices")
+            .select("qbo_id, invoice_number, project_id")
+            .eq("org_id", resolvedOrgId)
+            .in("qbo_id", Array.from(linkedInvoiceQboIds))
+        : Promise.resolve({ data: [] as any[] }),
+      linkedBillQboIds.size > 0
+        ? supabase
+            .from("vendor_bills")
+            .select("qbo_id, bill_number, project_id")
+            .eq("org_id", resolvedOrgId)
+            .in("qbo_id", Array.from(linkedBillQboIds))
+        : Promise.resolve({ data: [] as any[] }),
+    ])
+
+    const invoiceByQboId = new Map(
+      (linkedInvoiceRows.data ?? []).map((row: any) => [String(row.qbo_id), row]),
+    )
+    const billByQboId = new Map((linkedBillRows.data ?? []).map((row: any) => [String(row.qbo_id), row]))
+
+    const projectIds = Array.from(
+      new Set(
+        [...(linkedInvoiceRows.data ?? []), ...(linkedBillRows.data ?? [])]
+          .map((row: any) => row.project_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    )
+    const projectNameById = new Map<string, string>()
+    if (projectIds.length > 0) {
+      const { data: projectRows } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("org_id", resolvedOrgId)
+        .in("id", projectIds)
+      for (const projectRow of projectRows ?? []) projectNameById.set(projectRow.id, projectRow.name)
+    }
+
+    for (const record of records) {
+      if (!record.linkedDocs) continue
+      const lookup = record.linkedEntityType === "invoice" ? invoiceByQboId : billByQboId
+      for (const doc of record.linkedDocs) {
+        const docRow = lookup.get(doc.qboId)
+        if (!docRow) continue
+        doc.inArc = true
+        doc.docLabel =
+          record.linkedEntityType === "invoice"
+            ? (docRow.invoice_number ? `Invoice #${docRow.invoice_number}` : "Invoice")
+            : (docRow.bill_number ? `Bill #${docRow.bill_number}` : "Bill")
+        doc.projectName = docRow.project_id ? projectNameById.get(docRow.project_id) ?? null : null
+      }
+    }
+  }
+
   records.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""))
-  return { connected: true, records }
+  return { connected: true, records, loadErrors: loadErrors.length > 0 ? loadErrors : undefined }
 }
 
 // ---------------------------------------------------------------------------

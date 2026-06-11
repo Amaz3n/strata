@@ -61,8 +61,15 @@ export function ComparisonViewer({
   // Use optimized image URLs when available, fall back to PDF URLs
   const getVersionImageUrl = (version: DrawingSheetVersion | undefined) => {
     if (!version) return undefined
-    // Prefer optimized full resolution image, fall back to medium, then file_url (PDF)
-    return version.image_full_url || version.image_medium_url || version.file_url
+    // Prefer optimized full resolution image, fall back to medium, then the
+    // thumbnail (the tiled-viewer pipeline only generates thumbnail + tiles, not
+    // flat full/medium images), then file_url (PDF).
+    return (
+      version.image_full_url ||
+      version.image_medium_url ||
+      version.image_thumbnail_url ||
+      version.file_url
+    )
   }
 
   const leftImageUrl = getVersionImageUrl(leftVersion)
