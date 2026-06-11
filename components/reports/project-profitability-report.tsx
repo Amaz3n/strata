@@ -54,10 +54,6 @@ function formatCurrency(cents: number, opts?: { signed?: boolean }) {
   return formatted
 }
 
-function formatCompact(cents: number) {
-  const value = cents / 100
-  return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
-}
 
 export function ProjectProfitabilityReportView({
   projectId,
@@ -174,19 +170,19 @@ export function ProjectProfitabilityReportView({
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard
           label="Net profit"
-          value={formatCompact(report.net_profit_cents)}
+          value={formatCurrency(report.net_profit_cents)}
           sub={`${margin}% margin`}
           accent={marginPositive ? "positive" : "negative"}
           icon={marginPositive ? TrendingUp : TrendingDown}
         />
         <KpiCard
           label="Income"
-          value={formatCompact(report.total_income_cents)}
+          value={formatCurrency(report.total_income_cents)}
           sub={report.percent_billed != null ? `${report.percent_billed}% of contract billed` : "Billed revenue"}
         />
         <KpiCard
           label="Cost of work"
-          value={formatCompact(report.total_cost_cents)}
+          value={formatCurrency(report.total_cost_cents)}
           sub={report.percent_budget_spent != null ? `${report.percent_budget_spent}% of budget spent` : "Job-cost actuals"}
         />
         <KpiCard
