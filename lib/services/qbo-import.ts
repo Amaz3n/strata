@@ -2,6 +2,12 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import {
+  extractLinkedQboAmounts,
+  extractLinkedQboIds,
+  isUsableQboPaymentMapping,
+  qboImportProviderPaymentId,
+} from "@/lib/integrations/accounting/qbo-import-rules"
 import { recordEvent } from "@/lib/services/events"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { logQBO } from "@/lib/services/qbo-logger"
@@ -186,10 +192,14 @@ function refValue(ref: { value?: string } | null | undefined): string | null {
   return String(ref.value)
 }
 
+function expenseLineDetail(line: any): any | null {
+  return line?.AccountBasedExpenseLineDetail ?? line?.ItemBasedExpenseLineDetail ?? null
+}
+
 /** The customer/project ref on the first expense line of a Bill/Purchase, if any (job-costing link). */
 function firstLineCustomerRef(lines: any[] | undefined): { value?: string; name?: string } | null {
   for (const line of lines ?? []) {
-    const ref = line?.AccountBasedExpenseLineDetail?.CustomerRef ?? line?.ItemBasedExpenseLineDetail?.CustomerRef
+    const ref = expenseLineDetail(line)?.CustomerRef
     if (ref?.value) return ref
   }
   return null
@@ -199,7 +209,7 @@ function firstLineCustomerRef(lines: any[] | undefined): { value?: string; name?
 function allLineCustomerRefs(lines: any[] | undefined): { id: string; name: string | null }[] {
   const seen = new Map<string, string | null>()
   for (const line of lines ?? []) {
-    const ref = line?.AccountBasedExpenseLineDetail?.CustomerRef ?? line?.ItemBasedExpenseLineDetail?.CustomerRef
+    const ref = expenseLineDetail(line)?.CustomerRef
     if (ref?.value && !seen.has(String(ref.value))) seen.set(String(ref.value), refName(ref))
   }
   return Array.from(seen, ([id, name]) => ({ id, name }))
@@ -229,39 +239,16 @@ function deriveInvoiceStatus(totalCents: number, balanceCents: number, dueDate: 
 }
 
 function extractLinkedInvoiceQboIds(payment: any): string[] {
-  const ids = new Set<string>()
-  for (const line of (payment?.Line ?? []) as any[]) {
-    for (const linked of (line?.LinkedTxn ?? []) as any[]) {
-      if (String(linked?.TxnType ?? "").toLowerCase() !== "invoice") continue
-      if (linked?.TxnId) ids.add(String(linked.TxnId))
-    }
-  }
-  return Array.from(ids)
+  return extractLinkedQboIds(payment, "invoice")
 }
 
 /** Per-linked-document amounts for a payment, e.g. how much of a payment was applied to each invoice. */
 function extractLinkedDocAmounts(payment: any, txnType: "invoice" | "bill"): { qboId: string; amountCents: number }[] {
-  const byId = new Map<string, number>()
-  for (const line of (payment?.Line ?? []) as any[]) {
-    for (const linked of (line?.LinkedTxn ?? []) as any[]) {
-      if (String(linked?.TxnType ?? "").toLowerCase() !== txnType) continue
-      if (!linked?.TxnId) continue
-      const id = String(linked.TxnId)
-      byId.set(id, (byId.get(id) ?? 0) + toCents(line?.Amount))
-    }
-  }
-  return Array.from(byId, ([qboId, amountCents]) => ({ qboId, amountCents }))
+  return extractLinkedQboAmounts(payment, txnType)
 }
 
 function extractLinkedBillQboIds(billPayment: any): string[] {
-  const ids = new Set<string>()
-  for (const line of (billPayment?.Line ?? []) as any[]) {
-    for (const linked of (line?.LinkedTxn ?? []) as any[]) {
-      if (String(linked?.TxnType ?? "").toLowerCase() !== "bill") continue
-      if (linked?.TxnId) ids.add(String(linked.TxnId))
-    }
-  }
-  return Array.from(ids)
+  return extractLinkedQboIds(billPayment, "bill")
 }
 
 /**
@@ -272,16 +259,7 @@ function extractLinkedBillQboIds(billPayment: any): string[] {
  * the bill amount settled.
  */
 function extractAppliedVendorCredits(billPayment: any): { qboId: string; amountCents: number }[] {
-  const byId = new Map<string, number>()
-  for (const line of (billPayment?.Line ?? []) as any[]) {
-    for (const linked of (line?.LinkedTxn ?? []) as any[]) {
-      if (String(linked?.TxnType ?? "").toLowerCase() !== "vendorcredit") continue
-      if (!linked?.TxnId) continue
-      const id = String(linked.TxnId)
-      byId.set(id, (byId.get(id) ?? 0) + toCents(line?.Amount))
-    }
-  }
-  return Array.from(byId, ([qboId, amountCents]) => ({ qboId, amountCents }))
+  return extractLinkedQboAmounts(billPayment, "vendorcredit")
 }
 
 type ResolvedContext = {
@@ -308,7 +286,7 @@ async function collectLinkedQboIds(
     client_deposit: new Set(),
   }
 
-  const [invoiceRows, expenseRows, billRows, syncRows] = await Promise.all([
+  const [invoiceRows, expenseRows, billRows, syncRows, paymentRows] = await Promise.all([
     // Exclude client-deposit invoices: their qbo_id is the JournalEntry id (shared across lines) and
     // must not shadow a real Invoice that happens to share that numeric id.
     supabase.from("invoices").select("qbo_id, metadata").eq("org_id", orgId).not("qbo_id", "is", null),
@@ -323,12 +301,13 @@ async function collectLinkedQboIds(
     // Vendor credits also live in vendor_bills (negative rows, metadata.source = "vendor_credit").
     // Route them to the vendor_credit set, not bill — QBO ids aren't unique across entity types, so
     // a Bill and a VendorCredit can share a numeric id.
-    supabase.from("vendor_bills").select("qbo_id, metadata").eq("org_id", orgId).not("qbo_id", "is", null),
+    supabase.from("vendor_bills").select("id, qbo_id, metadata").eq("org_id", orgId).not("qbo_id", "is", null),
     supabase
       .from("qbo_sync_records")
-      .select("entity_type, qbo_id, metadata")
+      .select("entity_type, entity_id, qbo_id, status, metadata")
       .eq("org_id", orgId)
       .in("entity_type", ["invoice", "project_expense", "bill", "vendor_credit", "payment", "bill_payment"]),
+    supabase.from("payments").select("id").eq("org_id", orgId),
   ])
 
   for (const row of invoiceRows.data ?? []) {
@@ -339,29 +318,19 @@ async function collectLinkedQboIds(
   for (const row of expenseRows.data ?? []) if (row.qbo_id) linked.expense.add(String(row.qbo_id))
   for (const row of billRows.data ?? []) {
     if (!row.qbo_id) continue
+    if ((row.metadata as { qbo_import_complete?: boolean } | null)?.qbo_import_complete === false) continue
     if ((row.metadata as { source?: string } | null)?.source === "vendor_credit") linked.vendor_credit.add(String(row.qbo_id))
     else linked.bill.add(String(row.qbo_id))
   }
+  const paymentIds = new Set((paymentRows.data ?? []).map((row) => String(row.id)))
   for (const row of syncRows.data ?? []) {
     const qboId = row.qbo_id ? String(row.qbo_id) : null
     if (!qboId) continue
+    // Native financial rows above are the source of truth for documents. For payments, accept a
+    // mapping only when it points at a real Arc ledger row. This deliberately ignores old webhook
+    // placeholder mappings whose random entity_id never existed in `payments`.
+    if (!isUsableQboPaymentMapping(row, paymentIds)) continue
     switch (row.entity_type) {
-      case "invoice":
-        // Client-deposit invoices reuse the JournalEntry id; keep them out of the by-id invoice set
-        // (they dedupe at the JE-line level instead).
-        if ((row.metadata as { source?: string } | null)?.source === "client_deposit") break
-        linked.invoice.add(qboId)
-        break
-      case "project_expense":
-        if ((row.metadata as { source?: string } | null)?.source === "journal_entry") break
-        linked.expense.add(qboId)
-        break
-      case "bill":
-        linked.bill.add(qboId)
-        break
-      case "vendor_credit":
-        linked.vendor_credit.add(qboId)
-        break
       case "payment":
         linked.payment.add(qboId)
         break
@@ -538,7 +507,7 @@ export async function listImportableQboRecords({
 
   // Build the per-line allocation breakdown attached to multi-line records.
   const expenseLineToImportLine = (line: any): QboImportLine => {
-    const detail = line.AccountBasedExpenseLineDetail ?? line.ItemBasedExpenseLineDetail
+    const detail = expenseLineDetail(line)
     const customerRef = detail?.CustomerRef ?? null
     const customerId = refValue(customerRef)
     const accountRef = line.AccountBasedExpenseLineDetail?.AccountRef ?? line.ItemBasedExpenseLineDetail?.ItemRef ?? null
@@ -568,6 +537,13 @@ export async function listImportableQboRecords({
   }
 
   const records: QboImportRecord[] = []
+  const billCustomersByQboId = new Map<string, { id: string; name: string | null }[]>()
+  for (const result of results) {
+    if (result.type !== "bill") continue
+    for (const bill of result.rows) {
+      if (bill?.Id) billCustomersByQboId.set(String(bill.Id), allLineCustomerRefs(bill.Line))
+    }
+  }
 
   for (const { type, rows } of results) {
     for (const row of rows) {
@@ -696,7 +672,7 @@ export async function listImportableQboRecords({
           qboCustomerName: refName(lineCustomer),
           qboCustomerIds: allLineCustomerRefs(row.Line),
           lines: ((row.Line ?? []) as any[])
-            .filter((line) => line?.AccountBasedExpenseLineDetail)
+            .filter((line) => expenseLineDetail(line))
             .map(expenseLineToImportLine),
         })
       } else if (type === "vendor_credit") {
@@ -704,7 +680,7 @@ export async function listImportableQboRecords({
         // credit. The negation is display-only here; the importer derives signs from the QBO payload.
         const lineCustomer = firstLineCustomerRef(row.Line)
         const negativeLines = ((row.Line ?? []) as any[])
-          .filter((line) => line?.AccountBasedExpenseLineDetail)
+          .filter((line) => line?.AccountBasedExpenseLineDetail || line?.ItemBasedExpenseLineDetail)
           .map((line) => {
             const mapped = expenseLineToImportLine(line)
             return { ...mapped, amountCents: -mapped.amountCents }
@@ -752,6 +728,13 @@ export async function listImportableQboRecords({
         const linkedQboIds = extractLinkedBillQboIds(row)
         const docAmounts = extractLinkedDocAmounts(row, "bill")
         const appliedVendorCreditQboIds = extractAppliedVendorCredits(row).map((c) => c.qboId)
+        const linkedCustomers = new Map<string, string | null>()
+        for (const linkedId of linkedQboIds) {
+          for (const customer of billCustomersByQboId.get(linkedId) ?? []) {
+            if (!linkedCustomers.has(customer.id)) linkedCustomers.set(customer.id, customer.name)
+          }
+        }
+        const qboCustomerIds = Array.from(linkedCustomers, ([id, name]) => ({ id, name }))
         records.push({
           qboId,
           entityType: type,
@@ -764,6 +747,9 @@ export async function listImportableQboRecords({
           linkedEntityType: "bill",
           linkedQboIds,
           appliedVendorCreditQboIds: appliedVendorCreditQboIds.length > 0 ? appliedVendorCreditQboIds : undefined,
+          qboCustomerId: qboCustomerIds[0]?.id ?? null,
+          qboCustomerName: qboCustomerIds[0]?.name ?? null,
+          qboCustomerIds,
           linkedDocs: docAmounts.map((doc) => ({
             qboId: doc.qboId,
             docLabel: null,
@@ -920,10 +906,26 @@ export async function listImportableQboRecords({
     if (projectIds.length > 0) {
       const { data: projectRows } = await supabase
         .from("projects")
-        .select("id, name")
+        .select("id, name, qbo_customer_id, qbo_customer_name")
         .eq("org_id", resolvedOrgId)
         .in("id", projectIds)
       for (const projectRow of projectRows ?? []) projectNameById.set(projectRow.id, projectRow.name)
+
+      const projectById = new Map((projectRows ?? []).map((projectRow) => [projectRow.id, projectRow]))
+      for (const record of records) {
+        if (record.entityType !== "bill_payment" || !record.linkedDocs) continue
+        const customers = new Map((record.qboCustomerIds ?? []).map((customer) => [customer.id, customer.name]))
+        for (const doc of record.linkedDocs) {
+          const billRow = billByQboId.get(doc.qboId)
+          const projectRow = billRow?.project_id ? projectById.get(billRow.project_id) : null
+          if (projectRow?.qbo_customer_id) {
+            customers.set(String(projectRow.qbo_customer_id), projectRow.qbo_customer_name ?? projectRow.name)
+          }
+        }
+        record.qboCustomerIds = Array.from(customers, ([id, name]) => ({ id, name }))
+        record.qboCustomerId = record.qboCustomerIds[0]?.id ?? null
+        record.qboCustomerName = record.qboCustomerIds[0]?.name ?? null
+      }
     }
 
     for (const record of records) {
@@ -942,7 +944,12 @@ export async function listImportableQboRecords({
     }
   }
 
-  records.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""))
+  records.sort(
+    (a, b) =>
+      (b.date ?? "").localeCompare(a.date ?? "") ||
+      a.entityType.localeCompare(b.entityType) ||
+      a.qboId.localeCompare(b.qboId),
+  )
   return { connected: true, records, loadErrors: loadErrors.length > 0 ? loadErrors : undefined }
 }
 
@@ -976,7 +983,7 @@ async function linkSyncRecord(params: {
   pushable?: boolean
   metadata?: Record<string, unknown>
 }) {
-  await params.supabase.from("qbo_sync_records").upsert(
+  const { error } = await params.supabase.from("qbo_sync_records").upsert(
     {
       org_id: params.orgId,
       connection_id: params.connectionId,
@@ -993,6 +1000,7 @@ async function linkSyncRecord(params: {
     },
     { onConflict: "org_id,entity_type,entity_id" },
   )
+  if (error) throw new Error(`Failed to save QuickBooks import mapping: ${error.message}`)
 }
 
 /** Clear any "ignored / unmatched" webhook events for this QBO id so it leaves the drift queue. */
@@ -1109,6 +1117,25 @@ async function postJobCostActualsForImportedBill(ctx: ResolvedContext, billId: s
   if (rows.length === 0) return
 
   await supabase.from("job_cost_entries").upsert(rows, { onConflict: "org_id,source_type,source_id" })
+}
+
+async function deletePartialImportedBill(ctx: ResolvedContext, billId: string) {
+  const { supabase, orgId } = ctx
+  const { data: lines } = await supabase
+    .from("bill_lines")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("bill_id", billId)
+  const lineIds = (lines ?? []).map((line) => line.id)
+  if (lineIds.length > 0) {
+    await supabase
+      .from("job_cost_entries")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("source_type", "vendor_bill_line")
+      .in("source_id", lineIds)
+  }
+  await supabase.from("vendor_bills").delete().eq("org_id", orgId).eq("id", billId)
 }
 
 async function importInvoice(ctx: ResolvedContext, client: QBOClient, connectionId: string, projectId: string, qboId: string) {
@@ -1444,8 +1471,6 @@ async function importExpense(
 
   await markEventsResolved(supabase, qboId)
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
-
-  return { skipped: false as const, entityId: expenseRow.id }
 }
 
 async function importBill(
@@ -1460,11 +1485,16 @@ async function importBill(
 
   const { data: existing } = await supabase
     .from("vendor_bills")
-    .select("id")
+    .select("id, metadata")
     .eq("org_id", orgId)
     .eq("qbo_id", qboId)
     .maybeSingle()
-  if (existing?.id) return { skipped: true as const }
+  if (existing?.id) {
+    if ((existing.metadata as { qbo_import_complete?: boolean } | null)?.qbo_import_complete !== false) {
+      return { skipped: true as const }
+    }
+    await deletePartialImportedBill(ctx, existing.id)
+  }
 
   const qbo = await client.getBillById(qboId)
   if (!qbo) throw new Error("Bill not found in QuickBooks")
@@ -1475,9 +1505,10 @@ async function importBill(
   const billDate = normalizeDate(qbo.TxnDate)
   const dueDate = normalizeDate(qbo.DueDate)
   const vendorRef = qbo.VendorRef
-  const accountLine = (qbo.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
-  const accountRef = accountLine?.AccountBasedExpenseLineDetail?.AccountRef
-  const classRef = accountLine?.AccountBasedExpenseLineDetail?.ClassRef
+  const accountLine = (qbo.Line ?? []).find((line: any) => expenseLineDetail(line))
+  const accountDetail = expenseLineDetail(accountLine)
+  const accountRef = accountDetail?.AccountRef ?? accountDetail?.ItemRef
+  const classRef = accountDetail?.ClassRef
   const nowIso = new Date().toISOString()
   const status = balanceCents <= 0 && totalCents > 0 ? "paid" : "approved"
 
@@ -1496,7 +1527,7 @@ async function importBill(
       approved_at: nowIso,
       approved_by: ctx.userId,
       paid_at: status === "paid" ? nowIso : null,
-      metadata: { imported_from_qbo: true, qbo_imported_at: nowIso },
+      metadata: { imported_from_qbo: true, qbo_imported_at: nowIso, qbo_import_complete: false },
       qbo_id: qboId,
       qbo_synced_at: nowIso,
       qbo_sync_status: "synced",
@@ -1515,12 +1546,12 @@ async function importBill(
   // Persist the bill's expense lines, allocating each to the Arc project that maps to the
   // line's QBO customer (so a bill job-costed across multiple projects in QBO keeps that
   // split in Arc). Lines without a resolvable customer fall back to the import target project.
-  const expenseLines = (qbo.Line ?? []).filter((line: any) => line?.AccountBasedExpenseLineDetail)
+  const expenseLines = (qbo.Line ?? []).filter((line: any) => expenseLineDetail(line))
   if (expenseLines.length > 0) {
     const customerIds = Array.from(
       new Set(
         expenseLines
-          .map((line: any) => refValue(line.AccountBasedExpenseLineDetail?.CustomerRef))
+          .map((line: any) => refValue(expenseLineDetail(line)?.CustomerRef))
           .filter((value: string | null): value is string => Boolean(value)),
       ),
     )
@@ -1538,7 +1569,7 @@ async function importBill(
 
     const lineRows = []
     for (const [index, line] of expenseLines.entries()) {
-      const detail = line.AccountBasedExpenseLineDetail
+      const detail = expenseLineDetail(line)
       const customerRef = detail?.CustomerRef ?? null
       const lineProjectId = await resolveLineProject({
         supabase,
@@ -1555,7 +1586,7 @@ async function importBill(
         bill_id: billRow.id,
         project_id: lineProjectId,
         cost_code_id: null,
-        description: String(line.Description ?? refName(detail?.AccountRef) ?? "Imported QuickBooks line"),
+        description: String(line.Description ?? refName(detail?.AccountRef ?? detail?.ItemRef) ?? "Imported QuickBooks line"),
         quantity: 1,
         unit: "LS",
         unit_cost_cents: toCents(line.Amount),
@@ -1563,7 +1594,7 @@ async function importBill(
         metadata: {
           source: "qbo_import",
           qbo_expense_account_id: refValue(detail?.AccountRef),
-          qbo_expense_account_name: refName(detail?.AccountRef),
+          qbo_expense_account_name: refName(detail?.AccountRef ?? detail?.ItemRef),
           qbo_class_id: refValue(detail?.ClassRef),
           qbo_class_name: refName(detail?.ClassRef),
         },
@@ -1579,6 +1610,12 @@ async function importBill(
 
   await postJobCostActualsForImportedBill(ctx, billRow.id)
   await linkSyncRecord({ supabase, orgId, connectionId, entityType: "bill", entityId: billRow.id, qboId })
+  const { error: completeBillError } = await supabase
+    .from("vendor_bills")
+    .update({ metadata: { imported_from_qbo: true, qbo_imported_at: nowIso, qbo_import_complete: true } })
+    .eq("org_id", orgId)
+    .eq("id", billRow.id)
+  if (completeBillError) throw new Error(`Failed to finalize imported bill: ${completeBillError.message}`)
   await markEventsResolved(supabase, qboId)
   await recordEvent({
     orgId,
@@ -1613,12 +1650,17 @@ async function importVendorCredit(
 
   const { data: existing } = await supabase
     .from("vendor_bills")
-    .select("id")
+    .select("id, metadata")
     .eq("org_id", orgId)
     .eq("qbo_id", qboId)
     .eq("metadata->>source", "vendor_credit")
     .maybeSingle()
-  if (existing?.id) return { skipped: true as const }
+  if (existing?.id) {
+    if ((existing.metadata as { qbo_import_complete?: boolean } | null)?.qbo_import_complete !== false) {
+      return { skipped: true as const }
+    }
+    await deletePartialImportedBill(ctx, existing.id)
+  }
 
   const qbo = await client.getVendorCreditById(qboId)
   if (!qbo) throw new Error("Vendor credit not found in QuickBooks")
@@ -1626,9 +1668,10 @@ async function importVendorCredit(
   const totalCents = -toCents(qbo.TotalAmt)
   const txnDate = normalizeDate(qbo.TxnDate)
   const vendorRef = qbo.VendorRef
-  const accountLine = (qbo.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
-  const accountRef = accountLine?.AccountBasedExpenseLineDetail?.AccountRef
-  const classRef = accountLine?.AccountBasedExpenseLineDetail?.ClassRef
+  const accountLine = (qbo.Line ?? []).find((line: any) => expenseLineDetail(line))
+  const accountDetail = expenseLineDetail(accountLine)
+  const accountRef = accountDetail?.AccountRef ?? accountDetail?.ItemRef
+  const classRef = accountDetail?.ClassRef
   const nowIso = new Date().toISOString()
 
   const { data: creditRow, error: creditError } = await supabase
@@ -1646,7 +1689,12 @@ async function importVendorCredit(
       currency: "usd",
       approved_at: nowIso,
       approved_by: ctx.userId,
-      metadata: { source: "vendor_credit", imported_from_qbo: true, qbo_imported_at: nowIso },
+      metadata: {
+        source: "vendor_credit",
+        imported_from_qbo: true,
+        qbo_imported_at: nowIso,
+        qbo_import_complete: false,
+      },
       qbo_id: qboId,
       qbo_synced_at: nowIso,
       qbo_sync_status: "synced",
@@ -1662,12 +1710,12 @@ async function importVendorCredit(
 
   if (creditError || !creditRow) throw new Error(creditError?.message ?? "Failed to create vendor credit")
 
-  const creditLines = (qbo.Line ?? []).filter((line: any) => line?.AccountBasedExpenseLineDetail)
+  const creditLines = (qbo.Line ?? []).filter((line: any) => expenseLineDetail(line))
   if (creditLines.length > 0) {
     const customerIds = Array.from(
       new Set(
         creditLines
-          .map((line: any) => refValue(line.AccountBasedExpenseLineDetail?.CustomerRef))
+          .map((line: any) => refValue(expenseLineDetail(line)?.CustomerRef))
           .filter((value: string | null): value is string => Boolean(value)),
       ),
     )
@@ -1685,7 +1733,7 @@ async function importVendorCredit(
 
     const lineRows = []
     for (const [index, line] of creditLines.entries()) {
-      const detail = line.AccountBasedExpenseLineDetail
+      const detail = expenseLineDetail(line)
       const customerRef = detail?.CustomerRef ?? null
       const lineProjectId = await resolveLineProject({
         supabase,
@@ -1702,7 +1750,9 @@ async function importVendorCredit(
         bill_id: creditRow.id,
         project_id: lineProjectId,
         cost_code_id: null,
-        description: String(line.Description ?? refName(detail?.AccountRef) ?? "Imported QuickBooks vendor credit line"),
+        description: String(
+          line.Description ?? refName(detail?.AccountRef ?? detail?.ItemRef) ?? "Imported QuickBooks vendor credit line",
+        ),
         quantity: 1,
         unit: "LS",
         // Negative so the credit reduces the project's job cost.
@@ -1711,7 +1761,7 @@ async function importVendorCredit(
         metadata: {
           source: "vendor_credit",
           qbo_expense_account_id: refValue(detail?.AccountRef),
-          qbo_expense_account_name: refName(detail?.AccountRef),
+          qbo_expense_account_name: refName(detail?.AccountRef ?? detail?.ItemRef),
           qbo_class_id: refValue(detail?.ClassRef),
           qbo_class_name: refName(detail?.ClassRef),
         },
@@ -1735,6 +1785,21 @@ async function importVendorCredit(
     qboId,
     pushable: false,
   })
+  const { error: completeCreditError } = await supabase
+    .from("vendor_bills")
+    .update({
+      metadata: {
+        source: "vendor_credit",
+        imported_from_qbo: true,
+        qbo_imported_at: nowIso,
+        qbo_import_complete: true,
+      },
+    })
+    .eq("org_id", orgId)
+    .eq("id", creditRow.id)
+  if (completeCreditError) {
+    throw new Error(`Failed to finalize imported vendor credit: ${completeCreditError.message}`)
+  }
   await markEventsResolved(supabase, qboId)
   await recordEvent({
     orgId,
@@ -1750,15 +1815,6 @@ async function importVendorCredit(
 
 async function importPayment(ctx: ResolvedContext, client: QBOClient, connectionId: string, qboId: string) {
   const { supabase, orgId } = ctx
-
-  const { data: existingSync } = await supabase
-    .from("qbo_sync_records")
-    .select("entity_id")
-    .eq("org_id", orgId)
-    .eq("entity_type", "payment")
-    .eq("qbo_id", qboId)
-    .maybeSingle()
-  if (existingSync?.entity_id) return { skipped: true as const }
 
   const qbo = await client.getPaymentById(qboId)
   if (!qbo) throw new Error("Payment not found in QuickBooks")
@@ -1789,7 +1845,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
   // A payment might apply to multiple invoices. Create a payment record for each.
   const paymentLines = (qbo.Line ?? []).filter((line: any) =>
     line?.LinkedTxn?.some((txn: any) => String(txn?.TxnType ?? "").toLowerCase() === "invoice"),
-  )
+  ) as any[]
   const shouldSplit = paymentLines.length > 1
 
   for (const line of paymentLines) {
@@ -1803,6 +1859,35 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
 
     const amountCents = toCents(line.Amount)
     if (amountCents <= 0) continue
+    const providerPaymentId = qboImportProviderPaymentId({
+      kind: "payment",
+      qboId,
+      split: shouldSplit,
+      lineId: String(line.Id || linkedTxn.TxnId),
+    })
+
+    const { data: existingPayment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("provider", "qbo")
+      .eq("provider_payment_id", providerPaymentId)
+      .maybeSingle()
+    if (existingPayment?.id) {
+      firstEntityId ??= existingPayment.id
+      await linkSyncRecord({
+        supabase,
+        orgId,
+        connectionId,
+        entityType: "payment",
+        entityId: existingPayment.id,
+        qboId,
+        pushable: !shouldSplit,
+        metadata: shouldSplit ? { source: "payment_split", qbo_payment_line_id: String(line.Id || linkedTxn.TxnId) } : undefined,
+      })
+      await recalcInvoiceBalanceAndStatus({ supabase, orgId, invoiceId: invoice.id })
+      continue
+    }
 
     const { data: paymentRow, error: paymentError } = await supabase
       .from("payments")
@@ -1816,7 +1901,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
         currency: "usd",
         method: "other",
         provider: "qbo",
-        provider_payment_id: shouldSplit ? `qbo_payment_${qboId}_${line.Id || linkedTxn.TxnId}` : `qbo_payment_${qboId}`,
+        provider_payment_id: providerPaymentId,
         status: "succeeded",
         received_at: receivedAt ? new Date(receivedAt).toISOString() : nowIso,
         metadata: {
@@ -1869,15 +1954,6 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
 async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connectionId: string, qboId: string) {
   const { supabase, orgId } = ctx
 
-  const { data: existingSync } = await supabase
-    .from("qbo_sync_records")
-    .select("entity_id")
-    .eq("org_id", orgId)
-    .eq("entity_type", "bill_payment")
-    .eq("qbo_id", qboId)
-    .maybeSingle()
-  if (existingSync?.entity_id) return { skipped: true as const }
-
   const qbo = await client.getBillPaymentById(qboId)
   if (!qbo) throw new Error("Bill payment not found in QuickBooks")
 
@@ -1900,7 +1976,7 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
 
   const receivedAt = normalizeDate(qbo.TxnDate)
   const nowIso = new Date().toISOString()
-  let created = 0
+  let insertedAny = false
   let firstEntityId: string | null = null
 
   // A bill payment might apply to multiple bills. Create payment records for each.
@@ -1933,7 +2009,12 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
         amount_cents: cashForThisLine,
         gross_cents: cashForThisLine,
         net_cents: cashForThisLine,
-        provider_payment_id: shouldSplit ? `qbo_billpayment_${qboId}_${line.Id || linkedTxn.TxnId}` : `qbo_billpayment_${qboId}`,
+        provider_payment_id: qboImportProviderPaymentId({
+          kind: "billpayment",
+          qboId,
+          split: shouldSplit,
+          lineId: String(line.Id || linkedTxn.TxnId),
+        }),
         metadata: {
           imported_from_qbo: true,
           qbo_id: qboId,
@@ -1947,7 +2028,13 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
         amount_cents: creditForThisLine,
         gross_cents: creditForThisLine,
         net_cents: creditForThisLine,
-        provider_payment_id: shouldSplit ? `qbo_billpayment_${qboId}_${line.Id || linkedTxn.TxnId}_vc` : `qbo_billpayment_${qboId}_vc`,
+        provider_payment_id: qboImportProviderPaymentId({
+          kind: "billpayment",
+          qboId,
+          split: shouldSplit,
+          lineId: String(line.Id || linkedTxn.TxnId),
+          vendorCredit: true,
+        }),
         metadata: {
           imported_from_qbo: true,
           qbo_id: qboId,
@@ -1959,6 +2046,28 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
     }
 
     for (const p of paymentsToInsert) {
+      const { data: existingPayment } = await supabase
+        .from("payments")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("provider", "qbo")
+        .eq("provider_payment_id", p.provider_payment_id)
+        .maybeSingle()
+      if (existingPayment?.id) {
+        firstEntityId ??= existingPayment.id
+        await linkSyncRecord({
+          supabase,
+          orgId,
+          connectionId,
+          entityType: "bill_payment",
+          entityId: existingPayment.id,
+          qboId,
+          pushable: !shouldSplit,
+          metadata: shouldSplit ? { source: "payment_split", qbo_payment_line_id: p.metadata.qbo_payment_line_id } : undefined,
+        })
+        continue
+      }
+
       const { data: paymentRow, error: paymentError } = await supabase
         .from("payments")
         .insert({
@@ -1977,6 +2086,7 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
 
       if (paymentError || !paymentRow) throw new Error(paymentError?.message ?? "Failed to record bill payment")
 
+      insertedAny = true
       firstEntityId ??= paymentRow.id
 
       await linkSyncRecord({
@@ -1999,7 +2109,8 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
           qbo_id: qboId,
           amount_cents: p.amount_cents,
           bill_id: bill.id,
-          vendor_credit_applied: p.metadata.vendor_credit_applied,
+          vendor_credit_applied:
+            "vendor_credit_applied" in p.metadata ? p.metadata.vendor_credit_applied : false,
           ...(shouldSplit ? { source: "payment_split" } : {}),
         },
       })
@@ -2024,12 +2135,11 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
       .eq("org_id", orgId)
       .eq("id", bill.id)
 
-    created += 1
   }
 
   await markEventsResolved(supabase, qboId)
 
-  return { skipped: created === 0, entityId: firstEntityId ?? undefined }
+  return { skipped: !insertedAny, entityId: firstEntityId ?? undefined }
 }
 
 /**

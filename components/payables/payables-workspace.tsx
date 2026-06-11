@@ -839,6 +839,30 @@ export function PayablesWorkspace({
             </Button>
           ) : null}
 
+          {/* Payment Details */}
+          {selectedBill.status === "paid" || selectedBill.status === "partial" ? (
+            <div className="space-y-4 rounded-xl border border-emerald-100 bg-emerald-50/30 p-5 dark:border-emerald-900/30 dark:bg-emerald-950/10">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Payment details
+              </div>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount Paid</span>
+                  <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">{formatMoneyFromCents(selectedBill.paid_cents ?? billTotalCents)}</p>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Method</span>
+                  <p className="text-sm font-semibold capitalize">{selectedBill.payment_method || "—"}</p>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Reference</span>
+                  <p className="text-sm font-semibold">{selectedBill.payment_reference || "—"}</p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {selectedBill.status === "approved" || selectedBill.status === "partial" ? (
             <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/30 p-5 dark:border-blue-900/30 dark:bg-blue-950/10">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">

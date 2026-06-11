@@ -43,7 +43,8 @@ const SHEET_TITLE_LABEL_PATTERNS = [
 const GENERIC_SHEET_NUMBER_PATTERN = /\b(?:FP|SP|[ASMEPCLIGTDX])[-./]?\d{1,4}(?:\.\d{1,3})?[A-Z]?\b/gi;
 async function processDrawingSet(supabase, job) {
     const { drawingSetId, projectId, sourceFileId } = job.payload;
-    console.log(`📄 Processing drawing set ${drawingSetId}`);
+    let draftRevisionId = job.payload.draftRevisionId;
+    console.log(`📄 Processing drawing set ${drawingSetId} (draft revision ${draftRevisionId ?? 'none yet'})`);
     // Validate required parameters
     if (!drawingSetId || !projectId || !sourceFileId) {
         throw new Error('Missing required payload fields: drawingSetId, projectId, sourceFileId');
@@ -70,11 +71,41 @@ async function processDrawingSet(supabase, job) {
     if (fileError || !fileRecord) {
         throw new Error(`File record not found: ${fileError?.message}`);
     }
+    // Backward compatibility: older app deploys queue jobs without a pre-created
+    // draft revision. Create one here so every upload still lands as a draft.
+    if (!draftRevisionId) {
+        const { count } = await supabase
+            .from('drawing_revisions')
+            .select('*', { count: 'exact', head: true })
+            .eq('org_id', drawingSet.org_id)
+            .eq('project_id', projectId)
+            .eq('status', 'published');
+        const fallbackLabel = !count ? 'Initial Set' : `Revision ${count + 1}`;
+        const { data: created, error: createError } = await supabase
+            .from('drawing_revisions')
+            .insert({
+            org_id: drawingSet.org_id,
+            project_id: projectId,
+            drawing_set_id: drawingSetId,
+            revision_label: fallbackLabel,
+            status: 'processing',
+            processing_stage: 'queued',
+            issued_date: new Date().toISOString(),
+            source_file_id: sourceFileId,
+        })
+            .select('id')
+            .single();
+        if (createError || !created) {
+            throw new Error(`Failed to create draft revision: ${createError?.message}`);
+        }
+        draftRevisionId = created.id;
+        console.log(`Created fallback draft revision ${draftRevisionId}`);
+    }
     // Download PDF to temp file
     const tempDir = (0, os_1.tmpdir)();
     const tempPdfPath = (0, path_1.join)(tempDir, `pdf-${drawingSetId}-${Date.now()}.pdf`);
     try {
-        await updateSetStage(supabase, drawingSetId, {
+        await updateRevisionStage(supabase, draftRevisionId, {
             status: 'processing',
             processing_stage: 'downloading_pdf',
             processed_pages: 0,
@@ -87,57 +118,37 @@ async function processDrawingSet(supabase, job) {
         await fs_1.promises.writeFile(tempPdfPath, pdfBytes);
         console.log(`Downloaded PDF: ${pdfBytes.length} bytes`);
         // Get page count using MuPDF
-        await updateSetStage(supabase, drawingSetId, {
+        await updateRevisionStage(supabase, draftRevisionId, {
             processing_stage: 'counting_pages',
         });
         const pageCount = getPdfPageCount(tempPdfPath);
         console.log(`PDF has ${pageCount} pages`);
-        await updateSetStage(supabase, drawingSetId, {
+        await updateRevisionStage(supabase, draftRevisionId, {
             processing_stage: 'extracting_text',
             total_pages: pageCount,
         });
         const pageTexts = extractPdfTextByPage(tempPdfPath, pageCount);
         const pagesWithText = pageTexts.reduce((count, text) => (text.trim() ? count + 1 : count), 0);
         console.log(`Extracted searchable text for ${pagesWithText}/${pageCount} pages`);
-        // Determine revision label based on existing revisions in this project
-        let revisionLabel = 'Initial';
-        try {
-            const { count, error: countError } = await supabase
-                .from('drawing_revisions')
-                .select('*', { count: 'exact', head: true })
-                .eq('org_id', drawingSet.org_id)
-                .eq('project_id', projectId);
-            if (!countError && count !== null && count > 0) {
-                revisionLabel = `Rev ${count + 1}`;
-            }
-        }
-        catch (err) {
-            console.warn('Failed to calculate revision label:', err);
-        }
-        // Create a default revision for this drawing set
+        // Use the draft revision created by the upload action. We process all pages
+        // into draft versions under this revision without touching any live sheet —
+        // nothing becomes current until the user publishes.
         const { data: revision, error: revisionError } = await supabase
             .from('drawing_revisions')
-            .insert({
-            org_id: drawingSet.org_id,
-            project_id: projectId,
-            drawing_set_id: drawingSetId,
-            revision_label: revisionLabel,
-            issued_date: new Date().toISOString(),
-            notes: revisionLabel === 'Initial' ? 'Initial upload' : `Upload revision ${revisionLabel}`,
-            created_at: new Date().toISOString(),
-        })
-            .select()
+            .select('id, org_id, project_id')
+            .eq('id', draftRevisionId)
+            .eq('org_id', drawingSet.org_id)
             .single();
         if (revisionError || !revision) {
-            throw new Error(`Failed to create revision: ${revisionError?.message}`);
+            throw new Error(`Draft revision not found: ${revisionError?.message}`);
         }
-        console.log(`Created revision ${revision.id}`);
+        console.log(`Processing into draft revision ${revision.id}`);
         // Create content hash for deterministic storage paths
         const hash = (0, crypto_1.createHash)('sha256').update(pdfBytes).digest('hex').slice(0, 16);
         const basePath = `${drawingSet.org_id}/${hash}`;
         // Extract all pages as PNGs using MuPDF (do this once for all pages)
         console.log(`Extracting and uploading ${pageCount} pages...`);
-        await updateSetStage(supabase, drawingSetId, {
+        await updateRevisionStage(supabase, draftRevisionId, {
             processing_stage: 'rendering_pages',
         });
         const tempPngDir = (0, path_1.join)(tempDir, `pages-${drawingSetId}`);
@@ -180,7 +191,7 @@ async function processDrawingSet(supabase, job) {
         }
         console.log(`Processed ${tempPngPaths.length}/${pageCount} pages`);
         // Create drawing sheets and versions
-        await updateSetStage(supabase, drawingSetId, {
+        await updateRevisionStage(supabase, draftRevisionId, {
             processing_stage: 'detecting_sheets',
         });
         const sheetsCreated = [];
@@ -214,33 +225,20 @@ async function processDrawingSet(supabase, job) {
                 .eq('sheet_number', targetSheetNumber)
                 .maybeSingle();
             let sheet = existingSheet;
+            let isNewSheet = false;
             if (existingSheet) {
-                // Stack a new version onto the existing sheet: keep it on the project's
-                // canonical set, point it at the new revision, and refresh its title.
-                // Setting drawing_set_id also pulls in any sheets stranded on an older
-                // set so the project converges onto a single register.
-                const { data: updatedSheet, error: updateError } = await supabase
-                    .from('drawing_sheets')
-                    .update({
-                    drawing_set_id: drawingSetId,
-                    current_revision_id: revision.id,
-                    sheet_title: sheetTitle,
-                    discipline: resolvedSheet.discipline,
-                    updated_at: new Date().toISOString(),
-                })
-                    .eq('id', existingSheet.id)
-                    .select()
-                    .single();
-                if (updateError || !updatedSheet) {
-                    console.error(`Failed to update sheet for page ${pageIndex}:`, updateError);
-                    continue;
-                }
-                sheet = updatedSheet;
+                // Draft: do NOT mutate the live sheet (its current_revision_id, title,
+                // discipline and set assignment stay as published). We only attach a new
+                // draft version below; the proposed metadata rides on the version and is
+                // applied at publish time.
+                sheet = existingSheet;
             }
             else {
-                // Create sheet record
+                // Brand-new sheet number. Create it draft-only: current_revision_id stays
+                // NULL so the sheets list MV hides it until this revision is published.
+                isNewSheet = true;
                 if (pageIndex === 0) {
-                    await updateSetStage(supabase, drawingSetId, {
+                    await updateRevisionStage(supabase, draftRevisionId, {
                         processing_stage: 'creating_sheets',
                     });
                 }
@@ -253,7 +251,7 @@ async function processDrawingSet(supabase, job) {
                     sheet_number: targetSheetNumber,
                     sheet_title: sheetTitle,
                     discipline: resolvedSheet.discipline,
-                    current_revision_id: revision.id,
+                    current_revision_id: null,
                     sort_order: pageIndex,
                     share_with_clients: false,
                     share_with_subs: false,
@@ -268,7 +266,9 @@ async function processDrawingSet(supabase, job) {
                 }
                 sheet = newSheet;
             }
-            // Create sheet version with temp PNG path
+            // Create the draft sheet version. The proposed sheet number/title/discipline
+            // are stored on the version so the review screen can show + edit them and
+            // publish can apply them to the sheet.
             const { data: version, error: versionError } = await supabase
                 .from('drawing_sheet_versions')
                 .insert({
@@ -281,6 +281,12 @@ async function processDrawingSet(supabase, job) {
                     temp_png_path: tempPngPaths[pageIndex] || null,
                     source_hash: hash,
                     page_index: pageIndex,
+                    is_new_sheet: isNewSheet,
+                    proposed: {
+                        sheet_number: targetSheetNumber,
+                        sheet_title: sheetTitle,
+                        discipline: resolvedSheet.discipline,
+                    },
                     sheet_detection: {
                         method: resolvedSheet.method,
                         confidence: resolvedSheet.confidence,
@@ -297,13 +303,8 @@ async function processDrawingSet(supabase, job) {
                 console.error(`Failed to create version for page ${pageIndex}:`, versionError);
                 continue;
             }
-            // Set the current revision on the sheet
-            await supabase
-                .from('drawing_sheets')
-                .update({ current_revision_id: revision.id })
-                .eq('id', sheet.id);
             sheetsCreated.push({ sheet, version });
-            console.log(`Created sheet ${sheet.id} and version ${version.id} for page ${pageIndex}`);
+            console.log(`Created draft version ${version.id} for sheet ${sheet.id} (page ${pageIndex})`);
         }
         // Queue tile generation jobs for each version
         for (const { version } of sheetsCreated) {
@@ -315,24 +316,29 @@ async function processDrawingSet(supabase, job) {
             });
         }
         console.log(`Queued ${sheetsCreated.length} tile generation jobs`);
-        // Update drawing set status
-        await supabase
-            .from('drawing_sets')
-            .update({
-            status: 'processing', // Still processing tiles
+        // The draft is ready for review. Tiles keep generating in the background;
+        // the review screen works off thumbnails, so it doesn't need to wait. The
+        // live drawing set is intentionally left untouched.
+        await updateRevisionStage(supabase, draftRevisionId, {
+            status: 'draft',
+            processing_stage: 'ready',
             total_pages: pageCount,
-            processed_pages: 0, // Will be updated when tiles complete
-            processing_stage: 'generating_tiles',
-        })
-            .eq('id', drawingSetId);
-        // Refresh the materialized view
+            processed_pages: pageCount,
+        });
+        console.log(`Draft revision ${draftRevisionId} ready for review (${sheetsCreated.length} pages)`);
+    }
+    catch (error) {
+        // Surface the failure on the draft revision so the review UI can react.
         try {
-            await supabase.rpc('refresh_drawing_sheets_list');
+            await updateRevisionStage(supabase, draftRevisionId, {
+                processing_stage: 'failed',
+                error_message: error instanceof Error ? error.message : String(error),
+            });
         }
-        catch (e) {
-            console.error('Failed to refresh drawing sheets list:', e);
+        catch (stageError) {
+            console.warn('Failed to record draft failure:', stageError);
         }
-        console.log(`Successfully processed ${sheetsCreated.length} pages for drawing set ${drawingSetId}`);
+        throw error;
     }
     finally {
         // Clean up temp files
@@ -351,10 +357,8 @@ async function processDrawingSet(supabase, job) {
         }
     }
 }
-async function updateSetStage(supabase, drawingSetId, updates) {
-    const payload = {
-        updated_at: new Date().toISOString(),
-    };
+async function updateRevisionStage(supabase, revisionId, updates) {
+    const payload = {};
     if (updates.status !== undefined)
         payload.status = updates.status;
     if (updates.total_pages !== undefined)
@@ -365,7 +369,7 @@ async function updateSetStage(supabase, drawingSetId, updates) {
         payload.processing_stage = updates.processing_stage;
     if (updates.error_message !== undefined)
         payload.error_message = updates.error_message;
-    await supabase.from('drawing_sets').update(payload).eq('id', drawingSetId);
+    await supabase.from('drawing_revisions').update(payload).eq('id', revisionId);
 }
 function shouldUseVisionFallback(detected, pageText) {
     if (!getVisionApiKey())

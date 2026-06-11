@@ -813,6 +813,25 @@ export interface Payment {
   updated_at?: string
 }
 
+export type PaymentReversalType = "refund" | "ach_return" | "chargeback" | "dispute" | "correction"
+
+export interface PaymentReversal {
+  id: string
+  org_id: string
+  project_id?: string | null
+  invoice_id: string
+  payment_id: string
+  amount_cents: number
+  reversal_type: PaymentReversalType
+  status: "pending" | "succeeded" | "reversed" | "failed"
+  provider_reversal_id?: string | null
+  reason?: string | null
+  metadata?: Record<string, any>
+  occurred_at: string
+  created_at?: string
+  updated_at?: string
+}
+
 export interface PaymentIntent {
   id: string
   org_id: string

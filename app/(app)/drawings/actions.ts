@@ -29,6 +29,11 @@ import {
   createSheetVersion,
   getDisciplineCounts,
   getSheetSignedUrl,
+  getRevisionDiff,
+  publishRevision,
+  discardRevision,
+  getDraftRevisionStatus,
+  getPendingDraftRevision,
 } from "@/lib/services/drawings"
 import {
   listDrawingMarkups,
@@ -56,6 +61,9 @@ import type {
   DrawingRevision,
   DrawingSheet,
   DrawingSheetVersion,
+  RevisionDiff,
+  RevisionDraftStatus,
+  PublishRevisionInput,
 } from "@/lib/services/drawings"
 import type {
   DrawingMarkup,
@@ -160,7 +168,7 @@ export async function createDrawingSetFromUpload(input: {
   storagePath: string
   fileSize: number
   mimeType: string
-}): Promise<DrawingSet> {
+}): Promise<{ set: DrawingSet; draftRevisionId: string }> {
   const { supabase, orgId } = await requireOrgContext()
   const { data: project, error: projectError } = await supabase
     .from("projects")
@@ -195,10 +203,10 @@ export async function createDrawingSetFromUpload(input: {
     source: "upload",
   })
 
-  // Single register per project: reuse the project's canonical (oldest) set so
-  // re-uploads stack versions onto existing sheets in place instead of creating
-  // a new set each time. We do NOT delete existing sheets/revisions here — the
-  // worker matches sheets by sheet_number and appends a new version.
+  // Single register per project: reuse the project's canonical (oldest) set.
+  // An upload processes into a DRAFT revision and never mutates the live set or
+  // its sheets — nothing changes until the user publishes. So the live set stays
+  // 'ready' the whole time; draft progress is tracked on the revision row.
   const { data: existingSets, error: existingSetsError } = await supabase
     .from("drawing_sets")
     .select("id")
@@ -211,21 +219,29 @@ export async function createDrawingSetFromUpload(input: {
     throw new Error(`Failed to load existing drawing sets: ${existingSetsError.message}`)
   }
 
+  // Only one in-flight draft per project: require publishing/discarding first.
+  const { data: pendingDrafts, error: pendingError } = await supabase
+    .from("drawing_revisions")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", input.projectId)
+    .in("status", ["processing", "draft"])
+    .limit(1)
+
+  if (pendingError) {
+    throw new Error(`Failed to check pending revisions: ${pendingError.message}`)
+  }
+  if (pendingDrafts && pendingDrafts.length > 0) {
+    throw new Error("A revision is already pending review. Publish or discard it before uploading another.")
+  }
+
   let drawingSet: DrawingSet
 
   if (existingSets && existingSets.length > 0) {
     const canonicalSetId = existingSets[0].id as string
     const { error: updateError } = await supabase
       .from("drawing_sets")
-      .update({
-        status: "processing",
-        processed_pages: 0,
-        total_pages: null,
-        processing_stage: "queued",
-        error_message: null,
-        processed_at: null,
-        source_file_id: fileRecord.id,
-      })
+      .update({ source_file_id: fileRecord.id, status: "ready", processing_stage: "ready" })
       .eq("org_id", orgId)
       .eq("id", canonicalSetId)
 
@@ -248,14 +264,46 @@ export async function createDrawingSetFromUpload(input: {
 
     const { error: stageError } = await supabase
       .from("drawing_sets")
-      .update({ processing_stage: "queued" })
+      .update({ status: "ready", processing_stage: "ready" })
       .eq("org_id", orgId)
       .eq("id", drawingSet.id)
 
     if (stageError) {
-      console.warn("Failed to set initial processing stage:", stageError.message)
+      console.warn("Failed to set initial set status:", stageError.message)
     }
   }
+
+  // Create the draft revision the worker will process into. Default label is a
+  // sensible issuance name the user can rename at publish time.
+  const { count: publishedCount } = await supabase
+    .from("drawing_revisions")
+    .select("*", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .eq("project_id", input.projectId)
+    .eq("status", "published")
+
+  const defaultLabel = !publishedCount ? "Initial Set" : `Revision ${publishedCount + 1}`
+
+  const { data: draftRevision, error: draftError } = await supabase
+    .from("drawing_revisions")
+    .insert({
+      org_id: orgId,
+      project_id: input.projectId,
+      drawing_set_id: drawingSet.id,
+      revision_label: defaultLabel,
+      status: "processing",
+      processing_stage: "queued",
+      issued_date: new Date().toISOString(),
+      source_file_id: fileRecord.id,
+    })
+    .select("id")
+    .single()
+
+  if (draftError || !draftRevision) {
+    throw new Error(`Failed to create draft revision: ${draftError?.message}`)
+  }
+
+  const draftRevisionId = draftRevision.id as string
 
   // Trigger processing via outbox system
   try {
@@ -272,6 +320,7 @@ export async function createDrawingSetFromUpload(input: {
           projectId: input.projectId,
           sourceFileId: fileRecord.id,
           storagePath: fileRecord.storage_path,
+          draftRevisionId,
           orgId: orgId,
         },
         run_at: new Date().toISOString(),
@@ -279,35 +328,36 @@ export async function createDrawingSetFromUpload(input: {
 
     if (jobError) {
       console.error("Failed to queue processing job:", jobError)
-      // Update set status to failed
-      await updateDrawingSet(drawingSet.id, {
-        status: "failed",
-        error_message: "Failed to queue processing job",
-      })
+      // Mark the draft revision failed so the review UI can react.
+      await supabase
+        .from("drawing_revisions")
+        .update({ processing_stage: "failed", error_message: "Failed to queue processing job" })
+        .eq("org_id", orgId)
+        .eq("id", draftRevisionId)
     } else {
       console.log(`[Upload] Successfully queued processing job for drawing set: ${drawingSet.id}`)
       const trigger = await triggerDrawingsWorker({ reason: "drawing_set_uploaded" })
       if (!trigger.triggered) {
         console.warn("[Upload] Failed to trigger drawings worker:", trigger.error)
         await supabase
-          .from("drawing_sets")
+          .from("drawing_revisions")
           .update({
             processing_stage: "worker_unavailable",
             error_message: `Drawing worker could not be reached: ${trigger.error ?? `HTTP ${trigger.status}`}`,
           })
           .eq("org_id", orgId)
-          .eq("id", drawingSet.id)
+          .eq("id", draftRevisionId)
       }
     }
   } catch (error) {
     console.error("Failed to queue processing job:", error)
-    // The set stays in "processing" status - can be retried manually
+    // The draft revision stays in "processing" - can be retried manually.
   }
 
   revalidatePath("/drawings")
   revalidatePath(`/projects/${input.projectId}`)
 
-  return drawingSet
+  return { set: drawingSet, draftRevisionId }
 }
 
 /**
@@ -337,7 +387,7 @@ export async function uploadPlanSetAction(formData: FormData): Promise<DrawingSe
     throw new Error("File too large. Please use the updated upload method that uploads directly to storage.")
   }
 
-  return createDrawingSetFromUpload({
+  const { set } = await createDrawingSetFromUpload({
     projectId,
     title,
     fileName: file.name,
@@ -345,6 +395,7 @@ export async function uploadPlanSetAction(formData: FormData): Promise<DrawingSe
     fileSize: file.size,
     mimeType: file.type,
   })
+  return set
 }
 
 /**
@@ -914,6 +965,36 @@ export async function listUploadedSheetsAction(
     sort_order: sheet.sort_order ?? 0,
     updated_at: sheet.updated_at,
   }))
+}
+
+// ============================================================================
+// DRAFT REVISION ACTIONS (draft -> publish flow)
+// ============================================================================
+
+export async function getDraftRevisionStatusAction(
+  revisionId: string,
+): Promise<RevisionDraftStatus | null> {
+  return getDraftRevisionStatus(revisionId)
+}
+
+export async function getPendingDraftRevisionAction(
+  projectId: string,
+): Promise<RevisionDraftStatus | null> {
+  return getPendingDraftRevision(projectId)
+}
+
+export async function getRevisionDiffAction(revisionId: string): Promise<RevisionDiff> {
+  return getRevisionDiff(revisionId)
+}
+
+export async function publishRevisionAction(input: PublishRevisionInput): Promise<void> {
+  await publishRevision(input)
+  revalidatePath("/drawings")
+}
+
+export async function discardRevisionAction(revisionId: string): Promise<void> {
+  await discardRevision(revisionId)
+  revalidatePath("/drawings")
 }
 
 // ============================================================================

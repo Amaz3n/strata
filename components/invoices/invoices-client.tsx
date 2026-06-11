@@ -7,7 +7,7 @@ import { AnimatePresence } from "framer-motion"
 
 import { useRouter, useSearchParams, usePathname } from "next/navigation"
 
-import type { Contact, CostCode, Invoice, Project, InvoiceView } from "@/lib/types"
+import type { Contact, CostCode, Invoice, Project, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
@@ -227,6 +227,8 @@ export function InvoicesClient({
       qbo_id?: string | null
     }>
   >()
+  const [detailPayments, setDetailPayments] = useState<Payment[] | undefined>(undefined)
+  const [detailReversals, setDetailReversals] = useState<PaymentReversal[] | undefined>(undefined)
   const [isResyncing, setIsResyncing] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -253,6 +255,8 @@ export function InvoicesClient({
     setDetailLink(undefined)
     setDetailViews(undefined)
     setDetailSyncHistory(undefined)
+    setDetailPayments(undefined)
+    setDetailReversals(undefined)
 
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search)
@@ -266,6 +270,8 @@ export function InvoicesClient({
       setDetailLink(result.link)
       setDetailViews(result.views as InvoiceView[])
       setDetailSyncHistory(result.syncHistory as any)
+      setDetailPayments((result.payments as Payment[]) ?? [])
+      setDetailReversals((result.reversals as PaymentReversal[]) ?? [])
     } catch (error: any) {
       console.error(error)
       toast.error("Could not load invoice", {
@@ -307,6 +313,8 @@ export function InvoicesClient({
       setDetailLink(undefined)
       setDetailViews(undefined)
       setDetailSyncHistory(undefined)
+      setDetailPayments(undefined)
+      setDetailReversals(undefined)
     } else if (
       prevPendingLabelRef.current &&
       !pendingOpenInvoiceLabel &&
@@ -1082,6 +1090,8 @@ export function InvoicesClient({
         link={detailLink}
         views={detailViews}
         syncHistory={detailSyncHistory}
+        payments={detailPayments}
+        reversals={detailReversals}
         loading={detailLoading}
         manualResyncing={isResyncing}
         onCopyLink={async () => {

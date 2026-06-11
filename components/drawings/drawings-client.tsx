@@ -573,7 +573,7 @@ export function DrawingsClient({
       )
 
       setUploadProgress({ stage: "Processing PDF...", current: 0, total: 1 })
-      const newSet = await createDrawingSetFromUpload({
+      const { set: newSet } = await createDrawingSetFromUpload({
         projectId: selectedProject,
         title: uploadTitle,
       setType: uploadSetType,

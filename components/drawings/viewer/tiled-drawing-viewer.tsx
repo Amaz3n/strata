@@ -91,6 +91,20 @@ function buildRenderableTileBaseUrl(baseUrl: string, secureTilesEnabled: boolean
   }
 }
 
+/**
+ * Convert a raw drawings CDN url (tile base, thumbnail.png, etc.) into a URL the
+ * browser can actually load. Raw cdn.arcnaples.com urls are auth-protected and
+ * 401 off the production host (e.g. on localhost), so we route them through the
+ * authenticated /api/drawings/tiles proxy. Mirrors the viewer's tile handling.
+ */
+export function toRenderableDrawingsUrl(
+  url?: string | null,
+): string | undefined {
+  if (!url) return undefined
+  const secure = process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
+  return buildRenderableTileBaseUrl(url, secure)
+}
+
 export function TiledDrawingViewer({
   tileBaseUrl,
   tileManifest,

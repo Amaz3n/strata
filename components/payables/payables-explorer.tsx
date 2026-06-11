@@ -174,6 +174,7 @@ export function PayablesExplorer({
                 </div>
               </TableHead>
               <TableHead className="min-w-[240px] px-4 py-3">Vendor / Company</TableHead>
+              <TableHead className="w-[120px] px-4 py-3 text-center">Status</TableHead>
               <TableHead className="w-[132px] px-4 py-3 text-center">Due Date</TableHead>
               <TableHead className="w-[150px] px-4 py-3 text-right">Amount</TableHead>
               <TableHead className="min-w-[220px] px-4 py-3">Commitment</TableHead>
@@ -206,10 +207,10 @@ export function PayablesExplorer({
                         <div className="truncate text-[11px] text-muted-foreground">{bill.company_name}</div>
                       ) : null}
                     </div>
-                    <span className="ml-auto flex shrink-0 items-center justify-center" title={statusLabel(bill.status)}>
-                      <PayableStatusIcon status={bill.status} />
-                    </span>
                   </div>
+                </TableCell>
+                <TableCell className="px-4 py-2 text-center cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
+                  {billBadge(bill.status)}
                 </TableCell>
                 <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>{bill.due_date ? format(new Date(`${bill.due_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
                 <TableCell className="px-4 py-2 text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
@@ -284,7 +285,7 @@ export function PayablesExplorer({
             ))}
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={costCodesEnabled ? 11 : 10} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                <TableCell colSpan={costCodesEnabled ? 12 : 11} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                   <div className="flex flex-col items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <Receipt className="h-6 w-6" />
@@ -503,22 +504,20 @@ function RowActions({
   )
 }
 
-function PayableStatusIcon({ status }: { status?: string }) {
-  if (status === "paid" || status === "approved" || status === "partial") {
-    return <CheckCircle2 className="h-4 w-4 text-success" />
+function billBadge(status?: string) {
+  const normalized = (status ?? "pending").toLowerCase()
+  const map: Record<string, { label: string; tone: string }> = {
+    paid: { label: "Paid", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
+    partial: { label: "Partial", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
+    approved: { label: "Approved", tone: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20" },
+    pending: { label: "Pending", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
   }
-  return <Clock className="h-4 w-4 text-muted-foreground" />
+  const config = map[normalized] ?? map.pending
+  return <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-tight ${config.tone}`}>{config.label}</Badge>
 }
 
 function vendorLabel(bill: VendorBillSummary) {
   return bill.qbo_vendor_name ?? bill.company_name ?? "No vendor"
-}
-
-function statusLabel(status?: string) {
-  if (status === "paid") return "Paid"
-  if (status === "partial") return "Partially paid"
-  if (status === "approved") return "Approved"
-  return "Pending"
 }
 
 function initialsFor(value: string) {

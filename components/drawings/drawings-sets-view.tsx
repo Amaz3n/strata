@@ -98,7 +98,9 @@ import {
   listSheetVersionsAction,
   createDrawingRevisionAction,
   createSheetVersionAction,
+  getPendingDraftRevisionAction,
 } from "@/app/(app)/drawings/actions"
+import type { RevisionDraftStatus } from "@/lib/services/drawings"
 import type {
   DrawingMarkup,
   DrawingPin,
@@ -110,6 +112,7 @@ import type {
 } from "@/app/(app)/drawings/types"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
 import { DrawingViewer } from "./drawing-viewer"
+import { RevisionReviewDialog } from "./revision-review-dialog"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 
 type ProjectOption = { id: string; name: string }
@@ -197,15 +200,10 @@ function buildSheetsBySet(sheets: DrawingSheet[]) {
 }
 
 function sheetVersionLabel(sheet: DrawingSheet) {
-  const raw = sheet.current_revision_label?.trim()
-  if (!raw) return "v1"
-  const numeric = raw.match(/(\d+)/)
-  if (numeric) return `v${numeric[1]}`
-  const normalized = raw.toLowerCase()
-  if (["initial", "ifc", "permit", "permit set", "issued"].includes(normalized)) {
-    return "v1"
-  }
-  return "v1"
+  // Label by the sheet's own published version count: uploaded once -> v1,
+  // revised once -> v2, etc. Immune to project-wide revision numbering.
+  const count = sheet.version_count ?? 0
+  return `v${count > 0 ? count : 1}`
 }
 
 function describeProcessingStage(set: DrawingSet | null) {
@@ -314,6 +312,10 @@ export function DrawingsSetsView({
     error_message?: string
   } | null>(null)
   const [uploadedReviewSheets, setUploadedReviewSheets] = useState<UploadReviewSheet[]>([])
+  // Draft -> publish revision review
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [reviewRevisionId, setReviewRevisionId] = useState<string | null>(null)
+  const [pendingDraft, setPendingDraft] = useState<RevisionDraftStatus | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const viewerSheetCacheRef = useRef<
     Map<
@@ -459,6 +461,30 @@ export function DrawingsSetsView({
       console.error("Failed to refresh drawing sets:", err)
     }
   }, [selectedProjectId])
+
+  // Surface an in-flight draft revision (pending review) for the project.
+  const refreshPendingDraft = useCallback(async () => {
+    if (!selectedProjectId) {
+      setPendingDraft(null)
+      return
+    }
+    try {
+      const draft = await getPendingDraftRevisionAction(selectedProjectId)
+      setPendingDraft(draft)
+    } catch (err) {
+      console.error("Failed to load pending draft revision:", err)
+    }
+  }, [selectedProjectId])
+
+  useEffect(() => {
+    void refreshPendingDraft()
+  }, [refreshPendingDraft])
+
+  const handleReviewResolved = useCallback(async () => {
+    setReviewOpen(false)
+    setReviewRevisionId(null)
+    await Promise.all([refreshSets(), loadProjectSheets(), refreshPendingDraft()])
+  }, [refreshSets, loadProjectSheets, refreshPendingDraft])
 
   useEffect(() => {
     if (processingIds.length === 0) return
@@ -624,7 +650,7 @@ export function DrawingsSetsView({
       )
 
       setUploadStage("Processing PDF…")
-      const newSet = await createDrawingSetFromUpload({
+      const { set: newSet, draftRevisionId } = await createDrawingSetFromUpload({
         projectId: selectedProjectId,
         fileName: uploadFile.name,
         storagePath,
@@ -637,17 +663,15 @@ export function DrawingsSetsView({
         return [newSet, ...withoutCurrent]
       })
       setSelectedSetId((current) => current ?? newSet.id)
-      setUploadSetId(newSet.id)
-      setUploadSourceFileId(newSet.source_file_id ?? null)
-      setUploadStatus({
-        status: newSet.status,
-        processed_pages: newSet.processed_pages,
-        total_pages: newSet.total_pages,
-        processing_stage: newSet.processing_stage,
-      })
-      setUploadStep("processing")
 
-      toast.success("Drawings uploaded — processing started.")
+      // Close the upload dialog and hand off to the draft Revision Review, which
+      // polls processing and lets the user publish or discard.
+      setUploadDialogOpen(false)
+      setUploadFile(null)
+      setReviewRevisionId(draftRevisionId)
+      setReviewOpen(true)
+
+      toast.success("Upload received — review the revision before publishing.")
     } catch (err) {
       console.error("Upload failed:", err)
       toast.error(
@@ -1433,6 +1457,41 @@ export function DrawingsSetsView({
         </div>
       </div>
 
+      {/* Pending draft revision banner */}
+      {pendingDraft && (
+        <div className="flex items-center gap-3 border-b bg-amber-500/10 px-4 py-2 text-xs">
+          <RefreshCw
+            className={cn(
+              "h-4 w-4 shrink-0 text-amber-600",
+              pendingDraft.status === "processing" && "animate-spin",
+            )}
+          />
+          <div className="min-w-0 flex-1">
+            <span className="font-medium text-foreground">
+              {pendingDraft.status === "processing"
+                ? "A revision is processing"
+                : "A revision is waiting for review"}
+            </span>
+            <span className="text-muted-foreground">
+              {" — "}
+              {pendingDraft.revision_label}. The live drawings are unchanged until
+              you publish.
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7"
+            onClick={() => {
+              setReviewRevisionId(pendingDraft.id)
+              setReviewOpen(true)
+            }}
+          >
+            Review
+          </Button>
+        </div>
+      )}
+
       {/* Set status banner for failed/processing */}
       {activeSet && activeSetProcessing && (
         <div className="flex items-center gap-3 border-b bg-chart-1/5 px-4 py-2 text-xs">
@@ -2081,6 +2140,19 @@ export function DrawingsSetsView({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {reviewOpen && reviewRevisionId && (
+        <RevisionReviewDialog
+          open={reviewOpen}
+          onOpenChange={(open) => {
+            setReviewOpen(open)
+            if (!open) setReviewRevisionId(null)
+          }}
+          revisionId={reviewRevisionId}
+          onPublished={handleReviewResolved}
+          onDiscarded={handleReviewResolved}
+        />
+      )}
 
       {viewerOpen && viewerSheet && (
         <DrawingViewer

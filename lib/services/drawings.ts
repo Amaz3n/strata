@@ -91,6 +91,8 @@ export interface DrawingSheet {
   current_revision_id?: string
   current_revision_label?: string
   current_revision_creator_name?: string
+  // Number of published versions this sheet has (drives the v1/v2/... label)
+  version_count?: number | null
   last_modified_by_name?: string
   sort_order: number
   share_with_clients: boolean
@@ -157,6 +159,9 @@ export interface DrawingSheetVersion {
   image_full_path?: string | null
   tile_manifest_path?: string | null
   tiles_base_path?: string | null
+  // Resolved tile source for the OpenSeadragon viewer / tile-aware compare
+  tile_base_url?: string | null
+  tile_manifest?: Record<string, any> | null
 }
 
 // ============================================================================
@@ -232,6 +237,7 @@ function mapDrawingSheet(row: any): DrawingSheet {
     current_revision_id: row.current_revision_id ?? undefined,
     current_revision_label: currentRevisionLabel,
     current_revision_creator_name: currentRevisionCreator,
+    version_count: row.version_count ?? null,
     last_modified_by_name: currentRevisionCreator,
     sort_order: row.sort_order ?? 0,
     share_with_clients: row.share_with_clients ?? false,
@@ -340,6 +346,8 @@ function mapDrawingSheetVersion(row: any): DrawingSheetVersion {
     image_full_path: fullPath,
     tile_manifest_path: row.tile_manifest_path ?? null,
     tiles_base_path: row.tiles_base_path ?? null,
+    tile_base_url: row.tile_base_url ?? null,
+    tile_manifest: row.tile_manifest ?? null,
     image_thumbnail_url: toPublicImageUrl(thumbPath) ?? row.thumbnail_url ?? null,
     image_medium_url: toPublicImageUrl(mediumPath) ?? row.medium_url ?? null,
     image_full_url: toPublicImageUrl(fullPath) ?? row.full_url ?? null,
@@ -596,6 +604,12 @@ export async function deleteDrawingSet(setId: string, orgId?: string): Promise<v
     entityId: setId,
     payload: { title: existing.title },
   })
+
+  try {
+    await supabase.rpc("refresh_drawing_sheets_list")
+  } catch (e) {
+    console.error("Failed to refresh drawing sheets list after set delete:", e)
+  }
 }
 
 // ============================================================================
@@ -1263,6 +1277,14 @@ export async function deleteDrawingSheet(sheetId: string, orgId?: string): Promi
     entityId: sheetId,
     before: existing,
   })
+
+  // The sheets list reads a materialized view; refresh so the deleted sheet
+  // disappears from the register immediately.
+  try {
+    await supabase.rpc("refresh_drawing_sheets_list")
+  } catch (e) {
+    console.error("Failed to refresh drawing sheets list after delete:", e)
+  }
 }
 
 // ============================================================================
@@ -1319,6 +1341,7 @@ export async function listSheetVersionsWithUrls(
       id, org_id, drawing_sheet_id, drawing_revision_id,
       file_id, thumbnail_file_id, page_index, extracted_metadata, created_at,
       thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path,
+      tile_base_url, tile_manifest,
       thumbnail_url, medium_url, full_url, image_width, image_height, images_generated_at,
       drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(
         revision_label,
@@ -1482,4 +1505,336 @@ export async function getSheetSignedUrl(
     path: storagePath,
     expiresIn,
   })
+}
+
+// ============================================================================
+// DRAFT REVISIONS (draft -> publish flow)
+// ============================================================================
+
+export interface RevisionVersionPreview {
+  version_id: string
+  thumbnail_url?: string | null
+  tile_base_url?: string | null
+  tile_manifest?: Record<string, any> | null
+  image_width?: number | null
+  image_height?: number | null
+}
+
+export interface RevisionDiffSheet {
+  sheet_id: string
+  change: "updated" | "added"
+  is_new_sheet: boolean
+  sheet_number: string
+  sheet_title?: string | null
+  discipline?: DrawingDiscipline | null
+  current_sheet_number?: string | null
+  current_sheet_title?: string | null
+  current_discipline?: DrawingDiscipline | null
+  draft: RevisionVersionPreview
+  current?: RevisionVersionPreview | null
+}
+
+export interface RevisionUnchangedSheet {
+  sheet_id: string
+  sheet_number: string
+  sheet_title?: string | null
+  discipline?: DrawingDiscipline | null
+  current?: RevisionVersionPreview | null
+}
+
+export interface RevisionDraftStatus {
+  id: string
+  revision_label: string
+  status: string
+  processing_stage?: string | null
+  processed_pages?: number | null
+  total_pages?: number | null
+  error_message?: string | null
+  drawing_set_id?: string | null
+  project_id: string
+}
+
+export interface RevisionDiff {
+  revision: RevisionDraftStatus
+  updated: RevisionDiffSheet[]
+  added: RevisionDiffSheet[]
+  unchanged: RevisionUnchangedSheet[]
+}
+
+function revisionPreviewFromVersionRow(row: any): RevisionVersionPreview {
+  return {
+    version_id: row.id,
+    thumbnail_url: toPublicImageUrl(row.thumb_path) ?? row.thumbnail_url ?? null,
+    tile_base_url: row.tile_base_url ?? null,
+    tile_manifest: row.tile_manifest ?? null,
+    image_width: row.image_width ?? null,
+    image_height: row.image_height ?? null,
+  }
+}
+
+export async function getDraftRevisionStatus(
+  revisionId: string,
+  orgId?: string,
+): Promise<RevisionDraftStatus | null> {
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("drawing_revisions")
+    .select("id, project_id, drawing_set_id, revision_label, status, processing_stage, processed_pages, total_pages, error_message")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", revisionId)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load revision: ${error.message}`)
+  return (data as RevisionDraftStatus) ?? null
+}
+
+export async function getPendingDraftRevision(
+  projectId: string,
+  orgId?: string,
+): Promise<RevisionDraftStatus | null> {
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("drawing_revisions")
+    .select("id, project_id, drawing_set_id, revision_label, status, processing_stage, processed_pages, total_pages, error_message")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .in("status", ["processing", "draft"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load pending revision: ${error.message}`)
+  return (data as RevisionDraftStatus) ?? null
+}
+
+export async function getRevisionDiff(revisionId: string, orgId?: string): Promise<RevisionDiff> {
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const supabase = createServiceSupabaseClient()
+
+  const revision = await getDraftRevisionStatus(revisionId, resolvedOrgId)
+  if (!revision) throw new Error("Revision not found")
+
+  const { data: draftVersions, error: dvError } = await supabase
+    .from("drawing_sheet_versions")
+    .select(`
+      id, drawing_sheet_id, page_index, extracted_metadata,
+      thumb_path, tile_base_url, tile_manifest, thumbnail_url, image_width, image_height,
+      drawing_sheets!inner(id, sheet_number, sheet_title, discipline, current_revision_id, sort_order)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_revision_id", revisionId)
+    .order("page_index", { ascending: true })
+  if (dvError) throw new Error(`Failed to load draft versions: ${dvError.message}`)
+
+  const updated: RevisionDiffSheet[] = []
+  const added: RevisionDiffSheet[] = []
+  const draftSheetIds = new Set<string>()
+
+  for (const dv of draftVersions ?? []) {
+    const sheet = (dv as any).drawing_sheets
+    draftSheetIds.add(sheet.id)
+    const proposed = ((dv as any).extracted_metadata?.proposed ?? {}) as any
+    const isNew = !sheet.current_revision_id
+    const entry: RevisionDiffSheet = {
+      sheet_id: sheet.id,
+      change: isNew ? "added" : "updated",
+      is_new_sheet: isNew,
+      sheet_number: proposed.sheet_number ?? sheet.sheet_number,
+      sheet_title: proposed.sheet_title ?? sheet.sheet_title ?? null,
+      discipline: (proposed.discipline ?? sheet.discipline ?? null) as DrawingDiscipline | null,
+      draft: revisionPreviewFromVersionRow(dv),
+    }
+    if (isNew) {
+      added.push(entry)
+    } else {
+      entry.current_sheet_number = sheet.sheet_number
+      entry.current_sheet_title = sheet.sheet_title ?? null
+      entry.current_discipline = (sheet.discipline ?? null) as DrawingDiscipline | null
+      updated.push(entry)
+    }
+  }
+
+  // Current published preview for updated sheets.
+  const updatedSheetIds = updated.map((u) => u.sheet_id)
+  if (updatedSheetIds.length) {
+    const { data: currentSheets } = await supabase
+      .from("drawing_sheets")
+      .select(`
+        id, current_revision_id,
+        drawing_sheet_versions(id, drawing_revision_id, thumb_path, thumbnail_url, tile_base_url, tile_manifest, image_width, image_height)
+      `)
+      .eq("org_id", resolvedOrgId)
+      .in("id", updatedSheetIds)
+    const currentBySheet = new Map<string, any>()
+    for (const s of currentSheets ?? []) {
+      const versions = (s as any).drawing_sheet_versions ?? []
+      const cur = versions.find((v: any) => v.drawing_revision_id === (s as any).current_revision_id)
+      if (cur) currentBySheet.set((s as any).id, cur)
+    }
+    for (const u of updated) {
+      const cur = currentBySheet.get(u.sheet_id)
+      u.current = cur ? revisionPreviewFromVersionRow(cur) : null
+    }
+  }
+
+  // Unchanged: live sheets in the project not touched by this draft.
+  const { data: liveRows } = await supabase
+    .from("drawing_sheets_list_mv")
+    .select("id, sheet_number, sheet_title, discipline, current_version_id, thumbnail_url, tile_base_url, tile_manifest, image_width, image_height")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", revision.project_id)
+  const unchanged: RevisionUnchangedSheet[] = []
+  for (const r of liveRows ?? []) {
+    if (draftSheetIds.has((r as any).id)) continue
+    unchanged.push({
+      sheet_id: (r as any).id,
+      sheet_number: (r as any).sheet_number,
+      sheet_title: (r as any).sheet_title ?? null,
+      discipline: ((r as any).discipline ?? null) as DrawingDiscipline | null,
+      current: (r as any).current_version_id
+        ? {
+            version_id: (r as any).current_version_id,
+            thumbnail_url: (r as any).thumbnail_url ?? null,
+            tile_base_url: (r as any).tile_base_url ?? null,
+            tile_manifest: (r as any).tile_manifest ?? null,
+            image_width: (r as any).image_width ?? null,
+            image_height: (r as any).image_height ?? null,
+          }
+        : null,
+    })
+  }
+
+  return { revision, updated, added, unchanged }
+}
+
+export interface PublishRevisionInput {
+  revisionId: string
+  label?: string
+  decisions?: Record<string, boolean>
+  sheetEdits?: Record<string, { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }>
+}
+
+export async function publishRevision(input: PublishRevisionInput, orgId?: string): Promise<void> {
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const supabase = createServiceSupabaseClient()
+
+  const { data: revision, error: revError } = await supabase
+    .from("drawing_revisions")
+    .select("id, project_id, drawing_set_id, status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", input.revisionId)
+    .single()
+  if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
+  if (revision.status === "published") throw new Error("Revision already published")
+
+  const { data: draftVersions, error: dvError } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, drawing_sheet_id, extracted_metadata, drawing_sheets!inner(id, current_revision_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_revision_id", input.revisionId)
+  if (dvError) throw new Error(`Failed to load draft versions: ${dvError.message}`)
+
+  for (const dv of draftVersions ?? []) {
+    const sheet = (dv as any).drawing_sheets
+    const accept = input.decisions?.[sheet.id] ?? true
+    const proposed = ((dv as any).extracted_metadata?.proposed ?? {}) as any
+    const edits = input.sheetEdits?.[sheet.id] ?? {}
+    const wasDraftOnly = !sheet.current_revision_id
+
+    if (accept) {
+      const payload: Record<string, unknown> = {
+        current_revision_id: input.revisionId,
+        drawing_set_id: revision.drawing_set_id,
+        updated_at: new Date().toISOString(),
+      }
+      const sheetNumber = edits.sheet_number ?? proposed.sheet_number
+      const sheetTitle = edits.sheet_title ?? proposed.sheet_title
+      const discipline = edits.discipline ?? proposed.discipline
+      if (sheetNumber !== undefined && sheetNumber !== null) payload.sheet_number = sheetNumber
+      if (sheetTitle !== undefined) payload.sheet_title = sheetTitle
+      if (discipline !== undefined && discipline !== null) payload.discipline = discipline
+      await supabase.from("drawing_sheets").update(payload).eq("id", sheet.id)
+    } else {
+      await supabase.from("drawing_sheet_versions").delete().eq("id", (dv as any).id)
+      if (wasDraftOnly) {
+        const { count } = await supabase
+          .from("drawing_sheet_versions")
+          .select("*", { count: "exact", head: true })
+          .eq("drawing_sheet_id", sheet.id)
+        if (!count) await supabase.from("drawing_sheets").delete().eq("id", sheet.id)
+      }
+    }
+  }
+
+  const revUpdate: Record<string, unknown> = {
+    status: "published",
+    processing_stage: "published",
+    published_at: new Date().toISOString(),
+    published_by: userId,
+  }
+  const label = input.label?.trim()
+  if (label) revUpdate.revision_label = label
+  await supabase.from("drawing_revisions").update(revUpdate).eq("id", input.revisionId)
+
+  try {
+    await supabase.rpc("refresh_drawing_sheets_list")
+  } catch (e) {
+    console.error("Failed to refresh drawing sheets list:", e)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "drawing_revision_published",
+    entityType: "drawing_revision",
+    entityId: input.revisionId,
+    payload: { project_id: revision.project_id },
+  })
+}
+
+export async function discardRevision(revisionId: string, orgId?: string): Promise<void> {
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const supabase = createServiceSupabaseClient()
+
+  const { data: revision, error: revError } = await supabase
+    .from("drawing_revisions")
+    .select("id, project_id, status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", revisionId)
+    .single()
+  if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
+  if (revision.status === "published") throw new Error("Cannot discard a published revision")
+
+  const { data: draftVersions } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, drawing_sheet_id, drawing_sheets!inner(id, current_revision_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_revision_id", revisionId)
+
+  const draftOnlySheetIds = new Set<string>()
+  for (const dv of draftVersions ?? []) {
+    const sheet = (dv as any).drawing_sheets
+    if (!sheet.current_revision_id) draftOnlySheetIds.add(sheet.id)
+  }
+
+  await supabase
+    .from("drawing_sheet_versions")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_revision_id", revisionId)
+
+  for (const sheetId of draftOnlySheetIds) {
+    const { count } = await supabase
+      .from("drawing_sheet_versions")
+      .select("*", { count: "exact", head: true })
+      .eq("drawing_sheet_id", sheetId)
+    if (!count) await supabase.from("drawing_sheets").delete().eq("id", sheetId)
+  }
+
+  await supabase.from("drawing_revisions").delete().eq("id", revisionId)
+
+  try {
+    await supabase.rpc("refresh_drawing_sheets_list")
+  } catch (e) {
+    console.error("Failed to refresh drawing sheets list:", e)
+  }
 }

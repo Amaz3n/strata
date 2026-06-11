@@ -5,7 +5,7 @@ import { useMemo, useEffect, useState } from "react"
 import { format } from "date-fns"
 import { Copy, ExternalLink, Download, RefreshCw } from "lucide-react"
 
-import type { Invoice, InvoiceView } from "@/lib/types"
+import type { Invoice, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -36,6 +36,8 @@ type Props = {
   link?: string
   views?: InvoiceView[]
   syncHistory?: Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
+  payments?: Payment[]
+  reversals?: PaymentReversal[]
   loading?: boolean
   onCopyLink?: () => void
   onManualResync?: () => Promise<void>
@@ -48,6 +50,42 @@ type Props = {
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
+}
+
+function paymentSourceLabel(payment: Payment): string {
+  const metaSource = (payment.metadata as Record<string, any> | undefined)?.source
+  if (payment.provider === "qbo") {
+    return metaSource === "client_deposit" ? "Client deposit · QuickBooks" : "QuickBooks"
+  }
+  if (payment.provider === "stripe") return "Online payment"
+  if (payment.provider === "manual") return "Manual"
+  return payment.provider ? payment.provider : "Payment"
+}
+
+function paymentMethodLabel(method?: string | null): string | null {
+  if (!method) return null
+  switch (method) {
+    case "ach":
+      return "ACH"
+    case "card":
+      return "Card"
+    case "wire":
+      return "Wire"
+    case "check":
+      return "Check"
+    case "other":
+      return null
+    default:
+      return method.charAt(0).toUpperCase() + method.slice(1)
+  }
+}
+
+const REVERSAL_TYPE_LABEL: Record<string, string> = {
+  refund: "Refund",
+  ach_return: "ACH return",
+  chargeback: "Chargeback",
+  dispute: "Dispute",
+  correction: "Correction",
 }
 
 async function openPdfUrl(url: string, fileName?: string) {
@@ -107,6 +145,8 @@ export function InvoiceDetailSheet({
   link,
   views,
   syncHistory,
+  payments,
+  reversals,
   loading,
   onCopyLink,
   onManualResync,
@@ -257,6 +297,31 @@ export function InvoiceDetailSheet({
     }))
   }, [views])
 
+  const isClientDeposit = metadata.source === "client_deposit"
+
+  const reversalsByPayment = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const reversal of reversals ?? []) {
+      if (reversal.status === "failed") continue
+      map.set(reversal.payment_id, (map.get(reversal.payment_id) ?? 0) + reversal.amount_cents)
+    }
+    return map
+  }, [reversals])
+
+  const appliedPayments = useMemo(
+    () => (payments ?? []).filter((p) => p.status === "succeeded"),
+    [payments],
+  )
+
+  const totalAppliedCents = useMemo(
+    () =>
+      appliedPayments.reduce(
+        (sum, p) => sum + p.amount_cents - (reversalsByPayment.get(p.id) ?? 0),
+        0,
+      ),
+    [appliedPayments, reversalsByPayment],
+  )
+
   const syncLogs = useMemo(() => {
     return (syncHistory ?? []).map((item) => ({
       id: item.id,
@@ -359,6 +424,11 @@ export function InvoiceDetailSheet({
                         qboId={invoice.qbo_id ?? undefined}
                       />
                     )}
+                    {isClientDeposit && (
+                      <Badge variant="outline" className="border-blue-300 text-blue-700 dark:border-blue-900 dark:text-blue-300">
+                        Client deposit
+                      </Badge>
+                    )}
                     {invoice?.status && <Badge className="capitalize">{invoice.status}</Badge>}
                   </div>
                 </div>
@@ -442,6 +512,77 @@ export function InvoiceDetailSheet({
               <span className="text-foreground">{invoice?.invoice_number ?? "—"}</span>
             </div>
           </div>
+          )}
+
+          {!loading && (payments ?? []).length > 0 && (
+            <>
+              <Separator className="my-2" />
+              <div className="px-5 py-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Payments applied</span>
+                  <span className="text-sm text-muted-foreground">
+                    {formatMoneyFromCents(totalAppliedCents)} of {formatMoneyFromCents(total)}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {appliedPayments.map((payment) => {
+                    const reversedCents = reversalsByPayment.get(payment.id) ?? 0
+                    const methodLabel = paymentMethodLabel(payment.method)
+                    return (
+                      <div key={payment.id} className="rounded-md border px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="font-medium">{formatMoneyFromCents(payment.amount_cents)}</span>
+                            <Badge variant="secondary" className="shrink-0 text-[10px] font-normal">
+                              {paymentSourceLabel(payment)}
+                            </Badge>
+                          </div>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {payment.received_at ? format(new Date(payment.received_at), "MMM d, yyyy") : "—"}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <span className="truncate">
+                            {[methodLabel, payment.reference].filter(Boolean).join(" · ") || "—"}
+                          </span>
+                          {reversedCents > 0 && (
+                            <span className="shrink-0 font-medium text-destructive">
+                              −{formatMoneyFromCents(reversedCents)} reversed
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {(reversals ?? []).length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    {(reversals ?? []).map((reversal) => (
+                      <div
+                        key={reversal.id}
+                        className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span className="font-medium text-destructive">
+                            {REVERSAL_TYPE_LABEL[reversal.reversal_type] ?? reversal.reversal_type}
+                          </span>
+                          {reversal.status !== "succeeded" && (
+                            <span className="capitalize">({reversal.status})</span>
+                          )}
+                          {reversal.reason ? <span className="truncate">· {reversal.reason}</span> : null}
+                        </span>
+                        <span className="shrink-0">
+                          −{formatMoneyFromCents(reversal.amount_cents)}
+                          {reversal.occurred_at
+                            ? ` · ${format(new Date(reversal.occurred_at), "MMM d, yyyy")}`
+                            : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           <Separator className="my-2" />

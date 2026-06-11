@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 import { z } from "zod"
 
-import type { Invoice, Payment, PaymentIntent, PaymentLink } from "@/lib/types"
+import type { Invoice, Payment, PaymentIntent, PaymentLink, PaymentReversal } from "@/lib/types"
 import {
   createPaymentIntentInputSchema,
   generatePayLinkInputSchema,
@@ -70,6 +70,25 @@ function mapPayment(row: any): Payment {
     application_fee_cents: row.application_fee_cents ?? undefined,
     metadata: row.metadata ?? undefined,
     received_at: row.received_at ?? row.created_at,
+    created_at: row.created_at ?? undefined,
+    updated_at: row.updated_at ?? undefined,
+  }
+}
+
+function mapPaymentReversal(row: any): PaymentReversal {
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    project_id: row.project_id ?? undefined,
+    invoice_id: row.invoice_id,
+    payment_id: row.payment_id,
+    amount_cents: row.amount_cents,
+    reversal_type: row.reversal_type,
+    status: row.status ?? "succeeded",
+    provider_reversal_id: row.provider_reversal_id ?? undefined,
+    reason: row.reason ?? undefined,
+    metadata: row.metadata ?? undefined,
+    occurred_at: row.occurred_at ?? row.created_at,
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
   }
@@ -1038,6 +1057,48 @@ export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) 
 
   if (error) throw new Error(`Failed to list payments: ${error.message}`)
   return (data ?? []).map(mapPayment)
+}
+
+/**
+ * Full payment activity for an invoice: every applied payment (Stripe, manual, or
+ * QBO-imported) plus any reversals (refunds, ACH returns, chargebacks). Powers the
+ * receivable detail sheet's payment breakdown so users can see what settled an invoice
+ * — not just the resulting balance.
+ */
+export async function getInvoicePaymentActivity(invoiceId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "payment.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: invoiceId,
+  })
+
+  const [paymentsRes, reversalsRes] = await Promise.all([
+    supabase
+      .from("payments")
+      .select("*")
+      .eq("org_id", resolvedOrgId)
+      .eq("invoice_id", invoiceId)
+      .order("received_at", { ascending: false }),
+    supabase
+      .from("payment_reversals")
+      .select("*")
+      .eq("org_id", resolvedOrgId)
+      .eq("invoice_id", invoiceId)
+      .order("occurred_at", { ascending: false }),
+  ])
+
+  if (paymentsRes.error) throw new Error(`Failed to list payments: ${paymentsRes.error.message}`)
+  if (reversalsRes.error) throw new Error(`Failed to list payment reversals: ${reversalsRes.error.message}`)
+
+  return {
+    payments: (paymentsRes.data ?? []).map(mapPayment),
+    reversals: (reversalsRes.data ?? []).map(mapPaymentReversal),
+  }
 }
 
 export async function upsertReminderRule(input: unknown, orgId?: string) {

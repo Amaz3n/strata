@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server"
-import { randomUUID } from "crypto"
-
 import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accounting/qbo-api"
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo-api"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -615,6 +613,31 @@ async function reconcileBillPaymentFromQbo(params: {
   }
   if (linkedBillIds.size === 0) return { reconciled: false as const, reason: "No linked bill found" }
 
+  // A webhook is a reconciliation signal, not an import. Only reconcile a bill payment after the
+  // import/sync pipeline has created a real Arc payment row for it. Older code inserted a random
+  // placeholder entity_id here, which made the import sheet hide transactions that had never been
+  // added to the payment ledger.
+  const { data: syncRows } = await params.supabase
+    .from("qbo_sync_records")
+    .select("entity_id")
+    .eq("org_id", params.orgId)
+    .eq("entity_type", "bill_payment")
+    .eq("qbo_id", params.qboBillPaymentId)
+  const mappedPaymentIds = Array.from(
+    new Set((syncRows ?? []).map((row) => row.entity_id).filter((id): id is string => Boolean(id))),
+  )
+  if (mappedPaymentIds.length === 0) {
+    return { reconciled: false as const, reason: "Bill payment is available for manual import" }
+  }
+  const { data: mappedPayments } = await params.supabase
+    .from("payments")
+    .select("id")
+    .eq("org_id", params.orgId)
+    .in("id", mappedPaymentIds)
+  if (!mappedPayments || mappedPayments.length === 0) {
+    return { reconciled: false as const, reason: "Bill payment is available for manual import" }
+  }
+
   let updated = 0
   for (const qboBillId of linkedBillIds) {
     const { data: bill } = await params.supabase
@@ -625,10 +648,15 @@ async function reconcileBillPaymentFromQbo(params: {
       .maybeSingle()
     if (!bill?.id) continue
 
-    const paymentCents = toCents(billPayment.TotalAmt) ?? 0
-    const currentPaid = Number((bill as any).paid_cents ?? 0)
     const totalCents = Number((bill as any).total_cents ?? 0)
-    const nextPaid = Math.min(totalCents || currentPaid + paymentCents, Math.max(currentPaid, paymentCents))
+    const { data: ledgerRows } = await params.supabase
+      .from("payments")
+      .select("amount_cents")
+      .eq("org_id", params.orgId)
+      .eq("bill_id", bill.id)
+      .in("status", ["processing", "succeeded", "completed"])
+    const ledgerPaid = (ledgerRows ?? []).reduce((sum, payment) => sum + Number(payment.amount_cents ?? 0), 0)
+    const nextPaid = totalCents > 0 ? Math.min(totalCents, ledgerPaid) : ledgerPaid
     await params.supabase
       .from("vendor_bills")
       .update({
@@ -641,44 +669,18 @@ async function reconcileBillPaymentFromQbo(params: {
     updated += 1
   }
 
-  const nowIso = new Date().toISOString()
-  const syncRecord = {
-    org_id: params.orgId,
-    connection_id: params.connectionId,
-    entity_type: "bill_payment",
-    entity_id: randomUUID(),
-    qbo_id: params.qboBillPaymentId,
-    qbo_sync_token: billPayment.SyncToken ?? null,
-    last_synced_at: nowIso,
-    status: "synced",
-    error_message: null,
-    metadata: { source: "qbo_inbound" },
-  }
-  const { data: existingSyncRecord } = await params.supabase
+  await params.supabase
     .from("qbo_sync_records")
-    .select("entity_id")
+    .update({
+      connection_id: params.connectionId,
+      qbo_sync_token: billPayment.SyncToken ?? null,
+      last_synced_at: new Date().toISOString(),
+      status: "synced",
+      error_message: null,
+    })
     .eq("org_id", params.orgId)
     .eq("entity_type", "bill_payment")
     .eq("qbo_id", params.qboBillPaymentId)
-    .maybeSingle()
-
-  if (existingSyncRecord?.entity_id) {
-    await params.supabase
-      .from("qbo_sync_records")
-      .update({
-        connection_id: syncRecord.connection_id,
-        qbo_sync_token: syncRecord.qbo_sync_token,
-        last_synced_at: syncRecord.last_synced_at,
-        status: syncRecord.status,
-        error_message: syncRecord.error_message,
-        metadata: syncRecord.metadata,
-      })
-      .eq("org_id", params.orgId)
-      .eq("entity_type", "bill_payment")
-      .eq("qbo_id", params.qboBillPaymentId)
-  } else {
-    await params.supabase.from("qbo_sync_records").insert(syncRecord)
-  }
 
   return updated > 0 ? { reconciled: true as const } : { reconciled: false as const, reason: "No local bill matched linked QBO bill" }
 }

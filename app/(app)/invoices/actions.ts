@@ -30,6 +30,7 @@ import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import { recordEvent } from "@/lib/services/events"
+import { getInvoicePaymentActivity } from "@/lib/services/payments"
 
 const INVOICE_PDF_TEMPLATE_VERSION = 2
 
@@ -218,11 +219,18 @@ export async function getInvoiceDetailAction(invoiceId: string) {
     .eq("entity_id", invoiceId)
     .order("last_synced_at", { ascending: false })
 
+  const paymentActivity = await getInvoicePaymentActivity(invoiceId, invoice.org_id).catch((error) => {
+    console.error("Failed to load invoice payment activity", error)
+    return { payments: [], reversals: [] }
+  })
+
   return {
     invoice: { ...invoice, token },
     link: token ? `${appUrl}/i/${token}` : undefined,
     views,
     syncHistory: syncHistory ?? [],
+    payments: paymentActivity.payments,
+    reversals: paymentActivity.reversals,
   }
 }
 

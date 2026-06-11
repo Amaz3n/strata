@@ -406,7 +406,7 @@ function DrawingSetsWorkspace({
     try {
       const { storagePath } = await uploadDrawingFileToStorage(setRevisionFile, projectId)
       const nextTitle = `${setRevisionTarget.title} (${label})`
-      const newSet = await createDrawingSetFromUpload({
+      const { set: newSet } = await createDrawingSetFromUpload({
         projectId,
         title: nextTitle,
         setType: setRevisionTarget.set_type ?? "general",

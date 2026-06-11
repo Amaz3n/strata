@@ -1919,7 +1919,7 @@ export function DrawingViewer({
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-sm font-semibold">
-                            v{v.version_number}
+                            v{versions.length - idx}
                           </span>
                           {isCurrent && (
                             <Badge
@@ -1931,12 +1931,17 @@ export function DrawingViewer({
                           )}
                         </div>
                         <div className="text-xs text-muted-foreground mt-0.5">
-                          {v.creator_name ?? "Unknown"} ·{" "}
-                          {new Date(v.created_at).toLocaleDateString(undefined, {
-                            month: "short",
-                            day: "numeric",
-                            year: "numeric",
-                          })}
+                          {[
+                            v.revision_label,
+                            v.creator_name,
+                            new Date(v.created_at).toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            }),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </div>
                         {v.change_description && (
                           <div className="text-xs text-muted-foreground/80 mt-1 line-clamp-2">

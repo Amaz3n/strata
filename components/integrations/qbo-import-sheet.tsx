@@ -170,14 +170,18 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   // ones referenced by the fetched transactions.
   const [qboCustomers, setQboCustomers] = useState<QboImportCustomerOption[]>([])
   const defaultFilterApplied = useRef(false)
+  const loadRequestId = useRef(0)
+  const contextRequestId = useRef(0)
   // Arc projects for the per-line allocation picker, and per-record line→project overrides.
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
   const [allocations, setAllocations] = useState<Record<string, Record<string, string>>>({})
 
   const load = useCallback(async (lookbackValue: string) => {
+    const requestId = ++loadRequestId.current
     setLoading(true)
     try {
       const listing = await listQboImportRecordsAction({ sinceDate: sinceDateFor(lookbackValue) })
+      if (requestId !== loadRequestId.current) return
       setRecords(listing.records)
       setConnected(listing.connected)
       setSelected(new Set())
@@ -192,9 +196,10 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
         })
       }
     } catch (error: any) {
+      if (requestId !== loadRequestId.current) return
       toast.error("Couldn't load QuickBooks records", { description: error?.message ?? "Try again." })
     } finally {
-      setLoading(false)
+      if (requestId === loadRequestId.current) setLoading(false)
     }
   }, [])
 
@@ -206,16 +211,32 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   // filter so opening import from a linked project shows just that project's transactions.
   useEffect(() => {
     if (!active) return
+    const requestId = ++contextRequestId.current
     defaultFilterApplied.current = false
+    setProjectFilter("all")
+    setQboLink(null)
+    setQboCustomers([])
+    setProjects([])
+    setAllocations({})
     getProjectQboLinkAction({ projectId })
-      .then(setQboLink)
+      .then((link) => {
+        if (requestId === contextRequestId.current) setQboLink(link)
+      })
       .catch(() => {})
     listProjectsForImportAction()
-      .then(setProjects)
+      .then((listing) => {
+        if (requestId === contextRequestId.current) setProjects(listing)
+      })
       .catch(() => {})
     listQboCustomersForImportAction()
-      .then((listing) => setQboCustomers(listing.customers))
+      .then((listing) => {
+        if (requestId === contextRequestId.current) setQboCustomers(listing.customers)
+      })
       .catch(() => {})
+
+    return () => {
+      if (requestId === contextRequestId.current) contextRequestId.current += 1
+    }
   }, [active, projectId])
 
   // Effective line→project for a record: the user's per-line override, else the line's suggested
@@ -281,7 +302,12 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
           .filter(Boolean)
           .some((field) => field!.toLowerCase().includes(query))
       })
-      .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""))
+      .sort(
+        (a, b) =>
+          (b.date ?? "").localeCompare(a.date ?? "") ||
+          a.entityType.localeCompare(b.entityType) ||
+          a.qboId.localeCompare(b.qboId),
+      )
   }, [records, typeFilter, projectFilter, search])
 
   // The project filter's options. Sourced from the full live QBO customer/project list so every
@@ -290,7 +316,12 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   // has un-imported transactions) is folded in too, so nothing in view is unfilterable.
   const projectFilterOptions = useMemo(() => {
     const map = new Map<string, string>()
-    for (const customer of qboCustomers) map.set(customer.id, customer.name)
+    // Keep the picker focused on actual QBO Projects. Top-level customers are folded in only when
+    // a transaction in the current result set references them, so legacy job-costing setups remain
+    // filterable without turning this into a thousands-row customer directory.
+    for (const customer of qboCustomers) {
+      if (customer.isProject) map.set(customer.id, customer.name)
+    }
     for (const record of records) {
       if (record.qboCustomerIds && record.qboCustomerIds.length > 0) {
         for (const customer of record.qboCustomerIds) {

@@ -339,6 +339,9 @@ export class QBOClient {
       if (page.length < pageSize) break
       startPosition += page.length
     }
+    if (all.length >= hardCap) {
+      throw new Error(`QuickBooks returned at least ${hardCap} active customers/projects; narrow the project search.`)
+    }
     return all
   }
 
@@ -896,9 +899,10 @@ export class QBOClient {
       opts?.sinceDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.sinceDate)
         ? `TxnDate >= '${this.toQboStringLiteral(opts.sinceDate)}'`
         : undefined
-    const hardCap = Math.max(opts?.maxResults ?? 5000, 1)
+    const hardCap = Math.max(opts?.maxResults ?? 25000, 1)
     const pageSize = 1000
     const all: any[] = []
+    const seenIds = new Set<string>()
     let startPosition = 1
     while (all.length < hardCap) {
       const page = await this.queryEntity<any>(entity, {
@@ -907,11 +911,23 @@ export class QBOClient {
         startPosition,
         maxResults: Math.min(pageSize, hardCap - all.length),
       })
-      all.push(...page)
+      for (const row of page) {
+        const id = row?.Id ? String(row.Id) : null
+        if (!id || seenIds.has(id)) continue
+        seenIds.add(id)
+        all.push(row)
+      }
       if (page.length < pageSize) break
       startPosition += page.length
     }
-    return all
+    if (all.length >= hardCap) {
+      throw new Error(`QuickBooks returned at least ${hardCap} ${entity} records in this date range; choose a narrower period.`)
+    }
+    return all.sort(
+      (a, b) =>
+        String(b?.TxnDate ?? "").localeCompare(String(a?.TxnDate ?? "")) ||
+        String(a?.Id ?? "").localeCompare(String(b?.Id ?? "")),
+    )
   }
 
   async uploadAttachmentForEntity(params: {
