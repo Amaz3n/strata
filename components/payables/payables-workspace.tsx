@@ -52,7 +52,7 @@ import {
 } from "@/app/(app)/documents/actions"
 import {
   ensureProjectVendorCompanyForPayableAction,
-  reassignProjectVendorCreditAction,
+  reassignProjectPayableAction,
   syncProjectVendorBillToQBOAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
@@ -255,6 +255,12 @@ export function PayablesWorkspace({
     [bills, selectedBillId],
   )
   const selectedIsVendorCredit = selectedBill ? isVendorCredit(selectedBill) : false
+  // Payables imported from QuickBooks (credits or regular bills) are owned by QBO.
+  // Their project is moved via "Reassign" — which re-posts job costs safely —
+  // rather than editing line projects or deleting.
+  const selectedIsReassignablePayable = selectedBill
+    ? selectedIsVendorCredit || selectedBill.imported_from_qbo === true
+    : false
 
   const filtered = useMemo(
     () => filterPayables(bills, { search, queue: queueFilter, costCodesEnabled }),
@@ -495,16 +501,16 @@ export function PayablesWorkspace({
     })
   }
 
-  const reassignCredit = () => {
-    if (!selectedBill || !selectedIsVendorCredit || !creditProjectId || creditProjectId === selectedBill.project_id) return
+  const reassignPayable = () => {
+    if (!selectedBill || !selectedIsReassignablePayable || !creditProjectId || creditProjectId === selectedBill.project_id) return
     startTransition(async () => {
-      try {
-        const result = await reassignProjectVendorCreditAction(projectId, selectedBill.id, creditProjectId)
-        toast.success("Vendor credit reassigned")
+      const result = await reassignProjectPayableAction(projectId, selectedBill.id, creditProjectId)
+      if (result.success) {
+        toast.success(selectedIsVendorCredit ? "Vendor credit reassigned" : "Bill reassigned")
         router.push(`/projects/${result.projectId}/financials/payables?bill=${selectedBill.id}`)
         onChanged()
-      } catch (error) {
-        toast.error((error as Error).message)
+      } else {
+        toast.error(result.error)
       }
     })
   }
@@ -1028,7 +1034,7 @@ export function PayablesWorkspace({
                       <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Project</Label>
                       <Select
                         value={line.projectId}
-                        disabled={selectedIsVendorCredit}
+                        disabled={selectedIsReassignablePayable}
                         onValueChange={(value) =>
                           setSplitLines((prev) =>
                             prev.map((item) =>
@@ -1055,9 +1061,9 @@ export function PayablesWorkspace({
                           ))}
                         </SelectContent>
                       </Select>
-                      {selectedIsVendorCredit ? (
+                      {selectedIsReassignablePayable ? (
                         <p className="mt-1 text-[10px] text-muted-foreground">
-                          Use Reassign below to move the full QuickBooks credit safely.
+                          Use Reassign below to move this QuickBooks {selectedIsVendorCredit ? "credit" : "bill"} to another project safely.
                         </p>
                       ) : null}
                     </div>
@@ -1220,7 +1226,7 @@ export function PayablesWorkspace({
 
         {/* Footer actions */}
         <div className="flex items-center justify-between gap-3 border-t bg-muted/10 px-4 py-3 sm:px-6">
-          {selectedIsVendorCredit ? (
+          {selectedIsReassignablePayable ? (
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <span className="shrink-0 text-xs font-medium text-muted-foreground">Assigned project</span>
               <Select value={creditProjectId} onValueChange={setCreditProjectId}>
@@ -1238,7 +1244,7 @@ export function PayablesWorkspace({
               <Button
                 variant="outline"
                 disabled={isPending || !creditProjectId || creditProjectId === selectedBill.project_id}
-                onClick={reassignCredit}
+                onClick={reassignPayable}
               >
                 {isPending ? "Moving..." : "Reassign"}
               </Button>

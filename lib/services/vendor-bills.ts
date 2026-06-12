@@ -88,6 +88,8 @@ export interface VendorBillSummary {
   shared_projects?: VendorBillProjectShare[]
   payable_type: PayableKind
   qbo_pushable: boolean
+  /** True when this payable originated from a QuickBooks import (QBO owns the record). */
+  imported_from_qbo: boolean
   payments: VendorBillPaymentSummary[]
 }
 
@@ -244,6 +246,7 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     shared_projects: sharedProjects,
     payable_type: payableType,
     qbo_pushable: payableType === "bill",
+    imported_from_qbo: metadata.imported_from_qbo === true,
     payments: (paymentRows ?? []).map((payment) => {
       const paymentMetadata = (payment.metadata as Record<string, any> | null) ?? {}
       return {
@@ -1067,7 +1070,7 @@ export async function deleteVendorBill({
   // 1. Fetch the existing bill
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, bill_number, status, qbo_id")
+    .select("id, org_id, project_id, bill_number, status, qbo_id, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -1075,6 +1078,8 @@ export async function deleteVendorBill({
   if (existingError || !existing) {
     throw new Error("Vendor bill not found")
   }
+
+  const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
 
   // 2. Authorization check (bill.write)
   await requireAuthorization({
@@ -1090,6 +1095,14 @@ export async function deleteVendorBill({
 
   // 3. Restriction checks
   if (existing.qbo_id) {
+    // Bills imported FROM QuickBooks are owned by QBO — deleting the Arc copy
+    // would not touch QBO, and the usual reason to delete one is a wrong project.
+    // Point the user at Reassign instead of the (here misleading) "disconnect in QBO" path.
+    if (existingMetadata.imported_from_qbo === true) {
+      throw new Error(
+        'This bill was imported from QuickBooks. To move it to the correct project, use "Reassign" instead of deleting it here.',
+      )
+    }
     throw new Error("Bills synced to QuickBooks cannot be deleted. Disconnect or delete them in QuickBooks first.")
   }
 
@@ -1195,7 +1208,15 @@ export async function deleteVendorBill({
   return { projectId: existing.project_id }
 }
 
-export async function reassignImportedVendorCredit({
+/**
+ * Move a QuickBooks-imported payable (regular bill or vendor credit) to a
+ * different project. Re-posts the job-cost ledger so reports stay correct.
+ *
+ * Vendor credits that have already been *applied* to a bill (which records a
+ * payment-settlement link) are blocked, because moving them would break that
+ * application. A regular bill's own payment simply moves with the bill.
+ */
+export async function reassignImportedPayable({
   billId,
   targetProjectId,
   orgId,
@@ -1213,12 +1234,14 @@ export async function reassignImportedVendorCredit({
     .eq("id", billId)
     .maybeSingle()
 
-  if (existingError || !existing) throw new Error("Vendor credit not found")
+  if (existingError || !existing) throw new Error("Payable not found")
   const metadata = (existing.metadata as Record<string, any> | null) ?? {}
-  if (metadata.source !== "vendor_credit" || metadata.imported_from_qbo !== true || !existing.qbo_id) {
-    throw new Error("Only vendor credits imported from QuickBooks can be reassigned")
+  const isVendorCredit = metadata.source === "vendor_credit"
+  const payableLabel = isVendorCredit ? "vendor credit" : "bill"
+  if (metadata.imported_from_qbo !== true || !existing.qbo_id) {
+    throw new Error("Only payables imported from QuickBooks can be reassigned")
   }
-  if (!existing.project_id) throw new Error("Vendor credit is missing its current project")
+  if (!existing.project_id) throw new Error(`This ${payableLabel} is missing its current project`)
   if (existing.project_id === targetProjectId) {
     return { previousProjectId: existing.project_id, projectId: targetProjectId }
   }
@@ -1257,9 +1280,9 @@ export async function reassignImportedVendorCredit({
     .select("id", { count: "exact", head: true })
     .eq("org_id", resolvedOrgId)
     .eq("bill_id", billId)
-  if (paymentsError) throw new Error(`Failed to check credit dependencies: ${paymentsError.message}`)
-  if ((paymentCount ?? 0) > 0) {
-    throw new Error("This vendor credit cannot be reassigned because it is linked to a payment")
+  if (paymentsError) throw new Error(`Failed to check payable dependencies: ${paymentsError.message}`)
+  if (isVendorCredit && (paymentCount ?? 0) > 0) {
+    throw new Error("This vendor credit cannot be reassigned because it is already applied to a bill")
   }
 
   const previousProjectId = existing.project_id
@@ -1272,7 +1295,7 @@ export async function reassignImportedVendorCredit({
     .eq("bill_id", billId)
   if (lineUpdateError) {
     await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
-    throw new Error(`Failed to reassign vendor credit lines: ${lineUpdateError.message}`)
+    throw new Error(`Failed to reassign ${payableLabel} lines: ${lineUpdateError.message}`)
   }
 
   const { error: billUpdateError } = await supabase
@@ -1293,7 +1316,7 @@ export async function reassignImportedVendorCredit({
   if (billUpdateError) {
     await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
     await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
-    throw new Error(`Failed to reassign vendor credit: ${billUpdateError.message}`)
+    throw new Error(`Failed to reassign ${payableLabel}: ${billUpdateError.message}`)
   }
 
   try {
@@ -1307,7 +1330,21 @@ export async function reassignImportedVendorCredit({
     await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
     await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId }).catch(() => {})
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Vendor credit was not reassigned because job costs could not be updated: ${message}`)
+    throw new Error(`This ${payableLabel} was not reassigned because job costs could not be updated: ${message}`)
+  }
+
+  // A regular bill's payment(s) belong to the bill and should follow it to the
+  // new project. (Applied vendor credits are blocked above, so this only runs
+  // for ordinary bills.)
+  if (!isVendorCredit && (paymentCount ?? 0) > 0) {
+    const { error: paymentMoveError } = await supabase
+      .from("payments")
+      .update({ project_id: targetProjectId })
+      .eq("org_id", resolvedOrgId)
+      .eq("bill_id", billId)
+    if (paymentMoveError) {
+      console.warn("Payable reassigned but its payment project could not be moved", paymentMoveError)
+    }
   }
 
   const { error: fileLinksError } = await supabase
@@ -1317,7 +1354,7 @@ export async function reassignImportedVendorCredit({
     .eq("entity_type", "vendor_bill")
     .eq("entity_id", billId)
   if (fileLinksError) {
-    console.warn("Vendor credit reassigned but its file links could not be moved", fileLinksError)
+    console.warn("Payable reassigned but its file links could not be moved", fileLinksError)
   }
 
   await recordAudit({
@@ -1332,7 +1369,7 @@ export async function reassignImportedVendorCredit({
   await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
-    eventType: "vendor_credit_reassigned",
+    eventType: isVendorCredit ? "vendor_credit_reassigned" : "vendor_bill_reassigned",
     entityType: "vendor_bill",
     entityId: billId,
     payload: {

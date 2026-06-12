@@ -7,7 +7,7 @@ import {
   listVendorBillsForProject,
   mapVendorBill,
   deleteVendorBill,
-  reassignImportedVendorCredit,
+  reassignImportedPayable,
 } from "@/lib/services/vendor-bills"
 import { listProjectCommitments } from "@/lib/services/commitments"
 import { createCompany, getCompany } from "@/lib/services/companies"
@@ -31,6 +31,25 @@ function cleanAndRethrowError(error: unknown): never {
     throw cleanErr
   }
   throw error
+}
+
+export type PayableActionResult = { success: true } | { success: false; error: string }
+
+/**
+ * Turn a thrown error into a user-facing message. Server Actions redact thrown
+ * error messages in production (the client only gets a generic "an error
+ * occurred" + digest), so user-facing failures must be returned as data, not
+ * thrown, for the real message to reach the toast.
+ */
+function toPayableActionError(error: unknown): string {
+  console.error("[Payables Action Error]:", error)
+  if (error instanceof AuthorizationError) {
+    return "You don't have permission to do that."
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return "Something went wrong. Please try again."
 }
 
 function revalidatePayablesPages(projectId: string) {
@@ -338,23 +357,34 @@ export async function syncProjectVendorBillToQBOAction(projectId: string, billId
   }
 }
 
-export async function deleteProjectVendorBillAction(projectId: string, billId: string) {
+export async function deleteProjectVendorBillAction(
+  projectId: string,
+  billId: string,
+): Promise<PayableActionResult> {
   try {
     await deleteVendorBill({ billId })
     revalidatePayablesPages(projectId)
     return { success: true }
   } catch (error) {
-    cleanAndRethrowError(error)
+    return { success: false, error: toPayableActionError(error) }
   }
 }
 
-export async function reassignProjectVendorCreditAction(projectId: string, billId: string, targetProjectId: string) {
+export type ReassignPayableResult =
+  | { success: true; projectId: string }
+  | { success: false; error: string }
+
+export async function reassignProjectPayableAction(
+  projectId: string,
+  billId: string,
+  targetProjectId: string,
+): Promise<ReassignPayableResult> {
   try {
-    const result = await reassignImportedVendorCredit({ billId, targetProjectId })
+    const result = await reassignImportedPayable({ billId, targetProjectId })
     revalidatePayablesPages(projectId)
     revalidatePayablesPages(targetProjectId)
-    return result
+    return { success: true, projectId: result.projectId }
   } catch (error) {
-    cleanAndRethrowError(error)
+    return { success: false, error: toPayableActionError(error) }
   }
 }
