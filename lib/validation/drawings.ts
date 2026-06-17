@@ -36,6 +36,36 @@ export const DRAWING_SET_TYPE_LABELS: Record<DrawingSetType, string> = {
   other: "Other",
 }
 
+// Drawing issuance/package type. These are the terms builders usually expect
+// when a plan package changes hands.
+export const drawingIssuanceTypeSchema = z.enum([
+  "permit_set",
+  "ifc_set",
+  "bid_set",
+  "addendum",
+  "asi",
+  "bulletin",
+  "revision",
+  "sketch",
+  "record_set",
+  "other",
+])
+
+export type DrawingIssuanceType = z.infer<typeof drawingIssuanceTypeSchema>
+
+export const DRAWING_ISSUANCE_TYPE_LABELS: Record<DrawingIssuanceType, string> = {
+  permit_set: "Permit Set",
+  ifc_set: "Issued for Construction",
+  bid_set: "Bid Set",
+  addendum: "Addendum",
+  asi: "ASI",
+  bulletin: "Bulletin",
+  revision: "Revision",
+  sketch: "Sketch",
+  record_set: "Record Set",
+  other: "Other",
+}
+
 // Drawing discipline codes
 export const drawingDisciplineSchema = z.enum([
   "A",   // Architectural
@@ -111,6 +141,9 @@ export const drawingRevisionInputSchema = z.object({
   revision_label: z.string().min(1).max(50),
   issued_date: z.string().optional(), // ISO date string
   notes: z.string().max(1000).optional(),
+  issuance_type: drawingIssuanceTypeSchema.optional(),
+  issued_by: z.string().max(255).optional(),
+  received_from: z.string().max(255).optional(),
 })
 
 export type DrawingRevisionInput = z.infer<typeof drawingRevisionInputSchema>
@@ -119,6 +152,9 @@ export const drawingRevisionUpdateSchema = z.object({
   revision_label: z.string().min(1).max(50).optional(),
   issued_date: z.string().optional().nullable(),
   notes: z.string().max(1000).optional().nullable(),
+  issuance_type: drawingIssuanceTypeSchema.optional().nullable(),
+  issued_by: z.string().max(255).optional().nullable(),
+  received_from: z.string().max(255).optional().nullable(),
 })
 
 export type DrawingRevisionUpdate = z.infer<typeof drawingRevisionUpdateSchema>
@@ -199,6 +235,8 @@ export type DrawingSheetListFilters = z.infer<typeof drawingSheetListFiltersSche
 export const drawingRevisionListFiltersSchema = z.object({
   project_id: z.string().uuid().optional(),
   drawing_set_id: z.string().uuid().optional(),
+  status: z.enum(["processing", "draft", "published"]).optional(),
+  include_unpublished: z.boolean().optional(),
   limit: z.number().int().positive().max(100).default(50),
   offset: z.number().int().nonnegative().default(0),
 })

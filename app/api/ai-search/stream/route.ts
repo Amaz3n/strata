@@ -10,6 +10,7 @@ type StreamPayload = {
   limit?: number
   sessionId?: string
   mode?: "org" | "general"
+  currentProjectId?: string
 }
 
 function toSseEvent(event: string, data: unknown) {
@@ -34,6 +35,14 @@ function parseSessionId(raw: unknown) {
 function parseMode(raw: unknown): "org" | "general" | undefined {
   if (raw !== "org" && raw !== "general") return undefined
   return raw
+}
+
+function parseProjectId(raw: unknown) {
+  if (typeof raw !== "string") return undefined
+  const trimmed = raw.trim()
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(trimmed)
+    ? trimmed
+    : undefined
 }
 
 function buildStreamResponse(request: NextRequest, payload: StreamPayload) {
@@ -87,6 +96,7 @@ function buildStreamResponse(request: NextRequest, payload: StreamPayload) {
           limit: payload.limit,
           sessionId: payload.sessionId,
           mode: payload.mode,
+          currentProjectId: payload.currentProjectId,
           onTrace: (event) => {
             send("trace", event)
           },
@@ -121,6 +131,7 @@ export async function GET(request: NextRequest) {
     limit: parseLimit(request.nextUrl.searchParams.get("limit")),
     sessionId: parseSessionId(request.nextUrl.searchParams.get("sessionId")),
     mode: parseMode(request.nextUrl.searchParams.get("mode")),
+    currentProjectId: parseProjectId(request.nextUrl.searchParams.get("currentProjectId")),
   })
 }
 
@@ -131,6 +142,7 @@ export async function POST(request: NextRequest) {
     limit?: unknown
     sessionId?: unknown
     mode?: unknown
+    currentProjectId?: unknown
   }
   const query =
     (typeof body.q === "string" ? body.q : typeof body.query === "string" ? body.query : "").trim()
@@ -140,5 +152,6 @@ export async function POST(request: NextRequest) {
     limit: parseLimit(body.limit),
     sessionId: parseSessionId(body.sessionId),
     mode: parseMode(body.mode),
+    currentProjectId: parseProjectId(body.currentProjectId),
   })
 }

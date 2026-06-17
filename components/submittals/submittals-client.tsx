@@ -139,6 +139,10 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
         project={projects.find((p) => p.id === selectedSubmittal?.project_id)}
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
+        onUpdate={(updated) => {
+          setSelectedSubmittal(updated)
+          setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+        }}
       />
 
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
@@ -390,7 +394,6 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
     </>
   )
 }
-
 
 
 

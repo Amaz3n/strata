@@ -29,10 +29,12 @@ import {
 import {
   type FileWithDetails,
   isBrowserRenderableImage,
+  isAudioFile,
   isHeicFile,
   isImageFile,
   isPdfFile,
   isVideoFile,
+  isWordPreviewable,
   formatFileSize,
 } from "./types"
 import { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
@@ -81,6 +83,8 @@ export function FileViewer({
   const [activePdfPage, setActivePdfPage] = useState(1)
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false)
   const [imageLoadFailed, setImageLoadFailed] = useState(false)
+  const [wordLoadFailed, setWordLoadFailed] = useState(false)
+  const [wordHtml, setWordHtml] = useState<string | null>(null)
   const [pdfViewportWidth, setPdfViewportWidth] = useState(0)
   const [pdfComponents, setPdfComponents] = useState<{
     Document: any
@@ -113,6 +117,7 @@ export function FileViewer({
   const currentFile = hasFileList ? files[clampedIndex] : file
   const currentFileId = currentFile?.id
   const currentFileIsPdf = currentFile ? isPdfFile(currentFile.mime_type) : false
+  const currentFileIsWord = currentFile ? isWordPreviewable(currentFile.mime_type, currentFile.file_name) : false
   const currentPdfUrl = currentFile ? (currentFile.download_url ?? `/api/files/${currentFile.id}/raw`) : null
   const currentFileHasGeneratedImagePreview =
     Boolean(currentFile?.thumbnail_url) &&
@@ -157,6 +162,39 @@ export function FileViewer({
     }
   }, [open, currentFileIsPdf])
 
+  // Fetch the Word preview HTML and render it via srcDoc. Fetching (rather than
+  // pointing an iframe at the route URL) sidesteps the global X-Frame-Options: DENY
+  // header, while the sandboxed srcDoc keeps the document fully isolated.
+  useEffect(() => {
+    if (!open || !currentFileIsWord || !currentFileId) return
+    let cancelled = false
+
+    setWordHtml(null)
+    setWordLoadFailed(false)
+    setIsLoading(true)
+
+    fetch(`/api/files/${currentFileId}/word-preview`, { credentials: "same-origin" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Preview request failed (${res.status})`)
+        return res.text()
+      })
+      .then((html) => {
+        if (cancelled) return
+        setWordHtml(html)
+        setIsLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error("Failed to load Word preview", error)
+        setWordLoadFailed(true)
+        setIsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, currentFileIsWord, currentFileId])
+
   // Hide the mobile bottom nav (and any other immersive-aware chrome) while open
   useEffect(() => {
     if (typeof window === "undefined" || !open) return
@@ -182,6 +220,8 @@ export function FileViewer({
     setActivePdfPage(1)
     setPdfLoadFailed(false)
     setImageLoadFailed(false)
+    setWordLoadFailed(false)
+    setWordHtml(null)
 
     if (hasFileList && derivedIndexFromFile >= 0) {
       setCurrentIndex(derivedIndexFromFile)
@@ -454,6 +494,8 @@ export function FileViewer({
   const isHeic = currentFileIsHeic
   const isPdf = isPdfFile(currentFile.mime_type)
   const isVideo = isVideoFile(currentFile.mime_type)
+  const isAudio = isAudioFile(currentFile.mime_type)
+  const isWord = isWordPreviewable(currentFile.mime_type, currentFile.file_name)
   const activePdfPageClamped = Math.min(Math.max(activePdfPage, 1), Math.max(pdfPageCount, 1))
   const pdfPageWidth = pdfViewportWidth > 0
     ? Math.max(280, Math.min(1200, pdfViewportWidth - 48))
@@ -792,7 +834,49 @@ export function FileViewer({
             </div>
           )}
 
-          {((isImage && imageLoadFailed) || (!isImage && !isPdf && !isVideo)) && (
+          {isAudio && currentFile.download_url && (
+            <div className="absolute inset-0 flex items-center justify-center px-4">
+              <div className="w-full max-w-xl rounded-2xl border bg-background/95 p-6 shadow-2xl backdrop-blur-md">
+                <div className="mb-4 flex items-center gap-3">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                    <FileText className="h-5 w-5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{currentFile.file_name}</p>
+                    <p className="text-xs text-muted-foreground">{formatFileSize(currentFile.size_bytes)}</p>
+                  </div>
+                </div>
+                <audio
+                  key={currentFile.id}
+                  src={currentFile.download_url}
+                  controls
+                  preload="metadata"
+                  className="w-full"
+                  onLoadedMetadata={() => setIsLoading(false)}
+                  onCanPlay={() => setIsLoading(false)}
+                  onError={() => setIsLoading(false)}
+                />
+              </div>
+            </div>
+          )}
+
+          {isWord && !wordLoadFailed && wordHtml && (
+            <div className="h-full w-full overflow-hidden bg-zinc-950/40">
+              <iframe
+                key={currentFile.id}
+                srcDoc={wordHtml}
+                sandbox=""
+                referrerPolicy="no-referrer"
+                className="h-full w-full border-0 bg-[#f1f5f9]"
+                onLoad={() => setIsLoading(false)}
+                title={currentFile.file_name}
+              />
+            </div>
+          )}
+
+          {((isImage && imageLoadFailed) ||
+            (isWord && wordLoadFailed) ||
+            (!isImage && !isPdf && !isVideo && !isAudio && !isWord)) && (
             <div className="mx-4 flex max-w-sm flex-col items-center justify-center gap-4 rounded-2xl border bg-background/95 px-8 py-10 text-center shadow-xl backdrop-blur-md">
               <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
                 <FileText className="h-8 w-8" />
@@ -806,6 +890,8 @@ export function FileViewer({
                       : currentFile.preview_status === "failed"
                       ? "HEIC preview generation failed. The original file is still downloadable."
                       : "HEIC preview is still processing. The original file is downloadable now."
+                    : isWord
+                    ? "We couldn't render a preview for this document. The original file is still downloadable."
                     : "Preview not available for this file type"}
                 </p>
                 {onDownload && (

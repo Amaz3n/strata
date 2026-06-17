@@ -92,6 +92,7 @@ function mapStripeConnectedAccount(account: Stripe.Account): StripeConnectedAcco
 
 export async function createStripePaymentIntent(params: CreateStripeIntentParams): Promise<StripeIntentResult> {
   const paymentMethodTypes = params.payment_method_types ?? ["us_bank_account", "card"]
+  const acceptsAch = paymentMethodTypes.includes("us_bank_account")
 
   const intent = await getStripe().paymentIntents.create(
     {
@@ -109,14 +110,16 @@ export async function createStripePaymentIntent(params: CreateStripeIntentParams
         ...params.metadata,
       },
       application_fee_amount: params.application_fee_amount && params.application_fee_amount > 0 ? params.application_fee_amount : undefined,
-      payment_method_options: {
-        us_bank_account: {
-          financial_connections: {
-            permissions: ["payment_method", "balances"],
-          },
-          verification_method: "instant",
-        },
-      },
+      payment_method_options: acceptsAch
+        ? {
+            us_bank_account: {
+              financial_connections: {
+                permissions: ["payment_method", "balances"],
+              },
+              verification_method: "instant",
+            },
+          }
+        : undefined,
     },
     params.connected_account_id ? { stripeAccount: params.connected_account_id } : undefined,
   )

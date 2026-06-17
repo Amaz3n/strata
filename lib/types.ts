@@ -693,6 +693,13 @@ export interface CostCode {
   metadata?: Record<string, any>
 }
 
+/** Lightweight budget line option — the cost-bucket picker when cost codes are disabled. */
+export interface BudgetLineOption {
+  id: string
+  description: string | null
+  amount_cents: number | null
+}
+
 export type ProgressBasis = "manual" | "cost_to_cost" | "schedule_linked"
 
 export interface ProjectCostCodeProgress {

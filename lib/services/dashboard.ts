@@ -97,6 +97,50 @@ export interface PortfolioHealth {
   itemsDueNext7Days: number;
 }
 
+export interface OverdueInvoiceItem {
+  id: string;
+  number: string | null;
+  projectName: string | null;
+  balanceCents: number;
+  dueDate: string | null;
+  daysOverdue: number;
+  href: string;
+}
+
+export interface DueWorkItem {
+  id: string;
+  title: string;
+  projectName: string | null;
+  date: string | null;
+  isOverdue: boolean;
+  isCriticalPath: boolean;
+  href: string;
+}
+
+export interface BudgetHealthItem {
+  projectId: string;
+  projectName: string;
+  budgetCents: number;
+  actualCents: number;
+  /** actual - budget; positive when over budget. */
+  overageCents: number;
+  percentSpent: number;
+  status: "over" | "warning";
+  href: string;
+}
+
+export interface BudgetHealth {
+  /** Sum of overruns across jobs that are over budget. */
+  overBudgetCents: number;
+  jobsOver: number;
+  jobsApproaching: number;
+  jobsTracked: number;
+  jobsNoBudget: number;
+  /** Portfolio actual / budget across tracked jobs, as a percent. */
+  percentSpent: number;
+  items: BudgetHealthItem[];
+}
+
 export interface ControlTowerData {
   portfolioHealth: PortfolioHealth;
   projects: {
@@ -122,6 +166,8 @@ export interface ControlTowerData {
     totalCollected: number;
     totalOverdue: number;
     outstandingAR: number;
+    readyToInvoiceCents: number;
+    overdueInvoices: OverdueInvoiceItem[];
     revenueSeries: Array<{
       key: string;
       month: string;
@@ -142,6 +188,11 @@ export interface ControlTowerData {
     changeOrders: number;
     punchItems: number;
   };
+  dueItems: {
+    tasks: DueWorkItem[];
+    scheduleItems: DueWorkItem[];
+  };
+  budgetHealth: BudgetHealth;
   schedule: {
     totalItems: number;
     completedItems: number;
@@ -281,6 +332,7 @@ export async function getControlTowerData(
     scheduleResult,
     opportunitiesResult,
     vendorBillsResult,
+    billableCostsResult,
     eventsResult,
   ] = await Promise.all([
     supabase
@@ -289,12 +341,12 @@ export async function getControlTowerData(
       .eq("org_id", resolvedOrgId),
     supabase
       .from("tasks")
-      .select("id, status, due_date")
+      .select("id, status, due_date, title, project_id, project:projects(name)")
       .eq("org_id", resolvedOrgId),
     supabase
       .from("invoices")
       .select(
-        "id, status, total_cents, balance_due_cents, due_date, issue_date, created_at",
+        "id, status, total_cents, balance_due_cents, due_date, issue_date, created_at, invoice_number, project_id, project:projects(name)",
       )
       .eq("org_id", resolvedOrgId)
       .neq("status", "void"),
@@ -320,7 +372,7 @@ export async function getControlTowerData(
       .in("status", ["open", "in_progress"]),
     supabase
       .from("schedule_items")
-      .select("id, project_id, status, is_critical_path, progress, end_date")
+      .select("id, project_id, status, is_critical_path, progress, end_date, name, project:projects(name)")
       .eq("org_id", resolvedOrgId)
       .neq("status", "cancelled"),
     supabase
@@ -332,6 +384,12 @@ export async function getControlTowerData(
       .select("id, status, amount_cents, balance_due_cents")
       .eq("org_id", resolvedOrgId)
       .in("status", ["approved", "partial"]),
+    supabase
+      .from("billable_costs")
+      .select("id, billable_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("status", "open")
+      .eq("is_billable", true),
     supabase
       .from("events")
       .select("id, event_type, payload, created_at")
@@ -346,6 +404,7 @@ export async function getControlTowerData(
   const scheduleItems = scheduleResult.data ?? [];
   const opportunities = opportunitiesResult.data ?? [];
   const vendorBills = vendorBillsResult.data ?? [];
+  const billableCosts = billableCostsResult.data ?? [];
   const events = eventsResult.data ?? [];
 
   const now = new Date();
@@ -359,6 +418,106 @@ export async function getControlTowerData(
   const activeProjects = projects.filter((p) =>
     ["active", "on_hold"].includes(p.status),
   );
+
+  // Budget health — latest budget vs posted job-cost actuals, for active jobs only.
+  const activeProjectIds = activeProjects.map((p) => p.id);
+  const [budgetsResult, jobCostResult] =
+    activeProjectIds.length === 0
+      ? [
+          { data: [] as Array<{ project_id: string; total_cents: number | null; version: number | null }>, error: null },
+          { data: [] as Array<{ project_id: string; cost_cents: number | null }>, error: null },
+        ]
+      : await Promise.all([
+          supabase
+            .from("budgets")
+            .select("project_id, total_cents, version")
+            .eq("org_id", resolvedOrgId)
+            .in("project_id", activeProjectIds),
+          supabase
+            .from("job_cost_entries")
+            .select("project_id, cost_cents")
+            .eq("org_id", resolvedOrgId)
+            .eq("status", "posted")
+            .in("project_id", activeProjectIds),
+        ]);
+
+  const budgetByProject = new Map<string, number>();
+  const budgetVersionByProject = new Map<string, number>();
+  for (const row of (budgetsResult.data ?? []) as Array<{
+    project_id: string;
+    total_cents: number | null;
+    version: number | null;
+  }>) {
+    const version = row.version ?? 0;
+    if (version >= (budgetVersionByProject.get(row.project_id) ?? -1)) {
+      budgetVersionByProject.set(row.project_id, version);
+      budgetByProject.set(row.project_id, row.total_cents ?? 0);
+    }
+  }
+  const actualByProject = new Map<string, number>();
+  for (const row of (jobCostResult.data ?? []) as Array<{
+    project_id: string;
+    cost_cents: number | null;
+  }>) {
+    actualByProject.set(
+      row.project_id,
+      (actualByProject.get(row.project_id) ?? 0) + (row.cost_cents ?? 0),
+    );
+  }
+
+  const budgetHealthItems: BudgetHealthItem[] = [];
+  let overBudgetCents = 0;
+  let jobsOver = 0;
+  let jobsApproaching = 0;
+  let jobsTracked = 0;
+  let jobsNoBudget = 0;
+  let trackedBudgetTotal = 0;
+  let trackedActualTotal = 0;
+
+  for (const project of activeProjects) {
+    const budget = budgetByProject.get(project.id) ?? 0;
+    const actual = actualByProject.get(project.id) ?? 0;
+    if (budget <= 0) {
+      jobsNoBudget += 1;
+      continue;
+    }
+    jobsTracked += 1;
+    trackedBudgetTotal += budget;
+    trackedActualTotal += actual;
+    const percentSpent = Math.round((actual / budget) * 100);
+    if (percentSpent < 90) continue;
+    const overage = actual - budget;
+    if (percentSpent >= 100) {
+      jobsOver += 1;
+      overBudgetCents += Math.max(0, overage);
+    } else {
+      jobsApproaching += 1;
+    }
+    budgetHealthItems.push({
+      projectId: project.id,
+      projectName: project.name,
+      budgetCents: budget,
+      actualCents: actual,
+      overageCents: overage,
+      percentSpent,
+      status: percentSpent >= 100 ? "over" : "warning",
+      href: `/projects/${project.id}/financials/budget`,
+    });
+  }
+  budgetHealthItems.sort((a, b) => b.percentSpent - a.percentSpent);
+
+  const budgetHealth: BudgetHealth = {
+    overBudgetCents,
+    jobsOver,
+    jobsApproaching,
+    jobsTracked,
+    jobsNoBudget,
+    percentSpent:
+      trackedBudgetTotal > 0
+        ? Math.round((trackedActualTotal / trackedBudgetTotal) * 100)
+        : 0,
+    items: budgetHealthItems.slice(0, 10),
+  };
 
   // Tasks
   const tasksByStatus: Record<string, number> = {};
@@ -411,6 +570,99 @@ export async function getControlTowerData(
     unpaidApprovedBillsCents +=
       bill.balance_due_cents ?? bill.amount_cents ?? 0;
   }
+
+  // Approved costs earned but not yet invoiced (ready to bill)
+  let readyToInvoiceCents = 0;
+  for (const cost of billableCosts) {
+    readyToInvoiceCents += (cost as { billable_cents?: number | null }).billable_cents ?? 0;
+  }
+
+  // Detail lists for the KPI sheets — the actual items behind each headline number
+  const daysBetween = (from: Date, to: Date) =>
+    Math.max(0, Math.floor((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)));
+
+  const overdueInvoices: OverdueInvoiceItem[] = invoices
+    .filter((inv) => {
+      const balance = inv.balance_due_cents ?? 0;
+      if (balance <= 0) return false;
+      return (
+        inv.status === "overdue" ||
+        (!!inv.due_date && new Date(inv.due_date) < now)
+      );
+    })
+    .map((inv) => {
+      const i = inv as typeof inv & {
+        invoice_number?: string | null;
+        project_id?: string | null;
+        project?: { name?: string | null } | null;
+      };
+      const projectId = i.project_id ?? null;
+      return {
+        id: inv.id,
+        number: i.invoice_number ?? null,
+        projectName: i.project?.name ?? null,
+        balanceCents: inv.balance_due_cents ?? 0,
+        dueDate: inv.due_date ?? null,
+        daysOverdue: inv.due_date ? daysBetween(new Date(inv.due_date), now) : 0,
+        href: projectId
+          ? `/projects/${projectId}/financials/receivables?invoice=${inv.id}`
+          : "/invoices",
+      };
+    })
+    .sort((a, b) => b.daysOverdue - a.daysOverdue)
+    .slice(0, 8);
+
+  const dueTasks: DueWorkItem[] = tasks
+    .filter((t) => {
+      if (!t.due_date || t.status === "done") return false;
+      return new Date(t.due_date) <= weekFromNow;
+    })
+    .map((t) => {
+      const row = t as typeof t & {
+        title?: string | null;
+        project_id?: string | null;
+        project?: { name?: string | null } | null;
+      };
+      return {
+        id: t.id,
+        title: row.title ?? "Task",
+        projectName: row.project?.name ?? null,
+        date: t.due_date ?? null,
+        isOverdue: !!t.due_date && new Date(t.due_date) < now,
+        isCriticalPath: false,
+        href: row.project_id ? `/projects/${row.project_id}/tasks` : "/tasks",
+      };
+    })
+    .sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""))
+    .slice(0, 8);
+
+  const dueScheduleItems: DueWorkItem[] = scheduleItems
+    .filter((s) => {
+      if (s.status === "completed") return false;
+      const end = (s as { end_date?: string | null }).end_date;
+      return !!end && new Date(end) <= weekFromNow;
+    })
+    .map((s) => {
+      const row = s as typeof s & {
+        name?: string | null;
+        end_date?: string | null;
+        is_critical_path?: boolean | null;
+        project_id?: string | null;
+        project?: { name?: string | null } | null;
+      };
+      const end = row.end_date ?? null;
+      return {
+        id: s.id,
+        title: row.name ?? "Schedule item",
+        projectName: row.project?.name ?? null,
+        date: end,
+        isOverdue: !!end && new Date(end) < now,
+        isCriticalPath: !!row.is_critical_path,
+        href: row.project_id ? `/projects/${row.project_id}/schedule` : "/schedule",
+      };
+    })
+    .sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""))
+    .slice(0, 8);
 
   // Portfolio health
   const projectsAtRisk =
@@ -477,6 +729,8 @@ export async function getControlTowerData(
       totalCollected,
       totalOverdue,
       outstandingAR,
+      readyToInvoiceCents,
+      overdueInvoices,
       revenueSeries,
       arAging,
     },
@@ -486,6 +740,11 @@ export async function getControlTowerData(
       changeOrders: changeOrdersResult.count ?? 0,
       punchItems: punchResult.count ?? 0,
     },
+    dueItems: {
+      tasks: dueTasks,
+      scheduleItems: dueScheduleItems,
+    },
+    budgetHealth,
     schedule: {
       totalItems: scheduleItems.length,
       completedItems,

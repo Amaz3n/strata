@@ -1,27 +1,33 @@
 "use client"
 
 import Link from "next/link"
+import { useEffect, useState } from "react"
+import { format } from "date-fns"
+import NumberFlow from "@number-flow/react"
 import { ArrowDown, ArrowUp, ArrowUpRight } from "@/components/icons"
 import { cn } from "@/lib/utils"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Sheet, SheetContent } from "@/components/ui/sheet"
 import type {
+  BudgetHealthItem,
   ControlTowerData,
-  DecisionItem,
-  DecisionType,
+  DueWorkItem,
+  OverdueInvoiceItem,
   WatchlistProject,
 } from "@/lib/services/dashboard"
 
 interface ControlTowerStatsProps {
   portfolioHealth: ControlTowerData["portfolioHealth"]
   financials: ControlTowerData["financials"]
-  decisionItems: DecisionItem[]
+  budgetHealth: ControlTowerData["budgetHealth"]
   tasks: ControlTowerData["tasks"]
   projectsByStatus: ControlTowerData["projects"]["byStatus"]
   topWatchlist: WatchlistProject[]
   openItems: ControlTowerData["openItems"]
+  dueItems: ControlTowerData["dueItems"]
 }
 
 type Tone = "neutral" | "success" | "warning" | "destructive"
+type KpiKey = "projects" | "cash" | "budget" | "due"
 
 interface CellStatus {
   tone: Tone
@@ -42,6 +48,54 @@ function formatMoney(cents: number): string {
   return `$${Math.round(dollars).toLocaleString()}`
 }
 
+const MONEY_FORMAT: Intl.NumberFormatOptions = {
+  style: "currency",
+  currency: "USD",
+  notation: "compact",
+  maximumFractionDigits: 1,
+}
+const PERCENT_FORMAT: Intl.NumberFormatOptions = { style: "percent", maximumFractionDigits: 0 }
+const COUNT_FORMAT: Intl.NumberFormatOptions = {}
+
+/** Animated number that rolls up from 0 on mount, formatted via Intl. */
+function AnimatedNumber({
+  value,
+  format: formatOptions = COUNT_FORMAT,
+  delay = 0,
+  locale = "en-US",
+}: {
+  value: number
+  format?: Intl.NumberFormatOptions
+  delay?: number
+  locale?: string
+}) {
+  const [display, setDisplay] = useState(0)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDisplay(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+
+  return <NumberFlow value={display} format={formatOptions as any} locales={locale} willChange />
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return ""
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  return format(date, "MMM d")
+}
+
+function toneText(tone: Tone): string {
+  return tone === "destructive"
+    ? "text-destructive"
+    : tone === "warning"
+    ? "text-warning"
+    : tone === "success"
+    ? "text-success"
+    : "text-muted-foreground"
+}
+
 const PROJECT_STATUS_LABELS: Record<string, string> = {
   active: "Active",
   planning: "Planning",
@@ -51,33 +105,18 @@ const PROJECT_STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelled",
 }
 
-const DECISION_TYPE_LABELS: Record<DecisionType, string> = {
-  change_order: "Change orders",
-  rfi: "RFIs",
-  submittal: "Submittals",
-  vendor_bill: "Bills awaiting approval",
-  proposal: "Proposal signatures",
-  punch_item: "Punch items",
-}
-
-const DECISION_TYPE_HREF: Record<DecisionType, string> = {
-  change_order: "/change-orders",
-  rfi: "/rfis",
-  submittal: "/submittals",
-  vendor_bill: "/payments",
-  proposal: "/signatures",
-  punch_item: "/tasks",
-}
-
 export function ControlTowerStats({
   portfolioHealth,
   financials,
-  decisionItems,
+  budgetHealth,
   tasks,
   projectsByStatus,
   topWatchlist,
   openItems,
+  dueItems,
 }: ControlTowerStatsProps) {
+  const [activeKpi, setActiveKpi] = useState<KpiKey | null>(null)
+
   const activeProjects = portfolioHealth.activeProjects
   const projectsAtRisk = portfolioHealth.projectsAtRisk
   const riskRatio = activeProjects > 0 ? projectsAtRisk / activeProjects : 0
@@ -91,9 +130,7 @@ export function ControlTowerStats({
       ? portfolioHealth.overdueARCents / financials.outstandingAR
       : 0
 
-  const urgentDecisions = decisionItems.filter((i) => i.severity === "high").length
-  const decisionsCount = decisionItems.length
-  const urgentRatio = decisionsCount > 0 ? urgentDecisions / decisionsCount : 0
+  const budgetRatio = Math.min(budgetHealth.percentSpent / 100, 1)
 
   const dueCount = portfolioHealth.itemsDueNext7Days
   const blockers = portfolioHealth.totalBlockers
@@ -118,14 +155,14 @@ export function ControlTowerStats({
       ? null
       : { tone: "success", label: "Settled", trend: "up" }
 
-  const decisionStatus: CellStatus | null =
-    urgentDecisions >= 3
-      ? { tone: "destructive", label: `${urgentDecisions} urgent`, trend: "down" }
-      : urgentDecisions > 0
-      ? { tone: "warning", label: `${urgentDecisions} urgent` }
-      : decisionsCount > 0
-      ? null
-      : { tone: "success", label: "Clear", trend: "up" }
+  const budgetStatus: CellStatus | null =
+    budgetHealth.jobsOver > 0
+      ? { tone: "destructive", label: `${budgetHealth.jobsOver} over`, trend: "down" }
+      : budgetHealth.jobsApproaching > 0
+      ? { tone: "warning", label: `${budgetHealth.jobsApproaching} near` }
+      : budgetHealth.jobsTracked > 0
+      ? { tone: "success", label: "On budget", trend: "up" }
+      : null
 
   const dueStatus: CellStatus | null =
     blockers > 0
@@ -137,110 +174,130 @@ export function ControlTowerStats({
       : null
 
   return (
-    <section className="border-b">
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-        <Cell
-          label="Active projects"
-          value={activeProjects > 0 ? String(activeProjects) : "—"}
-          detail={
-            activeProjects === 0
-              ? "No active jobs"
-              : projectsAtRisk > 0
-              ? `${projectsAtRisk} on watchlist · ${activeProjects - projectsAtRisk} steady`
-              : "All projects on track"
-          }
-          status={activeStatus}
-          position={0}
-          align="start"
-          popover={
-            <ActiveProjectsPopover
+    <>
+      <section className="border-b">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
+          <Cell
+            label="Active projects"
+            value={activeProjects > 0 ? <AnimatedNumber value={activeProjects} delay={60} /> : "—"}
+            detail={
+              activeProjects === 0
+                ? "No active jobs"
+                : projectsAtRisk > 0
+                ? `${projectsAtRisk} on watchlist · ${activeProjects - projectsAtRisk} steady`
+                : "All projects on track"
+            }
+            status={activeStatus}
+            position={0}
+            onOpen={() => setActiveKpi("projects")}
+          >
+            <RatioBar ratio={1 - riskRatio} tone={activeStatus?.tone ?? "neutral"} delay={60} />
+          </Cell>
+
+          <Cell
+            label="Cash to collect"
+            value={<AnimatedNumber value={financials.outstandingAR / 100} format={MONEY_FORMAT} delay={130} />}
+            detail={
+              financials.outstandingAR === 0
+                ? "All invoices settled"
+                : portfolioHealth.overdueARCents > 0
+                ? `${formatMoney(portfolioHealth.overdueARCents)} overdue · ${Math.round(collectedRatio * 100)}% collected YTD`
+                : `${Math.round(collectedRatio * 100)}% collected YTD`
+            }
+            status={cashStatus}
+            position={1}
+            onOpen={() => setActiveKpi("cash")}
+          >
+            <SplitBar primaryRatio={overdueRatio} tone={cashStatus?.tone ?? "neutral"} delay={130} />
+          </Cell>
+
+          <Cell
+            label="Over budget"
+            value={
+              budgetHealth.jobsOver > 0 ? (
+                <AnimatedNumber value={budgetHealth.overBudgetCents / 100} format={MONEY_FORMAT} delay={200} />
+              ) : budgetHealth.jobsTracked > 0 ? (
+                <AnimatedNumber value={budgetHealth.percentSpent / 100} format={PERCENT_FORMAT} delay={200} />
+              ) : (
+                "—"
+              )
+            }
+            detail={
+              budgetHealth.jobsTracked === 0
+                ? "No budgets set yet"
+                : budgetHealth.jobsOver > 0
+                ? `${budgetHealth.jobsOver} of ${budgetHealth.jobsTracked} jobs over budget`
+                : budgetHealth.jobsApproaching > 0
+                ? `${budgetHealth.jobsApproaching} approaching budget`
+                : `${budgetHealth.percentSpent}% of budget spent`
+            }
+            status={budgetStatus}
+            position={2}
+            onOpen={() => setActiveKpi("budget")}
+          >
+            <RatioBar ratio={budgetRatio} tone={budgetStatus?.tone ?? "neutral"} delay={200} />
+          </Cell>
+
+          <Cell
+            label="Due this week"
+            value={dueCount > 0 ? <AnimatedNumber value={dueCount} delay={270} /> : "—"}
+            detail={
+              dueCount === 0
+                ? "Clear week ahead"
+                : blockers > 0
+                ? `${blockers} blocker${blockers === 1 ? "" : "s"} in the mix`
+                : "Tasks & schedule items"
+            }
+            status={dueStatus}
+            position={3}
+            onOpen={() => setActiveKpi("due")}
+          >
+            <RatioBar ratio={Math.min(dueCount / 25, 1)} tone={dueStatus?.tone ?? "neutral"} delay={270} />
+          </Cell>
+        </div>
+      </section>
+
+      <Sheet open={activeKpi !== null} onOpenChange={(open) => !open && setActiveKpi(null)}>
+        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
+          {activeKpi === "projects" && (
+            <ProjectsSheet
+              activeProjects={activeProjects}
+              projectsAtRisk={projectsAtRisk}
               byStatus={projectsByStatus}
               topWatchlist={topWatchlist}
             />
-          }
-        >
-          <RatioBar
-            ratio={1 - riskRatio}
-            tone={activeStatus?.tone ?? "neutral"}
-          />
-        </Cell>
-
-        <Cell
-          label="Cash to collect"
-          value={financials.outstandingAR > 0 ? formatMoney(financials.outstandingAR) : "$0"}
-          detail={
-            financials.outstandingAR === 0
-              ? "All invoices settled"
-              : portfolioHealth.overdueARCents > 0
-              ? `${formatMoney(portfolioHealth.overdueARCents)} overdue · ${Math.round(collectedRatio * 100)}% collected YTD`
-              : `${Math.round(collectedRatio * 100)}% collected YTD`
-          }
-          status={cashStatus}
-          position={1}
-          align="start"
-          popover={
-            <CashPopover
+          )}
+          {activeKpi === "cash" && (
+            <CashSheet
+              outstandingAR={financials.outstandingAR}
+              overdueARCents={portfolioHealth.overdueARCents}
               arAging={financials.arAging}
+              overdueInvoices={financials.overdueInvoices}
+              readyToInvoiceCents={financials.readyToInvoiceCents}
               unpaidBillsCents={portfolioHealth.unpaidApprovedBillsCents}
             />
-          }
-        >
-          <SplitBar
-            primaryRatio={overdueRatio}
-            tone={cashStatus?.tone ?? "neutral"}
-          />
-        </Cell>
-
-        <Cell
-          label="Decisions"
-          value={decisionsCount > 0 ? String(decisionsCount) : "—"}
-          detail={
-            decisionsCount === 0
-              ? "Nothing waiting on you"
-              : urgentDecisions > 0
-              ? `${urgentDecisions} urgent · ${decisionsCount - urgentDecisions} routine`
-              : `${decisionsCount} pending review`
-          }
-          status={decisionStatus}
-          position={2}
-          align="end"
-          popover={<DecisionsPopover items={decisionItems} />}
-        >
-          <SplitBar
-            primaryRatio={urgentRatio}
-            tone={decisionStatus?.tone ?? "neutral"}
-          />
-        </Cell>
-
-        <Cell
-          label="Due this week"
-          value={dueCount > 0 ? String(dueCount) : "—"}
-          detail={
-            dueCount === 0
-              ? "Clear week ahead"
-              : blockers > 0
-              ? `${blockers} blocker${blockers === 1 ? "" : "s"} in the mix`
-              : "Tasks & schedule items"
-          }
-          status={dueStatus}
-          position={3}
-          align="end"
-          popover={
-            <DuePopover
+          )}
+          {activeKpi === "budget" && <BudgetSheet budgetHealth={budgetHealth} />}
+          {activeKpi === "due" && (
+            <DueSheet
+              dueCount={dueCount}
+              blockers={blockers}
               tasksDue={tasksDue}
               scheduleDue={scheduleDue}
               tasksOverdue={tasks.overdue}
-              blockers={blockers}
+              dueItems={dueItems}
               openItems={openItems}
             />
-          }
-        >
-          <RatioBar ratio={Math.min(dueCount / 25, 1)} tone={dueStatus?.tone ?? "neutral"} />
-        </Cell>
-      </div>
-    </section>
+          )}
+        </SheetContent>
+      </Sheet>
+    </>
   )
 }
+
+/* ================================================================
+ * KPI cells
+ * ============================================================== */
 
 const cellBorders: Record<number, string> = {
   0: "border-b sm:border-r xl:border-b-0 xl:border-r",
@@ -258,16 +315,15 @@ const cellTints: Record<Tone, string> = {
 
 interface CellProps {
   label: string
-  value: string
+  value: React.ReactNode
   detail: string
   position: number
   status?: CellStatus | null
-  popover?: React.ReactNode
-  align?: "start" | "center" | "end"
+  onOpen?: () => void
   children: React.ReactNode
 }
 
-function Cell({ label, value, detail, position, status, popover, align = "center", children }: CellProps) {
+function Cell({ label, value, detail, position, status, onOpen, children }: CellProps) {
   const tint = status?.tone === "neutral" ? "" : cellTints[status?.tone ?? "neutral"]
 
   const cellBody = (
@@ -284,10 +340,10 @@ function Cell({ label, value, detail, position, status, popover, align = "center
       <div>{children}</div>
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-muted-foreground truncate">{detail}</div>
-        {popover && (
+        {onOpen && (
           <ArrowUpRight
             aria-hidden
-            className="h-3 w-3 shrink-0 text-muted-foreground/50 transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-foreground/85 group-data-[state=open]:text-foreground"
+            className="h-3 w-3 shrink-0 text-muted-foreground/50 transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-foreground/85"
           />
         )}
       </div>
@@ -298,28 +354,18 @@ function Cell({ label, value, detail, position, status, popover, align = "center
     "px-6 py-7 sm:px-8 sm:py-8 flex flex-col gap-4 relative w-full text-left transition-colors",
     cellBorders[position],
     tint,
-    popover && "group cursor-pointer hover:bg-foreground/[0.015] data-[state=open]:bg-foreground/[0.025] outline-none focus-visible:bg-foreground/[0.025]"
+    onOpen &&
+      "group cursor-pointer hover:bg-foreground/[0.015] outline-none focus-visible:bg-foreground/[0.025]"
   )
 
-  if (!popover) {
+  if (!onOpen) {
     return <div className={cellClasses}>{cellBody}</div>
   }
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button type="button" className={cellClasses}>
-          {cellBody}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align={align}
-        sideOffset={-1}
-        className="w-80 p-0 rounded-none border shadow-lg"
-      >
-        {popover}
-      </PopoverContent>
-    </Popover>
+    <button type="button" onClick={onOpen} className={cellClasses}>
+      {cellBody}
+    </button>
   )
 }
 
@@ -348,13 +394,22 @@ function StatusPill({ status }: { status: CellStatus }) {
   )
 }
 
-function RatioBar({ ratio, tone }: { ratio: number; tone: Tone }) {
-  const width = Math.min(100, Math.max(0, ratio * 100))
+function useMountedWidth(target: number, delay: number) {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setMounted(true), delay)
+    return () => clearTimeout(timer)
+  }, [delay])
+  return mounted ? target : 0
+}
+
+function RatioBar({ ratio, tone, delay = 0 }: { ratio: number; tone: Tone; delay?: number }) {
+  const width = useMountedWidth(Math.min(100, Math.max(0, ratio * 100)), delay)
   return (
     <div className="h-1 rounded-full bg-muted overflow-hidden">
       <div
         className={cn(
-          "h-full rounded-full transition-all duration-500",
+          "h-full rounded-full transition-[width] duration-700 ease-out",
           tone === "success" && "bg-success",
           tone === "warning" && "bg-warning",
           tone === "destructive" && "bg-destructive",
@@ -366,14 +421,14 @@ function RatioBar({ ratio, tone }: { ratio: number; tone: Tone }) {
   )
 }
 
-function SplitBar({ primaryRatio, tone }: { primaryRatio: number; tone: Tone }) {
-  const primary = Math.min(100, Math.max(0, primaryRatio * 100))
-  const remainder = 100 - primary
+function SplitBar({ primaryRatio, tone, delay = 0 }: { primaryRatio: number; tone: Tone; delay?: number }) {
+  const primary = useMountedWidth(Math.min(100, Math.max(0, primaryRatio * 100)), delay)
+  const remainder = primary === 0 ? 0 : 100 - primary
   return (
     <div className="flex h-1 w-full overflow-hidden rounded-full bg-muted">
       <div
         className={cn(
-          "h-full transition-all duration-500",
+          "h-full transition-[width] duration-700 ease-out",
           tone === "success" && "bg-success",
           tone === "warning" && "bg-warning",
           tone === "destructive" && "bg-destructive",
@@ -382,7 +437,7 @@ function SplitBar({ primaryRatio, tone }: { primaryRatio: number; tone: Tone }) 
         style={{ width: `${primary}%` }}
       />
       <div
-        className="h-full bg-foreground/45 transition-all duration-500"
+        className="h-full bg-foreground/45 transition-[width] duration-700 ease-out"
         style={{ width: `${remainder}%` }}
       />
     </div>
@@ -390,82 +445,177 @@ function SplitBar({ primaryRatio, tone }: { primaryRatio: number; tone: Tone }) 
 }
 
 /* ================================================================
- * Popover content
+ * Sheet building blocks
  * ============================================================== */
 
-function PopHeader({ label, count }: { label: string; count?: string }) {
+function SheetHead({
+  label,
+  value,
+  subtitle,
+  subtitleTone = "neutral",
+}: {
+  label: string
+  value: string
+  subtitle?: string
+  subtitleTone?: Tone
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-3 px-4 pt-4 pb-3">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground/85">
+    <div className="shrink-0 border-b px-5 pb-4 pt-5 pr-12">
+      <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/80">
         {label}
-      </span>
-      {count && (
-        <span className="text-[10px] font-medium tabular-nums text-muted-foreground/65">
-          {count}
-        </span>
+      </div>
+      <div className="mt-1.5 text-[30px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
+        {value}
+      </div>
+      {subtitle && (
+        <div className={cn("mt-2 text-sm font-medium", toneText(subtitleTone))}>{subtitle}</div>
       )}
     </div>
   )
 }
 
-function PopRow({
+function SheetBody({ children }: { children: React.ReactNode }) {
+  return <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+}
+
+function Section({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-b last:border-b-0">
+      <div className="flex items-baseline justify-between px-5 pb-1.5 pt-4">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground/70">
+          {label}
+        </span>
+        {hint && (
+          <span className="text-[10px] font-medium tabular-nums text-muted-foreground/65">
+            {hint}
+          </span>
+        )}
+      </div>
+      <div className="px-2.5 pb-3">{children}</div>
+    </div>
+  )
+}
+
+function LineRow({
   label,
   value,
   href,
   tone = "default",
+  bar,
 }: {
   label: string
   value: string
   href?: string
   tone?: "default" | "destructive" | "muted"
+  bar?: { ratio: number; tone: Tone }
 }) {
   const inner = (
     <div
       className={cn(
-        "flex items-center justify-between gap-3 px-4 py-1.5 -mx-0.5 transition-colors",
-        href && "rounded-sm hover:bg-foreground/[0.04]"
+        "flex flex-col gap-1.5 px-2.5 py-1.5 transition-colors",
+        href && "rounded-md hover:bg-foreground/[0.04]"
       )}
     >
-      <span
-        className={cn(
-          "text-[12px] truncate",
-          tone === "destructive" ? "text-destructive font-medium" : "text-foreground/85"
-        )}
-      >
-        {label}
-      </span>
-      <span
-        className={cn(
-          "text-[12px] font-semibold tabular-nums shrink-0",
-          tone === "destructive" && "text-destructive",
-          tone === "muted" && "text-muted-foreground/70",
-          tone === "default" && "text-foreground"
-        )}
-      >
-        {value}
-      </span>
+      <div className="flex items-center justify-between gap-3">
+        <span
+          className={cn(
+            "truncate text-[12.5px]",
+            tone === "destructive" ? "font-medium text-destructive" : "text-foreground/85"
+          )}
+        >
+          {label}
+        </span>
+        <span
+          className={cn(
+            "shrink-0 text-[12.5px] font-semibold tabular-nums",
+            tone === "destructive" && "text-destructive",
+            tone === "muted" && "text-muted-foreground/70",
+            tone === "default" && "text-foreground"
+          )}
+        >
+          {value}
+        </span>
+      </div>
+      {bar && <RatioBar ratio={bar.ratio} tone={bar.tone} />}
     </div>
   )
   return href ? <Link href={href}>{inner}</Link> : inner
 }
 
-function PopRule() {
-  return <div aria-hidden className="my-2 border-t border-border/60" />
-}
-
-function PopFooter({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-3 border-t border-border/60 px-4 py-2.5 bg-muted/30">
-      {children}
-    </div>
-  )
-}
-
-function PopLink({ href, children }: { href: string; children: React.ReactNode }) {
+function ItemRow({
+  href,
+  title,
+  meta,
+  value,
+  valueTone = "default",
+  badge,
+}: {
+  href: string
+  title: string
+  meta: string
+  value?: string
+  valueTone?: "default" | "destructive"
+  badge?: { label: string; tone: Tone }
+}) {
   return (
     <Link
       href={href}
-      className="group inline-flex items-center gap-1 text-[11px] font-medium text-foreground/80 hover:text-foreground transition-colors"
+      className="group flex items-center gap-3 rounded-md px-2.5 py-2 transition-colors hover:bg-foreground/[0.04]"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[13px] font-medium text-foreground">{title}</span>
+          {badge && (
+            <span
+              className={cn(
+                "shrink-0 rounded-sm px-1 py-px text-[9px] font-semibold uppercase tracking-wide",
+                pillStyles[badge.tone]
+              )}
+            >
+              {badge.label}
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{meta}</div>
+      </div>
+      {value && (
+        <span
+          className={cn(
+            "shrink-0 text-[13px] font-semibold tabular-nums",
+            valueTone === "destructive" ? "text-destructive" : "text-foreground"
+          )}
+        >
+          {value}
+        </span>
+      )}
+      <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-foreground/70" />
+    </Link>
+  )
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return <p className="px-2.5 py-3 text-[12px] text-muted-foreground">{children}</p>
+}
+
+function SheetFootLinks({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex shrink-0 items-center gap-3 border-t bg-muted/30 px-5 py-3">{children}</div>
+  )
+}
+
+function FootLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <Link
+      href={href}
+      className="group inline-flex items-center gap-1 text-[11px] font-medium text-foreground/80 transition-colors hover:text-foreground"
     >
       {children}
       <ArrowUpRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
@@ -473,10 +623,18 @@ function PopLink({ href, children }: { href: string; children: React.ReactNode }
   )
 }
 
-function ActiveProjectsPopover({
+/* ================================================================
+ * Per-KPI sheet bodies
+ * ============================================================== */
+
+function ProjectsSheet({
+  activeProjects,
+  projectsAtRisk,
   byStatus,
   topWatchlist,
 }: {
+  activeProjects: number
+  projectsAtRisk: number
   byStatus: Record<string, number>
   topWatchlist: WatchlistProject[]
 }) {
@@ -485,201 +643,328 @@ function ActiveProjectsPopover({
     .sort(([, a], [, b]) => b - a)
 
   return (
-    <div>
-      <PopHeader label="Active projects" />
-      <div className="px-1 pb-2">
-        {visibleStatuses.length === 0 ? (
-          <p className="px-4 py-2 text-[12px] text-muted-foreground">No projects yet.</p>
-        ) : (
-          visibleStatuses.map(([key, count]) => (
-            <PopRow
-              key={key}
-              label={PROJECT_STATUS_LABELS[key] ?? key}
-              value={String(count)}
-              href={`/projects?status=${key}`}
-            />
-          ))
-        )}
-      </div>
+    <>
+      <SheetHead
+        label="Active projects"
+        value={activeProjects > 0 ? String(activeProjects) : "—"}
+        subtitle={
+          projectsAtRisk > 0 ? `${projectsAtRisk} on the watchlist` : "All projects on track"
+        }
+        subtitleTone={projectsAtRisk > 0 ? "warning" : "success"}
+      />
+      <SheetBody>
+        <Section label="By status">
+          {visibleStatuses.length === 0 ? (
+            <EmptyState>No projects yet.</EmptyState>
+          ) : (
+            visibleStatuses.map(([key, count]) => (
+              <LineRow
+                key={key}
+                label={PROJECT_STATUS_LABELS[key] ?? key}
+                value={String(count)}
+                href={`/projects?status=${key}`}
+              />
+            ))
+          )}
+        </Section>
 
-      {topWatchlist.length > 0 && (
-        <>
-          <PopRule />
-          <PopHeader label="Most at risk" count={`${topWatchlist.length} flagged`} />
-          <div className="px-1 pb-2">
-            {topWatchlist.slice(0, 4).map((project) => {
-              const isCritical = project.signals.some((s) => s.status === "critical")
+        <Section label="Most at risk" hint={topWatchlist.length > 0 ? `${topWatchlist.length} flagged` : undefined}>
+          {topWatchlist.length === 0 ? (
+            <EmptyState>No projects flagged. Nice.</EmptyState>
+          ) : (
+            topWatchlist.map((project) => {
+              const flagged = project.signals.filter((s) => s.status !== "ok")
+              const isCritical = flagged.some((s) => s.status === "critical")
+              const meta =
+                flagged.length > 0
+                  ? flagged.map((s) => s.label).join(" · ")
+                  : "Watchlist"
               return (
-                <PopRow
+                <ItemRow
                   key={project.id}
-                  label={project.name}
-                  value={`risk ${project.riskScore}`}
                   href={`/projects/${project.id}`}
-                  tone={isCritical ? "destructive" : "default"}
+                  title={project.name}
+                  meta={meta}
+                  value={`Risk ${project.riskScore}`}
+                  valueTone={isCritical ? "destructive" : "default"}
+                  badge={isCritical ? { label: "Critical", tone: "destructive" } : undefined}
                 />
               )
-            })}
-          </div>
-        </>
-      )}
-
-      <PopFooter>
-        <PopLink href="/projects">View all projects</PopLink>
-      </PopFooter>
-    </div>
+            })
+          )}
+        </Section>
+      </SheetBody>
+      <SheetFootLinks>
+        <FootLink href="/projects">All projects</FootLink>
+      </SheetFootLinks>
+    </>
   )
 }
 
-function CashPopover({
+function CashSheet({
+  outstandingAR,
+  overdueARCents,
   arAging,
+  overdueInvoices,
+  readyToInvoiceCents,
   unpaidBillsCents,
 }: {
+  outstandingAR: number
+  overdueARCents: number
   arAging: ControlTowerData["financials"]["arAging"]
+  overdueInvoices: OverdueInvoiceItem[]
+  readyToInvoiceCents: number
   unpaidBillsCents: number
 }) {
-  const buckets: Array<{ label: string; cents: number; tone: "default" | "destructive" }> = [
-    { label: "Current", cents: arAging.current, tone: "default" },
-    { label: "1–30 days", cents: arAging.oneToThirty, tone: "default" },
-    { label: "31–60 days", cents: arAging.thirtyOneToSixty, tone: "default" },
+  const buckets: Array<{ label: string; cents: number; tone: Tone }> = [
+    { label: "Current", cents: arAging.current, tone: "neutral" },
+    { label: "1–30 days", cents: arAging.oneToThirty, tone: "neutral" },
+    { label: "31–60 days", cents: arAging.thirtyOneToSixty, tone: "warning" },
     { label: "61–90 days", cents: arAging.sixtyOneToNinety, tone: "destructive" },
     { label: "90+ days", cents: arAging.overNinety, tone: "destructive" },
   ]
   if (arAging.noDueDate > 0) {
-    buckets.push({ label: "No due date", cents: arAging.noDueDate, tone: "default" })
+    buckets.push({ label: "No due date", cents: arAging.noDueDate, tone: "neutral" })
   }
+  const maxBucket = Math.max(1, ...buckets.map((b) => b.cents))
 
   return (
-    <div>
-      <PopHeader label="AR aging" />
-      <div className="px-1 pb-2">
-        {buckets.map((bucket) => (
-          <PopRow
-            key={bucket.label}
-            label={bucket.label}
-            value={formatMoney(bucket.cents)}
-            tone={bucket.cents === 0 ? "muted" : bucket.tone}
-          />
-        ))}
-      </div>
+    <>
+      <SheetHead
+        label="Cash to collect"
+        value={outstandingAR > 0 ? formatMoney(outstandingAR) : "$0"}
+        subtitle={
+          outstandingAR === 0
+            ? "All invoices settled"
+            : overdueARCents > 0
+            ? `${formatMoney(overdueARCents)} overdue`
+            : "Nothing overdue"
+        }
+        subtitleTone={overdueARCents > 0 ? "destructive" : "success"}
+      />
+      <SheetBody>
+        <Section label="AR aging">
+          {buckets.map((bucket) => (
+            <LineRow
+              key={bucket.label}
+              label={bucket.label}
+              value={formatMoney(bucket.cents)}
+              tone={bucket.cents === 0 ? "muted" : bucket.tone === "destructive" ? "destructive" : "default"}
+              bar={bucket.cents > 0 ? { ratio: bucket.cents / maxBucket, tone: bucket.tone } : undefined}
+            />
+          ))}
+        </Section>
 
-      {unpaidBillsCents > 0 && (
-        <>
-          <PopRule />
-          <PopHeader label="You owe" />
-          <div className="px-1 pb-2">
-            <PopRow
+        {overdueInvoices.length > 0 && (
+          <Section label="Overdue invoices" hint={`${overdueInvoices.length} shown`}>
+            {overdueInvoices.map((inv) => (
+              <ItemRow
+                key={inv.id}
+                href={inv.href}
+                title={inv.number ? `Invoice #${inv.number}` : "Invoice"}
+                meta={`${inv.projectName ?? "—"} · ${inv.daysOverdue}d overdue`}
+                value={formatMoney(inv.balanceCents)}
+                valueTone="destructive"
+              />
+            ))}
+          </Section>
+        )}
+
+        {readyToInvoiceCents > 0 && (
+          <Section label="Ready to bill">
+            <LineRow
+              label="Approved costs not yet invoiced"
+              value={formatMoney(readyToInvoiceCents)}
+              href="/projects"
+            />
+          </Section>
+        )}
+
+        {unpaidBillsCents > 0 && (
+          <Section label="You owe">
+            <LineRow
               label="Approved bills unpaid"
               value={formatMoney(unpaidBillsCents)}
               href="/payments"
             />
-          </div>
-        </>
-      )}
-
-      <PopFooter>
-        <PopLink href="/invoices">View invoices</PopLink>
+          </Section>
+        )}
+      </SheetBody>
+      <SheetFootLinks>
+        <FootLink href="/invoices">Invoices</FootLink>
         <span className="text-muted-foreground/40">·</span>
-        <PopLink href="/invoices?status=overdue">Overdue</PopLink>
-      </PopFooter>
-    </div>
+        <FootLink href="/invoices?status=overdue">Overdue</FootLink>
+      </SheetFootLinks>
+    </>
   )
 }
 
-function DecisionsPopover({ items }: { items: DecisionItem[] }) {
-  const counts = new Map<DecisionType, { count: number; urgent: number }>()
-  for (const item of items) {
-    const entry = counts.get(item.type) ?? { count: 0, urgent: 0 }
-    entry.count += 1
-    if (item.severity === "high") entry.urgent += 1
-    counts.set(item.type, entry)
-  }
-  const sortedTypes = (Object.keys(DECISION_TYPE_LABELS) as DecisionType[])
-    .map((type) => ({ type, ...(counts.get(type) ?? { count: 0, urgent: 0 }) }))
-    .sort((a, b) => b.count - a.count)
+function BudgetSheet({ budgetHealth }: { budgetHealth: ControlTowerData["budgetHealth"] }) {
+  const over = budgetHealth.items.filter((i) => i.status === "over")
+  const approaching = budgetHealth.items.filter((i) => i.status === "warning")
+
+  const renderItem = (item: BudgetHealthItem) => (
+    <ItemRow
+      key={item.projectId}
+      href={item.href}
+      title={item.projectName}
+      meta={`${item.percentSpent}% spent · budget ${formatMoney(item.budgetCents)}`}
+      value={
+        item.status === "over"
+          ? `+${formatMoney(item.overageCents)}`
+          : `${formatMoney(item.budgetCents - item.actualCents)} left`
+      }
+      valueTone={item.status === "over" ? "destructive" : "default"}
+      badge={
+        item.status === "over"
+          ? { label: "Over", tone: "destructive" }
+          : { label: "Near", tone: "warning" }
+      }
+    />
+  )
 
   return (
-    <div>
-      <PopHeader label="By type" count={`${items.length} pending`} />
-      <div className="px-1 pb-2">
-        {sortedTypes.map(({ type, count, urgent }) => (
-          <PopRow
-            key={type}
-            label={
-              urgent > 0
-                ? `${DECISION_TYPE_LABELS[type]} · ${urgent} urgent`
-                : DECISION_TYPE_LABELS[type]
-            }
-            value={String(count)}
-            href={count > 0 ? DECISION_TYPE_HREF[type] : undefined}
-            tone={urgent > 0 ? "destructive" : count === 0 ? "muted" : "default"}
-          />
-        ))}
-      </div>
-      <PopFooter>
-        <PopLink href="/change-orders">Change orders</PopLink>
-        <span className="text-muted-foreground/40">·</span>
-        <PopLink href="/rfis">RFIs</PopLink>
-      </PopFooter>
-    </div>
+    <>
+      <SheetHead
+        label="Over budget"
+        value={
+          budgetHealth.jobsOver > 0
+            ? formatMoney(budgetHealth.overBudgetCents)
+            : budgetHealth.jobsTracked > 0
+            ? `${budgetHealth.percentSpent}% spent`
+            : "—"
+        }
+        subtitle={
+          budgetHealth.jobsTracked === 0
+            ? "No active jobs have a budget yet"
+            : budgetHealth.jobsOver > 0
+            ? `${budgetHealth.jobsOver} of ${budgetHealth.jobsTracked} jobs over budget`
+            : budgetHealth.jobsApproaching > 0
+            ? `${budgetHealth.jobsApproaching} approaching budget`
+            : "All jobs within budget"
+        }
+        subtitleTone={
+          budgetHealth.jobsOver > 0
+            ? "destructive"
+            : budgetHealth.jobsApproaching > 0
+            ? "warning"
+            : "success"
+        }
+      />
+      <SheetBody>
+        {over.length > 0 && (
+          <Section label="Over budget" hint={`${over.length}`}>
+            {over.map(renderItem)}
+          </Section>
+        )}
+        {approaching.length > 0 && (
+          <Section label="Approaching budget" hint={`${approaching.length}`}>
+            {approaching.map(renderItem)}
+          </Section>
+        )}
+        {over.length === 0 && approaching.length === 0 && (
+          <Section label="Budget health">
+            <EmptyState>
+              {budgetHealth.jobsTracked > 0
+                ? "Every active job with a budget is tracking within plan."
+                : "No active jobs have a budget set. Add budgets to track cost variance here."}
+            </EmptyState>
+          </Section>
+        )}
+        {budgetHealth.jobsNoBudget > 0 && (
+          <Section label="Not tracked">
+            <LineRow
+              label="Active jobs without a budget"
+              value={String(budgetHealth.jobsNoBudget)}
+              tone="muted"
+              href="/projects"
+            />
+          </Section>
+        )}
+      </SheetBody>
+      <SheetFootLinks>
+        <FootLink href="/projects">All projects</FootLink>
+      </SheetFootLinks>
+    </>
   )
 }
 
-function DuePopover({
+function DueSheet({
+  dueCount,
+  blockers,
   tasksDue,
   scheduleDue,
   tasksOverdue,
-  blockers,
+  dueItems,
   openItems,
 }: {
+  dueCount: number
+  blockers: number
   tasksDue: number
   scheduleDue: number
   tasksOverdue: number
-  blockers: number
+  dueItems: ControlTowerData["dueItems"]
   openItems: ControlTowerData["openItems"]
 }) {
+  const renderWork = (item: DueWorkItem) => (
+    <ItemRow
+      key={item.id}
+      href={item.href}
+      title={item.title}
+      meta={[item.projectName, formatDate(item.date)].filter(Boolean).join(" · ") || "—"}
+      badge={
+        item.isOverdue
+          ? { label: "Overdue", tone: "destructive" }
+          : item.isCriticalPath
+          ? { label: "Critical path", tone: "warning" }
+          : undefined
+      }
+    />
+  )
+
   return (
-    <div>
-      <PopHeader label="Coming up" />
-      <div className="px-1 pb-2">
-        <PopRow
-          label="Tasks due in 7 days"
-          value={String(tasksDue)}
-          href="/tasks"
-          tone={tasksDue === 0 ? "muted" : "default"}
-        />
-        <PopRow
-          label="Schedule items"
-          value={String(scheduleDue)}
-          href="/schedule"
-          tone={scheduleDue === 0 ? "muted" : "default"}
-        />
-        {tasksOverdue > 0 && (
-          <PopRow
-            label="Tasks overdue"
-            value={String(tasksOverdue)}
-            href="/tasks"
-            tone="destructive"
-          />
-        )}
-        {blockers > 0 && (
-          <PopRow label="Total blockers" value={String(blockers)} tone="destructive" />
-        )}
-      </div>
+    <>
+      <SheetHead
+        label="Due this week"
+        value={dueCount > 0 ? String(dueCount) : "—"}
+        subtitle={
+          dueCount === 0
+            ? "Clear week ahead"
+            : blockers > 0
+            ? `${blockers} blocker${blockers === 1 ? "" : "s"} · ${tasksDue} tasks · ${scheduleDue} schedule`
+            : `${tasksDue} tasks · ${scheduleDue} schedule items`
+        }
+        subtitleTone={blockers > 0 ? "destructive" : dueCount === 0 ? "success" : "neutral"}
+      />
+      <SheetBody>
+        <Section label="Tasks" hint={tasksOverdue > 0 ? `${tasksOverdue} overdue` : undefined}>
+          {dueItems.tasks.length === 0 ? (
+            <EmptyState>No tasks due in the next 7 days.</EmptyState>
+          ) : (
+            dueItems.tasks.map(renderWork)
+          )}
+        </Section>
 
-      <PopRule />
-      <PopHeader label="Open work" />
-      <div className="px-1 pb-2">
-        <PopRow label="RFIs open" value={String(openItems.rfis)} href="/rfis" tone={openItems.rfis === 0 ? "muted" : "default"} />
-        <PopRow label="Submittals" value={String(openItems.submittals)} href="/submittals" tone={openItems.submittals === 0 ? "muted" : "default"} />
-        <PopRow label="Change orders" value={String(openItems.changeOrders)} href="/change-orders" tone={openItems.changeOrders === 0 ? "muted" : "default"} />
-        <PopRow label="Punch items" value={String(openItems.punchItems)} href="/tasks" tone={openItems.punchItems === 0 ? "muted" : "default"} />
-      </div>
+        <Section label="Schedule">
+          {dueItems.scheduleItems.length === 0 ? (
+            <EmptyState>No schedule items landing this week.</EmptyState>
+          ) : (
+            dueItems.scheduleItems.map(renderWork)
+          )}
+        </Section>
 
-      <PopFooter>
-        <PopLink href="/tasks">View tasks</PopLink>
+        <Section label="Open work">
+          <LineRow label="RFIs" value={String(openItems.rfis)} href="/rfis" tone={openItems.rfis === 0 ? "muted" : "default"} />
+          <LineRow label="Submittals" value={String(openItems.submittals)} href="/submittals" tone={openItems.submittals === 0 ? "muted" : "default"} />
+          <LineRow label="Change orders" value={String(openItems.changeOrders)} href="/change-orders" tone={openItems.changeOrders === 0 ? "muted" : "default"} />
+          <LineRow label="Punch items" value={String(openItems.punchItems)} href="/tasks" tone={openItems.punchItems === 0 ? "muted" : "default"} />
+        </Section>
+      </SheetBody>
+      <SheetFootLinks>
+        <FootLink href="/tasks">Tasks</FootLink>
         <span className="text-muted-foreground/40">·</span>
-        <PopLink href="/schedule">View schedule</PopLink>
-      </PopFooter>
-    </div>
+        <FootLink href="/schedule">Schedule</FootLink>
+      </SheetFootLinks>
+    </>
   )
 }

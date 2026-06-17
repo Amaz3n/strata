@@ -53,6 +53,7 @@ type SplitLine = {
   id: string
   projectId: string
   costCodeId: string
+  budgetLineId: string
   description: string
   amountDollars: string
   qboExpenseAccountId: string
@@ -131,6 +132,7 @@ export function ExpenseWorkspace({
   const paymentAccounts = accountingContext?.paymentAccounts ?? []
   const vendors = accountingContext?.vendors ?? []
   const costCodes = (accountingContext?.costCodes ?? []) as { id: string; code?: string | null; name?: string | null }[]
+  const budgetLines = (accountingContext?.budgetLines ?? []) as { id: string; description?: string | null; amount_cents?: number | null }[]
 
   const selectedExpense = useMemo(
     () => expenses.find((expense) => expense.id === selectedExpenseId) ?? null,
@@ -207,6 +209,7 @@ export function ExpenseWorkspace({
             id: line.id ?? crypto.randomUUID(),
             projectId: line.project_id ?? projectId,
             costCodeId: line.cost_code_id ?? "",
+            budgetLineId: line.budget_line_id ?? "",
             description: line.description ?? selectedExpense.description ?? "",
             amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
             qboExpenseAccountId: line.qbo_expense_account_id ?? defaultAccountId,
@@ -216,6 +219,7 @@ export function ExpenseWorkspace({
               id: crypto.randomUUID(),
               projectId,
               costCodeId: selectedExpense.cost_code_id ?? "",
+              budgetLineId: selectedExpense.budget_line_id ?? "",
               description: selectedExpense.description ?? "",
               amountDollars: (total / 100).toFixed(2),
               qboExpenseAccountId: defaultAccountId,
@@ -331,6 +335,7 @@ export function ExpenseWorkspace({
       ? splitLines.map((line) => ({
           project_id: line.projectId || projectId,
           cost_code_id: costCodesEnabled ? line.costCodeId || null : null,
+          budget_line_id: costCodesEnabled ? null : line.budgetLineId || null,
           description: line.description.trim() || memo || null,
           amount_cents: dollarsToCents(line.amountDollars) ?? 0,
           qbo_expense_account_id: line.qboExpenseAccountId || null,
@@ -344,8 +349,9 @@ export function ExpenseWorkspace({
           description: memo,
           expenseDate: expenseDate || undefined,
           paymentMethod: paymentMethod || null,
-          // When split, per-line cost codes drive job costing; keep the single-line code only otherwise.
+          // When split, per-line coding drives job costing; keep the single-line code only otherwise.
           ...(costCodesEnabled && !isSplit ? { costCodeId: firstLine?.costCodeId || null } : {}),
+          ...(!costCodesEnabled && !isSplit ? { budgetLineId: firstLine?.budgetLineId || null } : {}),
         })
         await updateProjectExpenseAccountingAction(projectId, selectedExpense.id, {
           qboTransactionType: "purchase",
@@ -373,7 +379,8 @@ export function ExpenseWorkspace({
       {
         id: crypto.randomUUID(),
         projectId,
-        costCodeId: costCodesEnabled ? "" : "",
+        costCodeId: "",
+        budgetLineId: prev[0]?.budgetLineId ?? "",
         description: memo,
         amountDollars: "0.00",
         qboExpenseAccountId: prev[0]?.qboExpenseAccountId ?? accountingContext?.defaults?.expenseAccountId ?? "",
@@ -677,8 +684,26 @@ export function ExpenseWorkspace({
                         </SelectContent>
                       </Select>
                     </div>
+                  ) : budgetLines.length > 0 ? (
+                    <div>
+                      <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Budget line</Label>
+                      <Select
+                        value={line.budgetLineId || "__none__"}
+                        onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, budgetLineId: value === "__none__" ? "" : value } : item)))}
+                      >
+                        <SelectTrigger className="h-9 w-full text-xs"><SelectValue placeholder="Select budget line" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__" className="text-xs">Unassigned</SelectItem>
+                          {budgetLines.map((bl) => (
+                            <SelectItem key={bl.id} value={bl.id} className="text-xs">
+                              {bl.description?.trim() || "Untitled line"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   ) : null}
-                  <div className={cn(!costCodesEnabled && "sm:col-span-2")}>
+                  <div className={cn(!costCodesEnabled && budgetLines.length === 0 && "sm:col-span-2")}>
                     <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Description</Label>
                     <Input
                       value={line.description}

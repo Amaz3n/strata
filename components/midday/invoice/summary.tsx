@@ -1,14 +1,12 @@
 import { calculateTotal } from "@midday/invoice/utils/calculate";
-import * as React from "react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import { FormatAmount } from "../format-amount";
 import { AmountInput } from "./amount-input";
 import { LabelInput } from "./label-input";
 import { TaxInput } from "./tax-input";
 import { VATInput } from "./vat-input";
-import { NumberFlowLite, partitionParts } from "number-flow";
-import { useRef } from "react";
+import NumberFlow from "@number-flow/react";
 
 export function Summary() {
   const { control, setValue } = useFormContext();
@@ -213,49 +211,19 @@ export function Summary() {
           }}
         />
         <span className="text-right font-medium text-[21px]">
-          <NumberFlow total={total ?? 0} currency={currency} maxFrac={includeTax || includeVat ? 2 : maximumFractionDigits} locale={locale ?? "en-US"} />
+          <NumberFlow
+            value={total ?? 0}
+            format={{
+              style: "currency",
+              currency,
+              maximumFractionDigits: includeTax || includeVat ? 2 : maximumFractionDigits,
+            }}
+            locales={locale ?? "en-US"}
+            willChange
+          />
         </span>
       </div>
     </div>
   );
 }
 
-function NumberFlow({
-  total,
-  currency,
-  maxFrac,
-  locale,
-}: {
-  total: number;
-  currency: string;
-  maxFrac: number;
-  locale: string;
-}) {
-  const ref = useRef<any>(null);
-
-  useEffect(() => {
-    if (typeof customElements !== "undefined" && !customElements.get("number-flow")) {
-      NumberFlowLite.define?.();
-    }
-  }, []);
-
-  const formatter = useMemo(
-    () =>
-      new Intl.NumberFormat(locale, {
-        style: "currency",
-        currency,
-        maximumFractionDigits: maxFrac,
-      }),
-    [currency, locale, maxFrac],
-  );
-
-  const parts = useMemo(() => partitionParts(total, formatter), [total, formatter]);
-
-  useEffect(() => {
-    if (ref.current && parts) {
-      ref.current.parts = parts;
-    }
-  }, [parts]);
-
-  return React.createElement('number-flow', { ref, root: true });
-}

@@ -26,10 +26,6 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
   return (
     <PageLayout
       title="Documents"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Documents" },
-      ]}
     >
       <Suspense
         fallback={
@@ -74,28 +70,20 @@ async function ProjectFilesData({
   ])
 
   return (
-    <PageLayout
-      title="Documents"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Documents" },
-      ]}
-    >
-      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
-        <UnifiedDocumentsLayout
-          project={{ id: project.id, name: project.name }}
-          initialFiles={filesResult.data}
-          initialTotalCount={filesResult.count}
-          initialHasMore={filesResult.hasMore}
-          initialCounts={counts}
-          initialFolders={folders.map((folder) => folder.path)}
-          initialFolderCounts={Object.fromEntries(
-            folders.map((folder) => [folder.path, folder.itemCount])
-          )}
-          initialSets={[]}
-          initialPath={query.path}
-        />
-      </div>
-    </PageLayout>
+    <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+      <UnifiedDocumentsLayout
+        project={{ id: project.id, name: project.name }}
+        initialFiles={filesResult.data}
+        initialTotalCount={filesResult.count}
+        initialHasMore={filesResult.hasMore}
+        initialCounts={counts}
+        initialFolders={folders.map((folder) => folder.path)}
+        initialFolderCounts={Object.fromEntries(
+          folders.map((folder) => [folder.path, folder.itemCount])
+        )}
+        initialSets={[]}
+        initialPath={query.path}
+      />
+    </div>
   )
 }

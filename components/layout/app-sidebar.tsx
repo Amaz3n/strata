@@ -174,13 +174,6 @@ function buildWorkspaceGroups(
       requiredAny: ["org.member", "project.read"],
     },
     {
-      title: "Financial Control",
-      url: "/financial-control",
-      icon: Wallet,
-      isActive: pathname.startsWith("/financial-control"),
-      requiredAny: ["invoice.read"],
-    },
-    {
       title: "Pipeline",
       url: "/pipeline",
       icon: Contact,

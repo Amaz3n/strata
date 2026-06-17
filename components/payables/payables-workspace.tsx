@@ -58,7 +58,7 @@ import {
 } from "@/app/(app)/projects/[id]/payables/actions"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
-import type { Company, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
+import type { BudgetLineOption, Company, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
 import { PayableDocumentPane } from "./payable-document-pane"
 
@@ -76,6 +76,7 @@ interface PayablesWorkspaceProps {
   selectedBillId: string | null
   onSelectBill: (billId: string | null) => void
   costCodes: CostCode[]
+  budgetLines?: BudgetLineOption[]
   costCodesEnabled: boolean
   projects: ProjectOption[]
   accountingEnabled: boolean
@@ -91,6 +92,7 @@ type SplitLine = {
   id: string
   projectId: string
   costCodeId: string
+  budgetLineId: string
   description: string
   amountDollars: string
   qboExpenseAccountId?: string
@@ -104,6 +106,7 @@ export function PayablesWorkspace({
   selectedBillId,
   onSelectBill,
   costCodes,
+  budgetLines = [],
   costCodesEnabled,
   projects,
   accountingEnabled,
@@ -319,6 +322,7 @@ export function PayablesWorkspace({
             id: line.id ?? crypto.randomUUID(),
             projectId: line.project_id ?? selectedBill.project_id,
             costCodeId: line.cost_code_id ?? "",
+            budgetLineId: line.budget_line_id ?? "",
             description: line.description ?? selectedBill.bill_number ?? "Vendor bill",
             amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
             qboExpenseAccountId: line.qbo_expense_account_id ?? selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
@@ -330,6 +334,7 @@ export function PayablesWorkspace({
               id: crypto.randomUUID(),
               projectId: selectedBill.project_id,
               costCodeId: costCodesEnabled ? selectedBill.actual_cost_code_id ?? sortedCostCodes[0]?.id ?? "" : "",
+              budgetLineId: "",
               description: selectedBill.bill_number ?? "Vendor bill",
               amountDollars: ((selectedBill.total_cents ?? 0) / 100).toFixed(2),
               qboExpenseAccountId: selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
@@ -454,6 +459,7 @@ export function PayablesWorkspace({
     const actualLines = splitLines.map((line) => ({
       project_id: line.projectId || selectedBill.project_id,
       cost_code_id: costCodesEnabled ? line.costCodeId || null : null,
+      budget_line_id: costCodesEnabled ? null : line.budgetLineId || null,
       description: line.description.trim() || billNumber || "Vendor bill",
       amount_cents: dollarsToCents(line.amountDollars),
       billable_to_customer: line.billableToCustomer,
@@ -1004,6 +1010,7 @@ export function PayablesWorkspace({
                       id: crypto.randomUUID(),
                       projectId: selectedBill.project_id,
                       costCodeId: costCodesEnabled ? sortedCostCodes[0]?.id ?? "" : "",
+                      budgetLineId: prev[0]?.budgetLineId ?? "",
                       description: billNumber || "Vendor bill",
                       amountDollars: "0.00",
                       qboExpenseAccountId: qboExpenseAccountId,
@@ -1094,9 +1101,9 @@ export function PayablesWorkspace({
                     </div>
                   </div>
 
-                  {/* Second row: Cost Code & Description */}
+                  {/* Second row: Cost Code / Budget line & Description */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {costCodesEnabled && (
+                    {costCodesEnabled ? (
                       <div>
                         <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Cost Code</Label>
                         <Select
@@ -1113,9 +1120,27 @@ export function PayablesWorkspace({
                           </SelectContent>
                         </Select>
                       </div>
-                    )}
+                    ) : budgetLines.length > 0 ? (
+                      <div>
+                        <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Budget line</Label>
+                        <Select
+                          value={line.budgetLineId || "__none__"}
+                          onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, budgetLineId: value === "__none__" ? "" : value } : item)))}
+                        >
+                          <SelectTrigger className="h-9 w-full text-xs"><SelectValue placeholder="Select budget line" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__" className="text-xs">Unassigned</SelectItem>
+                            {budgetLines.map((bl) => (
+                              <SelectItem key={bl.id} value={bl.id} className="text-xs">
+                                {bl.description?.trim() || "Untitled line"}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null}
 
-                    <div className={cn(!costCodesEnabled && "sm:col-span-2")}>
+                    <div className={cn(!costCodesEnabled && budgetLines.length === 0 && "sm:col-span-2")}>
                       <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Description</Label>
                       <Input
                         value={line.description}

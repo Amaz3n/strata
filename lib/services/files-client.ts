@@ -61,6 +61,20 @@ function detectContentType(file: File): string {
       return "video/x-m4v"
     case "webm":
       return "video/webm"
+    // Office documents: some browsers/OSes report an empty File.type for these,
+    // which would otherwise persist as application/octet-stream and break preview detection.
+    case "doc":
+      return "application/msword"
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    case "xls":
+      return "application/vnd.ms-excel"
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    case "ppt":
+      return "application/vnd.ms-powerpoint"
+    case "pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     default:
       return "application/octet-stream"
   }

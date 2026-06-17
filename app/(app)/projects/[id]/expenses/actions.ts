@@ -53,6 +53,7 @@ export interface UpdateExpenseAccountingInput {
 export interface UpdateExpenseDetailsInput {
   description?: string | null
   costCodeId?: string | null
+  budgetLineId?: string | null
   expenseDate?: string | null
   paymentMethod?: string | null
 }
@@ -70,6 +71,34 @@ function revalidate(projectId: string) {
   revalidatePath(`/projects/${projectId}/expenses`)
   revalidatePath(`/projects/${projectId}/cost-inbox`)
   revalidatePath(`/projects/${projectId}/financials`)
+}
+
+/** Latest budget's lines for a project — used as the cost bucket picker when cost codes are off. */
+async function loadProjectBudgetLines(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  projectId: string,
+): Promise<{ id: string; description: string | null; amount_cents: number | null }[]> {
+  const { data: budget } = await supabase
+    .from("budgets")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!budget) return []
+  const { data: lines } = await supabase
+    .from("budget_lines")
+    .select("id, description, amount_cents, sort_order")
+    .eq("org_id", orgId)
+    .eq("budget_id", budget.id)
+    .order("sort_order", { ascending: true })
+  return (lines ?? []).map((line) => ({
+    id: line.id as string,
+    description: (line.description as string | null) ?? null,
+    amount_cents: (line.amount_cents as number | null) ?? null,
+  }))
 }
 
 export async function createMyExpenseAction(projectId: string, formData: FormData) {
@@ -133,13 +162,13 @@ export async function createMyExpenseAction(projectId: string, formData: FormDat
 
 export async function extractExpenseReceiptAction(_projectId: string, formData: FormData): Promise<ReceiptExtractionResult> {
   try {
-    await requireOrgContext()
+    const { orgId } = await requireOrgContext()
     const receipt = formData.get("receipt")
     if (!(receipt instanceof File)) {
       return { ok: false, error: "Choose a receipt to scan" }
     }
 
-    const data = await extractExpenseReceiptFromFile(receipt)
+    const data = await extractExpenseReceiptFromFile(receipt, { orgId })
     return { ok: true, data }
   } catch (error: any) {
     console.warn("[ReceiptExtraction] Scan failed", error)
@@ -171,6 +200,10 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
         .eq("is_active", true)
         .order("code")
     : { data: [] }
+  // Cost-codes-off projects bucket costs by budget line instead — offer those as the picker.
+  const budgetLines = !costCodesEnabled && projectId
+    ? await loadProjectBudgetLines(supabase, orgId, projectId)
+    : []
   const client = await QBOClient.forOrg(orgId)
   if (!client) {
     return {
@@ -180,6 +213,7 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
       apAccounts: [],
       vendors: [],
       costCodes: costCodesEnabled ? costCodes ?? [] : [],
+      budgetLines,
       costCodesEnabled,
       defaults: {},
       warning: null,
@@ -201,6 +235,7 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
       apAccounts,
       vendors,
       costCodes: costCodesEnabled ? costCodes ?? [] : [],
+      budgetLines,
       costCodesEnabled,
       defaults: {
         expenseAccountId: typeof settings.default_expense_account_id === "string" ? settings.default_expense_account_id : "",
@@ -218,6 +253,7 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
       apAccounts: [],
       vendors: [],
       costCodes: costCodesEnabled ? costCodes ?? [] : [],
+      budgetLines,
       costCodesEnabled,
       defaults: {},
       warning: error?.message ?? "Unable to load QuickBooks accounting categories.",
@@ -245,6 +281,7 @@ export async function updateProjectExpenseDetailsAction(
   const updateData: Record<string, any> = {}
   if ("description" in input) updateData.description = input.description?.trim() || null
   if ("costCodeId" in input) updateData.cost_code_id = input.costCodeId || null
+  if ("budgetLineId" in input) updateData.budget_line_id = input.budgetLineId || null
   if ("expenseDate" in input && input.expenseDate) updateData.expense_date = input.expenseDate
   if ("paymentMethod" in input) updateData.payment_method = input.paymentMethod || null
 

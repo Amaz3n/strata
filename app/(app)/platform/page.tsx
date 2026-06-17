@@ -1,25 +1,16 @@
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
-import { PageLayout } from "@/components/layout/page-layout"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
-import { AdminStats } from "@/components/admin/admin-stats"
-import { QuickActions } from "@/components/admin/quick-actions"
-import { PlatformAiDefaultsCard } from "@/components/platform/platform-ai-defaults-card"
-import { AiSearchAccessCard } from "@/components/platform/ai-search-access-card"
-import { listOrgAiSearchAccess } from "@/lib/services/ai-search-access"
-import { getPlans } from "@/lib/services/admin"
-import Link from "next/link"
 
+import { PageLayout } from "@/components/layout/page-layout"
+import { Skeleton } from "@/components/ui/skeleton"
+import { PlatformClient } from "@/components/platform/platform-client"
+
+import { listOrgAiSearchAccess } from "@/lib/services/ai-search-access"
+import { getAdminStats, getPlans } from "@/lib/services/admin"
 import { getCurrentPlatformAccess, listPlatformOrganizations } from "@/lib/services/platform-access"
-import { provisionPlatformOrgAction } from "@/app/(app)/platform/actions"
-import { ImpersonationPanel } from "@/components/platform/impersonation-panel"
-import { DemoUsageCard } from "@/components/platform/demo-usage-card"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
-import { ProvisionOrgSheet } from "@/components/platform/provision-org-sheet"
-import { getPlatformAiSearchDefaultConfig } from "@/lib/services/ai-config"
+import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
+import { getDemoUsageSummary } from "@/lib/services/platform-demo-usage"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { hasAnyPermission } from "@/lib/services/permissions"
 import { requireAuth } from "@/lib/auth/context"
@@ -28,109 +19,79 @@ export const dynamic = "force-dynamic"
 
 async function PlatformData() {
   const access = await getCurrentPlatformAccess()
-
   if (!access.canAccessPlatform) {
     redirect("/unauthorized")
   }
 
   const { user } = await requireAuth()
-  const [orgs, session, plans, platformAiConfig, canManagePlatformAi, aiSearchAccess] = await Promise.all([
+  const serviceSupabase = createServiceSupabaseClient()
+
+  const [stats, orgs, session, plans, aiConfigs, canManagePlatformAi, aiSearchAccess, demoUsage] = await Promise.all([
+    getAdminStats(),
     listPlatformOrganizations(),
     getPlatformSessionState(),
     getPlans(),
-    getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() }),
+    Promise.all([
+      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "search" }),
+      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "document_extraction" }),
+      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "drawings_vision" }),
+    ]),
     hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
     listOrgAiSearchAccess(),
+    getDemoUsageSummary(),
   ])
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Platform Operations</h1>
-          <p className="text-muted-foreground mt-2">Unified admin and platform console for managing client organizations.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ProvisionOrgSheet action={provisionPlatformOrgAction} plans={plans} />
-          <Button asChild variant="outline">
-            <Link href="/admin/customers">Manage Customers</Link>
-          </Button>
-          {access.roles.map((role) => (
-            <Badge key={role} variant="secondary">{role}</Badge>
-          ))}
-        </div>
-      </div>
-
-      <Suspense fallback={<AdminStatsSkeleton />}>
-        <AdminStats />
-      </Suspense>
-
-      <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr]">
-        <Suspense fallback={<Skeleton className="h-80" />}>
-          <QuickActions />
-        </Suspense>
-
-        <div className="space-y-6">
-          <Suspense fallback={<Skeleton className="h-80" />}>
-            <DemoUsageCard />
-          </Suspense>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Impersonation</CardTitle>
-              <CardDescription>
-                Start an audited impersonation session for support and diagnostics. Active session:
-                {" "}
-                {session.impersonation.active ? "yes" : "no"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ImpersonationPanel orgs={orgs.map((org) => ({ id: org.id, name: org.name }))} />
-            </CardContent>
-          </Card>
-
-          <PlatformAiDefaultsCard
-            initialProvider={platformAiConfig.provider}
-            initialModel={platformAiConfig.model}
-            initialSource={platformAiConfig.source}
-            canManage={canManagePlatformAi}
-          />
-
-          <AiSearchAccessCard orgs={aiSearchAccess} canManage={canManagePlatformAi} />
-        </div>
-      </div>
-
-    </div>
+    <PlatformClient
+      roles={access.roles}
+      stats={{
+        totalOrgs: stats.totalOrgs,
+        newOrgsThisMonth: stats.newOrgsThisMonth,
+        activeSubscriptions: stats.activeSubscriptions,
+        trialingSubscriptions: stats.trialingSubscriptions,
+      }}
+      plans={plans}
+      orgs={orgs.map((org) => ({ id: org.id, name: org.name }))}
+      aiConfigs={aiConfigs}
+      aiSearchAccess={aiSearchAccess}
+      canManagePlatformAi={canManagePlatformAi}
+      demoUsage={demoUsage}
+      impersonation={{
+        active: session.impersonation.active,
+        target: session.impersonation.targetName ?? session.impersonation.targetEmail,
+        expiresAt: session.impersonation.expiresAt,
+      }}
+    />
   )
 }
 
 export default function PlatformPage() {
   return (
-    <PageLayout
-      title="Platform"
-      breadcrumbs={[{ label: "Platform" }]}
-    >
-      <Suspense fallback={<div className="p-6 space-y-4"><Skeleton className="h-8 w-48 mb-6" /><div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-16 w-full rounded-md" />))}</div></div>}>
-        <PlatformData />
-      </Suspense>
+    <PageLayout title="Platform">
+      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+        <Suspense fallback={<PlatformSkeleton />}>
+          <PlatformData />
+        </Suspense>
+      </div>
     </PageLayout>
   )
 }
 
-function AdminStatsSkeleton() {
+function PlatformSkeleton() {
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-      {Array.from({ length: 4 }).map((_, i) => (
-        <Card key={i}>
-          <CardHeader className="pb-2">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-3 w-16" />
-          </CardHeader>
-          <CardContent>
-            <Skeleton className="h-8 w-12" />
-          </CardContent>
-        </Card>
-      ))}
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <Skeleton className="h-5 w-24" />
+        <Skeleton className="h-8 w-64" />
+      </div>
+      <div className="mx-auto w-full max-w-4xl space-y-8 px-6 py-8">
+        <Skeleton className="h-24 w-full rounded-xl" />
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-20 w-full rounded-xl" />
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

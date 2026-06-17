@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import {
   CheckCircle2,
   Download,
@@ -9,12 +10,12 @@ import {
   HardHat,
   Info,
   Lock,
+  Link2,
   MoreHorizontal,
   Pencil,
   RefreshCw,
   Share2,
   Trash2,
-  Upload,
   Users,
   History,
   X,
@@ -44,12 +45,25 @@ interface FilePropertiesPanelProps {
   onMove: (fileId: string) => void
   onShare: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
+  versions?: FilePropertyVersion[]
+  onDownloadVersion?: (versionId: string) => void
   timelineEvents: FileTimelineEvent[]
   timelineLoading: boolean
   onRefreshTimeline: (fileId: string) => void
   onSendForSignature: (fileId: string) => void
-  onSendForApproval: (fileId: string) => void
   onDelete: (fileId: string) => void
+}
+
+interface FilePropertyVersion {
+  id: string
+  version_number: number
+  label?: string
+  notes?: string
+  file_name?: string
+  size_bytes?: number
+  creator_name?: string
+  created_at: string
+  is_current: boolean
 }
 
 function formatDateTime(value?: string | null) {
@@ -113,6 +127,35 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
   )
 }
 
+function getPrimarySourceContext(file: FileWithUrls) {
+  const contexts = file.source_contexts ?? []
+  return contexts.find((context) => context.type !== "manual_upload") ?? contexts[0] ?? null
+}
+
+function formatSourceType(type?: string) {
+  if (!type || type === "manual_upload") return "Manual upload"
+  if (type === "executed_signature") return "Executed signature"
+  return type.replaceAll("_", " ")
+}
+
+function getSourceBadgeClass(type?: string) {
+  switch (type) {
+    case "drawing_set":
+    case "drawing_sheet":
+      return "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-400"
+    case "submittal":
+      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400"
+    case "signature_document":
+    case "executed_signature":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-400"
+    case "rfi":
+    case "change_order":
+      return "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-900 dark:bg-cyan-950/30 dark:text-cyan-400"
+    default:
+      return "border-muted bg-muted/40 text-muted-foreground"
+  }
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <span className="text-sm font-semibold tracking-tight text-foreground">{children}</span>
 }
@@ -126,13 +169,16 @@ export function FilePropertiesPanel({
   onMove,
   onShare,
   onUploadNewVersion,
+  versions = [],
+  onDownloadVersion,
   timelineEvents,
   timelineLoading,
   onRefreshTimeline,
   onSendForSignature,
-  onSendForApproval,
   onDelete,
 }: FilePropertiesPanelProps) {
+  const router = useRouter()
+
   if (!file) return null
 
   const Icon = getFileIcon(file.mime_type ?? undefined)
@@ -151,6 +197,18 @@ export function FilePropertiesPanel({
   const hasStatus = Boolean(file.status || file.signature_status)
   const isPdf = file.mime_type === "application/pdf"
   const workflowSummary = statusLabel(file.signature_status ?? file.status)
+  const sourceContexts = file.source_contexts ?? []
+  const primarySource = getPrimarySourceContext(file)
+  const visibleVersions = versions.length > 0
+    ? versions
+    : [{
+        id: "",
+        version_number: file.version_number ?? 1,
+        file_name: file.file_name,
+        size_bytes: file.size_bytes ?? undefined,
+        created_at: file.updated_at ?? file.created_at,
+        is_current: true,
+      }]
 
   return (
     <div className="flex h-full flex-col bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -208,10 +266,6 @@ export function FilePropertiesPanel({
                     Send for signature
                   </DropdownMenuItem>
                 ) : null}
-                <DropdownMenuItem onSelect={() => onSendForApproval(file.id)} className="py-2.5">
-                  <Upload className="mr-2.5 h-4 w-4 text-muted-foreground" />
-                  Submit for approval
-                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => onUploadNewVersion(file.id)} className="py-2.5">
                   <History className="mr-2.5 h-4 w-4 text-muted-foreground" />
                   Upload new version
@@ -251,6 +305,51 @@ export function FilePropertiesPanel({
             <DetailRow label="Uploaded" value={formatDate(file.created_at)} />
             <DetailRow label="Modified" value={formatDate(file.updated_at ?? file.created_at)} />
             <DetailRow label="Version" value={file.version_number ? `v${file.version_number}` : "-"} />
+          </div>
+          <div className="mt-3">
+            {primarySource ? (
+              <div className="rounded-xl border bg-card p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-2">
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "max-w-full justify-start gap-1.5 px-2 py-0.5 text-xs font-medium capitalize",
+                        getSourceBadgeClass(primarySource.type),
+                      )}
+                    >
+                      <span className="truncate">{formatSourceType(primarySource.type)}</span>
+                    </Badge>
+                    <p className="break-words text-sm font-semibold leading-snug text-foreground">
+                      {primarySource.label}
+                    </p>
+                    {sourceContexts.length > 1 ? (
+                      <p className="text-xs font-medium text-muted-foreground">
+                        Linked to {sourceContexts.length} workflow records.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                {primarySource.href ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="mt-4 w-full shadow-sm"
+                    onClick={() => router.push(primarySource.href!)}
+                  >
+                    <Link2 className="mr-2 h-4 w-4 text-muted-foreground" />
+                    {primarySource.primary_action_label ?? "Open source"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="rounded-xl border bg-card p-4 shadow-sm">
+                <p className="text-sm font-medium text-foreground">Manual upload</p>
+                <p className="mt-1 text-xs font-medium text-muted-foreground">
+                  This file is not linked to a source workflow record.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -303,27 +402,55 @@ export function FilePropertiesPanel({
               <div className="flex flex-1 items-center justify-between gap-3 pr-2">
                 <SectionLabel>Versions</SectionLabel>
                 <Badge variant="secondary" className="h-6 px-2 text-xs font-medium">
-                  v{file.version_number ?? 1}
+                  {visibleVersions.length} version{visibleVersions.length === 1 ? "" : "s"}
                 </Badge>
               </div>
             </AccordionTrigger>
             <AccordionContent className="px-4 pb-4">
-              <div className="rounded-xl border bg-card p-4 shadow-sm">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold">
-                      Current version v{file.version_number ?? 1}
-                    </p>
-                    <p className="mt-1 text-xs font-medium text-muted-foreground">
-                      {file.is_current === false ? "Superseded revision" : "Latest revision"}
-                    </p>
-                  </div>
-                  <span className="text-xs text-muted-foreground">{formatDateTime(file.updated_at ?? file.created_at)}</span>
+              <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+                <div className="divide-y">
+                  {visibleVersions.map((version) => (
+                    <div key={version.id} className="flex items-center gap-3 p-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold">
+                        v{version.version_number}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <p className="truncate text-sm font-semibold">
+                            {version.label || version.file_name || `Version ${version.version_number}`}
+                          </p>
+                          {version.is_current ? (
+                            <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">
+                              Current
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <p className="truncate text-xs font-medium text-muted-foreground">
+                          {version.creator_name ?? "Unknown"} · {formatDate(version.created_at)}
+                          {version.size_bytes ? ` · ${formatFileSize(version.size_bytes)}` : ""}
+                        </p>
+                        {version.notes ? (
+                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{version.notes}</p>
+                        ) : null}
+                      </div>
+                      {onDownloadVersion && version.id ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          onClick={() => onDownloadVersion(version.id)}
+                          aria-label={`Download version ${version.version_number}`}
+                        >
+                          <Download className="h-4 w-4" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  ))}
                 </div>
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="mt-4 w-full shadow-sm"
+                  className="m-3 mt-2 w-[calc(100%-1.5rem)] shadow-sm"
                   onClick={() => onUploadNewVersion(file.id)}
                 >
                   <History className="mr-2 h-4 w-4 text-muted-foreground" />

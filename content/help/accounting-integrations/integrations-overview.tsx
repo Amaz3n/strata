@@ -4,29 +4,43 @@ export default function IntegrationsOverviewArticle() {
   return (
     <>
       <p>
-        Integrations connect Arc workflows to accounting and payment services. Organization
-        administrator access is generally required to connect or change them.
+        Integrations connect your Arc workspace directly to external accounting and payment systems. By linking 
+        these services, you eliminate double data entry, automate invoice payment tracking, and keep your general 
+        ledger up to date.
       </p>
-      <h2>QuickBooks Online</h2>
+
+      <h2>Supported Integrations</h2>
       <p>
-        QuickBooks integration supports connected accounting workflows such as customers,
-        vendors, invoices, bills, payments, expenses, account coding, imports, and sync
-        history.
+        Arc integrates with two primary financial services. Click the detailed guides below to learn how to set up 
+        and manage each service:
       </p>
-      <h2>Stripe</h2>
+
+      <h3>1. QuickBooks Online</h3>
       <p>
-        Stripe supports Arc payment and payout features when the organization has completed
-        the required onboarding and account verification.
+        Synchronize customers, vendors, approved subcontractor bills, and client progress invoices. Automatically 
+        pull payment statuses from your QuickBooks ledger back into your Arc dashboards.
+        {" "}
+        <Link href="/help/accounting-and-integrations/connected-services/quickbooks-online">
+          Read the QuickBooks Online Guide
+        </Link>
+        .
       </p>
-      <h2>Manage integrations</h2>
+
+      <h3>2. Stripe Payments</h3>
       <p>
-        Open <Link href="/settings?tab=integrations">Settings → Integrations</Link> to
-        review connection status and available configuration.
+        Enable online invoice billing, accept credit cards or secure ACH bank transfers directly inside the Client 
+        Portal, and set up automatic bank payouts.
+        {" "}
+        <Link href="/help/accounting-and-integrations/connected-services/stripe-payments">
+          Read the Stripe Payments Guide
+        </Link>
+        .
       </p>
-      <h2>Before syncing</h2>
+
+      <h2>Enabling Integrations</h2>
       <p>
-        Confirm that projects, companies, customers, vendors, and accounting categories are
-        linked correctly. Review failed or pending records before retrying a sync.
+        To connect these services, navigate to <strong>Settings → Integrations</strong>. Connection setup 
+        typically requires Administrator permissions in both Arc and the corresponding target platform.
       </p>
     </>
   )

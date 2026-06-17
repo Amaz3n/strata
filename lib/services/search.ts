@@ -19,32 +19,13 @@ export interface SearchResult {
   project_name?: string
 }
 
-export type SearchEntityType =
-  | 'project'
-  | 'task'
-  | 'file'
-  | 'contact'
-  | 'company'
-  | 'invoice'
-  | 'payment'
-  | 'budget'
-  | 'estimate'
-  | 'commitment'
-  | 'change_order'
-  | 'contract'
-  | 'proposal'
-  | 'rfi'
-  | 'submittal'
-  | 'drawing_set'
-  | 'drawing_sheet'
-  | 'daily_log'
-  | 'punch_item'
-  | 'schedule_item'
-  | 'photo'
-  | 'portal_access'
-  | 'payable'
-  | 'expense'
-  | 'prospect'
+export type { SearchEntityType, SearchEntityConfig } from "@/lib/services/search-config"
+import {
+  SEARCH_CONFIGS,
+  buildEntitySelectClause,
+  type SearchEntityType,
+} from "@/lib/services/search-config"
+import { embeddingsConfigured, generateEmbeddingVector, toPgVectorLiteral } from "@/lib/services/search-embeddings"
 
 export interface SearchFilters {
   entityTypes?: SearchEntityType[]
@@ -63,17 +44,6 @@ export interface SearchOptions {
   sortBy?: 'relevance' | 'created_at' | 'updated_at'
   sortOrder?: 'asc' | 'desc'
   preferFast?: boolean
-}
-
-type SearchEntityConfig = {
-  table: string
-  titleField: string
-  subtitleFields?: string[]
-  descriptionFields?: string[]
-  searchableFields: string[]
-  hrefTemplate: string
-  filters?: Record<string, any>
-  joins?: string[]
 }
 
 const DEFAULT_SEARCH_LIMIT = 50
@@ -261,16 +231,6 @@ function buildSearchDocumentBackfillKey(orgId: string, result: SearchResult) {
   return `${orgId}:${result.type}:${result.id}:${result.updated_at ?? result.created_at ?? ""}`
 }
 
-function buildEntitySelectClause(entityType: SearchEntityType, config: SearchEntityConfig, includeProject: boolean) {
-  const fields = new Set<string>(["id", "created_at", "updated_at", config.titleField])
-  if (entityType !== "project") fields.add("project_id")
-  for (const field of config.subtitleFields ?? []) fields.add(field)
-  for (const field of config.descriptionFields ?? []) fields.add(field)
-
-  const baseSelect = Array.from(fields).join(",")
-  return includeProject && entityType !== "project" ? `${baseSelect},projects(name)` : baseSelect
-}
-
 function isSearchEntityType(value: unknown): value is SearchEntityType {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(SEARCH_CONFIGS, value)
 }
@@ -301,46 +261,117 @@ async function searchViaUnifiedIndex(
 
   const allowedTypes = new Set<SearchEntityType>(entityTypes)
   const rows = data
-    .map((entry) => {
-      const row = entry as Record<string, unknown>
-      const type = isSearchEntityType(row.entity_type) ? row.entity_type : null
-      if (!type) return null
-      if (allowedTypes.size > 0 && !allowedTypes.has(type)) return null
-
-      const id = typeof row.entity_id === "string" ? row.entity_id : null
-      if (!id) return null
-
-      const metadata = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {}
-      const config = SEARCH_CONFIGS[type]
-      const resolvedProjectId = (row.project_id || metadata.project_id) as string || ""
-      const href = config.hrefTemplate.replace("{id}", id).replace("{project_id}", resolvedProjectId)
-
-      const normalized: SearchResult = {
-        id,
-        type,
-        title:
-          typeof row.title === "string" && row.title.trim().length > 0
-            ? row.title
-            : (typeof metadata.title === "string" ? metadata.title : `Untitled ${type}`),
-        href,
-      }
-
-      if (typeof metadata.subtitle === "string") normalized.subtitle = metadata.subtitle
-      if (typeof metadata.description === "string") normalized.description = metadata.description
-      if (typeof row.project_id === "string") {
-        normalized.project_id = row.project_id
-      } else if (typeof metadata.project_id === "string") {
-        normalized.project_id = metadata.project_id
-      }
-      if (typeof metadata.project_name === "string") normalized.project_name = metadata.project_name
-      if (typeof row.created_at === "string") normalized.created_at = row.created_at
-      if (typeof row.updated_at === "string") normalized.updated_at = row.updated_at
-
-      return normalized
-    })
+    .map((entry) => mapIndexRowToResult(entry as Record<string, unknown>, allowedTypes))
     .filter((item): item is SearchResult => item !== null)
 
   return rows.slice(0, limit)
+}
+
+// Normalizes a row from search_documents (FTS), match_search_documents_fuzzy, or
+// match_search_embeddings into a SearchResult. All three return the same shape:
+// entity_type, entity_id, title, project_id, metadata, updated_at (+ optional
+// created_at / similarity).
+function mapIndexRowToResult(
+  row: Record<string, unknown>,
+  allowedTypes: Set<SearchEntityType>,
+): SearchResult | null {
+  const type = isSearchEntityType(row.entity_type) ? row.entity_type : null
+  if (!type) return null
+  if (allowedTypes.size > 0 && !allowedTypes.has(type)) return null
+
+  const id = typeof row.entity_id === "string" ? row.entity_id : null
+  if (!id) return null
+
+  const metadata = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {}
+  const config = SEARCH_CONFIGS[type]
+  const resolvedProjectId = ((row.project_id || metadata.project_id) as string) || ""
+  const href =
+    typeof metadata.href === "string" && metadata.href.length > 0
+      ? metadata.href
+      : config.hrefTemplate.replace("{id}", id).replace("{project_id}", resolvedProjectId)
+
+  const normalized: SearchResult = {
+    id,
+    type,
+    title:
+      typeof row.title === "string" && row.title.trim().length > 0
+        ? row.title
+        : typeof metadata.title === "string"
+          ? metadata.title
+          : `Untitled ${type}`,
+    href,
+  }
+
+  if (typeof metadata.subtitle === "string") normalized.subtitle = metadata.subtitle
+  if (typeof metadata.description === "string") normalized.description = metadata.description
+  if (typeof row.project_id === "string") {
+    normalized.project_id = row.project_id
+  } else if (typeof metadata.project_id === "string") {
+    normalized.project_id = metadata.project_id
+  }
+  if (typeof metadata.project_name === "string") normalized.project_name = metadata.project_name
+  if (typeof row.created_at === "string") normalized.created_at = row.created_at
+  if (typeof row.updated_at === "string") normalized.updated_at = row.updated_at
+  if (typeof row.similarity === "number") normalized.score = row.similarity
+
+  return normalized
+}
+
+// Typo-tolerant trigram search over the unified index (Postgres pg_trgm).
+async function searchViaFuzzyIndex(
+  supabase: SupabaseClient,
+  orgId: string,
+  query: string,
+  entityTypes: SearchEntityType[],
+  limit: number,
+): Promise<SearchResult[]> {
+  const cleaned = sanitizeSearchTerm(query)
+  if (cleaned.length < 2) return []
+
+  const { data, error } = await supabase.rpc("match_search_documents_fuzzy", {
+    p_org_id: orgId,
+    p_query: cleaned,
+    p_limit: Math.max(limit, 20),
+    p_entity_types: entityTypes.length > 0 ? entityTypes : null,
+  })
+
+  if (error || !Array.isArray(data)) return []
+
+  const allowedTypes = new Set<SearchEntityType>(entityTypes)
+  return data
+    .map((entry) => mapIndexRowToResult(entry as Record<string, unknown>, allowedTypes))
+    .filter((item): item is SearchResult => item !== null)
+    .slice(0, limit)
+}
+
+// Semantic (vector) search over the unified index. Embeds the query and matches
+// against search_embeddings. Best-effort: returns [] when embeddings are not
+// configured or the embedding call fails.
+async function searchViaSemanticIndex(
+  supabase: SupabaseClient,
+  orgId: string,
+  query: string,
+  entityTypes: SearchEntityType[],
+  limit: number,
+): Promise<SearchResult[]> {
+  if (!embeddingsConfigured()) return []
+  const vector = await generateEmbeddingVector(query)
+  if (!vector || vector.length === 0) return []
+
+  const { data, error } = await supabase.rpc("match_search_embeddings", {
+    p_org_id: orgId,
+    p_query_embedding: toPgVectorLiteral(vector),
+    p_limit: Math.max(limit, 20),
+    p_entity_types: entityTypes.length > 0 ? entityTypes : null,
+  })
+
+  if (error || !Array.isArray(data)) return []
+
+  const allowedTypes = new Set<SearchEntityType>(entityTypes)
+  return data
+    .map((entry) => mapIndexRowToResult(entry as Record<string, unknown>, allowedTypes))
+    .filter((item): item is SearchResult => item !== null)
+    .slice(0, limit)
 }
 
 async function upsertSearchDocumentsFromResults(
@@ -391,216 +422,6 @@ async function upsertSearchDocumentsFromResults(
     // Keep search serving resilient if search_documents is unavailable.
     return
   }
-}
-
-// Entity search configurations
-const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
-  project: {
-    table: 'projects',
-    titleField: 'name',
-    subtitleFields: ['status'],
-    descriptionFields: ['description'],
-    searchableFields: ['name', 'description'],
-    hrefTemplate: '/projects/{id}',
-  },
-  task: {
-    table: 'tasks',
-    titleField: 'title',
-    subtitleFields: ['status', 'priority'],
-    descriptionFields: ['description'],
-    searchableFields: ['title', 'description'],
-    hrefTemplate: '/tasks/{id}',
-    joins: ['LEFT JOIN projects p ON t.project_id = p.id'],
-  },
-  file: {
-    table: 'files',
-    titleField: 'file_name',
-    subtitleFields: ['category', 'size_bytes'],
-    descriptionFields: ['description'],
-    searchableFields: ['file_name', 'description'],
-    hrefTemplate: '/files/{id}',
-    joins: ['LEFT JOIN projects p ON f.project_id = p.id'],
-  },
-  contact: {
-    table: 'contacts',
-    titleField: 'full_name',
-    subtitleFields: ['email', 'role'],
-    searchableFields: ['full_name', 'email', 'phone', 'role'],
-    hrefTemplate: '/contacts/{id}',
-    joins: ['LEFT JOIN companies c ON contacts.primary_company_id = c.id'],
-  },
-  company: {
-    table: 'companies',
-    titleField: 'name',
-    subtitleFields: ['company_type', 'email'],
-    searchableFields: ['name', 'email', 'phone', 'website'],
-    hrefTemplate: '/companies/{id}',
-  },
-  invoice: {
-    table: 'invoices',
-    titleField: 'title',
-    subtitleFields: ['invoice_number', 'status', 'total_cents'],
-    searchableFields: ['title', 'invoice_number', 'notes'],
-    hrefTemplate: '/projects/{project_id}/financials/receivables?invoice={id}',
-    joins: ['LEFT JOIN projects p ON i.project_id = p.id'],
-  },
-  payment: {
-    table: 'payments',
-    titleField: 'reference',
-    subtitleFields: ['amount_cents', 'method', 'status'],
-    searchableFields: ['reference', 'method'],
-    hrefTemplate: '/payments/{id}',
-    joins: ['LEFT JOIN projects p ON pay.project_id = p.id'],
-  },
-  budget: {
-    table: 'budgets',
-    titleField: 'id',
-    subtitleFields: ['status', 'total_cents'],
-    searchableFields: ['status'],
-    hrefTemplate: '/budgets/{id}',
-    joins: ['LEFT JOIN projects p ON b.project_id = p.id'],
-  },
-  estimate: {
-    table: 'estimates',
-    titleField: 'title',
-    subtitleFields: ['status', 'total_cents'],
-    searchableFields: ['title', 'status'],
-    hrefTemplate: '/estimates/{id}',
-    joins: ['LEFT JOIN projects p ON e.project_id = p.id'],
-  },
-  commitment: {
-    table: 'commitments',
-    titleField: 'title',
-    subtitleFields: ['status', 'total_cents'],
-    searchableFields: ['title', 'external_reference'],
-    hrefTemplate: '/commitments/{id}',
-    joins: ['LEFT JOIN projects p ON c.project_id = p.id'],
-  },
-  change_order: {
-    table: 'change_orders',
-    titleField: 'title',
-    subtitleFields: ['status', 'total_cents'],
-    descriptionFields: ['description', 'reason'],
-    searchableFields: ['title', 'description', 'reason', 'summary'],
-    hrefTemplate: '/change-orders/{id}',
-    joins: ['LEFT JOIN projects p ON co.project_id = p.id'],
-  },
-  contract: {
-    table: 'contracts',
-    titleField: 'title',
-    subtitleFields: ['status', 'number', 'total_cents'],
-    searchableFields: ['title', 'number', 'terms'],
-    hrefTemplate: '/contracts/{id}',
-    joins: ['LEFT JOIN projects p ON con.project_id = p.id'],
-  },
-  proposal: {
-    table: 'proposals',
-    titleField: 'title',
-    subtitleFields: ['status', 'number', 'total_cents'],
-    descriptionFields: ['summary', 'terms'],
-    searchableFields: ['title', 'number', 'summary', 'terms'],
-    hrefTemplate: '/signatures',
-    joins: ['LEFT JOIN projects p ON prop.project_id = p.id'],
-  },
-  rfi: {
-    table: 'rfis',
-    titleField: 'subject',
-    subtitleFields: ['rfi_number', 'status'],
-    descriptionFields: ['question'],
-    searchableFields: ['subject', 'question', 'drawing_reference', 'spec_reference', 'location'],
-    hrefTemplate: '/rfis/{id}',
-    joins: ['LEFT JOIN projects p ON r.project_id = p.id'],
-  },
-  submittal: {
-    table: 'submittals',
-    titleField: 'title',
-    subtitleFields: ['submittal_number', 'status'],
-    descriptionFields: ['description'],
-    searchableFields: ['title', 'description', 'spec_section'],
-    hrefTemplate: '/submittals/{id}',
-    joins: ['LEFT JOIN projects p ON s.project_id = p.id'],
-  },
-  drawing_set: {
-    table: 'drawing_sets',
-    titleField: 'title',
-    subtitleFields: ['status'],
-    descriptionFields: ['description'],
-    searchableFields: ['title', 'description'],
-    hrefTemplate: '/drawings/sets/{id}',
-    joins: ['LEFT JOIN projects p ON ds.project_id = p.id'],
-  },
-  drawing_sheet: {
-    table: 'drawing_sheets',
-    titleField: 'sheet_title',
-    subtitleFields: ['sheet_number', 'discipline'],
-    searchableFields: ['sheet_title', 'sheet_number', 'discipline'],
-    hrefTemplate: '/drawings/sheets/{id}',
-    joins: ['LEFT JOIN drawing_sets ds ON ds_sheet.drawing_set_id = ds.id', 'LEFT JOIN projects p ON ds.project_id = p.id'],
-  },
-  daily_log: {
-    table: 'daily_logs',
-    titleField: 'summary',
-    subtitleFields: ['log_date'],
-    searchableFields: ['summary'],
-    hrefTemplate: '/daily-logs/{id}',
-    joins: ['LEFT JOIN projects p ON dl.project_id = p.id'],
-  },
-  punch_item: {
-    table: 'punch_items',
-    titleField: 'title',
-    subtitleFields: ['status', 'severity'],
-    descriptionFields: ['description', 'location'],
-    searchableFields: ['title', 'description', 'location'],
-    hrefTemplate: '/punch-items/{id}',
-    joins: ['LEFT JOIN projects p ON pi.project_id = p.id'],
-  },
-  schedule_item: {
-    table: 'schedule_items',
-    titleField: 'name',
-    subtitleFields: ['status', 'phase'],
-    searchableFields: ['name', 'phase', 'trade', 'location'],
-    hrefTemplate: '/schedule/{id}',
-    joins: ['LEFT JOIN projects p ON si.project_id = p.id'],
-  },
-  photo: {
-    table: 'photos',
-    titleField: 'id',
-    subtitleFields: ['taken_at'],
-    searchableFields: ['tags'],
-    hrefTemplate: '/photos/{id}',
-    joins: ['LEFT JOIN projects p ON ph.project_id = p.id'],
-  },
-  portal_access: {
-    table: 'portal_access_tokens',
-    titleField: 'id',
-    subtitleFields: ['portal_type'],
-    searchableFields: [],
-    hrefTemplate: '/portal-access/{id}',
-    joins: ['LEFT JOIN projects p ON pat.project_id = p.id'],
-  },
-  payable: {
-    table: 'vendor_bills',
-    titleField: 'bill_number',
-    subtitleFields: ['status', 'total_cents'],
-    searchableFields: ['bill_number', 'status'],
-    hrefTemplate: '/projects/{project_id}/financials/payables?bill={id}',
-    joins: ['LEFT JOIN projects p ON payable.project_id = p.id'],
-  },
-  expense: {
-    table: 'project_expenses',
-    titleField: 'description',
-    subtitleFields: ['status', 'amount_cents', 'vendor_name_text'],
-    searchableFields: ['description', 'vendor_name_text', 'status'],
-    hrefTemplate: '/projects/{project_id}/expenses?expense={id}',
-    joins: ['LEFT JOIN projects p ON expense.project_id = p.id'],
-  },
-  prospect: {
-    table: 'prospects',
-    titleField: 'name',
-    subtitleFields: ['status', 'project_type'],
-    searchableFields: ['name', 'status', 'project_type', 'notes'],
-    hrefTemplate: '/pipeline?prospectId={id}',
-  },
 }
 
 // Helper function to build search query
@@ -766,54 +587,78 @@ export async function searchEntities(
   }
 
   const results: SearchResult[] = []
-  const promises: Promise<void>[] = []
-  // Amount filters (set above) force the per-entity fan-out via shouldForceEntityFanout.
-  const canUseUnifiedIndex = !shouldForceEntityFanout(effectiveFilters)
-
-  if (searchText.trim() && canUseUnifiedIndex) {
-    const indexed = await searchViaUnifiedIndex(
-      supabase,
-      resolvedOrgId,
-      searchText,
-      typesToSearch,
-      targetLimit,
-    )
-    if (indexed.length > 0) {
-      results.push(...indexed)
-      if (shouldShortCircuitUnifiedIndex(indexed.length, targetLimit, effectiveFilters, preferFast)) {
-        return indexed.slice(0, targetLimit)
-      }
+  const seenKeys = new Set<string>()
+  const addResults = (items: SearchResult[]) => {
+    for (const item of items) {
+      const key = `${item.type}:${item.id}`
+      if (seenKeys.has(key)) continue
+      seenKeys.add(key)
+      results.push(item)
     }
   }
 
-  const perEntityLimit = preferFast
-    ? Math.max(
-        ENTITY_QUERY_MIN_LIMIT,
-        Math.min(10, Math.ceil((targetLimit * 1.1) / Math.max(1, typesToSearch.length))),
-      )
-    : Math.max(
-        ENTITY_QUERY_MIN_LIMIT,
-        Math.min(ENTITY_QUERY_MAX_LIMIT, Math.ceil((targetLimit * 1.4) / Math.max(1, typesToSearch.length))),
-      )
+  // Amount/date/status/project filters can't be applied against the denormalized
+  // index, so those queries force the per-entity fan-out.
+  const canUseUnifiedIndex = !shouldForceEntityFanout(effectiveFilters)
+  const trimmedSearchText = searchText.trim()
+  let satisfied = false
 
-  // Search each entity type in parallel
-  for (const entityType of typesToSearch) {
-    promises.push(
-      (async () => {
+  if (trimmedSearchText && canUseUnifiedIndex) {
+    // Tier 1 — full-text (primary, fast, free).
+    addResults(await searchViaUnifiedIndex(supabase, resolvedOrgId, searchText, typesToSearch, targetLimit))
+    satisfied =
+      results.length > 0 && shouldShortCircuitUnifiedIndex(results.length, targetLimit, effectiveFilters, preferFast)
+
+    // Tier 2 — fuzzy/trigram (typo tolerance) when FTS didn't fill the page.
+    if (!satisfied && results.length < targetLimit) {
+      addResults(await searchViaFuzzyIndex(supabase, resolvedOrgId, searchText, typesToSearch, targetLimit))
+    }
+
+    // Tier 3 — semantic smart-fallback: only when keyword + fuzzy still come up
+    // short and the query carries enough words to be meaningful (keeps the
+    // embedding cost off short, identifier-style lookups).
+    const meaningfulWordCount = trimmedSearchText.split(/\s+/).filter((token) => token.length > 1).length
+    const semanticTrigger = Math.max(3, Math.ceil(targetLimit * 0.3))
+    if (!satisfied && results.length < semanticTrigger && meaningfulWordCount >= 2) {
+      addResults(await searchViaSemanticIndex(supabase, resolvedOrgId, searchText, typesToSearch, targetLimit))
+    }
+
+    // Once the index has produced a healthy set, skip the expensive fan-out.
+    const fanoutFloor = preferFast
+      ? Math.max(3, Math.ceil(targetLimit * 0.2))
+      : Math.max(8, Math.ceil(targetLimit * 0.5))
+    satisfied = satisfied || results.length >= fanoutFloor
+  }
+
+  // Last-resort per-entity fan-out: forced-filter queries (amount/date/status),
+  // or orgs whose unified index hasn't been backfilled yet. ILIKE per table.
+  if (!satisfied) {
+    const perEntityLimit = preferFast
+      ? Math.max(
+          ENTITY_QUERY_MIN_LIMIT,
+          Math.min(10, Math.ceil((targetLimit * 1.1) / Math.max(1, typesToSearch.length))),
+        )
+      : Math.max(
+          ENTITY_QUERY_MIN_LIMIT,
+          Math.min(ENTITY_QUERY_MAX_LIMIT, Math.ceil((targetLimit * 1.4) / Math.max(1, typesToSearch.length))),
+        )
+
+    const fanoutResults: SearchResult[] = []
+    await Promise.all(
+      typesToSearch.map(async (entityType) => {
         try {
           const result = await searchSingleEntity(supabase, resolvedOrgId, entityType, searchText, effectiveFilters, {
             ...options,
             limit: perEntityLimit,
           })
-          results.push(...result)
+          fanoutResults.push(...result)
         } catch (error) {
           console.error(`Failed to search ${entityType}:`, error)
         }
-      })()
+      }),
     )
+    addResults(fanoutResults)
   }
-
-  await Promise.all(promises)
 
   const deduped: SearchResult[] = []
   const seen = new Set<string>()
@@ -1015,28 +860,4 @@ export async function searchAll(
   context?: OrgServiceContext
 ): Promise<SearchResult[]> {
   return searchEntities(query, [], filters, options, orgId, context)
-}
-
-// Get search suggestions
-export async function getSearchSuggestions(
-  query: string,
-  orgId?: string,
-  context?: OrgServiceContext
-): Promise<string[]> {
-  const { supabase, orgId: resolvedOrgId } = context || await requireOrgContext(orgId)
-
-  if (!query.trim()) return []
-
-  // Get recent search terms from projects, tasks, and files
-  const { data, error } = await supabase
-    .from('projects')
-    .select('name')
-    .eq('org_id', resolvedOrgId)
-    .ilike('name', `%${query}%`)
-    .limit(5)
-    .order('updated_at', { ascending: false })
-
-  if (error) return []
-
-  return (data || []).map(row => row.name).filter(name => name.toLowerCase().includes(query.toLowerCase()))
 }

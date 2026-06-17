@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useTransition, type CSSProperties } from 
 import { useRouter } from "next/navigation"
 import {
   AlertTriangle,
+  Info,
   ListOrdered,
   MoreHorizontal,
   Plus,
@@ -79,6 +80,12 @@ import {
   SheetDescription,
   SheetTitle,
 } from "@/components/ui/sheet"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 type EditableBudgetLine = {
   id: string
@@ -97,6 +104,7 @@ type CostBucketDraft = {
 
 type CommitmentCreateDraft = {
   costCodeId: string | null
+  budgetLineId: string | null
   defaultAmountDollars: string
   defaultScope: string
 }
@@ -142,10 +150,29 @@ function formatCurrency(cents?: number | null, opts?: { compact?: boolean }) {
   })
 }
 
-function SummaryMetric({ label, value }: { label: string; value: string }) {
+/** A label with an info icon that reveals a plain-language definition on hover. */
+function Hint({ label, hint, className }: { label: string; hint: string; className?: string }) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className={cn("inline-flex items-center gap-1", className)}>
+            {label}
+            <Info className="h-3 w-3 opacity-50" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[220px] text-xs font-normal normal-case">{hint}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+function SummaryMetric({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-md border p-3">
-      <span className="text-[11px] font-medium uppercase text-muted-foreground">{label}</span>
+      <span className="text-[11px] font-medium uppercase text-muted-foreground">
+        {hint ? <Hint label={label} hint={hint} /> : label}
+      </span>
       <span className="font-mono text-sm">{value}</span>
     </div>
   )
@@ -424,10 +451,11 @@ export function BudgetTab({
   const breakdownByCostCode = useMemo(() => {
     const map = new Map<string, any>()
     for (const row of budgetData?.breakdown ?? []) {
-      map.set(row.cost_code_id ?? "uncoded", row)
+      const key = (costCodesEnabled ? row.cost_code_id : row.budget_line_id) ?? "uncoded"
+      map.set(key, row)
     }
     return map
-  }, [budgetData?.breakdown])
+  }, [budgetData?.breakdown, costCodesEnabled])
 
   const unifiedRows = useMemo(() => {
     const grouped = new Map<
@@ -458,14 +486,19 @@ export function BudgetTab({
 
     for (const line of lines) {
       const lineCostCodeId = costCodesEnabled ? line.cost_code_id : null
-      const key = lineCostCodeId ?? "uncoded"
+      // Codes on: group lines that share a cost code. Codes off: every budget
+      // line is its own bucket (keyed by its row id) so they never collapse.
+      const key = costCodesEnabled ? lineCostCodeId ?? "uncoded" : line.id
       const code = lineCostCodeId ? costCodeById.get(lineCostCodeId) : null
       const breakdown = breakdownByCostCode.get(key)
+      const fallbackName = costCodesEnabled
+        ? "Uncoded"
+        : line.description.trim() || "Untitled line"
       const existing = grouped.get(key) ?? {
         key,
         costCodeId: lineCostCodeId,
         code: code?.code,
-        name: code?.name ?? "Uncoded",
+        name: code?.name ?? fallbackName,
         category: code?.category ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: 0,
@@ -500,7 +533,7 @@ export function BudgetTab({
         key,
         costCodeId: breakdownCostCodeId,
         code: code?.code,
-        name: code?.name ?? "Uncoded",
+        name: code?.name ?? (costCodesEnabled ? "Uncoded" : "Unassigned"),
         category: code?.category ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: breakdown.budget_cents ?? 0,
@@ -546,6 +579,7 @@ export function BudgetTab({
   const activeBucket = unifiedRows.find((row) => row.key === activeBucketKey) ?? null
 
   const openCreateCommitment = (bucket?: {
+    key?: string
     costCodeId: string | null
     budgetCents: number
     committedCents: number
@@ -555,8 +589,14 @@ export function BudgetTab({
       ? Math.max(0, bucket.budgetCents - bucket.committedCents)
       : 0
 
+    // Codes off: tie the commitment to the originating budget line (bucket key
+    // is the budget_line id) so its contract amount rolls into that line.
+    const budgetLineId =
+      !costCodesEnabled && bucket?.key && bucket.key !== "uncoded" ? bucket.key : null
+
     setCreateCommitmentDraft({
       costCodeId: costCodesEnabled ? bucket?.costCodeId ?? costCodeOptions[0]?.id ?? null : null,
+      budgetLineId,
       defaultAmountDollars:
         remainingToBuyCents > 0 ? (remainingToBuyCents / 100).toFixed(2) : "",
       defaultScope: bucket?.lines[0]?.description?.trim() || "",
@@ -646,7 +686,9 @@ export function BudgetTab({
             <span className="font-mono text-sm">{formatCurrency(contractValue)}</span>
           </div>
           <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Earned Rev</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <Hint label="Earned Rev" hint="Earned revenue — contract value times percent complete. What you've actually earned so far." />
+            </span>
             <span className="font-mono text-sm">{formatCurrency(earnedRevenue)}</span>
           </div>
           <div className="flex flex-col gap-1 rounded-md border p-3">
@@ -654,13 +696,17 @@ export function BudgetTab({
             <span className="font-mono text-sm">{formatCurrency(contractBilled)}</span>
           </div>
           <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Over/(Under)</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <Hint label="Over/(Under)" hint="Over/under billing — billed revenue minus earned revenue. Positive means you've billed ahead of work completed." />
+            </span>
             <span className={cn("font-mono text-sm", overUnderBilling > 0 ? "text-emerald-600 dark:text-emerald-400" : overUnderBilling < 0 ? "text-destructive" : "")}>
               {formatCurrency(overUnderBilling)}
             </span>
           </div>
           <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">EAC</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <Hint label="EAC" hint="Estimate at Completion — projected total project cost when finished." />
+            </span>
             <span className="font-mono text-sm">{formatCurrency(summary?.total_eac_cents)}</span>
           </div>
         </div>
@@ -749,7 +795,7 @@ export function BudgetTab({
           {editable && (
             <Button size="sm" onClick={openCreateBucket}>
               <Plus className="h-4 w-4" />
-              <span className="hidden sm:inline">Add bucket</span>
+              <span className="hidden sm:inline">{costCodesEnabled ? "Add bucket" : "Add line"}</span>
             </Button>
           )}
           <DropdownMenu>
@@ -808,17 +854,24 @@ export function BudgetTab({
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
-                            {row.code ?? "Uncoded"}
-                          </span>
+                          {costCodesEnabled && (
+                            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
+                              {row.code ?? "Uncoded"}
+                            </span>
+                          )}
                           {row.status === "over" && (
                             <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
                           )}
                           {row.status === "warning" && (
                             <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                           )}
+                          {!costCodesEnabled && (
+                            <span className="line-clamp-1 text-sm font-medium">{row.name}</span>
+                          )}
                         </div>
-                        <p className="mt-1.5 line-clamp-1 text-sm font-medium">{row.name}</p>
+                        {costCodesEnabled && (
+                          <p className="mt-1.5 line-clamp-1 text-sm font-medium">{row.name}</p>
+                        )}
                         {row.assignedCompanies.length > 0 && (
                           <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
                             {row.assignedCompanies.join(", ")}
@@ -862,16 +915,30 @@ export function BudgetTab({
         <Table className="w-full min-w-[1000px]">
           <TableHeader>
             <TableRow className="border-b bg-muted/30 hover:bg-muted/30">
-              <TableHead className="w-[120px] px-4 text-xs uppercase tracking-wide">Code</TableHead>
-              <TableHead className="min-w-[200px] px-4 text-xs uppercase tracking-wide">Scope</TableHead>
+              {costCodesEnabled && (
+                <TableHead className="w-[120px] px-4 text-xs uppercase tracking-wide">Code</TableHead>
+              )}
+              <TableHead className="min-w-[200px] px-4 text-xs uppercase tracking-wide">
+                {costCodesEnabled ? "Scope" : "Budget line"}
+              </TableHead>
               <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
               <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Approved CO</TableHead>
               <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">Revised</TableHead>
-              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Committed</TableHead>
-              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Actual</TableHead>
-              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">CTC</TableHead>
-              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">EAC</TableHead>
-              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">VAC</TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                <Hint className="justify-end" label="Committed" hint="Committed — amount locked in via approved subcontracts and purchase orders for this line." />
+              </TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                <Hint className="justify-end" label="Actual" hint="Actual — costs already incurred (approved bills, expenses, and labor) on this line." />
+              </TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                <Hint className="justify-end" label="CTC" hint="Cost to Complete — estimated remaining cost to finish this line (EAC minus Actual)." />
+              </TableHead>
+              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">
+                <Hint className="justify-end" label="EAC" hint="Estimate at Completion — projected total cost for this line when finished." />
+              </TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                <Hint className="justify-end" label="VAC" hint="Variance at Completion — revised budget minus EAC. Negative means a projected overrun." />
+              </TableHead>
               <TableHead className="w-[100px] px-4 text-right text-xs uppercase tracking-wide">% Comp</TableHead>
               <TableHead className="w-[56px] px-2" />
             </TableRow>
@@ -879,8 +946,8 @@ export function BudgetTab({
           <TableBody>
             {filteredUnifiedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="h-56 text-center hover:bg-transparent">
-                  <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
+                <TableCell colSpan={costCodesEnabled ? 12 : 11} className="h-56 text-center hover:bg-transparent">
+                  <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} costCodesEnabled={costCodesEnabled} />
                 </TableCell>
               </TableRow>
             ) : (
@@ -906,23 +973,35 @@ export function BudgetTab({
                     className="group h-[60px] cursor-pointer hover:bg-muted/30"
                     onClick={() => setActiveBucketKey(row.key)}
                   >
-                    <TableCell className="px-4">
-                      <div className="flex items-center gap-2">
-                        {row.status === "over" ? (
-                          <span className="h-1.5 w-1.5 rounded-full bg-destructive" aria-label="Over budget" />
-                        ) : row.status === "warning" ? (
-                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-label="Near budget" />
-                        ) : (
-                          <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />
-                        )}
-                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
-                          {row.code ?? "Uncoded"}
-                        </span>
-                      </div>
-                    </TableCell>
+                    {costCodesEnabled && (
+                      <TableCell className="px-4">
+                        <div className="flex items-center gap-2">
+                          {row.status === "over" ? (
+                            <span className="h-1.5 w-1.5 rounded-full bg-destructive" aria-label="Over budget" />
+                          ) : row.status === "warning" ? (
+                            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-label="Near budget" />
+                          ) : (
+                            <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />
+                          )}
+                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
+                            {row.code ?? "Uncoded"}
+                          </span>
+                        </div>
+                      </TableCell>
+                    )}
                     <TableCell className="min-w-0 px-4">
-                      <span className="block truncate text-sm font-medium">{row.name}</span>
-                      {row.lines.length > 0 && (
+                      <div className="flex items-center gap-2">
+                        {!costCodesEnabled &&
+                          (row.status === "over" ? (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-destructive" aria-label="Over budget" />
+                          ) : row.status === "warning" ? (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-label="Near budget" />
+                          ) : (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
+                          ))}
+                        <span className="block truncate text-sm font-medium">{row.name}</span>
+                      </div>
+                      {row.lines.length > 0 && (costCodesEnabled || row.lines.length > 1) && (
                         <span className="block truncate text-xs text-muted-foreground">
                           {row.lines.length === 1
                             ? row.lines[0].description
@@ -1074,9 +1153,11 @@ function FinancialLoadWarning({ errors }: { errors: string[] }) {
 function UnifiedBudgetEmptyState({
   editable,
   onCreate,
+  costCodesEnabled = true,
 }: {
   editable: boolean
   onCreate: () => void
+  costCodesEnabled?: boolean
 }) {
   return (
     <div className="flex flex-col items-center gap-3">
@@ -1084,15 +1165,19 @@ function UnifiedBudgetEmptyState({
         <ListOrdered className="h-6 w-6" />
       </div>
       <div className="max-w-[420px] text-center">
-        <p className="font-medium">No cost buckets found</p>
+        <p className="font-medium">
+          {costCodesEnabled ? "No cost buckets found" : "No budget lines yet"}
+        </p>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          Add cost-code buckets for labor, materials, subs, and allowances.
+          {costCodesEnabled
+            ? "Add cost-code buckets for labor, materials, subs, and allowances."
+            : "Add a budget line for each part of the job — e.g. framing, plumbing, allowances — with an amount you expect to spend."}
         </p>
       </div>
       {editable && (
         <Button size="sm" onClick={onCreate}>
           <Plus className="h-4 w-4" />
-          Add cost bucket
+          {costCodesEnabled ? "Add cost bucket" : "Add budget line"}
         </Button>
       )}
     </div>
@@ -1430,7 +1515,13 @@ function CostBucketEditorSheet({
         <div className="flex-1 overflow-y-auto px-4">
           <div className="pt-6 pb-4">
             <SheetTitle className="text-lg font-semibold leading-none tracking-tight">
-              {draft?.key ? "Edit cost bucket" : "Add cost bucket"}
+              {costCodesEnabled
+                ? draft?.key
+                  ? "Edit cost bucket"
+                  : "Add cost bucket"
+                : draft?.key
+                  ? "Edit budget line"
+                  : "Add budget line"}
             </SheetTitle>
             <SheetDescription className="text-sm text-muted-foreground">
               Set the budget amount and scope note for this project budget.
@@ -1501,7 +1592,7 @@ function CostBucketEditorSheet({
                   }}
                 >
                   <Trash2 className="h-4 w-4" />
-                  Remove bucket
+                  {costCodesEnabled ? "Remove bucket" : "Remove line"}
                 </Button>
               ) : null}
             </div>
@@ -1510,7 +1601,7 @@ function CostBucketEditorSheet({
                 Cancel
               </Button>
               <Button className="flex-1" onClick={submit} disabled={!canSave}>
-                {draft?.key ? "Save bucket" : "Add bucket"}
+                {draft?.key ? (costCodesEnabled ? "Save bucket" : "Save line") : costCodesEnabled ? "Add bucket" : "Add line"}
               </Button>
             </div>
           </div>
@@ -1595,6 +1686,7 @@ function CommitmentCreateDialog({
         })
         await createCommitmentLineAction(commitment.id, {
           cost_code_id: costCodesEnabled ? costCodeId : null,
+          budget_line_id: costCodesEnabled ? null : draft?.budgetLineId ?? null,
           description: scope.trim(),
           quantity: 1,
           unit: "LS",

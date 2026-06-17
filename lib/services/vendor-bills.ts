@@ -102,6 +102,7 @@ export interface VendorBillProjectShare {
 export interface VendorBillActualLine {
   id?: string
   cost_code_id: string | null
+  budget_line_id?: string | null
   cost_code_code?: string
   cost_code_name?: string
   description?: string
@@ -136,6 +137,7 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
   const actualLines = lines.map((line) => ({
     id: line.id ?? undefined,
     cost_code_id: line.cost_code_id,
+    budget_line_id: line.budget_line_id ?? null,
     cost_code_code: line.cost_code?.code ?? undefined,
     cost_code_name: line.cost_code?.name ?? undefined,
     description: line.description ?? undefined,
@@ -275,6 +277,7 @@ async function replaceBillLineCoding(
     billId: string
     lines: Array<{
       cost_code_id: string | null
+      budget_line_id?: string | null
       description: string
       amount_cents: number
       project_id?: string | null
@@ -339,6 +342,7 @@ async function replaceBillLineCoding(
     org_id: orgId,
     bill_id: billId,
     cost_code_id: line.cost_code_id,
+    budget_line_id: line.budget_line_id ?? null,
     project_id: line.project_id ?? null,
     description: line.description,
     quantity: 1,
@@ -475,7 +479,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
       ? { data: [], error: null }
       : await supabase
           .from("bill_lines")
-          .select("id, bill_id, project_id, cost_code_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name), project:projects(id, name)")
+          .select("id, bill_id, project_id, cost_code_id, budget_line_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name), project:projects(id, name)")
           .eq("org_id", resolvedOrgId)
           .in("bill_id", billIds)
           .order("sort_order", { ascending: true })
@@ -704,6 +708,7 @@ export async function updateVendorBillStatus({
   let actualLines = explicitLines
     ? explicitLines.map((line) => ({
         cost_code_id: line.cost_code_id ?? null,
+        budget_line_id: line.budget_line_id ?? null,
         description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
         amount_cents: line.amount_cents,
         project_id: line.project_id ?? existing.project_id ?? null,
@@ -741,6 +746,7 @@ export async function updateVendorBillStatus({
       actualLines = [
         {
           cost_code_id: parsed.cost_code_id ?? null,
+          budget_line_id: null,
           description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
           amount_cents: totalCents,
           project_id: existing.project_id ?? null,

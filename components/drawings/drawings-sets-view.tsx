@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { ElementType } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
@@ -70,9 +71,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { DISCIPLINE_LABELS } from "@/lib/validation/drawings"
-import type { DrawingDiscipline } from "@/lib/validation/drawings"
+import {
+  DISCIPLINE_LABELS,
+  DRAWING_ISSUANCE_TYPE_LABELS,
+} from "@/lib/validation/drawings"
+import type { DrawingDiscipline, DrawingIssuanceType } from "@/lib/validation/drawings"
 import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
 import {
   createDrawingMarkupAction,
@@ -97,8 +107,6 @@ import {
   updateDrawingSheetAction,
   listDrawingRevisionsAction,
   listSheetVersionsAction,
-  createDrawingRevisionAction,
-  createSheetVersionAction,
   getPendingDraftRevisionAction,
 } from "@/app/(app)/drawings/actions"
 import type { RevisionDraftStatus } from "@/lib/services/drawings"
@@ -111,7 +119,6 @@ import type {
   DrawingRevision,
   DrawingSheetVersion,
 } from "@/app/(app)/drawings/types"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
 import { DrawingViewer } from "./drawing-viewer"
 import { RevisionReviewDialog } from "./revision-review-dialog"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
@@ -143,6 +150,19 @@ const DISCIPLINE_ORDER: DrawingDiscipline[] = [
   "SP",
   "D",
   "X",
+]
+
+const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
+  "revision",
+  "asi",
+  "bulletin",
+  "addendum",
+  "ifc_set",
+  "permit_set",
+  "bid_set",
+  "sketch",
+  "record_set",
+  "other",
 ]
 
 
@@ -205,6 +225,41 @@ function sheetVersionLabel(sheet: DrawingSheet) {
   // revised once -> v2, etc. Immune to project-wide revision numbering.
   const count = sheet.version_count ?? 0
   return `v${count > 0 ? count : 1}`
+}
+
+function issuanceDisplayLabel(revision: DrawingRevision | RevisionDraftStatus) {
+  const type = revision.issuance_type
+    ? DRAWING_ISSUANCE_TYPE_LABELS[revision.issuance_type as DrawingIssuanceType]
+    : null
+  return type ? `${type}: ${revision.revision_label}` : revision.revision_label
+}
+
+function DisabledUploadMenuItem({
+  icon: Icon,
+  label,
+  reason,
+}: {
+  icon: ElementType
+  label: string
+  reason: string
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <DropdownMenuItem
+          aria-disabled="true"
+          onSelect={(event) => event.preventDefault()}
+          className="cursor-not-allowed opacity-50 focus:opacity-70"
+        >
+          <Icon className="mr-2 h-4 w-4" />
+          {label}
+        </DropdownMenuItem>
+      </TooltipTrigger>
+      <TooltipContent side="left" className="max-w-64 text-xs">
+        {reason}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 function describeProcessingStage(set: DrawingSet | null) {
@@ -308,6 +363,13 @@ export function DrawingsSetsView({
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadStage, setUploadStage] = useState<string | null>(null)
+  const [issuanceLabel, setIssuanceLabel] = useState("")
+  const [issuanceType, setIssuanceType] = useState<DrawingIssuanceType>("revision")
+  const [issuanceDate, setIssuanceDate] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  )
+  const [issuanceSource, setIssuanceSource] = useState("")
+  const [issuanceNotes, setIssuanceNotes] = useState("")
   const [uploadStep, setUploadStep] = useState<"prepare" | "processing" | "review">("prepare")
   const [uploadSetId, setUploadSetId] = useState<string | null>(null)
   const [uploadSourceFileId, setUploadSourceFileId] = useState<string | null>(null)
@@ -362,6 +424,11 @@ export function DrawingsSetsView({
   const [revisionTargetSheet, setRevisionTargetSheet] = useState<DrawingSheet | null>(null)
   const [revisionFile, setRevisionFile] = useState<File | null>(null)
   const [sheetRevisionLabel, setSheetRevisionLabel] = useState("")
+  const [sheetRevisionType, setSheetRevisionType] = useState<DrawingIssuanceType>("revision")
+  const [sheetRevisionDate, setSheetRevisionDate] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  )
+  const [sheetRevisionSource, setSheetRevisionSource] = useState("")
   const [sheetRevisionNotes, setSheetRevisionNotes] = useState("")
   const [savingSheetRevision, setSavingSheetRevision] = useState(false)
   const [loadingRevisionMeta, setLoadingRevisionMeta] = useState(false)
@@ -667,7 +734,18 @@ export function DrawingsSetsView({
       toast.error("Select a project to upload")
       return
     }
+    if (pendingDraft) {
+      setReviewRevisionId(pendingDraft.id)
+      setReviewOpen(true)
+      return
+    }
     fileInputRef.current?.click()
+  }
+
+  const openPendingDraftReview = () => {
+    if (!pendingDraft) return
+    setReviewRevisionId(pendingDraft.id)
+    setReviewOpen(true)
   }
 
   const acceptFile = (file: File) => {
@@ -680,6 +758,11 @@ export function DrawingsSetsView({
       return
     }
     setUploadFile(file)
+    setIssuanceLabel("")
+    setIssuanceType(sets.length > 0 ? "revision" : "ifc_set")
+    setIssuanceDate(new Date().toISOString().slice(0, 10))
+    setIssuanceSource("")
+    setIssuanceNotes("")
     setUploadStep("prepare")
     setUploadStatus(null)
     setUploadedReviewSheets([])
@@ -716,6 +799,11 @@ export function DrawingsSetsView({
         storagePath,
         fileSize: uploadFile.size,
         mimeType: uploadFile.type,
+        issuanceLabel: issuanceLabel.trim() || undefined,
+        issuanceType,
+        issuedDate: issuanceDate || undefined,
+        receivedFrom: issuanceSource.trim() || undefined,
+        notes: issuanceNotes.trim() || undefined,
       })
 
       setSets((prev) => {
@@ -724,14 +812,14 @@ export function DrawingsSetsView({
       })
       setSelectedSetId((current) => current ?? newSet.id)
 
-      // Close the upload dialog and hand off to the draft Revision Review, which
+      // Close the upload dialog and hand off to the draft issuance review, which
       // polls processing and lets the user publish or discard.
       setUploadDialogOpen(false)
       setUploadFile(null)
       setReviewRevisionId(draftRevisionId)
       setReviewOpen(true)
 
-      toast.success("Upload received — review the revision before publishing.")
+      toast.success("Upload received — review the package before publishing.")
     } catch (err) {
       console.error("Upload failed:", err)
       toast.error(
@@ -985,6 +1073,9 @@ export function DrawingsSetsView({
       setRevisionFile(null)
       setSheetRevisionNotes("")
       setSheetRevisionLabel("")
+      setSheetRevisionType("revision")
+      setSheetRevisionDate(new Date().toISOString().slice(0, 10))
+      setSheetRevisionSource("")
       setKnownRevisions([])
       setKnownVersionCount(0)
       setLoadingRevisionMeta(true)
@@ -999,7 +1090,7 @@ export function DrawingsSetsView({
         ])
         setKnownRevisions(revisions)
         setKnownVersionCount(versions.length)
-        setSheetRevisionLabel(`Rev ${revisions.length + 1}`)
+        setSheetRevisionLabel(`Revision ${revisions.length + 1}`)
       } catch (error) {
         console.error("Failed to load version metadata:", error)
         setSheetRevisionLabel("Rev 1")
@@ -1017,64 +1108,63 @@ export function DrawingsSetsView({
       toast.error("Choose a version file")
       return
     }
+    if (revisionFile.type !== "application/pdf") {
+      toast.error("Sheet revisions must be uploaded as PDFs")
+      return
+    }
     const cleanRevisionLabel = sheetRevisionLabel.trim()
     if (!cleanRevisionLabel) {
-      toast.error("Revision label is required")
+      toast.error("Package label is required")
       return
     }
     setSavingSheetRevision(true)
     try {
-      const formData = new FormData()
-      formData.append("file", revisionFile)
-      formData.append("projectId", selectedProjectId)
-      formData.append("category", "plans")
-      formData.append("folderPath", `/drawings/versions/${targetSetId}`)
-      formData.append(
-        "description",
-        `Drawing version for ${revisionTargetSheet.sheet_number}`,
+      const orgId = document.cookie.match(/(?:^|; )org_id=([^;]+)/)?.[1]
+      if (!orgId) throw new Error("Organization not found. Please refresh.")
+
+      const { storagePath } = await uploadDrawingFileToStorage(
+        revisionFile,
+        selectedProjectId,
+        orgId,
       )
-
-      const uploaded = await uploadFileAction(formData)
-      const revision = await createDrawingRevisionAction({
-        project_id: selectedProjectId,
-        drawing_set_id: targetSetId,
-        revision_label: cleanRevisionLabel,
-        issued_date: new Date().toISOString().slice(0, 10),
+      const { draftRevisionId } = await createDrawingSetFromUpload({
+        projectId: selectedProjectId,
+        fileName: revisionFile.name,
+        storagePath,
+        fileSize: revisionFile.size,
+        mimeType: revisionFile.type,
+        issuanceLabel: cleanRevisionLabel,
+        issuanceType: sheetRevisionType,
+        issuedDate: sheetRevisionDate || undefined,
+        receivedFrom: sheetRevisionSource.trim() || undefined,
         notes: sheetRevisionNotes.trim() || undefined,
-      })
-      await createSheetVersionAction({
-        drawing_sheet_id: revisionTargetSheet.id,
-        drawing_revision_id: revision.id,
-        file_id: uploaded.id,
-        extracted_metadata: {
-          source: "drawings-sheet-version",
-          original_file_name: revisionFile.name,
-        },
-      })
-      await updateDrawingSheetAction(revisionTargetSheet.id, {
-        current_revision_id: revision.id,
+        targetSheetId: revisionTargetSheet.id,
       })
 
-      // Refresh sheets list
-      await loadProjectSheets()
-
-      toast.success("New sheet version added")
+      await Promise.all([refreshSets(), refreshPendingDraft()])
+      setReviewRevisionId(draftRevisionId)
+      setReviewOpen(true)
+      toast.success("Sheet revision received — review it before publishing.")
       setRevisionTargetSheet(null)
       setRevisionFile(null)
     } catch (error) {
-      console.error("Failed to add sheet version:", error)
-      toast.error("Failed to add sheet version")
+      console.error("Failed to queue sheet revision:", error)
+      toast.error("Failed to queue sheet revision")
     } finally {
       setSavingSheetRevision(false)
     }
   }, [
-    loadProjectSheets,
     selectedProjectId,
     selectedSetId,
     sheetRevisionLabel,
+    sheetRevisionType,
+    sheetRevisionDate,
+    sheetRevisionSource,
     sheetRevisionNotes,
     revisionFile,
     revisionTargetSheet,
+    refreshSets,
+    refreshPendingDraft,
   ])
 
   const handleDisciplineChange = useCallback(
@@ -1497,7 +1587,7 @@ export function DrawingsSetsView({
                   <SelectItem value="current">Current (latest)</SelectItem>
                   {registerRevisions.map((rev) => (
                     <SelectItem key={rev.id} value={rev.id}>
-                      {rev.revision_label}
+                      {issuanceDisplayLabel(rev)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1507,15 +1597,64 @@ export function DrawingsSetsView({
 
           {/* Upload is desktop-only — mobile is a read/review surface. */}
           <div className="ml-auto hidden items-center gap-2 sm:flex">
-            <Button
-              onClick={openFilePicker}
-              disabled={!selectedProjectId}
-              size="sm"
-              className="h-9"
-            >
-              <Upload className="mr-2 h-4 w-4" />
-              Upload sheets / revision
-            </Button>
+            {sets.length === 0 && !pendingDraft ? (
+              <Button
+                onClick={openFilePicker}
+                disabled={!selectedProjectId}
+                size="sm"
+                className="h-9"
+              >
+                <Upload className="mr-2 h-4 w-4" />
+                Upload drawings
+              </Button>
+            ) : (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button disabled={!selectedProjectId} size="sm" className="h-9">
+                    {pendingDraft ? (
+                      <>
+                        <History className="mr-2 h-4 w-4" />
+                        Review pending
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="mr-2 h-4 w-4" />
+                        Add issuance
+                      </>
+                    )}
+                    <ChevronDown className="ml-2 h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <TooltipProvider delayDuration={150}>
+                  <DropdownMenuContent align="end" className="w-64">
+                    {pendingDraft ? (
+                      <DisabledUploadMenuItem
+                        icon={Upload}
+                        label="Add drawing issuance"
+                        reason="Publish or discard the pending issuance before uploading another drawing package."
+                      />
+                    ) : (
+                      <DropdownMenuItem onClick={openFilePicker}>
+                        <Upload className="mr-2 h-4 w-4" />
+                        Add drawing issuance
+                      </DropdownMenuItem>
+                    )}
+                    {pendingDraft ? (
+                      <DropdownMenuItem onClick={openPendingDraftReview}>
+                        <History className="mr-2 h-4 w-4" />
+                        Review pending issuance
+                      </DropdownMenuItem>
+                    ) : (
+                      <DisabledUploadMenuItem
+                        icon={History}
+                        label="Review pending issuance"
+                        reason="There is no draft issuance waiting for review."
+                      />
+                    )}
+                  </DropdownMenuContent>
+                </TooltipProvider>
+              </DropdownMenu>
+            )}
           </div>
         </div>
 
@@ -1547,8 +1686,10 @@ export function DrawingsSetsView({
           <History className="h-4 w-4 shrink-0 text-blue-600" />
           <div className="min-w-0 flex-1 text-muted-foreground">
             <span className="font-medium text-foreground">
-              {registerRevisions.find((r) => r.id === revisionFilter)?.revision_label ??
-                "Revision"}
+              {(() => {
+                const revision = registerRevisions.find((r) => r.id === revisionFilter)
+                return revision ? issuanceDisplayLabel(revision) : "Revision"
+              })()}
             </span>
             {" — showing each sheet as of this revision."}
             {snapshotLoading && " Loading…"}
@@ -1576,12 +1717,12 @@ export function DrawingsSetsView({
           <div className="min-w-0 flex-1">
             <span className="font-medium text-foreground">
               {pendingDraft.status === "processing"
-                ? "A revision is processing"
-                : "A revision is waiting for review"}
+                ? "A drawing package is processing"
+                : "A drawing package is waiting for review"}
             </span>
             <span className="text-muted-foreground">
               {" — "}
-              {pendingDraft.revision_label}. The live drawings are unchanged until
+              {issuanceDisplayLabel(pendingDraft)}. The live drawings are unchanged until
               you publish.
             </span>
           </div>
@@ -1661,7 +1802,7 @@ export function DrawingsSetsView({
             action={
               <Button onClick={openFilePicker} size="sm">
                 <Upload className="mr-2 h-4 w-4" />
-                Upload plan set / revision
+                Upload drawing package
               </Button>
             }
           />
@@ -1755,21 +1896,21 @@ export function DrawingsSetsView({
               {uploadStep === "review"
                 ? "Review imported pages"
                 : sets.length > 0
-                  ? "Add drawings"
-                  : "Upload drawings"}
+                  ? "Upload drawing package"
+                  : "Upload initial drawing package"}
             </DialogTitle>
             <DialogDescription>
               {uploadStep === "review"
                 ? "The new pages are ready. Review them here and make any quick corrections before closing."
                 : sets.length > 0
-                  ? "Upload another PDF into this project's single drawing register. We'll process it, detect pages by trade, and keep the existing register intact while the import runs."
+                  ? "Upload another PDF into this project's single drawing register. We'll process it as a draft package, detect pages by trade, and keep the existing register intact while it runs."
                   : "Upload a PDF and we'll process it, detect page metadata, and separate the pages into trades automatically."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             {uploadStep !== "review" && (
               <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
-                The upload wizard now works off the project&apos;s single drawing register. We process the PDF first, then let you review the imported pages instead of asking for set-level metadata up front.
+                We process the PDF into a draft issuance first, then let you review what changed before the live register updates.
               </div>
             )}
 
@@ -1783,6 +1924,65 @@ export function DrawingsSetsView({
                   <p className="text-xs text-muted-foreground">
                     {(uploadFile.size / 1024 / 1024).toFixed(2)} MB
                   </p>
+                </div>
+              </div>
+            )}
+
+            {uploadStep === "prepare" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="issuance-type">Package type</Label>
+                  <Select
+                    value={issuanceType}
+                    onValueChange={(value) => setIssuanceType(value as DrawingIssuanceType)}
+                  >
+                    <SelectTrigger id="issuance-type" className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ISSUANCE_TYPE_ORDER.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {DRAWING_ISSUANCE_TYPE_LABELS[type]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="issuance-label">Package label</Label>
+                  <Input
+                    id="issuance-label"
+                    value={issuanceLabel}
+                    onChange={(e) => setIssuanceLabel(e.target.value)}
+                    placeholder="e.g., ASI 03, Bulletin 02"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="issuance-date">Issued date</Label>
+                  <Input
+                    id="issuance-date"
+                    type="date"
+                    value={issuanceDate}
+                    onChange={(e) => setIssuanceDate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="issuance-source">Received from</Label>
+                  <Input
+                    id="issuance-source"
+                    value={issuanceSource}
+                    onChange={(e) => setIssuanceSource(e.target.value)}
+                    placeholder="Architect, owner, consultant"
+                  />
+                </div>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label htmlFor="issuance-notes">Notes</Label>
+                  <Input
+                    id="issuance-notes"
+                    value={issuanceNotes}
+                    onChange={(e) => setIssuanceNotes(e.target.value)}
+                    placeholder="Optional package notes"
+                  />
                 </div>
               </div>
             )}
@@ -2165,9 +2365,9 @@ export function DrawingsSetsView({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Submit sheet revision</DialogTitle>
+            <DialogTitle>Submit sheet issuance</DialogTitle>
             <DialogDescription>
-              Upload a revised file and create a new version for this page.
+              Upload a revised PDF for this sheet. It will be processed as a draft and will not replace the current sheet until published.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -2181,13 +2381,54 @@ export function DrawingsSetsView({
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="sheet-revision-label">Revision label</Label>
+              <Label htmlFor="sheet-revision-label">Package label</Label>
               <Input
                 id="sheet-revision-label"
                 value={sheetRevisionLabel}
                 onChange={(e) => setSheetRevisionLabel(e.target.value)}
                 disabled={savingSheetRevision || loadingRevisionMeta}
-                placeholder="e.g., Rev B"
+                placeholder="e.g., ASI 03, Revision B"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="sheet-revision-type">Package type</Label>
+                <Select
+                  value={sheetRevisionType}
+                  onValueChange={(value) => setSheetRevisionType(value as DrawingIssuanceType)}
+                  disabled={savingSheetRevision || loadingRevisionMeta}
+                >
+                  <SelectTrigger id="sheet-revision-type" className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ISSUANCE_TYPE_ORDER.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {DRAWING_ISSUANCE_TYPE_LABELS[type]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="sheet-revision-date">Issued date</Label>
+                <Input
+                  id="sheet-revision-date"
+                  type="date"
+                  value={sheetRevisionDate}
+                  onChange={(e) => setSheetRevisionDate(e.target.value)}
+                  disabled={savingSheetRevision || loadingRevisionMeta}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sheet-revision-source">Received from</Label>
+              <Input
+                id="sheet-revision-source"
+                value={sheetRevisionSource}
+                onChange={(e) => setSheetRevisionSource(e.target.value)}
+                disabled={savingSheetRevision || loadingRevisionMeta}
+                placeholder="Architect, owner, consultant"
               />
             </div>
             <div className="space-y-1.5">
@@ -2205,7 +2446,7 @@ export function DrawingsSetsView({
               <Input
                 id="sheet-revision-file"
                 type="file"
-                accept=".pdf,image/*"
+                accept=".pdf,application/pdf"
                 disabled={savingSheetRevision || loadingRevisionMeta}
                 onChange={(e) => setRevisionFile(e.target.files?.[0] ?? null)}
               />
@@ -2218,8 +2459,8 @@ export function DrawingsSetsView({
             )}
             {knownRevisions.length > 0 && (
               <p className="text-[11px] text-muted-foreground">
-                Existing set revisions:{" "}
-                {knownRevisions.map((rev) => rev.revision_label).join(", ")}
+                Existing packages:{" "}
+                {knownRevisions.map((rev) => issuanceDisplayLabel(rev)).join(", ")}
               </p>
             )}
           </div>
@@ -2241,7 +2482,7 @@ export function DrawingsSetsView({
                   Saving...
                 </>
               ) : (
-                "Upload version"
+                "Process draft"
               )}
             </Button>
           </DialogFooter>
@@ -2534,7 +2775,7 @@ function SheetRow({
               </DropdownMenuItem>
               <DropdownMenuItem onClick={onUploadRevision}>
                 <Upload className="mr-2 h-4 w-4" />
-                Submit revision
+                Submit sheet issuance
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={async () => {

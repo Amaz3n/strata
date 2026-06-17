@@ -19,12 +19,14 @@ import { setPlatformOrganizationStatus } from "@/lib/services/platform-access"
 import { createOrgSubscriptionCheckout } from "@/lib/services/billing"
 import { createOrgMemberInvite } from "@/lib/services/team"
 import {
+  AI_FEATURE_VALUES,
   AI_PROVIDER_VALUES,
-  clearPlatformAiSearchDefaultConfig,
-  defaultModelForProvider,
-  getPlatformAiSearchDefaultConfig,
+  clearPlatformAiFeatureDefaultConfig,
+  defaultModelForFeatureProvider,
+  getPlatformAiFeatureDefaultConfig,
   normalizeAiProvider,
-  upsertPlatformAiSearchDefaultConfig,
+  upsertPlatformAiFeatureDefaultConfig,
+  validateAiProviderModelPair,
 } from "@/lib/services/ai-config"
 import { listOrgAiSearchAccess, setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
 
@@ -68,6 +70,7 @@ const setOrganizationStatusSchema = z.object({
 })
 
 const updatePlatformAiDefaultsSchema = z.object({
+  feature: z.enum(AI_FEATURE_VALUES).default("search"),
   provider: z.enum(AI_PROVIDER_VALUES),
   model: z.string().trim().max(120).optional(),
 })
@@ -304,7 +307,7 @@ export async function getPlatformAiDefaultsAction() {
 
   const [canManage, config] = await Promise.all([
     hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
-    getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() }),
+    getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature: "search" }),
   ])
 
   return {
@@ -315,7 +318,7 @@ export async function getPlatformAiDefaultsAction() {
   }
 }
 
-export async function updatePlatformAiDefaultsAction(input: { provider: string; model?: string }) {
+export async function updatePlatformAiDefaultsAction(input: { feature?: string; provider: string; model?: string }) {
   const parsed = updatePlatformAiDefaultsSchema.safeParse(input)
   if (!parsed.success) {
     return { error: parsed.error.errors[0]?.message ?? "Invalid AI defaults." }
@@ -325,11 +328,17 @@ export async function updatePlatformAiDefaultsAction(input: { provider: string; 
   await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
 
   const provider = normalizeAiProvider(parsed.data.provider) ?? "openai"
-  const model = parsed.data.model?.trim() || defaultModelForProvider(provider)
+  const feature = parsed.data.feature
+  const model = parsed.data.model?.trim() || defaultModelForFeatureProvider(feature, provider)
+  const providerModelError = validateAiProviderModelPair(provider, model)
+  if (providerModelError) {
+    return { error: providerModelError }
+  }
 
   try {
-    await upsertPlatformAiSearchDefaultConfig({
+    await upsertPlatformAiFeatureDefaultConfig({
       supabase: createServiceSupabaseClient(),
+      feature,
       provider,
       model,
       updatedBy: user.id,
@@ -343,9 +352,37 @@ export async function updatePlatformAiDefaultsAction(input: { provider: string; 
   revalidatePath("/settings")
   return {
     success: true as const,
+    feature,
     provider,
     model,
     source: "platform" as const,
+  }
+}
+
+export async function clearPlatformAiDefaultsAction(input: { feature?: string } = {}) {
+  const feature = AI_FEATURE_VALUES.includes(input.feature as any) ? input.feature as (typeof AI_FEATURE_VALUES)[number] : "search"
+  const { user } = await requireAuth()
+  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+  try {
+    await clearPlatformAiFeatureDefaultConfig({
+      supabase: createServiceSupabaseClient(),
+      feature,
+    })
+  } catch (error: any) {
+    console.error("Failed to clear platform AI defaults", error)
+    return { error: error?.message ?? "Unable to clear platform AI defaults." }
+  }
+
+  const config = await getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature })
+  revalidatePath("/platform")
+  revalidatePath("/settings")
+  return {
+    success: true as const,
+    feature,
+    provider: config.provider,
+    model: config.model,
+    source: config.source,
   }
 }
 
@@ -383,26 +420,4 @@ export async function setAiSearchAccessAction(input: { orgId: string; enabled: b
 
   revalidatePath("/platform")
   return { success: true as const, orgId: parsed.data.orgId, enabled: parsed.data.enabled }
-}
-
-export async function clearPlatformAiDefaultsAction() {
-  const { user } = await requireAuth()
-  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
-
-  try {
-    await clearPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() })
-  } catch (error: any) {
-    console.error("Failed to clear platform AI defaults", error)
-    return { error: error?.message ?? "Unable to clear platform AI defaults." }
-  }
-
-  revalidatePath("/platform")
-  revalidatePath("/settings")
-  const config = await getPlatformAiSearchDefaultConfig({ supabase: createServiceSupabaseClient() })
-  return {
-    success: true as const,
-    provider: config.provider,
-    model: config.model,
-    source: config.source,
-  }
 }

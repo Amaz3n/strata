@@ -22,11 +22,12 @@ export default async function HomePage() {
         <ControlTowerStats
           portfolioHealth={data.portfolioHealth}
           financials={data.financials}
-          decisionItems={decisionItems}
+          budgetHealth={data.budgetHealth}
           tasks={data.tasks}
           projectsByStatus={data.projects.byStatus}
           topWatchlist={watchlistProjects}
           openItems={data.openItems}
+          dueItems={data.dueItems}
         />
         <div className="grid grid-cols-1 lg:grid-cols-2 flex-1">
           <ControlTowerDecisions items={decisionItems} />

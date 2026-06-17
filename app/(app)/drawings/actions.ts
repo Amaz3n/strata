@@ -82,6 +82,7 @@ import type {
   DrawingSheetListFilters,
   DrawingRevisionListFilters,
   DrawingDiscipline,
+  DrawingIssuanceType,
   DrawingMarkupInput,
   DrawingMarkupUpdate,
   DrawingMarkupListFilters,
@@ -94,11 +95,19 @@ import type {
 } from "@/lib/validation/drawings"
 import { createFileRecord } from "@/lib/services/files"
 import { triggerDrawingsWorker } from "@/lib/services/drawings-worker"
+import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
 import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import type { UploadReviewSheet } from "./types"
+
+type TargetDrawingSheet = {
+  id: string
+  sheet_number: string
+  sheet_title: string | null
+  discipline: DrawingDiscipline | null
+}
 
 // ============================================================================
 // DRAWING SET ACTIONS
@@ -169,6 +178,13 @@ export async function createDrawingSetFromUpload(input: {
   storagePath: string
   fileSize: number
   mimeType: string
+  issuanceLabel?: string
+  issuanceType?: DrawingIssuanceType
+  issuedDate?: string
+  issuedBy?: string
+  receivedFrom?: string
+  notes?: string
+  targetSheetId?: string
 }): Promise<{ set: DrawingSet; draftRevisionId: string }> {
   const { supabase, orgId } = await requireOrgContext()
   const { data: project, error: projectError } = await supabase
@@ -190,6 +206,22 @@ export async function createDrawingSetFromUpload(input: {
 
   if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
     throw new Error("Invalid drawing upload path for project scope")
+  }
+
+  let targetSheet: TargetDrawingSheet | null = null
+  if (input.targetSheetId) {
+    const { data, error } = await supabase
+      .from("drawing_sheets")
+      .select("id, sheet_number, sheet_title, discipline")
+      .eq("org_id", orgId)
+      .eq("project_id", input.projectId)
+      .eq("id", input.targetSheetId)
+      .maybeSingle()
+
+    if (error || !data) {
+      throw new Error("Invalid target sheet for drawing revision")
+    }
+    targetSheet = data as TargetDrawingSheet
   }
 
   // Create file record for the uploaded PDF
@@ -284,6 +316,7 @@ export async function createDrawingSetFromUpload(input: {
     .eq("status", "published")
 
   const defaultLabel = !publishedCount ? "Initial Set" : `Revision ${publishedCount + 1}`
+  const cleanLabel = input.issuanceLabel?.trim() || defaultLabel
 
   const { data: draftRevision, error: draftError } = await supabase
     .from("drawing_revisions")
@@ -291,10 +324,14 @@ export async function createDrawingSetFromUpload(input: {
       org_id: orgId,
       project_id: input.projectId,
       drawing_set_id: drawingSet.id,
-      revision_label: defaultLabel,
+      revision_label: cleanLabel,
+      issuance_type: input.issuanceType ?? "revision",
       status: "processing",
       processing_stage: "queued",
-      issued_date: new Date().toISOString(),
+      issued_date: input.issuedDate || new Date().toISOString(),
+      issued_by: input.issuedBy?.trim() || null,
+      received_from: input.receivedFrom?.trim() || null,
+      notes: input.notes?.trim() || null,
       source_file_id: fileRecord.id,
     })
     .select("id")
@@ -305,6 +342,10 @@ export async function createDrawingSetFromUpload(input: {
   }
 
   const draftRevisionId = draftRevision.id as string
+  const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
+    supabase,
+    feature: "drawings_vision",
+  })
 
   // Trigger processing via outbox system
   try {
@@ -323,6 +364,12 @@ export async function createDrawingSetFromUpload(input: {
           storagePath: fileRecord.storage_path,
           draftRevisionId,
           orgId: orgId,
+          targetSheetId: targetSheet?.id,
+          aiVision: {
+            provider: drawingsVisionConfig.provider,
+            model: drawingsVisionConfig.model,
+            source: drawingsVisionConfig.source,
+          },
         },
         run_at: new Date().toISOString(),
       })
@@ -446,6 +493,11 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
     throw new Error("Source file not found")
   }
 
+  const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
+    supabase,
+    feature: "drawings_vision",
+  })
+
   // Queue processing again (worker path supports R2-backed uploads)
   try {
     const { error: jobError } = await supabase
@@ -459,6 +511,11 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
           projectId: set.project_id,
           sourceFileId: set.source_file_id,
           storagePath: fileData.storage_path,
+          aiVision: {
+            provider: drawingsVisionConfig.provider,
+            model: drawingsVisionConfig.model,
+            source: drawingsVisionConfig.source,
+          },
         },
         run_at: new Date().toISOString(),
       })

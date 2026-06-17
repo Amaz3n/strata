@@ -9,7 +9,7 @@ import { createStripeBillingPortalSession, createStripeCheckoutSession, createSt
 import { getCurrentUserPermissions, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getOrgAccessState } from "@/lib/services/access"
-import { AI_PROVIDER_VALUES, defaultModelForProvider, getOrgAiSearchConfig, normalizeAiProvider } from "@/lib/services/ai-config"
+import { AI_PROVIDER_VALUES, defaultModelForProvider, getOrgAiSearchConfig, normalizeAiProvider, validateAiProviderModelPair } from "@/lib/services/ai-config"
 
 export async function getNotificationPreferencesAction() {
   const { user } = await requireOrgMembership()
@@ -636,6 +636,10 @@ export async function updateOrganizationSettingsAction(input: {
     const normalizedAiProvider = normalizeAiProvider(parsed.data.aiProvider) ?? existingAiProvider ?? "openai"
     const requestedAiModel = parsed.data.aiModel?.trim() ?? ""
     const normalizedAiModel = requestedAiModel || existingAiModel || defaultModelForProvider(normalizedAiProvider)
+    const providerModelError = validateAiProviderModelPair(normalizedAiProvider, normalizedAiModel)
+    if (providerModelError) {
+      return { error: providerModelError }
+    }
 
     mergedSettings.ai_search_provider = normalizedAiProvider
     mergedSettings.ai_search_model = normalizedAiModel

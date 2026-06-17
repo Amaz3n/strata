@@ -262,7 +262,6 @@ export function MobileBottomNav({
               badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
               requiredAny: ["pipeline.read", "pipeline.write"],
             },
-            { title: "Financial Control", url: "/financial-control", icon: Wallet, requiredAny: ["invoice.read"] },
             { title: "Directory", url: "/directory", icon: Building2, requiredAny: ["directory.read", "directory.write"] },
           ],
         },
@@ -293,13 +292,6 @@ export function MobileBottomNav({
       {
         label: "More",
         items: [
-          {
-            title: "Financial Control",
-            url: "/financial-control",
-            icon: Wallet,
-            isActive: pathname.startsWith("/financial-control"),
-            requiredAny: ["invoice.read"],
-          },
           {
             title: "Directory",
             url: "/directory",

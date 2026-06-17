@@ -49,8 +49,11 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
-import { DISCIPLINE_LABELS } from "@/lib/validation/drawings"
-import type { DrawingDiscipline } from "@/lib/validation/drawings"
+import {
+  DISCIPLINE_LABELS,
+  DRAWING_ISSUANCE_TYPE_LABELS,
+} from "@/lib/validation/drawings"
+import type { DrawingDiscipline, DrawingIssuanceType } from "@/lib/validation/drawings"
 import { DISCIPLINE_SORT_ORDER } from "@/lib/utils/drawing-utils"
 import {
   getDraftRevisionStatusAction,
@@ -75,6 +78,19 @@ interface RevisionReviewDialogProps {
 
 type SheetEdit = { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }
 
+const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
+  "revision",
+  "asi",
+  "bulletin",
+  "addendum",
+  "ifc_set",
+  "permit_set",
+  "bid_set",
+  "sketch",
+  "record_set",
+  "other",
+]
+
 export function RevisionReviewDialog({
   open,
   onOpenChange,
@@ -87,6 +103,10 @@ export function RevisionReviewDialog({
   const [processing, setProcessing] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const [label, setLabel] = useState("")
+  const [issuanceType, setIssuanceType] = useState<DrawingIssuanceType>("revision")
+  const [issuedDate, setIssuedDate] = useState("")
+  const [receivedFrom, setReceivedFrom] = useState("")
+  const [notes, setNotes] = useState("")
   const [edits, setEdits] = useState<Record<string, SheetEdit>>({})
   const [decisions, setDecisions] = useState<Record<string, boolean>>({})
   const [publishing, setPublishing] = useState(false)
@@ -100,6 +120,10 @@ export function RevisionReviewDialog({
       const data = await getRevisionDiffAction(revisionId)
       setDiff(data)
       setLabel((prev) => prev || data.revision.revision_label || "")
+      setIssuanceType((data.revision.issuance_type as DrawingIssuanceType | null) ?? "revision")
+      setIssuedDate(data.revision.issued_date?.slice(0, 10) ?? "")
+      setReceivedFrom(data.revision.received_from ?? "")
+      setNotes(data.revision.notes ?? "")
     } catch (err) {
       console.error("Failed to load revision diff:", err)
       toast.error("Failed to load revision for review")
@@ -140,7 +164,10 @@ export function RevisionReviewDialog({
           setLoading(false)
           return
         }
-        if (status.processing_stage === "failed") {
+        if (
+          status.processing_stage === "failed" ||
+          status.processing_stage === "worker_unavailable"
+        ) {
           setFailed(status.error_message || "Processing failed.")
           setProcessing(false)
           setLoading(false)
@@ -198,15 +225,19 @@ export function RevisionReviewDialog({
       await publishRevisionAction({
         revisionId,
         label: label.trim() || undefined,
+        issuanceType,
+        issuedDate: issuedDate || undefined,
+        receivedFrom: receivedFrom.trim() || undefined,
+        notes: notes.trim() || undefined,
         decisions,
         sheetEdits: edits,
       })
-      toast.success("Revision published")
+      toast.success("Issuance published")
       onPublished()
       onOpenChange(false)
     } catch (err) {
-      console.error("Failed to publish revision:", err)
-      toast.error(err instanceof Error ? err.message : "Failed to publish revision")
+      console.error("Failed to publish issuance:", err)
+      toast.error(err instanceof Error ? err.message : "Failed to publish issuance")
     } finally {
       setPublishing(false)
     }
@@ -233,10 +264,10 @@ export function RevisionReviewDialog({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[90vh] w-[min(1100px,96vw)] max-w-none flex-col overflow-hidden">
           <DialogHeader>
-            <DialogTitle>Review revision</DialogTitle>
+            <DialogTitle>Review issuance</DialogTitle>
             <DialogDescription>
               Nothing changes in the live drawings until you publish. Review what
-              this upload changes, then publish or discard it.
+              this package changes, then publish or discard it.
             </DialogDescription>
           </DialogHeader>
 
@@ -249,7 +280,7 @@ export function RevisionReviewDialog({
           ) : processing || (loading && !diff) ? (
             <div className="flex flex-col items-center gap-3 p-10 text-center">
               <RefreshCw className="h-6 w-6 animate-spin text-chart-1" />
-              <p className="text-sm font-medium">Processing your upload…</p>
+              <p className="text-sm font-medium">Processing your package…</p>
               <p className="text-xs text-muted-foreground">
                 We&apos;re rendering pages and detecting sheets. This stays a draft
                 until you publish.
@@ -267,15 +298,62 @@ export function RevisionReviewDialog({
             </div>
           ) : diff ? (
             <div className="flex-1 space-y-5 overflow-y-auto pr-1">
-              {/* Revision name */}
-              <div className="space-y-2">
-                <Label htmlFor="revision-label">Revision name</Label>
-                <Input
-                  id="revision-label"
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  placeholder="e.g. Permit Set, For Construction, 2026-06-10"
-                />
+              {/* Issuance metadata */}
+              <div className="grid gap-3 rounded-lg border bg-muted/20 p-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="revision-label">Package label</Label>
+                  <Input
+                    id="revision-label"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="e.g. Permit Set, ASI 03, Bulletin 02"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="issuance-type">Package type</Label>
+                  <Select
+                    value={issuanceType}
+                    onValueChange={(value) => setIssuanceType(value as DrawingIssuanceType)}
+                  >
+                    <SelectTrigger id="issuance-type" className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ISSUANCE_TYPE_ORDER.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {DRAWING_ISSUANCE_TYPE_LABELS[type]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="issued-date">Issued date</Label>
+                  <Input
+                    id="issued-date"
+                    type="date"
+                    value={issuedDate}
+                    onChange={(e) => setIssuedDate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="received-from">Received from</Label>
+                  <Input
+                    id="received-from"
+                    value={receivedFrom}
+                    onChange={(e) => setReceivedFrom(e.target.value)}
+                    placeholder="Architect, owner, consultant"
+                  />
+                </div>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label htmlFor="issuance-notes">Notes</Label>
+                  <Input
+                    id="issuance-notes"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Optional package notes"
+                  />
+                </div>
               </div>
 
               {/* Summary */}

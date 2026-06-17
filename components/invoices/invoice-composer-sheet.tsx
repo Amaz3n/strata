@@ -1,9 +1,9 @@
 "use client"
 
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
 import { CalendarIcon, Check, ChevronDown, Download, Plus, Search, Send, UserRound, X } from "lucide-react"
-import { NumberFlowLite, partitionParts } from "number-flow"
+import NumberFlow from "@number-flow/react"
 
 import type { ChangeOrder, Contact, CostCode, Invoice, Project } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
@@ -110,18 +110,6 @@ type QboDiagnostics = {
   connectionLastError: string | null
   refreshFailureCount: number
   accountLoadWarning: string | null
-}
-
-const NUMBER_FLOW_TAG = "number-flow"
-let isNumberFlowDefined = false
-
-function ensureNumberFlowDefined() {
-  if (isNumberFlowDefined) return
-  if (typeof window === "undefined" || typeof customElements === "undefined") return
-  if (!customElements.get(NUMBER_FLOW_TAG)) {
-    NumberFlowLite.define()
-  }
-  isNumberFlowDefined = true
 }
 
 function formatMoney(dollars: number) {
@@ -242,31 +230,14 @@ function DatePicker({ value, onChange, className }: { value: string; onChange: (
 }
 
 function AnimatedCurrency({ cents, className }: { cents: number; className?: string }) {
-  const flowRef = useRef<NumberFlowLite | null>(null)
-  const formatter = useMemo(
-    () =>
-      new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-      }),
-    [],
+  return (
+    <NumberFlow
+      value={cents / 100}
+      format={{ style: "currency", currency: "USD" }}
+      willChange
+      className={className}
+    />
   )
-
-  useEffect(() => {
-    ensureNumberFlowDefined()
-  }, [])
-
-  useEffect(() => {
-    if (!flowRef.current) return
-    flowRef.current.parts = partitionParts(cents / 100, formatter)
-  }, [cents, formatter])
-
-  return createElement("number-flow", {
-    ref: (el: unknown) => {
-      flowRef.current = el as NumberFlowLite | null
-    },
-    className,
-  })
 }
 
 function formatQboAccountLabel(account?: QBOIncomeAccountOption | null) {

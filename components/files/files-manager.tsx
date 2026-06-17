@@ -102,7 +102,7 @@ export function FilesManager({
 
   // Get previewable files for gallery navigation
   const previewableFiles = useMemo(
-    () => filteredFiles.filter((f) => isPreviewable(f.mime_type)),
+    () => filteredFiles.filter((f) => isPreviewable(f.mime_type, f.file_name)),
     [filteredFiles]
   )
 

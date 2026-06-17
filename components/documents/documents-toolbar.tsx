@@ -9,6 +9,7 @@ import {
   FolderInput,
   Trash2,
   Download,
+  CheckSquare,
   Plus,
   Upload,
   ListFilter,
@@ -85,62 +86,80 @@ export function DocumentsToolbar({
   return (
     <div className="flex flex-col gap-2">
       {hasFolderSelection ? (
-        <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
-          <span className="text-sm font-medium">
-            {selectedFolderCount} folder{selectedFolderCount === 1 ? "" : "s"} selected
-          </span>
-          {selectedFolderCount === 1 && (
-            <>
-              <Button variant="outline" size="sm" onClick={onOpenSelectedFolder}>
-                <FolderClosed className="h-4 w-4 mr-2" />
-                Open
-              </Button>
-              <Button variant="outline" size="sm" onClick={onRenameSelectedFolder}>
-                <FolderInput className="h-4 w-4 mr-2" />
-                Rename
-              </Button>
-              <Button variant="outline" size="sm" onClick={onShareSelectedFolder}>
-                <Plus className="h-4 w-4 mr-2" />
-                Share
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive hover:text-destructive"
-                onClick={onDeleteSelectedFolder}
-              >
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete
-              </Button>
-            </>
-          )}
-          <Button variant="ghost" size="sm" onClick={onClearSelection}>
-            Clear
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 shadow-sm">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <CheckSquare className="h-4 w-4" />
+            </span>
+            <Badge variant="secondary" className="h-7 px-2.5 text-xs font-semibold">
+              {selectedFolderCount} folder{selectedFolderCount === 1 ? "" : "s"}
+            </Badge>
+            <span className="text-sm font-medium text-foreground">selected</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {selectedFolderCount === 1 && (
+              <>
+                <Button variant="secondary" size="sm" className="h-8" onClick={onOpenSelectedFolder}>
+                  <FolderClosed className="h-4 w-4 mr-2" />
+                  Open
+                </Button>
+                <Button variant="secondary" size="sm" className="h-8" onClick={onRenameSelectedFolder}>
+                  <FolderInput className="h-4 w-4 mr-2" />
+                  Rename
+                </Button>
+                <Button variant="secondary" size="sm" className="h-8" onClick={onShareSelectedFolder}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Share
+                </Button>
+              </>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-destructive hover:text-destructive"
+              onClick={onDeleteSelectedFolder}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClearSelection} aria-label="Clear selection">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       ) : selectedCount > 0 ? (
-        <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
-          <span className="text-sm font-medium">{selectedCount} selected</span>
-          <Button variant="outline" size="sm" onClick={onDownloadSelected} disabled={isDownloadingSelected}>
-            <Download className="h-4 w-4 mr-2" />
-            {isDownloadingSelected ? "Downloading..." : "Download"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={onMoveSelected}>
-            <FolderInput className="h-4 w-4 mr-2" />
-            Move
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={onDeleteSelected}
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            Delete
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onClearSelection}>
-            Clear
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 shadow-sm">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <CheckSquare className="h-4 w-4" />
+            </span>
+            <Badge variant="secondary" className="h-7 px-2.5 text-xs font-semibold">
+              {selectedCount} file{selectedCount === 1 ? "" : "s"}
+            </Badge>
+            <span className="text-sm font-medium text-foreground">selected</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button variant="secondary" size="sm" className="h-8" onClick={onDownloadSelected} disabled={isDownloadingSelected}>
+              <Download className="h-4 w-4 mr-2" />
+              {isDownloadingSelected ? "Downloading..." : "Download"}
+            </Button>
+            <Button variant="secondary" size="sm" className="h-8" onClick={onMoveSelected}>
+              <FolderInput className="h-4 w-4 mr-2" />
+              Move
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-destructive hover:text-destructive"
+              onClick={onDeleteSelected}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClearSelection} aria-label="Clear selection">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       ) : null}
 

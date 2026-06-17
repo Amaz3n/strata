@@ -6,6 +6,7 @@ export interface ProjectExpenseLine {
   project_id?: string | null
   cost_code_id?: string | null
   cost_code?: { code?: string | null; name?: string | null } | null
+  budget_line_id?: string | null
   description?: string | null
   amount_cents: number
   qbo_expense_account_id?: string | null
@@ -40,6 +41,7 @@ export interface ProjectExpense {
   vendor_company?: { name?: string | null } | null
   cost_code_id?: string | null
   cost_code?: { code?: string | null; name?: string | null } | null
+  budget_line_id?: string | null
   lines?: ProjectExpenseLine[]
 }
 

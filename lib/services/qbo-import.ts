@@ -87,6 +87,12 @@ export type QboImportRecord = {
   qboCustomerId?: string | null
   qboCustomerName?: string | null
   /**
+   * Arc project the record's header customer auto-maps to via its QBO customer link, or null when
+   * unmapped. Drives the default destination for single-document types (invoices) in the import
+   * workspace; multi-line types resolve their destination per line instead.
+   */
+  suggestedProjectId?: string | null
+  /**
    * Every QBO customer/project this record touches (one per costed line for bills/expenses/JEs).
    * Drives the "filter import by QBO project" picker so a multi-project transaction surfaces under
    * each of its projects, not just the first line's.
@@ -644,6 +650,7 @@ export async function listImportableQboRecords({
           hasLinks: false,
           qboCustomerId: refValue(row.CustomerRef),
           qboCustomerName: refName(row.CustomerRef),
+          suggestedProjectId: suggestProjectForCustomer(refValue(row.CustomerRef)),
         })
       } else if (type === "expense") {
         const vendor = refName(row.EntityRef) ?? refName(row.AccountRef)
@@ -2532,24 +2539,30 @@ async function importClientDeposit(
  */
 export async function importQboRecords({
   orgId,
-  projectId,
   items,
 }: {
   orgId?: string
-  projectId: string
-  items: { qboId: string; entityType: QboImportEntityType; allocations?: Record<string, string> }[]
+  items: { qboId: string; entityType: QboImportEntityType; projectId?: string; allocations?: Record<string, string> }[]
 }): Promise<QboImportResult> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "bill.write", userId, orgId: resolvedOrgId, supabase, logDecision: true })
   await requireAuthorization({ permission: "invoice.write", userId, orgId: resolvedOrgId, supabase, logDecision: true })
 
-  const { data: project } = await supabase
-    .from("projects")
-    .select("id")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", projectId)
-    .maybeSingle()
-  if (!project?.id) throw new Error("Project not found")
+  // Each record carries its own destination project (org-wide import). Validate every distinct
+  // destination belongs to the org in one query. Payments derive their project from the linked
+  // document, so they may omit projectId.
+  const projectIds = Array.from(
+    new Set(items.map((item) => item.projectId).filter((id): id is string => Boolean(id))),
+  )
+  if (projectIds.length > 0) {
+    const { data: validProjects } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .in("id", projectIds)
+    const validIds = new Set((validProjects ?? []).map((row) => row.id))
+    if (projectIds.some((id) => !validIds.has(id))) throw new Error("Project not found")
+  }
 
   const connectionId = await getActiveConnectionId(supabase, resolvedOrgId)
   if (!connectionId) throw new Error("QuickBooks isn't connected for this organization.")
@@ -2587,19 +2600,23 @@ export async function importQboRecords({
 
   for (const item of ordered) {
     try {
+      // Project-bound types must name a destination; payments resolve theirs from the linked doc.
+      const isPayment = item.entityType === "payment" || item.entityType === "bill_payment"
+      if (!isPayment && !item.projectId) throw new Error("No destination project selected")
+      const dest = item.projectId as string
       let outcome: { skipped: boolean }
       switch (item.entityType) {
         case "invoice":
-          outcome = await importInvoice(ctx, client, connectionId, projectId, item.qboId)
+          outcome = await importInvoice(ctx, client, connectionId, dest, item.qboId)
           break
         case "expense":
-          outcome = await importExpense(ctx, client, connectionId, projectId, item.qboId, item.allocations)
+          outcome = await importExpense(ctx, client, connectionId, dest, item.qboId, item.allocations)
           break
         case "bill":
-          outcome = await importBill(ctx, client, connectionId, projectId, item.qboId, item.allocations)
+          outcome = await importBill(ctx, client, connectionId, dest, item.qboId, item.allocations)
           break
         case "vendor_credit":
-          outcome = await importVendorCredit(ctx, client, connectionId, projectId, item.qboId, item.allocations)
+          outcome = await importVendorCredit(ctx, client, connectionId, dest, item.qboId, item.allocations)
           break
         case "payment":
           outcome = await importPayment(ctx, client, connectionId, item.qboId)
@@ -2608,10 +2625,10 @@ export async function importQboRecords({
           outcome = await importBillPayment(ctx, client, connectionId, item.qboId)
           break
         case "journal_entry":
-          outcome = await importJournalEntry(ctx, client, connectionId, projectId, item.qboId, jeExpenseAccountIds, item.allocations)
+          outcome = await importJournalEntry(ctx, client, connectionId, dest, item.qboId, jeExpenseAccountIds, item.allocations)
           break
         case "client_deposit":
-          outcome = await importClientDeposit(ctx, client, connectionId, projectId, item.qboId, incomeAccountIds, item.allocations)
+          outcome = await importClientDeposit(ctx, client, connectionId, dest, item.qboId, incomeAccountIds, item.allocations)
           break
         default:
           throw new Error(`Unsupported entity type: ${item.entityType}`)

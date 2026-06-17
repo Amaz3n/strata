@@ -30,8 +30,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
-  ShieldCheck,
   Download,
+  Link2,
   ArrowUpDown,
   ChevronDown,
   ChevronUp,
@@ -136,6 +136,11 @@ function getDisplaySheetNumber(sheet: DrawingSheet): string {
   return rawNumber || "UNNAMED"
 }
 
+function getPrimarySourceContext(file: FileWithUrls) {
+  const contexts = file.source_contexts ?? []
+  return contexts.find((context) => context.type !== "manual_upload") ?? contexts[0] ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -166,7 +171,6 @@ export interface DocumentsFileTableProps {
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
-  onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
@@ -248,7 +252,6 @@ export function DocumentsFileTable({
   onShareFile,
   onUploadNewVersion,
   onSendForSignature,
-  onSendForApproval,
   onOpenProperties,
   onFileDragStart,
   onFileDragEnd,
@@ -345,7 +348,6 @@ export function DocumentsFileTable({
               onShareFile={onShareFile}
               onUploadNewVersion={onUploadNewVersion}
               onSendForSignature={onSendForSignature}
-              onSendForApproval={onSendForApproval}
               onOpenProperties={onOpenProperties}
               onFileDragStart={onFileDragStart}
               onFileDragEnd={onFileDragEnd}
@@ -523,7 +525,6 @@ const FileRow = memo(function FileRow({
   onShareFile,
   onUploadNewVersion,
   onSendForSignature,
-  onSendForApproval,
   onOpenProperties,
   onFileDragStart,
   onFileDragEnd,
@@ -540,7 +541,6 @@ const FileRow = memo(function FileRow({
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
-  onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
@@ -549,6 +549,8 @@ const FileRow = memo(function FileRow({
   const Icon = getFileIcon(file.mime_type ?? undefined)
   const isImage = file.mime_type?.startsWith("image/")
   const thumbnailUrl = file.thumbnail_url ?? (isImage ? file.download_url : undefined)
+  const primarySource = getPrimarySourceContext(file)
+  const hasSourceHref = Boolean(primarySource?.href)
 
   const isShared = file.share_with_clients || file.share_with_subs
   
@@ -606,7 +608,8 @@ const FileRow = memo(function FileRow({
         )}
       </TableCell>
       <TableCell className="hidden md:table-cell w-[184px]">
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-1">
           {file.status && file.status !== "draft" && (
             <TooltipProvider>
               <Tooltip>
@@ -684,6 +687,10 @@ const FileRow = memo(function FileRow({
               </Tooltip>
             </TooltipProvider>
           )}
+          {!file.status && !file.signature_status && !file.version_number && (
+            <span className="text-xs text-muted-foreground">-</span>
+          )}
+          </div>
         </div>
       </TableCell>
       <TableCell className="hidden lg:table-cell w-[128px]">
@@ -790,14 +797,10 @@ const FileRow = memo(function FileRow({
                   View signature...
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => onSendForApproval?.(file.id)}>
-                <CheckCircle2 className="h-4 w-4 mr-2" />
-                Submit for approval...
-              </DropdownMenuItem>
-              {file.status && file.status !== "draft" && (
-                <DropdownMenuItem onClick={() => {/* Stage 9 logic */}}>
-                  <ShieldCheck className="h-4 w-4 mr-2" />
-                  Approval workflow...
+              {hasSourceHref && (
+                <DropdownMenuItem onClick={() => primarySource?.href && router.push(primarySource.href)}>
+                  <Link2 className="h-4 w-4 mr-2" />
+                  {primarySource?.primary_action_label ?? "Open source"}
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />

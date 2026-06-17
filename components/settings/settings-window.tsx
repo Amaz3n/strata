@@ -144,7 +144,7 @@ const AI_PROVIDER_DEFAULT_MODELS: Record<AiProvider, string> = {
 const AI_PROVIDER_PRESET_MODELS: Record<AiProvider, string[]> = {
   openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
   anthropic: ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
-  google: ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-1.5-pro"],
+  google: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"],
 }
 
 const AI_CONFIG_SOURCE_LABELS: Record<AiConfigSource, string> = {

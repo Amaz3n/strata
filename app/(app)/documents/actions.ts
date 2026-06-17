@@ -57,6 +57,8 @@ import {
   type FileShareLink,
 } from "@/lib/services/file-share-links"
 import type { FinalizeUploadedFileInput } from "./types"
+import { downloadFilesObject } from "@/lib/storage/files-storage"
+import { suggestDocumentFileNameFromBytes } from "@/lib/services/document-ai-rename"
 
 /**
  * List files with optional filters
@@ -72,6 +74,39 @@ export async function listFilesAction(
  */
 export async function getFileAction(fileId: string): Promise<FileRecord | null> {
   return getFile(fileId)
+}
+
+export async function suggestFileNameAction(
+  fileId: string,
+): Promise<{ ok: true; fileName: string } | { ok: false; error: string }> {
+  try {
+    const { supabase, orgId } = await requireOrgContext()
+    const { data: file, error } = await supabase
+      .from("files")
+      .select("id, org_id, storage_path, file_name, mime_type")
+      .eq("org_id", orgId)
+      .eq("id", fileId)
+      .maybeSingle()
+
+    if (error || !file) {
+      return { ok: false, error: "File not found" }
+    }
+
+    const bytes = await downloadFilesObject({
+      supabase,
+      orgId,
+      path: file.storage_path,
+    })
+    const suggestion = await suggestDocumentFileNameFromBytes({
+      bytes,
+      fileName: file.file_name,
+      mimeType: file.mime_type,
+    })
+    return { ok: true, fileName: suggestion.suggestedFileName }
+  } catch (error: any) {
+    console.warn("[Documents] AI rename failed", error)
+    return { ok: false, error: error?.message ?? "Could not suggest a file name" }
+  }
 }
 
 /**

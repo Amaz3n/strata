@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   summarizeJobCostEntriesByCostCode,
   type JobCostActualByCostCode,
+  type JobCostGroupBy,
 } from "@/lib/financials/job-cost-rules"
 import { requireOrgContext } from "@/lib/services/context"
 
@@ -20,6 +21,7 @@ export interface JobCostEntry {
   org_id: string
   project_id: string
   cost_code_id?: string | null
+  budget_line_id?: string | null
   source_type: JobCostSourceType
   source_id: string
   incurred_on: string
@@ -74,6 +76,7 @@ async function upsertJobCostEntry(
     org_id: string
     project_id: string
     cost_code_id?: string | null
+    budget_line_id?: string | null
     source_type: JobCostSourceType
     source_id: string
     incurred_on: string
@@ -92,6 +95,7 @@ async function upsertJobCostEntry(
   const row = {
     ...payload,
     cost_code_id: payload.cost_code_id ?? null,
+    budget_line_id: payload.budget_line_id ?? null,
     incurred_on: toDateOnly(payload.incurred_on),
     cost_cents: Math.round(payload.cost_cents),
     status: payload.status ?? "posted",
@@ -119,7 +123,7 @@ export async function postJobCostEntryFromBillLine(args: { billLineId: string; o
   const { data: line, error } = await supabase
     .from("bill_lines")
     .select(`
-      id, org_id, bill_id, project_id, cost_code_id, description, quantity, unit_cost_cents, metadata,
+      id, org_id, bill_id, project_id, cost_code_id, budget_line_id, description, quantity, unit_cost_cents, metadata,
       bill:vendor_bills(id, org_id, project_id, bill_number, bill_date, status, approved_at, created_at)
     `)
     .eq("org_id", resolvedOrgId)
@@ -148,6 +152,7 @@ export async function postJobCostEntryFromBillLine(args: { billLineId: string; o
     org_id: resolvedOrgId,
     project_id: lineProjectId,
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: (line as any).budget_line_id ?? null,
     source_type: "vendor_bill_line",
     source_id: line.id,
     incurred_on: bill.bill_date ?? bill.approved_at ?? bill.created_at,
@@ -191,6 +196,7 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
     org_id: resolvedOrgId,
     project_id: expense.project_id,
     cost_code_id: expense.cost_code_id ?? null,
+    budget_line_id: expense.budget_line_id ?? null,
     source_type: "project_expense",
     source_id: expense.id,
     incurred_on: expense.expense_date,
@@ -215,7 +221,7 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
   const { data: line, error } = await supabase
     .from("project_expense_lines")
     .select(`
-      id, org_id, expense_id, project_id, cost_code_id, description, amount_cents, metadata,
+      id, org_id, expense_id, project_id, cost_code_id, budget_line_id, description, amount_cents, metadata,
       expense:project_expenses(id, org_id, project_id, expense_date, status, vendor_company_id, vendor_name_text, receipt_file_id)
     `)
     .eq("org_id", resolvedOrgId)
@@ -243,6 +249,7 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
     org_id: resolvedOrgId,
     project_id: lineProjectId,
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: (line as any).budget_line_id ?? null,
     source_type: "project_expense_line",
     source_id: line.id,
     incurred_on: expense.expense_date,
@@ -288,6 +295,7 @@ export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string;
     org_id: resolvedOrgId,
     project_id: entry.project_id,
     cost_code_id: entry.cost_code_id ?? null,
+    budget_line_id: entry.budget_line_id ?? null,
     source_type: "time_entry",
     source_id: entry.id,
     incurred_on: entry.work_date,
@@ -366,17 +374,19 @@ export async function getProjectJobCostActualsByCostCode({
   projectId,
   orgId,
   supabase: providedSupabase,
+  groupBy = "cost_code",
 }: {
   projectId: string
   orgId?: string
   supabase?: SupabaseClient
+  groupBy?: JobCostGroupBy
 }): Promise<JobCostActualByCostCode[]> {
   const context = providedSupabase ? { supabase: providedSupabase, orgId: orgId as string } : await requireOrgContext(orgId)
   if (!context.orgId) throw new Error("Organization is required to load job-cost actuals")
   const { supabase, orgId: resolvedOrgId } = context
   const { data, error } = await supabase
     .from("job_cost_entries")
-    .select("org_id, cost_code_id, source_type, source_id, cost_cents, status, is_billable")
+    .select("org_id, cost_code_id, budget_line_id, source_type, source_id, cost_cents, status, is_billable")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .eq("status", "posted")
@@ -385,5 +395,5 @@ export async function getProjectJobCostActualsByCostCode({
     throw new Error(`Failed to load job-cost actuals: ${error.message}`)
   }
 
-  return summarizeJobCostEntriesByCostCode(data ?? [])
+  return summarizeJobCostEntriesByCostCode(data ?? [], groupBy)
 }

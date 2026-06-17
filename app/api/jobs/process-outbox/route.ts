@@ -17,6 +17,8 @@ import {
 } from "@/lib/storage/drawings-tiles-storage"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
+import { reindexEntity, removeFromIndex } from "@/lib/services/search-index"
+import type { SearchEntityType } from "@/lib/services/search-config"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
 // These are complete implementations that PDF.js needs for proper rendering
@@ -460,7 +462,7 @@ async function processOutboxQueue(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "send_daily_log_mention_email", "refresh_drawing_sheets_list", "index_file", "generate_file_preview"])
+    .in("job_type", ["deliver_notification", "send_daily_log_mention_email", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index"])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -493,6 +495,10 @@ async function processOutboxQueue(request: NextRequest) {
         await indexFileJob(supabase, job)
       } else if (job.job_type === "generate_file_preview") {
         await generateFilePreviewJob(supabase, job)
+      } else if (job.job_type === "reindex_search") {
+        await reindexSearchJob(supabase, job)
+      } else if (job.job_type === "remove_search_index") {
+        await removeSearchIndexJob(supabase, job)
       } else if (job.job_type === "generate_drawing_tiles" || job.job_type === "process_drawing_set") {
         // Skip drawing jobs - these are now handled by the Cloud Run worker
         console.log(`Skipping ${job.job_type} job ${job.id} - handled by Cloud Run worker`)
@@ -721,6 +727,29 @@ async function sendDailyLogMentionEmailJob(supabase: ReturnType<typeof createSer
   })
 }
 
+function readSearchIndexJobRef(job: any): { entityType: SearchEntityType; entityId: string } {
+  const payload = job.payload ?? {}
+  const entityType = typeof payload.entity_type === "string" ? (payload.entity_type as SearchEntityType) : null
+  const entityId = typeof payload.entity_id === "string" ? payload.entity_id : null
+  if (!entityType || !entityId) {
+    throw new Error("Missing entity_type/entity_id for search index job")
+  }
+  if (!job.org_id) {
+    throw new Error("Missing org_id for search index job")
+  }
+  return { entityType, entityId }
+}
+
+async function reindexSearchJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const { entityType, entityId } = readSearchIndexJobRef(job)
+  await reindexEntity({ orgId: job.org_id, entityType, entityId }, supabase)
+}
+
+async function removeSearchIndexJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const { entityType, entityId } = readSearchIndexJobRef(job)
+  await removeFromIndex({ orgId: job.org_id, entityType, entityId }, supabase)
+}
+
 async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   const payload = job.payload ?? {}
   const fileId = typeof payload.fileId === "string" ? payload.fileId : null
@@ -782,6 +811,36 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       lowerFileName.endsWith(".heif") ||
       lowerStoragePath.endsWith(".heic") ||
       lowerStoragePath.endsWith(".heif")
+    const isDocx =
+      mimeType.toLowerCase() ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      lowerFileName.endsWith(".docx") ||
+      lowerStoragePath.endsWith(".docx")
+
+    // Word documents render to a self-contained HTML preview rather than an image thumbnail.
+    if (isDocx) {
+      const { convertDocxToPreviewHtml } = await import("@/lib/services/word-preview")
+      const { html } = await convertDocxToPreviewHtml(sourceBytes)
+      const safeBaseName = file.file_name.replace(/[^a-zA-Z0-9.-]/g, "_")
+      const htmlPath = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}/${Date.now()}_${safeBaseName}.html`
+      await uploadFilesObject({
+        supabase,
+        orgId: file.org_id,
+        path: htmlPath,
+        bytes: new TextEncoder().encode(html),
+        contentType: "text/html; charset=utf-8",
+        cacheControl: "private, max-age=86400",
+      })
+      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+        status: "ready",
+        kind: "html",
+        html_path: htmlPath,
+        content_type: "text/html",
+        generated_at: new Date().toISOString(),
+      })
+      return
+    }
+
     const preview =
       mimeType.startsWith("image/") || isHeic
         ? isHeic

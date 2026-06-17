@@ -6,6 +6,7 @@ const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/b/", "/d/", "/
 const PUBLIC_API_ROUTES = [
   "/api/esign/executed/",
   "/api/jobs/process-outbox",
+  "/api/jobs/backfill-search-index",
   "/api/jobs/rbac-evidence",
   "/api/webhooks/stripe",
   // QBO infra routes — no user session; they self-authenticate via CRON_SECRET

@@ -5,6 +5,7 @@ import {
   useMemo,
   useState,
   useTransition,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import Link from "next/link";
@@ -41,6 +42,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { CompanyForm } from "@/components/companies/company-form";
 import { ContactForm } from "@/components/contacts/contact-form";
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet";
@@ -734,21 +741,30 @@ export function CompanyDetailPage({
         </div>
       ) : null}
 
-      <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Edit company</DialogTitle>
-            <DialogDescription>
+      <Sheet open={editOpen} onOpenChange={setEditOpen}>
+        <SheetContent
+          side="right"
+          mobileFullscreen
+          className="gap-0 p-0 sm:max-w-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col fast-sheet-animation"
+          style={{ animationDuration: "150ms", transitionDuration: "150ms" } as CSSProperties}
+        >
+          <div className="border-b px-6 pt-6 pb-4">
+            <SheetTitle className="text-lg font-semibold leading-none tracking-tight">
+              Edit company
+            </SheetTitle>
+            <SheetDescription className="mt-1.5 text-sm text-muted-foreground">
               Update company profile, payment defaults, and notes.
-            </DialogDescription>
-          </DialogHeader>
-          <CompanyForm
-            company={company}
-            onSubmitted={() => setEditOpen(false)}
-            onCancel={() => setEditOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
+            </SheetDescription>
+          </div>
+          <div className="min-h-0 flex-1 px-6 py-4">
+            <CompanyForm
+              company={company}
+              onSubmitted={() => setEditOpen(false)}
+              onCancel={() => setEditOpen(false)}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <Dialog open={contactCreateOpen} onOpenChange={setContactCreateOpen}>
         <DialogContent className="max-w-2xl">

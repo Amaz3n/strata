@@ -46,6 +46,7 @@ async function FinancialsPayablesData({ id }: { id: string }) {
         projectId={project.id}
         vendorBills={data.vendorBills}
         costCodes={data.costCodes}
+        budgetLines={data.budgetLines}
         costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
         billingModel={setupStatus.billingModel}
         complianceRules={data.complianceRules}

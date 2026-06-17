@@ -12,21 +12,27 @@ import type { InvoiceBackupPackage } from "@/lib/services/owner-billing-packages
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { createPortalInvoicePaymentIntentAction } from "./actions"
+import type { PaymentFeeQuote } from "@/lib/payments/fees"
 
 interface Props {
   token: string
   invoice: Invoice
   portalType?: "client" | "sub"
-  payment?: {
-    clientSecret: string
-    publishableKey: string
-    token: string
-    connectedAccountId?: string | null
-  } | null
+  payment?: PortalPaymentProps | null
   receipts?: Receipt[] | null
   costDetails?: Array<BillableCost & { source_company_name?: string | null; source_status?: string | null; proof_file_id?: string | null }> | null
   backupPackages?: InvoiceBackupPackage[] | null
   proofErrors?: string[]
+}
+
+type PortalPaymentProps = {
+  publishableKey: string
+  portalToken: string
+  feeQuotes: {
+    ach: PaymentFeeQuote
+    card: PaymentFeeQuote
+  }
 }
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -108,27 +114,19 @@ function getStripeAppearance(isDark: boolean): Appearance {
 }
 
 function PaymentForm({
-  invoice,
+  quote,
   token,
-  isDark,
+  invoiceId,
 }: {
-  invoice: Invoice
+  quote: PaymentFeeQuote
   token: string
-  isDark: boolean
+  invoiceId: string
 }) {
   const stripe = useStripe()
   const elements = useElements()
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
-  const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
-  const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
-  const businessName =
-    typeof (invoice.metadata as Record<string, any> | undefined)?.org_name === "string"
-      ? ((invoice.metadata as Record<string, any>).org_name as string)
-      : "Invoice payment"
 
   const handleSubmit = async () => {
     setError(null)
@@ -137,15 +135,11 @@ function PaymentForm({
       setError("Payment form not ready yet.")
       return
     }
-    if (isPaid) {
-      setMessage("This invoice is already paid.")
-      return
-    }
     setIsSubmitting(true)
     const { error: stripeError, paymentIntent } = await stripe.confirmPayment({
       elements,
       confirmParams: {
-        return_url: `${window.location.origin}/p/${token}/invoices/${invoice.id}?status=success`,
+        return_url: `${window.location.origin}/p/${token}/invoices/${invoiceId}?status=success`,
       },
       redirect: "if_required",
     })
@@ -156,7 +150,8 @@ function PaymentForm({
       return
     }
     if (paymentIntent?.status === "succeeded" || paymentIntent?.status === "processing") {
-      setMessage("Payment submitted successfully.")
+      setMessage(paymentIntent.status === "processing" ? "Payment is processing. This page will refresh shortly." : "Payment submitted successfully. This page will refresh shortly.")
+      window.setTimeout(() => window.location.reload(), 2500)
     } else {
       setMessage(`Payment status: ${paymentIntent?.status ?? "unknown"}`)
     }
@@ -164,10 +159,25 @@ function PaymentForm({
 
   return (
     <div className="space-y-6">
+      <div className="space-y-2 border bg-muted/30 p-4 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">Invoice balance</span>
+          <span>{formatMoneyFromCents(quote.invoiceBalanceCents)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">{quote.label} processing fee</span>
+          <span>{formatMoneyFromCents(quote.feeCents)}</span>
+        </div>
+        <Separator />
+        <div className="flex items-center justify-between font-semibold">
+          <span>Total charged</span>
+          <span>{formatMoneyFromCents(quote.totalCents)}</span>
+        </div>
+      </div>
+
       <PaymentElement
         options={{
           layout: "tabs",
-          business: { name: businessName },
         }}
       />
 
@@ -185,18 +195,16 @@ function PaymentForm({
 
       <Button
         className="w-full h-11"
-        disabled={isSubmitting || isPaid || !stripe}
+        disabled={isSubmitting || !stripe}
         onClick={handleSubmit}
       >
-        {isPaid ? (
-          "Already paid"
-        ) : isSubmitting ? (
+        {isSubmitting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
             Processing...
           </>
         ) : (
-          `Pay ${formatMoneyFromCents(balanceCents)}`
+          `Pay ${formatMoneyFromCents(quote.totalCents)}`
         )}
       </Button>
 
@@ -213,14 +221,15 @@ function PaymentSection({
   payment,
 }: {
   invoice: Invoice
-  payment: {
-    clientSecret: string
-    publishableKey: string
-    token: string
-    connectedAccountId?: string | null
-  }
+  payment: PortalPaymentProps
 }) {
   const [isDark, setIsDark] = useState(false)
+  const [selectedQuote, setSelectedQuote] = useState<PaymentFeeQuote | null>(null)
+  const [clientSecret, setClientSecret] = useState<string | null>(null)
+  const [stripeAccountId, setStripeAccountId] = useState<string | null>(null)
+  const [isCreatingIntent, setIsCreatingIntent] = useState(false)
+  const [intentError, setIntentError] = useState<string | null>(null)
+  const [unavailableMethods, setUnavailableMethods] = useState<Array<PaymentFeeQuote["method"]>>([])
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -234,39 +243,130 @@ function PaymentSection({
   }, [])
 
   const stripePromise = useMemo(
-    () => loadStripe(payment.publishableKey, payment.connectedAccountId ? { stripeAccount: payment.connectedAccountId } : undefined),
-    [payment.publishableKey, payment.connectedAccountId],
+    () => loadStripe(payment.publishableKey, stripeAccountId ? { stripeAccount: stripeAccountId } : undefined),
+    [payment.publishableKey, stripeAccountId],
   )
   const appearance = useMemo(() => getStripeAppearance(isDark), [isDark])
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
   const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
+  const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
+  const availableQuotes = useMemo(
+    () => [payment.feeQuotes.ach, payment.feeQuotes.card].filter((quote) => quote.enabled),
+    [payment.feeQuotes.ach, payment.feeQuotes.card],
+  )
+
+  async function handleMethodSelect(quote: PaymentFeeQuote) {
+    if (!quote.enabled || isPaid || isCreatingIntent || unavailableMethods.includes(quote.method)) return
+    setSelectedQuote(quote)
+    setClientSecret(null)
+    setStripeAccountId(null)
+    setIntentError(null)
+    setIsCreatingIntent(true)
+    try {
+      const intent = await createPortalInvoicePaymentIntentAction({
+        portalToken: payment.portalToken,
+        invoiceId: invoice.id,
+        method: quote.method,
+      })
+      if (!intent.client_secret) {
+        throw new Error("Stripe did not return a payment form secret.")
+      }
+      setClientSecret(intent.client_secret)
+      setStripeAccountId(intent.connected_account_id ?? null)
+    } catch (err) {
+      setUnavailableMethods((current) => (current.includes(quote.method) ? current : [...current, quote.method]))
+      setIntentError(
+        err instanceof Error
+          ? err.message
+          : `${quote.label} is unavailable. Try another payment method or contact the sender.`,
+      )
+    } finally {
+      setIsCreatingIntent(false)
+    }
+  }
+
+  function renderMethodButton(quote: PaymentFeeQuote) {
+    const isSelected = selectedQuote?.method === quote.method
+    const unavailable = unavailableMethods.includes(quote.method)
+    const disabled = !quote.enabled || unavailable || isPaid || isCreatingIntent
+    return (
+      <button
+        type="button"
+        key={quote.method}
+        disabled={disabled}
+        onClick={() => handleMethodSelect(quote)}
+        className={[
+          "w-full border p-4 text-left transition-all",
+          isSelected ? "border-primary bg-primary/[0.04] ring-1 ring-primary" : "bg-background hover:border-foreground/25 hover:bg-muted/40",
+          disabled ? "cursor-not-allowed opacity-60" : "",
+        ].join(" ")}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-medium leading-tight">{quote.label}</p>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {unavailable ? "Unavailable for this builder's Stripe account." : quote.disclosure}
+            </p>
+          </div>
+          <span className="shrink-0 font-semibold tabular-nums">{formatMoneyFromCents(quote.totalCents)}</span>
+        </div>
+        <div className="mt-3 flex items-center justify-between border-t border-dashed pt-3 text-sm">
+          <span className="text-muted-foreground">
+            Total {quote.feeCents > 0 ? `incl. ${formatMoneyFromCents(quote.feeCents)} fee` : "- no fee"}
+          </span>
+          <span className="capitalize text-muted-foreground">{quote.method}</span>
+        </div>
+      </button>
+    )
+  }
 
   return (
-    <Elements
-      stripe={stripePromise}
-      options={{
-        clientSecret: payment.clientSecret,
-        appearance,
-      }}
-    >
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="font-semibold">Pay invoice</h3>
-            <p className="text-sm text-muted-foreground">Select a payment method</p>
-          </div>
-          <div className="text-right">
-            <p className="text-xs text-muted-foreground">Amount due</p>
-            <p className="text-xl font-semibold">{formatMoneyFromCents(balanceCents)}</p>
-          </div>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold">Pay invoice</h3>
+          <p className="text-sm text-muted-foreground">
+            {availableQuotes.length > 0 ? "Select an available payment method" : "Online payments are not enabled for this invoice"}
+          </p>
         </div>
-
-        <Separator />
-
-        <PaymentForm invoice={invoice} token={payment.token} isDark={isDark} />
+        <div className="text-right">
+          <p className="text-xs text-muted-foreground">Amount due</p>
+          <p className="text-xl font-semibold">{formatMoneyFromCents(balanceCents)}</p>
+        </div>
       </div>
-    </Elements>
+
+      <Separator />
+
+      {availableQuotes.length > 0 ? (
+        <div className="grid gap-2.5">{availableQuotes.map(renderMethodButton)}</div>
+      ) : null}
+
+      {isCreatingIntent && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Preparing secure payment form...
+        </div>
+      )}
+      {intentError && (
+        <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
+          {intentError}
+        </div>
+      )}
+
+      {selectedQuote && clientSecret ? (
+        <Elements
+          key={clientSecret}
+          stripe={stripePromise}
+          options={{
+            clientSecret,
+            appearance,
+          }}
+        >
+          <PaymentForm quote={selectedQuote} token={payment.portalToken} invoiceId={invoice.id} />
+        </Elements>
+      ) : null}
+    </div>
   )
 }
 
@@ -442,10 +542,11 @@ export function InvoicePortalClient({ token, invoice, portalType = "client", pay
             <div className="space-y-3">
               {invoice.lines && invoice.lines.length > 0 ? (
                 invoice.lines.map((line, idx) => {
-                  const linkedCostIds = ((line as any).metadata?.billable_cost_ids ?? []) as string[]
+                  const linkedCostIds = (line.billable_cost_ids ?? (line as any).metadata?.billable_cost_ids ?? []) as string[]
                   const lineCosts = linkedCostIds.length
                     ? openBookCosts.filter((cost) => linkedCostIds.includes(cost.id))
                     : []
+                  const lineTotalCents = Math.round(Number(line.quantity ?? 0) * Number(line.unit_cost_cents ?? 0))
                   return (
                   <div key={idx} className="py-2">
                     <div className="flex items-start justify-between gap-4">
@@ -457,7 +558,7 @@ export function InvoicePortalClient({ token, invoice, portalType = "client", pay
                         </p>
                       </div>
                       <p className="text-sm font-medium shrink-0">
-                        {formatMoneyFromCents(line.unit_cost_cents)}
+                        {formatMoneyFromCents(lineTotalCents)}
                       </p>
                     </div>
                     {lineCosts.length > 0 ? (

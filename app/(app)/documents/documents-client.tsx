@@ -86,7 +86,7 @@ import {
   getVersionDownloadUrlAction,
   listFileAccessEventsAction,
   listFileLinkSummaryAction,
-} from "./types"
+} from "./actions"
 import type { FileWithUrls, FileUpdate, FileVersion, FileAccessEvent } from "./types"
 import { FileMetadataSheet } from "./file-metadata-sheet"
 import type { FileVersionInfo } from "@/components/files/version-history-panel"
@@ -354,7 +354,7 @@ export function DocumentsCenterClient({
 
   // Get previewable files for gallery navigation
   const previewableFiles = useMemo(
-    () => mappedFiles.filter((f) => isPreviewable(f.mime_type)),
+    () => mappedFiles.filter((f) => isPreviewable(f.mime_type, f.file_name)),
     [mappedFiles]
   )
 

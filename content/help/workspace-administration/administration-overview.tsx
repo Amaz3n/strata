@@ -4,34 +4,52 @@ export default function AdministrationOverviewArticle() {
   return (
     <>
       <p>
-        Workspace Administration covers organization-wide settings, users, permissions,
-        billing, notifications, appearance, and security.
+        Workspace Administration is the central hub for managing your company&apos;s account in Arc. 
+        It gives company owners, executives, and designated administrators control over organizational settings, 
+        user security permissions, subscription billing, and external accounting integrations. 
+        Setting up these defaults correctly ensures that your projects run smoothly, brand guidelines are met, 
+        and financial data is secure.
       </p>
-      <h2>Organization and profile settings</h2>
+
+      <h2>Key Administrative Controls</h2>
       <p>
-        Open <Link href="/settings">Settings</Link> to manage your profile and the settings
-        available to your role. Organization settings affect the shared workspace.
+        Workspace administrative workflows are divided into three core categories:
       </p>
-      <h2>Roles and permissions</h2>
+
+      <h3>1. Company Profile &amp; Project Defaults</h3>
       <p>
-        Roles define a user&apos;s general place in the organization. Permission presets
-        control the records and actions they can access. Apply the least access needed for
-        the person&apos;s responsibilities.
+        Navigate to <strong>Settings → Profile</strong> to configure standard configurations that apply across all projects:
       </p>
-      <h2>Billing and integrations</h2>
+      <ul>
+        <li>
+          <strong>Branding &amp; Logos:</strong> Upload your company logo and select your brand color. This logo automatically appears on all customer-facing PDF exports, submittals, RFI sheets, budget reports, and in the Client and Subcontractor Portals.
+        </li>
+        <li>
+          <strong>Standard CSI Cost Codes:</strong> Pre-populate your workspace with standard CSI Division codes (16-Division or 50-Division templates) or upload your custom corporate chart of accounts. This structure serves as the foundation for building new project budgets.
+        </li>
+        <li>
+          <strong>Document Templates:</strong> Define default contract terms for subcontracts and purchase orders, and upload standard lien waiver templates to automate verification processes.
+        </li>
+      </ul>
+
+      <h3>2. Team &amp; Access Controls</h3>
       <p>
-        Authorized administrators can manage the Arc subscription, payment method, and
-        connected services.
+        Invite your team, manage user roles, and apply fine-grained permission overrides to control who can view financial details or approve daily logs.
+        {" "}
+        <Link href="/help/workspace-administration/settings-and-access/team-permissions">
+          Read the Team &amp; Permissions Guide
+        </Link>
+        .
       </p>
-      <h2>Notifications and appearance</h2>
+
+      <h3>3. Subscription &amp; Billing</h3>
       <p>
-        Users can adjust notification preferences and visual settings where those options
-        are available.
-      </p>
-      <h2>Account security</h2>
-      <p>
-        Protect accounts with unique credentials and multi-factor authentication when
-        enabled. Remove or suspend access promptly when a teammate no longer needs Arc.
+        Update payment methods via Stripe, download historical Arc invoices, and manage QuickBooks Online integration sync statuses.
+        {" "}
+        <Link href="/help/workspace-administration/settings-and-access/subscription-billing">
+          Read the Subscription &amp; Billing Guide
+        </Link>
+        .
       </p>
     </>
   )

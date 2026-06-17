@@ -23,6 +23,7 @@ import { usePageTitle } from "./page-title-context"
 export type AppBreadcrumbItem = {
   label: string
   href?: string
+  onClick?: () => void
 }
 
 /**
@@ -118,7 +119,6 @@ const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
   "change-orders": "Change Orders",
   invoices: "Invoices",
   payments: "Payments",
-  "financial-control": "Financial Control",
   signatures: "Signatures",
   emails: "Emails",
   warranty: "Warranty",
@@ -183,6 +183,16 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
                     <BreadcrumbPage>
                       <SlidingLabel label={item.label} />
                     </BreadcrumbPage>
+                  ) : item.onClick ? (
+                    <BreadcrumbLink
+                      href={item.href ?? "#"}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        item.onClick?.()
+                      }}
+                    >
+                      <SlidingLabel label={item.label} />
+                    </BreadcrumbLink>
                   ) : item.href ? (
                     <BreadcrumbLink href={item.href}>
                       <SlidingLabel label={item.label} />

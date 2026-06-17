@@ -2,6 +2,9 @@ import "server-only"
 
 import { z } from "zod"
 
+import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+
 const MAX_RECEIPT_EXTRACTION_SIZE = 10 * 1024 * 1024
 const SUPPORTED_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"])
 
@@ -93,7 +96,7 @@ export interface ExtractedPayableInvoice {
   model: string
 }
 
-export async function extractExpenseReceiptFromFile(file: File): Promise<ExtractedExpenseReceipt> {
+export async function extractExpenseReceiptFromFile(file: File, options: { orgId?: string } = {}): Promise<ExtractedExpenseReceipt> {
   if (!file || file.size === 0) throw new Error("Choose a receipt to scan")
   if (file.size > MAX_RECEIPT_EXTRACTION_SIZE) {
     throw new Error("Receipt scanning supports files up to 10MB")
@@ -110,7 +113,7 @@ export async function extractExpenseReceiptFromFile(file: File): Promise<Extract
     throw new Error("Receipt scanning is not configured")
   }
 
-  const model = getReceiptVisionModel()
+  const model = await getReceiptVisionModel(options.orgId)
   const rawText = await generateGeminiReceiptExtraction({
     apiKey,
     model,
@@ -132,7 +135,7 @@ export async function extractExpenseReceiptFromFile(file: File): Promise<Extract
   }
 }
 
-export async function extractPayableInvoiceFromFile(file: File): Promise<ExtractedPayableInvoice> {
+export async function extractPayableInvoiceFromFile(file: File, options: { orgId?: string } = {}): Promise<ExtractedPayableInvoice> {
   if (!file || file.size === 0) throw new Error("Choose an invoice to scan")
   if (file.size > MAX_RECEIPT_EXTRACTION_SIZE) {
     throw new Error("Invoice scanning supports files up to 10MB")
@@ -149,7 +152,7 @@ export async function extractPayableInvoiceFromFile(file: File): Promise<Extract
     throw new Error("Invoice scanning is not configured")
   }
 
-  const model = getReceiptVisionModel()
+  const model = await getReceiptVisionModel(options.orgId)
   const rawText = await generateGeminiExtraction({
     apiKey,
     model,
@@ -235,8 +238,22 @@ function getGeminiApiKey() {
   return process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim() || null
 }
 
-function getReceiptVisionModel() {
+async function getReceiptVisionModel(_orgId?: string) {
+  try {
+    const config = await getPlatformAiFeatureDefaultConfig({
+      supabase: createServiceSupabaseClient(),
+      feature: "document_extraction",
+    })
+    if (config.provider === "google" && config.model.trim()) {
+      return config.model.trim()
+    }
+  } catch (error) {
+    console.warn("[ReceiptExtraction] Failed to load platform AI defaults", error)
+  }
+
   return (
+    process.env.DOCUMENT_EXTRACTION_MODEL_DEFAULT ||
+    process.env.GOOGLE_DOCUMENT_EXTRACTION_MODEL ||
     process.env.RECEIPT_VISION_MODEL ||
     process.env.GEMINI_RECEIPT_MODEL ||
     process.env.DRAWINGS_VISION_MODEL ||

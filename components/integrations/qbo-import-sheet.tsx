@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Check, ChevronsUpDown, Download, ExternalLink, Link2, Plug, Search, X } from "lucide-react"
+import { Check, ChevronRight, ChevronsUpDown, Download, ExternalLink, Link2, Plug, Search, X } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -19,12 +19,6 @@ import type {
   QboImportRecord,
   QboImportLine,
 } from "@/lib/services/qbo-import"
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -37,7 +31,6 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandSeparator,
 } from "@/components/ui/command"
 import {
   Select,
@@ -47,19 +40,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
 import { cn } from "@/lib/utils"
 
-type Props = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  projectId: string
-  projectName?: string | null
-}
-
 type QboImportPanelProps = {
+  /** When false, the panel skips loading (it lives in a tab that mounts only when active). */
   active?: boolean
+  /** Context project: defaults the project filter + the fallback header project for multi-line records. */
   projectId: string
   projectName?: string | null
   onCancel?: () => void
@@ -75,6 +62,14 @@ const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "journal_entry", label: "Journal entries" },
   { key: "client_deposit", label: "Client deposits (historical)" },
 ]
+
+const SECTION_LABEL: Record<QboImportEntityType, string> = SECTIONS.reduce(
+  (acc, section) => {
+    acc[section.key] = section.label
+    return acc
+  },
+  {} as Record<QboImportEntityType, string>,
+)
 
 const LOOKBACK_OPTIONS: { value: string; label: string; days: number | null }[] = [
   { value: "90", label: "Last 90 days", days: 90 },
@@ -107,6 +102,14 @@ function rowKey(record: { entityType: QboImportEntityType; qboId: string }) {
   return `${record.entityType}:${record.qboId}`
 }
 
+function isPaymentType(type: QboImportEntityType) {
+  return type === "payment" || type === "bill_payment"
+}
+
+function hasAllocatableLines(record: QboImportRecord) {
+  return Boolean(record.lines && record.lines.length > 0)
+}
+
 function formatMoney(cents: number) {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
@@ -132,27 +135,15 @@ function sinceDateFor(value: string): string | null {
   return d.toISOString().split("T")[0]
 }
 
-export function QboImportSheet({ open, onOpenChange, projectId, projectName }: Props) {
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        mobileFullscreen
-        className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
-      >
-        <SheetHeader className="space-y-1 border-b px-6 pb-5 pt-6">
-          <SheetTitle className="text-lg">Import from QuickBooks</SheetTitle>
-          <SheetDescription className="text-left">
-            Select unmatched QuickBooks transactions and import them into {projectName ?? "this project"}.
-          </SheetDescription>
-        </SheetHeader>
-        <QboImportPanel active={open} projectId={projectId} projectName={projectName} onCancel={() => onOpenChange(false)} />
-      </SheetContent>
-    </Sheet>
-  )
-}
-
-export function QboImportPanel({ active = true, projectId, projectName, onCancel }: QboImportPanelProps) {
+/**
+ * QuickBooks import grid — the body of the "Import" tab inside `QboSyncSheet` (the sheet widens when
+ * this tab is active to make the grid usable). The context project defaults the left filter and is
+ * the multi-line header fallback, but every record is importable into its own project (org-wide).
+ * Records group by type; the **destination project is an always-visible, inline-editable column** so
+ * nothing files silently. Rows auto-fill from the QBO customer→project link; anything unmapped shows
+ * an amber "assign" and blocks import until resolved.
+ */
+export function QboImportPanel({ active = true, projectId, onCancel }: QboImportPanelProps) {
   const [records, setRecords] = useState<QboImportRecord[]>([])
   const [alreadyImportedCounts, setAlreadyImportedCounts] = useState<Partial<Record<QboImportEntityType, number>>>({})
   const [connected, setConnected] = useState(true)
@@ -162,7 +153,8 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all")
   const [search, setSearch] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [openSections, setOpenSections] = useState<string[]>(SECTIONS.map((section) => section.key))
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [lastImport, setLastImport] = useState<Record<QboImportEntityType, number> | null>(null)
   const [projectFilter, setProjectFilter] = useState<string>("all")
   const [projectFilterOpen, setProjectFilterOpen] = useState(false)
@@ -173,9 +165,10 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   const defaultFilterApplied = useRef(false)
   const loadRequestId = useRef(0)
   const contextRequestId = useRef(0)
-  // Arc projects for the per-line allocation picker, and per-record line→project overrides.
+  // Arc projects for the destination pickers, and the per-record line→project + record→project overrides.
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
   const [allocations, setAllocations] = useState<Record<string, Record<string, string>>>({})
+  const [destinations, setDestinations] = useState<Record<string, string>>({})
 
   const load = useCallback(async (lookbackValue: string) => {
     const requestId = ++loadRequestId.current
@@ -191,7 +184,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       // showing zero of that type (e.g. vendor credits "disappearing" when their query 400s).
       if (listing.loadErrors && listing.loadErrors.length > 0) {
         const labels = listing.loadErrors
-          .map((error) => SECTIONS.find((section) => section.key === error.entityType)?.label ?? error.entityType)
+          .map((error) => SECTION_LABEL[error.entityType] ?? error.entityType)
           .join(", ")
         toast.warning(`Couldn't load some QuickBooks records: ${labels}`, {
           description: listing.loadErrors[0]?.message ?? "Try reloading or narrowing the date range.",
@@ -220,6 +213,8 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     setQboCustomers([])
     setProjects([])
     setAllocations({})
+    setDestinations({})
+    setExpanded(new Set())
     getProjectQboLinkAction({ projectId })
       .then((link) => {
         if (requestId === contextRequestId.current) setQboLink(link)
@@ -259,18 +254,60 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   // A record is importable once every one of its lines has a destination project (chosen or suggested).
   const isFullyAllocated = useCallback(
     (record: QboImportRecord) => {
-      if (!record.lines || record.lines.length === 0) return true
+      if (!hasAllocatableLines(record)) return true
       const effective = recordAllocations(record)
-      return record.lines.every((line) => effective[line.lineId])
+      return record.lines!.every((line) => effective[line.lineId])
     },
     [recordAllocations],
   )
 
-  const setLineAllocation = (record: QboImportRecord, lineId: string, projectId: string) => {
+  // Single-document destination (invoices). Override → customer-linked suggestion → empty (unassigned,
+  // which blocks import). We deliberately do NOT fall back to the context project, so a record never
+  // files into the wrong project silently — the user assigns it (or bulk-assigns) on purpose.
+  const invoiceDestination = useCallback(
+    (record: QboImportRecord): string => destinations[rowKey(record)] ?? record.suggestedProjectId ?? "",
+    [destinations],
+  )
+
+  // Has the user (or a suggestion) given this record a complete home yet?
+  const needsAssignment = useCallback(
+    (record: QboImportRecord): boolean => {
+      if (isPaymentType(record.entityType)) return false
+      if (hasAllocatableLines(record)) return !isFullyAllocated(record)
+      return !invoiceDestination(record)
+    },
+    [isFullyAllocated, invoiceDestination],
+  )
+
+  // The project sent to the importer for this record. Payments derive it from the linked doc; multi-line
+  // records resolve per line and only need a header fallback (the context project).
+  const importProjectIdFor = useCallback(
+    (record: QboImportRecord): string | undefined => {
+      if (isPaymentType(record.entityType)) return undefined
+      if (hasAllocatableLines(record)) return destinations[rowKey(record)] ?? projectId
+      return invoiceDestination(record) || undefined
+    },
+    [destinations, projectId, invoiceDestination],
+  )
+
+  const setLineAllocation = (record: QboImportRecord, lineId: string, target: string) => {
     setAllocations((prev) => ({
       ...prev,
-      [rowKey(record)]: { ...(prev[rowKey(record)] ?? {}), [lineId]: projectId },
+      [rowKey(record)]: { ...(prev[rowKey(record)] ?? {}), [lineId]: target },
     }))
+  }
+
+  const setInvoiceDestination = (record: QboImportRecord, target: string) => {
+    setDestinations((prev) => ({ ...prev, [rowKey(record)]: target }))
+  }
+
+  const toggleExpand = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   }
 
   const recordByKey = useMemo(() => new Map(records.map((record) => [rowKey(record), record])), [records])
@@ -337,8 +374,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
   }, [qboCustomers, records])
 
   // Default the filter to the project's linked QBO project once (per open), but only if that project
-  // actually has records in view — otherwise we'd auto-filter to an empty list. The full customer
-  // list now always contains the linked project, so we key this on the records, not the options.
+  // actually has records in view — otherwise we'd auto-filter to an empty list.
   useEffect(() => {
     if (defaultFilterApplied.current) return
     const linkedId = qboLink?.qboCustomerId
@@ -402,6 +438,15 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     })
   }
 
+  const toggleSectionCollapse = (key: string) => {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
   const selectedItems = useMemo(
     () => records.filter((record) => selected.has(rowKey(record))),
     [records, selected],
@@ -410,23 +455,48 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     () => selectedItems.reduce((sum, item) => sum + item.amountCents, 0),
     [selectedItems],
   )
-  // Selected multi-line records that still have an unassigned line — block import until resolved.
-  const selectedNeedingAllocation = useMemo(
-    () => selectedItems.filter((item) => !isFullyAllocated(item)),
-    [selectedItems, isFullyAllocated],
+  const selectedNeedingAssignment = useMemo(
+    () => selectedItems.filter(needsAssignment),
+    [selectedItems, needsAssignment],
   )
 
+  // Bulk-assign: drop every selected record into one project at once. Single-doc records get the
+  // destination; multi-line records get every line set to that project. Payments are skipped (their
+  // project comes from the linked document).
+  const bulkAssign = (target: string) => {
+    setDestinations((prev) => {
+      const next = { ...prev }
+      for (const item of selectedItems) {
+        if (!isPaymentType(item.entityType) && !hasAllocatableLines(item)) next[rowKey(item)] = target
+      }
+      return next
+    })
+    setAllocations((prev) => {
+      const next = { ...prev }
+      for (const item of selectedItems) {
+        if (hasAllocatableLines(item)) {
+          const lineMap = { ...(next[rowKey(item)] ?? {}) }
+          for (const line of item.lines!) lineMap[line.lineId] = target
+          next[rowKey(item)] = lineMap
+        }
+      }
+      return next
+    })
+    const name = projects.find((p) => p.id === target)?.name
+    toast.success(`Assigned ${selectedItems.length} record${selectedItems.length === 1 ? "" : "s"}${name ? ` to ${name}` : ""}`)
+  }
+
   const handleImport = async () => {
-    if (importing || selectedItems.length === 0 || selectedNeedingAllocation.length > 0) return
+    if (importing || selectedItems.length === 0 || selectedNeedingAssignment.length > 0) return
     setImporting(true)
     try {
       const result = await importQboRecordsAction({
-        projectId,
         items: selectedItems.map((item) => {
           const alloc = recordAllocations(item)
           return {
             qboId: item.qboId,
             entityType: item.entityType,
+            projectId: importProjectIdFor(item),
             allocations: Object.keys(alloc).length > 0 ? alloc : undefined,
           }
         }),
@@ -441,7 +511,7 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
       } else {
         toast.success(
           result.imported > 0
-            ? `Imported ${result.imported} into ${projectName ?? "this project"}${result.skipped ? ` (${result.skipped} already imported)` : ""}`
+            ? `Imported ${result.imported} record${result.imported === 1 ? "" : "s"}${result.skipped ? ` · ${result.skipped} already imported` : ""}`
             : "Nothing new to import",
         )
       }
@@ -464,362 +534,497 @@ export function QboImportPanel({ active = true, projectId, projectName, onCancel
     }
   }
 
-  if (!connected) {
-    return (
-      <EmptyState
-        icon={<Plug className="size-5" />}
-        title="QuickBooks isn't connected"
-        body="Connect QuickBooks in Settings, then come back to import existing transactions."
-      />
-    )
-  }
+  const totalAlreadyImported = Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Full-bleed search */}
-      <div className="relative shrink-0 border-b">
-        <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by number or name"
-          className="h-11 rounded-none border-0 bg-transparent pl-11 pr-10 text-sm shadow-none focus-visible:ring-0"
+      {!connected ? (
+        <EmptyState
+          icon={<Plug className="size-5" />}
+          title="QuickBooks isn't connected"
+          body="Connect QuickBooks in Settings, then come back to import existing transactions."
         />
-        {search ? (
-          <button
-            type="button"
-            onClick={() => setSearch("")}
-            className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-4" />
-          </button>
-        ) : null}
-      </div>
-
-      {/* Combined type + period filter */}
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b px-6 py-2.5">
-        <div className="inline-flex">
-          <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)} disabled={loading || importing}>
-            <SelectTrigger className="h-8 w-36 rounded-none border-r-0 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All types ({records.length})</SelectItem>
-              <SelectSeparator />
-              {SECTIONS.map((section) => (
-                <SelectItem key={section.key} value={section.key}>
-                  {section.label} ({typeCounts[section.key]} new
-                  {alreadyImportedCounts[section.key] ? `, ${alreadyImportedCounts[section.key]} in Arc` : ""})
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={lookback} onValueChange={setLookback} disabled={loading || importing}>
-            <SelectTrigger className="h-8 w-32 rounded-none text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {LOOKBACK_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex items-center gap-2">
-          {projectFilterOptions.length > 0 ? (
-            <Popover open={projectFilterOpen} onOpenChange={setProjectFilterOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  role="combobox"
-                  aria-expanded={projectFilterOpen}
-                  className="h-8 w-40 justify-between rounded-none text-xs px-3 font-normal"
-                  disabled={loading || importing}
+      ) : (
+        <>
+          {/* Toolbar */}
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2.5">
+            <div className="relative min-w-48 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search by number or name"
+                className="h-9 pl-9 pr-9"
+              />
+              {search ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
-                  <span
-                    className="truncate"
-                    title={
-                      projectFilter === "all"
-                        ? "All projects"
-                        : projectFilterOptions.find((option) => option.id === projectFilter)?.name ?? projectFilter
-                    }
+                  <X className="size-4" />
+                </button>
+              ) : null}
+            </div>
+            <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)} disabled={loading || importing}>
+              <SelectTrigger className="h-9 w-44 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All types ({records.length})</SelectItem>
+                <SelectSeparator />
+                {SECTIONS.map((section) => (
+                  <SelectItem key={section.key} value={section.key}>
+                    {section.label} ({typeCounts[section.key]} new
+                    {alreadyImportedCounts[section.key] ? `, ${alreadyImportedCounts[section.key]} in Arc` : ""})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={lookback} onValueChange={setLookback} disabled={loading || importing}>
+              <SelectTrigger className="h-9 w-32 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOOKBACK_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {projectFilterOptions.length > 0 ? (
+              <Popover open={projectFilterOpen} onOpenChange={setProjectFilterOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={projectFilterOpen}
+                    className="h-9 w-48 justify-between px-3 text-xs font-normal"
+                    disabled={loading || importing}
                   >
-                    {projectFilter === "all"
-                      ? "All projects"
-                      : projectFilterOptions.find((option) => option.id === projectFilter)?.name ?? projectFilter}
-                  </span>
-                  <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-48 p-0" align="end">
-                <Command filter={substringFilter}>
-                  <CommandInput placeholder="Search project..." className="h-8" />
-                  <CommandList>
-                    <CommandEmpty>No project found.</CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem
-                        value="all"
-                        onSelect={() => {
-                          setProjectFilter("all")
-                          setProjectFilterOpen(false)
-                        }}
-                        className="text-xs"
-                      >
-                        <Check
-                          className={cn(
-                            "mr-2 size-3",
-                            projectFilter === "all" ? "opacity-100" : "opacity-0"
-                          )}
-                        />
-                        All projects
-                      </CommandItem>
-                      {projectFilterOptions.map((option) => (
+                    <span className="truncate">
+                      {projectFilter === "all"
+                        ? "All QBO projects"
+                        : projectFilterOptions.find((option) => option.id === projectFilter)?.name ?? projectFilter}
+                    </span>
+                    <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-0" align="end">
+                  <Command filter={substringFilter}>
+                    <CommandInput placeholder="Search project..." className="h-8" />
+                    <CommandList>
+                      <CommandEmpty>No project found.</CommandEmpty>
+                      <CommandGroup>
                         <CommandItem
-                          key={option.id}
-                          value={option.name}
+                          value="all"
                           onSelect={() => {
-                            setProjectFilter(option.id)
+                            setProjectFilter("all")
                             setProjectFilterOpen(false)
                           }}
                           className="text-xs"
                         >
-                          <Check
-                            className={cn(
-                              "mr-2 size-3",
-                              projectFilter === option.id ? "opacity-100" : "opacity-0"
-                            )}
-                          />
-                          <span className="truncate" title={option.name}>
-                            {option.name}
-                          </span>
+                          <Check className={cn("mr-2 size-3", projectFilter === "all" ? "opacity-100" : "opacity-0")} />
+                          All QBO projects
                         </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-          ) : null}
-          <span className="shrink-0 text-xs text-muted-foreground">{filteredRecords.length} shown</span>
-        </div>
-      </div>
-
-      {lastImport && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-emerald-500/10 px-6 py-3 text-xs">
-          <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
-          {(lastImport.invoice > 0 || lastImport.payment > 0 || lastImport.client_deposit > 0) && <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />}
-          {(lastImport.bill > 0 || lastImport.bill_payment > 0 || lastImport.vendor_credit > 0) && <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />}
-          {(lastImport.expense > 0 || lastImport.journal_entry > 0) && <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />}
-        </div>
-      )}
-
-      <ScrollArea className="min-h-0 flex-1">
-        {loading && records.length === 0 ? (
-          <div className="space-y-3 p-6">
-            {Array.from({ length: 6 }).map((_, index) => (
-              <div key={index} className="h-14 animate-pulse bg-muted/60" />
-            ))}
-          </div>
-        ) : records.length === 0 ? (
-          <EmptyState
-            icon={<Download className="size-5" />}
-            title="Nothing to import"
-            body={
-              Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0) > 0
-                ? `No new QuickBooks transactions in this window. ${Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0)} already ${Object.values(alreadyImportedCounts).reduce((sum, count) => sum + (count ?? 0), 0) === 1 ? "exists" : "exist"} in Arc.`
-                : "No QuickBooks transactions were returned in this window. Widen the date range or reload the connection."
-            }
-          />
-        ) : sections.length === 0 ? (
-          <EmptyState
-            icon={<Search className="size-5" />}
-            title="No matches"
-            body={
-              typeFilter !== "all" && (alreadyImportedCounts[typeFilter] ?? 0) > 0
-                ? `No new ${SECTIONS.find((section) => section.key === typeFilter)?.label.toLowerCase() ?? "records"} to import. ${alreadyImportedCounts[typeFilter]} already ${alreadyImportedCounts[typeFilter] === 1 ? "exists" : "exist"} in Arc.`
-                : "No transactions match your search or filter. Try clearing them."
-            }
-          />
-        ) : (
-          <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full">
-            {sections.map((section) => {
-              const allSelected = section.items.every((item) => selected.has(rowKey(item)))
-              const selectedCount = section.items.filter((item) => selected.has(rowKey(item))).length
-              return (
-                <AccordionItem key={section.key} value={section.key} className="border-b">
-                  <div className="flex items-center bg-muted/30">
-                    <div className="pl-6">
-                      <Checkbox
-                        checked={allSelected}
-                        onCheckedChange={() => toggleSection(section.items, allSelected)}
-                        disabled={importing}
-                        className="rounded-none"
-                        aria-label={`Select all ${section.label}`}
-                      />
-                    </div>
-                    <AccordionTrigger className="flex-1 px-3 py-2.5 hover:no-underline">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">{section.label}</span>
-                        <span className="text-xs text-muted-foreground">{section.items.length}</span>
-                        {selectedCount > 0 ? (
-                          <span className="text-xs font-medium text-primary">{selectedCount} selected</span>
-                        ) : null}
-                      </div>
-                    </AccordionTrigger>
-                  </div>
-                  <AccordionContent className="pb-0">
-                    <ul>
-                      {section.items.map((item) => (
-                        <li key={rowKey(item)}>
-                          <ImportRow
-                            record={item}
-                            selected={selected.has(rowKey(item))}
-                            disabled={importing}
-                            blocked={!canImportRecord(item)}
-                            onToggle={() => toggle(rowKey(item))}
-                          />
-                          {/* Surface the per-line allocation when there's a real choice to make: more
-                              than one line, a line with no suggested project, or a line whose suggested
-                              project (from its QBO customer link) diverges from the project being
-                              imported into — so a single line never silently lands elsewhere. */}
-                          {selected.has(rowKey(item)) &&
-                          item.lines &&
-                          item.lines.length > 0 &&
-                          (item.lines.length > 1 ||
-                            item.lines.some(
-                              (line) => !line.suggestedProjectId || line.suggestedProjectId !== projectId,
-                            )) ? (
-                            <LineAllocationEditor
-                              record={item}
-                              projects={projects}
-                              value={allocations[rowKey(item)] ?? {}}
-                              disabled={importing}
-                              onChange={(lineId, projectId) => setLineAllocation(item, lineId, projectId)}
+                        {projectFilterOptions.map((option) => (
+                          <CommandItem
+                            key={option.id}
+                            value={option.name}
+                            onSelect={() => {
+                              setProjectFilter(option.id)
+                              setProjectFilterOpen(false)
+                            }}
+                            className="text-xs"
+                          >
+                            <Check
+                              className={cn("mr-2 size-3", projectFilter === option.id ? "opacity-100" : "opacity-0")}
                             />
-                          ) : null}
-                          {/* Read-only breakdown for payments: shows how the payment splits across the
-                              QBO invoices/bills it pays and which project each portion lands in. The
-                              project is the linked document's project, so there's nothing to choose. */}
-                          {selected.has(rowKey(item)) && item.linkedDocs && item.linkedDocs.length > 0 ? (
-                            <LinkedDocsBreakdown record={item} />
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  </AccordionContent>
-                </AccordionItem>
-              )
-            })}
-          </Accordion>
-        )}
-      </ScrollArea>
+                            <span className="truncate" title={option.name}>
+                              {option.name}
+                            </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            ) : null}
+          </div>
 
-      {/* Footer: selection summary + actions */}
-      <div className="flex shrink-0 items-center justify-between gap-3 border-t px-6 py-3">
-        <div className="flex min-w-0 items-center gap-2 text-sm">
-          {selectedItems.length > 0 ? (
-            <>
-              <span className="truncate">
-                <span className="font-medium text-foreground">{selectedItems.length} selected</span>
-                <span className="text-muted-foreground"> · {formatMoney(selectedTotal)}</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => setSelected(new Set())}
-                className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              >
-                Clear
-              </button>
-            </>
-          ) : (
-            <span className="text-sm text-muted-foreground">Select transactions to import</span>
+          {lastImport && (
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-emerald-500/10 px-4 py-2.5 text-xs">
+              <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
+              {(lastImport.invoice > 0 || lastImport.payment > 0 || lastImport.client_deposit > 0) && (
+                <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />
+              )}
+              {(lastImport.bill > 0 || lastImport.bill_payment > 0 || lastImport.vendor_credit > 0) && (
+                <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />
+              )}
+              {(lastImport.expense > 0 || lastImport.journal_entry > 0) && (
+                <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />
+              )}
+            </div>
           )}
-          {selectedNeedingAllocation.length > 0 ? (
-            <span className="shrink-0 text-xs text-amber-700 dark:text-amber-400">
-              · {selectedNeedingAllocation.length} need a project assigned
-            </span>
+
+          {/* Column header */}
+          {sections.length > 0 ? (
+            <div className="flex shrink-0 items-center gap-3 border-b bg-muted/20 px-4 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span className="w-4" />
+              <span className="flex-1">Document</span>
+              <span className="hidden w-20 text-right sm:block">Date</span>
+              <span className="w-28 text-right">Amount</span>
+              <span className="w-56">Destination project</span>
+            </div>
           ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {onCancel ? (
-            <Button variant="outline" size="sm" className="h-8" onClick={onCancel} disabled={importing}>
-              Cancel
-            </Button>
-          ) : null}
-          <Button
-            onClick={handleImport}
-            disabled={importing || loading || selectedItems.length === 0 || selectedNeedingAllocation.length > 0}
-            size="sm"
-            className="h-8"
-          >
-            {importing ? <Spinner className="mr-1.5 size-4" /> : <Download className="mr-1.5 size-4" />}
-            Import{selectedItems.length > 0 ? ` ${selectedItems.length}` : ""}
-          </Button>
-        </div>
-      </div>
+
+          {/* Grid */}
+          <ScrollArea className="min-h-0 flex-1">
+            {loading && records.length === 0 ? (
+              <div className="space-y-2 p-4">
+                {Array.from({ length: 8 }).map((_, index) => (
+                  <div key={index} className="h-11 animate-pulse rounded bg-muted/60" />
+                ))}
+              </div>
+            ) : records.length === 0 ? (
+              <EmptyState
+                icon={<Download className="size-5" />}
+                title="Nothing to import"
+                body={
+                  totalAlreadyImported > 0
+                    ? `No new QuickBooks transactions in this window. ${totalAlreadyImported} already ${totalAlreadyImported === 1 ? "exists" : "exist"} in Arc.`
+                    : "No QuickBooks transactions were returned in this window. Widen the date range or reload the connection."
+                }
+              />
+            ) : sections.length === 0 ? (
+              <EmptyState
+                icon={<Search className="size-5" />}
+                title="No matches"
+                body={
+                  typeFilter !== "all" && (alreadyImportedCounts[typeFilter] ?? 0) > 0
+                    ? `No new ${SECTION_LABEL[typeFilter]?.toLowerCase() ?? "records"} to import. ${alreadyImportedCounts[typeFilter]} already in Arc.`
+                    : "No transactions match your search or filter. Try clearing them."
+                }
+              />
+            ) : (
+              <div>
+                {sections.map((section) => {
+                  const open = !collapsedSections.has(section.key)
+                  const allSelected = section.items.every((item) => selected.has(rowKey(item)))
+                  const selectedCount = section.items.filter((item) => selected.has(rowKey(item))).length
+                  const subtotal = section.items.reduce((sum, item) => sum + item.amountCents, 0)
+                  return (
+                    <section key={section.key} className="border-b">
+                      <div className="flex items-center gap-3 bg-muted/40 px-4 py-2">
+                        <Checkbox
+                          checked={allSelected}
+                          onCheckedChange={() => toggleSection(section.items, allSelected)}
+                          disabled={importing}
+                          aria-label={`Select all ${section.label}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => toggleSectionCollapse(section.key)}
+                          className="flex flex-1 items-center gap-2 text-left"
+                        >
+                          <ChevronRight className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-90")} />
+                          <span className="text-sm font-semibold">{section.label}</span>
+                          <span className="text-xs text-muted-foreground">{section.items.length}</span>
+                          {selectedCount > 0 ? (
+                            <span className="text-xs font-medium text-primary">{selectedCount} selected</span>
+                          ) : null}
+                        </button>
+                        <span className="text-xs tabular-nums text-muted-foreground">{formatMoney(subtotal)}</span>
+                      </div>
+                      {open ? (
+                        <ul>
+                          {section.items.map((item) => {
+                            const key = rowKey(item)
+                            return (
+                              <li key={key}>
+                                <ImportGridRow
+                                  record={item}
+                                  projects={projects}
+                                  selected={selected.has(key)}
+                                  expanded={expanded.has(key)}
+                                  disabled={importing}
+                                  blocked={!canImportRecord(item)}
+                                  needsAssignment={needsAssignment(item)}
+                                  invoiceDestination={invoiceDestination(item)}
+                                  lineValues={allocations[key] ?? {}}
+                                  recordAllocations={recordAllocations(item)}
+                                  onToggleSelect={() => toggle(key)}
+                                  onToggleExpand={() => toggleExpand(key)}
+                                  onSetInvoiceDestination={(target) => setInvoiceDestination(item, target)}
+                                  onSetLine={(lineId, target) => setLineAllocation(item, lineId, target)}
+                                />
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      ) : null}
+                    </section>
+                  )
+                })}
+              </div>
+            )}
+          </ScrollArea>
+
+          {/* Footer */}
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2 text-sm">
+              {selectedItems.length > 0 ? (
+                <>
+                  <span className="truncate">
+                    <span className="font-medium text-foreground">{selectedItems.length} selected</span>
+                    <span className="text-muted-foreground"> · {formatMoney(selectedTotal)}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(new Set())}
+                    className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    Clear
+                  </button>
+                </>
+              ) : (
+                <span className="text-sm text-muted-foreground">Select transactions, then assign and import</span>
+              )}
+              {selectedNeedingAssignment.length > 0 ? (
+                <span className="shrink-0 text-xs text-amber-700 dark:text-amber-400">
+                  · {selectedNeedingAssignment.length} need a project
+                </span>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {selectedItems.length > 0 ? (
+                <ProjectPicker
+                  projects={projects}
+                  current=""
+                  disabled={importing}
+                  placeholder="Assign selected to…"
+                  onChange={bulkAssign}
+                  className="h-8 w-48"
+                />
+              ) : null}
+              {onCancel ? (
+                <Button variant="outline" size="sm" className="h-8" onClick={onCancel} disabled={importing}>
+                  Close
+                </Button>
+              ) : null}
+              <Button
+                onClick={handleImport}
+                disabled={importing || loading || selectedItems.length === 0 || selectedNeedingAssignment.length > 0}
+                size="sm"
+                className="h-8"
+              >
+                {importing ? <Spinner className="mr-1.5 size-4" /> : <Download className="mr-1.5 size-4" />}
+                Import{selectedItems.length > 0 ? ` ${selectedItems.length}` : ""}
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-function ImportRow({
+function ImportGridRow({
   record,
+  projects,
   selected,
+  expanded,
   disabled,
   blocked,
-  onToggle,
+  needsAssignment,
+  invoiceDestination,
+  lineValues,
+  recordAllocations,
+  onToggleSelect,
+  onToggleExpand,
+  onSetInvoiceDestination,
+  onSetLine,
 }: {
   record: QboImportRecord
+  projects: { id: string; name: string }[]
   selected: boolean
+  expanded: boolean
   disabled: boolean
   blocked: boolean
-  onToggle: () => void
+  needsAssignment: boolean
+  invoiceDestination: string
+  lineValues: Record<string, string>
+  recordAllocations: Record<string, string>
+  onToggleSelect: () => void
+  onToggleExpand: () => void
+  onSetInvoiceDestination: (projectId: string) => void
+  onSetLine: (lineId: string, projectId: string) => void
 }) {
-  const isPayment = record.entityType === "payment" || record.entityType === "bill_payment"
+  const isPayment = isPaymentType(record.entityType)
+  const hasLines = hasAllocatableLines(record)
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name
+
+  return (
+    <div className={cn("border-t", selected && "bg-primary/5", blocked && "opacity-60")}>
+      <div className="flex items-center gap-3 px-4 py-2">
+        <Checkbox
+          checked={selected}
+          onCheckedChange={onToggleSelect}
+          disabled={disabled || blocked}
+          aria-label="Select for import"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">
+            {record.docNumber ? `#${record.docNumber}` : record.counterparty ?? "Untitled"}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+            {record.docNumber && record.counterparty ? <span className="truncate">{record.counterparty}</span> : null}
+            {record.balanceCents != null && record.balanceCents > 0 && (
+              <span className="shrink-0">{formatMoney(record.balanceCents)} open</span>
+            )}
+            {isPayment && (
+              <span
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-0.5",
+                  record.dependencyStatus === "missing" && "text-destructive",
+                  record.dependencyStatus === "available_to_import" && "text-amber-700 dark:text-amber-400",
+                  record.dependencyStatus === "already_in_arc" && "text-emerald-700 dark:text-emerald-400",
+                )}
+              >
+                <Link2 className="size-3" />
+                {record.dependencyMessage ?? (record.hasLinks ? "linked" : "unlinked")}
+              </span>
+            )}
+            {record.possibleMatch ? (
+              <span className="shrink-0 text-amber-700 dark:text-amber-400">Possible match: {record.possibleMatch}</span>
+            ) : null}
+          </div>
+        </div>
+        <span className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">
+          {formatDate(record.date)}
+        </span>
+        <span className="w-28 shrink-0 text-right text-sm tabular-nums">{formatMoney(record.amountCents)}</span>
+        <div className="w-56 shrink-0">
+          {isPayment ? (
+            <PaymentDestination record={record} expanded={expanded} onToggleExpand={onToggleExpand} />
+          ) : hasLines ? (
+            <LineSummaryButton
+              record={record}
+              effective={recordAllocations}
+              expanded={expanded}
+              needsAssignment={needsAssignment}
+              projectName={projectName}
+              onToggleExpand={onToggleExpand}
+            />
+          ) : (
+            <ProjectPicker
+              projects={projects}
+              current={invoiceDestination}
+              disabled={disabled}
+              placeholder="Choose project…"
+              onChange={onSetInvoiceDestination}
+              className="h-8 w-full"
+              invalidWhenEmpty
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Expansion: per-line allocation (multi-line) or read-only payment split */}
+      {expanded && hasLines ? (
+        <div className="space-y-2 border-t bg-muted/20 px-4 py-3 pl-11">
+          <p className="text-xs font-medium text-muted-foreground">Allocate each line to a project</p>
+          <ul className="space-y-2">
+            {record.lines!.map((line) => (
+              <LineAllocationRow
+                key={line.lineId}
+                line={line}
+                projects={projects}
+                current={lineValues[line.lineId] ?? line.suggestedProjectId ?? ""}
+                disabled={disabled}
+                onChange={(target) => onSetLine(line.lineId, target)}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {expanded && isPayment && record.linkedDocs && record.linkedDocs.length > 0 ? (
+        <div className="border-t bg-muted/20 px-4 py-3 pl-11">
+          <LinkedDocsBreakdown record={record} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/** Read-only destination for payments — project is the linked document's, so it's shown, not chosen. */
+function PaymentDestination({
+  record,
+  expanded,
+  onToggleExpand,
+}: {
+  record: QboImportRecord
+  expanded: boolean
+  onToggleExpand: () => void
+}) {
+  if (record.dependencyStatus === "missing") {
+    return <span className="text-xs text-destructive">Import its document first</span>
+  }
+  if (record.linkedDocs && record.linkedDocs.length > 0) {
+    return (
+      <button
+        type="button"
+        onClick={onToggleExpand}
+        className="flex h-8 w-full items-center justify-between rounded-md border px-2 text-xs text-muted-foreground hover:bg-muted/50"
+      >
+        <span className="truncate">
+          From {record.linkedDocs.length} {record.linkedEntityType === "invoice" ? "invoice" : "bill"}
+          {record.linkedDocs.length === 1 ? "" : "s"}
+        </span>
+        <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+      </button>
+    )
+  }
+  return <span className="text-xs text-muted-foreground">From linked document</span>
+}
+
+/** Multi-line destination summary that expands to the per-line allocation editor. */
+function LineSummaryButton({
+  record,
+  effective,
+  expanded,
+  needsAssignment,
+  projectName,
+  onToggleExpand,
+}: {
+  record: QboImportRecord
+  effective: Record<string, string>
+  expanded: boolean
+  needsAssignment: boolean
+  projectName: (id: string) => string | undefined
+  onToggleExpand: () => void
+}) {
+  const lineCount = record.lines!.length
+  const distinct = new Set(Object.values(effective))
+  const label = needsAssignment
+    ? `Assign ${lineCount} line${lineCount === 1 ? "" : "s"}`
+    : distinct.size === 1
+      ? projectName([...distinct][0]) ?? "1 project"
+      : `Split · ${distinct.size} projects`
+
   return (
     <button
       type="button"
-      onClick={onToggle}
-      disabled={disabled || blocked}
+      onClick={onToggleExpand}
       className={cn(
-        "flex w-full items-start gap-3 border-t px-6 py-3 text-left transition-colors hover:bg-muted/40",
-        selected && "bg-primary/5",
-        blocked && "cursor-not-allowed opacity-60",
+        "flex h-8 w-full items-center justify-between rounded-md border px-2 text-xs hover:bg-muted/50",
+        needsAssignment && "border-amber-500 text-amber-700 dark:text-amber-400",
       )}
     >
-      <Checkbox checked={selected} className="mt-0.5 rounded-none" tabIndex={-1} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-sm font-medium">
-            {record.docNumber ? `#${record.docNumber}` : record.counterparty ?? "Untitled"}
-          </span>
-          <span className="shrink-0 text-sm tabular-nums">{formatMoney(record.amountCents)}</span>
-        </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-          {record.docNumber && record.counterparty ? <span className="truncate">{record.counterparty}</span> : null}
-          <span className="shrink-0">{formatDate(record.date)}</span>
-          {record.balanceCents != null && record.balanceCents > 0 && (
-            <span className="shrink-0">· {formatMoney(record.balanceCents)} open</span>
-          )}
-          {isPayment && (
-            <span
-              className={cn(
-                "inline-flex shrink-0 items-center gap-0.5",
-                record.dependencyStatus === "missing" && "text-destructive",
-                record.dependencyStatus === "available_to_import" && "text-amber-700 dark:text-amber-400",
-                record.dependencyStatus === "already_in_arc" && "text-emerald-700 dark:text-emerald-400",
-              )}
-            >
-              <Link2 className="size-3" />
-              {record.dependencyMessage ?? (record.hasLinks ? "linked" : "unlinked")}
-            </span>
-          )}
-          {record.possibleMatch ? (
-            <span className="shrink-0 text-amber-700 dark:text-amber-400">Possible match: {record.possibleMatch}</span>
-          ) : null}
-        </div>
-      </div>
+      <span className="truncate">{label}</span>
+      <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
     </button>
   )
 }
@@ -828,8 +1033,8 @@ function LinkedDocsBreakdown({ record }: { record: QboImportRecord }) {
   const docs = record.linkedDocs ?? []
   const isInvoice = record.linkedEntityType === "invoice"
   return (
-    <div className="border-t bg-muted/20 py-2.5 pl-12 pr-6">
-      <p className="mb-2 text-xs font-medium text-muted-foreground">
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">
         Splits across {docs.length} {isInvoice ? (docs.length === 1 ? "invoice" : "invoices") : docs.length === 1 ? "bill" : "bills"}
       </p>
       <ul className="space-y-1.5">
@@ -851,41 +1056,6 @@ function LinkedDocsBreakdown({ record }: { record: QboImportRecord }) {
   )
 }
 
-function LineAllocationEditor({
-  record,
-  projects,
-  value,
-  disabled,
-  onChange,
-}: {
-  record: QboImportRecord
-  projects: { id: string; name: string }[]
-  value: Record<string, string>
-  disabled: boolean
-  onChange: (lineId: string, projectId: string) => void
-}) {
-  return (
-    <div className="border-t bg-muted/20 py-2.5 pl-12 pr-6">
-      <p className="mb-2 text-xs font-medium text-muted-foreground">Allocate each line to a project</p>
-      <ul className="space-y-2">
-        {(record.lines ?? []).map((line) => {
-          const current = value[line.lineId] ?? line.suggestedProjectId ?? ""
-          return (
-            <LineAllocationRow
-              key={line.lineId}
-              line={line}
-              projects={projects}
-              current={current}
-              disabled={disabled}
-              onChange={(projectId) => onChange(line.lineId, projectId)}
-            />
-          )
-        })}
-      </ul>
-    </div>
-  )
-}
-
 function LineAllocationRow({
   line,
   projects,
@@ -899,10 +1069,6 @@ function LineAllocationRow({
   disabled: boolean
   onChange: (projectId: string) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const unassigned = !current
-  const currentProjectName = projects.find((p) => p.id === current)?.name
-
   return (
     <li className="flex items-center gap-3">
       <div className="min-w-0 flex-1">
@@ -911,57 +1077,88 @@ function LineAllocationRow({
           {line.qboCustomerName ?? "No QBO customer"} · {formatMoney(line.amountCents)}
         </div>
       </div>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button
-            variant="outline"
-            role="combobox"
-            aria-expanded={open}
-            disabled={disabled}
-            className={cn(
-              "h-7 w-48 shrink-0 justify-between rounded-none text-xs px-2 font-normal",
-              unassigned && "border-amber-500 text-amber-700"
-            )}
-          >
-            <span className="truncate" title={currentProjectName ?? "Choose project…"}>
-              {currentProjectName ?? "Choose project…"}
-            </span>
-            <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-56 p-0" align="end">
-          <Command filter={substringFilter}>
-            <CommandInput placeholder="Search project..." className="h-8" />
-            <CommandList>
-              <CommandEmpty>No project found.</CommandEmpty>
-              <CommandGroup>
-                {projects.map((project) => (
-                  <CommandItem
-                    key={project.id}
-                    value={project.name}
-                    onSelect={() => {
-                      onChange(project.id)
-                      setOpen(false)
-                    }}
-                    className="text-xs"
-                  >
-                    <Check
-                      className={cn(
-                        "mr-2 size-3",
-                        current === project.id ? "opacity-100" : "opacity-0"
-                      )}
-                    />
-                    <span className="truncate" title={project.name}>
-                      {project.name}
-                    </span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
-          </Command>
-        </PopoverContent>
-      </Popover>
+      <ProjectPicker
+        projects={projects}
+        current={current}
+        disabled={disabled}
+        placeholder="Choose project…"
+        onChange={onChange}
+        className="h-8 w-56 shrink-0"
+        invalidWhenEmpty
+      />
     </li>
+  )
+}
+
+/** Searchable project combobox shared by the destination column, line allocation, and bulk-assign. */
+function ProjectPicker({
+  projects,
+  current,
+  disabled,
+  placeholder,
+  onChange,
+  className,
+  invalidWhenEmpty,
+}: {
+  projects: { id: string; name: string }[]
+  current: string
+  disabled: boolean
+  placeholder: string
+  onChange: (projectId: string) => void
+  className?: string
+  invalidWhenEmpty?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const currentName = projects.find((p) => p.id === current)?.name
+  const unassigned = !current
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className={cn(
+            "justify-between px-2 text-xs font-normal",
+            invalidWhenEmpty && unassigned && "border-amber-500 text-amber-700 dark:text-amber-400",
+            className,
+          )}
+        >
+          <span className="truncate" title={currentName ?? placeholder}>
+            {currentName ?? placeholder}
+          </span>
+          <ChevronsUpDown className="ml-2 size-3 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0" align="start">
+        <Command filter={substringFilter}>
+          <CommandInput placeholder="Search project..." className="h-8" />
+          <CommandList>
+            <CommandEmpty>No project found.</CommandEmpty>
+            <CommandGroup>
+              {projects.map((project) => (
+                <CommandItem
+                  key={project.id}
+                  value={project.name}
+                  onSelect={() => {
+                    onChange(project.id)
+                    setOpen(false)
+                  }}
+                  className="text-xs"
+                >
+                  <Check className={cn("mr-2 size-3", current === project.id ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate" title={project.name}>
+                    {project.name}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -978,7 +1175,7 @@ function ImportLink({ href, label }: { href: string; label: string }) {
 
 function EmptyState({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
   return (
-    <div className="flex h-full min-h-80 flex-col items-center justify-center px-8 text-center">
+    <div className="flex h-full min-h-80 flex-1 flex-col items-center justify-center px-8 text-center">
       <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">{icon}</div>
       <p className="mt-4 text-sm font-medium">{title}</p>
       <p className="mt-1 max-w-xs text-sm text-muted-foreground">{body}</p>

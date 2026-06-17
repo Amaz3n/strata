@@ -956,7 +956,7 @@ export async function voidChangeOrder({
     action: "update",
     entityType: "change_order",
     entityId: data.id,
-    before: existing,
+    before: existing as any,
     after: data,
     source: "change_order.void",
   })

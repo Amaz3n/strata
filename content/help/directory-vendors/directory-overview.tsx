@@ -4,30 +4,48 @@ export default function DirectoryOverviewArticle() {
   return (
     <>
       <p>
-        The Directory stores the companies and people your organization works with across
-        projects.
+        The Directory stores the companies and contacts your organization works with across all projects. 
+        Maintaining central records enables streamlined preconstruction bidding, project assignments, 
+        and compliance auditing.
       </p>
-      <h2>Companies and contacts</h2>
+
+      <h2>Core Modules in Directory &amp; Vendors</h2>
       <p>
-        Open <Link href="/directory">Directory</Link> to find or add companies and
-        contacts. Keep shared details on the directory record instead of recreating the
-        same party separately for each project.
+        Directory &amp; Vendors is comprised of three key workflows. Click the detailed guides below to learn how 
+        to manage each phase:
       </p>
-      <h2>Project assignments</h2>
+
+      <h3>1. Companies &amp; Contacts</h3>
       <p>
-        Directory records can be assigned to projects with a project-specific role, scope,
-        and notes.
+        Add companies, specify types and trades, record prequalification credentials, link employee contacts, 
+        and map companies to QuickBooks Online vendor records.
+        {" "}
+        <Link href="/help/directory-and-vendors/directory-basics/companies-contacts">
+          Read the Companies &amp; Contacts Guide
+        </Link>
+        .
       </p>
-      <h2>Vendor records</h2>
+
+      <h3>2. Project Assignments</h3>
       <p>
-        Vendor information supports commitments, bills, payments, bid invitations, and
-        project participation. When QuickBooks is connected, an Arc company can be linked
-        to its QuickBooks vendor.
+        Connect directory companies to specific projects, designate project roles and scopes of work, and track active 
+        vendors working on each job site.
+        {" "}
+        <Link href="/help/directory-and-vendors/directory-basics/project-assignments">
+          Read the Project Assignments Guide
+        </Link>
+        .
       </p>
-      <h2>Compliance</h2>
+
+      <h3>3. Compliance &amp; Insurance</h3>
       <p>
-        Compliance tools can track required vendor documents, expiration, review status,
-        lien waiver requirements, and payment blocks configured by the organization.
+        Track Certificates of Insurance (COI) and W-9s, define minimum coverage limits, review compliance documents, 
+        and manage automated compliance payment holds.
+        {" "}
+        <Link href="/help/directory-and-vendors/directory-basics/compliance-insurance">
+          Read the Compliance &amp; Insurance Guide
+        </Link>
+        .
       </p>
     </>
   )

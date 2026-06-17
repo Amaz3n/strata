@@ -63,14 +63,14 @@ export function ImpersonationPanel({ orgs }: { orgs: OrgOption[] }) {
       </div>
 
       {state.error && (
-        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div className="flex items-start gap-2 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4" />
           <span>{state.error}</span>
         </div>
       )}
 
       {state.message && !state.error && (
-        <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+        <div className="flex items-start gap-2 border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
           <CheckCircle className="mt-0.5 h-4 w-4" />
           <span>{state.message}</span>
         </div>

@@ -1,5 +1,6 @@
 export type {
   FileRecord,
+  FileSourceContext,
   FileTimelineEvent,
   FileWithUrls,
   FolderChild,

@@ -16,7 +16,6 @@ import {
   Download,
   Plus,
   Upload,
-  Layers,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -51,7 +50,6 @@ const CATEGORY_LABELS: Record<Exclude<QuickFilter, "all" | "drawings">, string> 
 
 interface DocumentsHeaderProps {
   onUploadClick: () => void
-  onUploadDrawingSetClick: () => void
   onCreateFolderClick: () => void
   onManageFolderAccessClick: () => void
   selectedCount: number
@@ -67,7 +65,6 @@ interface DocumentsHeaderProps {
 
 export function DocumentsHeader({
   onUploadClick,
-  onUploadDrawingSetClick,
   onCreateFolderClick,
   onManageFolderAccessClick,
   selectedCount,
@@ -91,14 +88,9 @@ export function DocumentsHeader({
     setViewMode,
     isUploading,
     counts,
-    drawingSets,
-    selectedDrawingSetId,
-    selectedDrawingSetTitle,
-    setSelectedDrawingSet,
   } = useDocuments()
 
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const hasDrawingSets = drawingSets.length > 0
 
   const pathSegments = currentPath
     ? currentPath.split("/").filter(Boolean)
@@ -112,11 +104,6 @@ export function DocumentsHeader({
       setCurrentPath(newPath)
     }
   }
-
-  const totalSheets = drawingSets.reduce(
-    (acc, set) => acc + (set.sheet_count ?? 0),
-    0
-  )
 
   const categoryKeys = Object.keys(CATEGORY_LABELS) as Array<Exclude<QuickFilter, "all" | "drawings">>
   const categoryOptions = categoryKeys.filter((cat) => {
@@ -156,26 +143,15 @@ export function DocumentsHeader({
       <div className="flex items-center gap-2">
         {/* Category dropdown */}
         <select
-          value={quickFilter === "drawings" && !hasDrawingSets ? "all" : quickFilter}
+          value={quickFilter === "drawings" ? "all" : quickFilter}
           onChange={(event) => {
             const nextValue = event.target.value as QuickFilter
             setQuickFilter(nextValue)
-            if (nextValue === "drawings") {
-              setCurrentPath("")
-            }
-            if (nextValue !== "drawings") {
-              setSelectedDrawingSet(null, null)
-            }
           }}
           className="h-8 w-[160px] rounded-md border border-input bg-background px-2 text-sm"
           aria-label="Filter documents by category"
         >
           <option value="all">All</option>
-          {hasDrawingSets && (
-            <option value="drawings">
-              Drawings{totalSheets > 0 ? ` (${totalSheets})` : ""}
-            </option>
-          )}
           {categoryOptions.map((cat) => (
             <option key={cat} value={cat}>
               {CATEGORY_LABELS[cat]} ({counts[cat] ?? 0})
@@ -243,21 +219,14 @@ export function DocumentsHeader({
               <Upload className="h-4 w-4 mr-2" />
               {isUploading ? "Uploading..." : "Upload files"}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onUploadDrawingSetClick} disabled={isUploading}>
-              <Layers className="h-4 w-4 mr-2" />
-              Upload drawing set
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={onCreateFolderClick}
-              disabled={quickFilter === "drawings"}
-            >
+            <DropdownMenuItem onClick={onCreateFolderClick}>
               <FolderPlus className="h-4 w-4 mr-2" />
               New folder
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {currentPath && quickFilter !== "drawings" && (
+        {currentPath && (
           <Button
             onClick={onManageFolderAccessClick}
             variant="outline"
@@ -271,61 +240,9 @@ export function DocumentsHeader({
       </div>
 
       {/* Row 2: Breadcrumbs */}
-      {(quickFilter === "drawings" || currentPath) && (
+      {currentPath && (
         <div className="flex items-center gap-3 min-h-[32px]">
-          {quickFilter === "drawings" ? (
-            <Breadcrumb className="shrink-0">
-              <BreadcrumbList className="flex-nowrap gap-1">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      setQuickFilter("all")
-                      setCurrentPath("")
-                      setSelectedDrawingSet(null, null)
-                    }}
-                    className="flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-colors hover:bg-muted"
-                  >
-                    <FolderClosed className="h-3.5 w-3.5" />
-                    All files
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator>
-                  <ChevronRight className="h-3 w-3" />
-                </BreadcrumbSeparator>
-                <BreadcrumbItem>
-                  {selectedDrawingSetId && selectedDrawingSetTitle ? (
-                    <BreadcrumbLink
-                      href="#"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        setSelectedDrawingSet(null, null)
-                      }}
-                      className="text-xs rounded px-1 py-0.5 transition-colors hover:bg-muted"
-                    >
-                      Drawings
-                    </BreadcrumbLink>
-                  ) : (
-                    <BreadcrumbPage className="text-xs">Drawings</BreadcrumbPage>
-                  )}
-                </BreadcrumbItem>
-                {selectedDrawingSetId && selectedDrawingSetTitle && (
-                  <Fragment>
-                    <BreadcrumbSeparator>
-                      <ChevronRight className="h-3 w-3" />
-                    </BreadcrumbSeparator>
-                    <BreadcrumbItem>
-                    <BreadcrumbPage className="text-xs truncate max-w-[220px]">
-                      {selectedDrawingSetTitle}
-                    </BreadcrumbPage>
-                    </BreadcrumbItem>
-                  </Fragment>
-                )}
-              </BreadcrumbList>
-            </Breadcrumb>
-          ) : (
-            <Breadcrumb className="shrink-0">
+          <Breadcrumb className="shrink-0">
               <BreadcrumbList className="flex-nowrap gap-1">
                 <BreadcrumbItem>
                   <BreadcrumbLink
@@ -391,8 +308,7 @@ export function DocumentsHeader({
                   </Fragment>
                 ))}
               </BreadcrumbList>
-            </Breadcrumb>
-          )}
+          </Breadcrumb>
         </div>
       )}
     </div>

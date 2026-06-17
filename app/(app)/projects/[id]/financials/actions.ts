@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
-import { getBudgetWithActuals, listVarianceAlertsForProject } from "@/lib/services/budgets"
+import { getBudgetWithActuals, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listCommitmentLines, listProjectCommitments } from "@/lib/services/commitments"
 import { listCompanies } from "@/lib/services/companies"
@@ -173,10 +173,11 @@ export async function prepareBillingAutopilotAction(projectId: string) {
  * - Compliance rules for payment blocking
  */
 export async function fetchPayablesTabDataAction(projectId: string) {
-  const [vendorBillsResult, complianceRulesResult, costCodesResult] = await Promise.allSettled([
+  const [vendorBillsResult, complianceRulesResult, costCodesResult, budgetLinesResult] = await Promise.allSettled([
     listVendorBillsForProject(projectId),
     getComplianceRules(),
     listCostCodes(),
+    listProjectBudgetLines(projectId),
   ])
 
   const vendorBills = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : []
@@ -188,6 +189,7 @@ export async function fetchPayablesTabDataAction(projectId: string) {
           block_payment_on_missing_docs: true,
         }
   const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
+  const budgetLines = budgetLinesResult.status === "fulfilled" ? budgetLinesResult.value : []
   const companyIds = Array.from(new Set(vendorBills.map((b) => b.company_id).filter(Boolean))) as string[]
   const complianceStatusResult = await Promise.allSettled([getCompaniesComplianceStatus(companyIds)])
   const complianceStatusByCompanyId =
@@ -198,6 +200,7 @@ export async function fetchPayablesTabDataAction(projectId: string) {
     complianceRules,
     complianceStatusByCompanyId,
     costCodes,
+    budgetLines,
     errors: [
       resultError("Vendor bills", vendorBillsResult),
       resultError("Compliance rules", complianceRulesResult),

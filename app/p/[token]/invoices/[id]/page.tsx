@@ -2,10 +2,11 @@ import { notFound } from "next/navigation"
 
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
-import { createPaymentIntent } from "@/lib/services/payments"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listOpenBookCostDetailsForInvoice } from "@/lib/services/cost-plus"
 import { listSharedInvoiceBackupPackagesForPortal } from "@/lib/services/owner-billing-packages"
+import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fees"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { InvoicePortalClient } from "./portal-invoice-client"
 
 interface Params {
@@ -30,35 +31,26 @@ export default async function InvoicePortalPage({ params }: Params) {
 
   let paymentProps:
     | {
-        clientSecret: string
         publishableKey: string
-        token: string
-        connectedAccountId?: string | null
+        portalToken: string
+        feeQuotes: ReturnType<typeof calculatePaymentFeeQuotes>
       }
     | null = null
 
-  if (publishableKey) {
+  if (publishableKey && access.permissions.can_pay_invoices) {
     try {
-      const intent = await createPaymentIntent(
-        {
-          invoice_id: invoice.id,
-          currency: invoice.currency,
-          include_processing_fee: false,
-        },
-        access.org_id,
-      )
-
-      if (intent?.client_secret) {
+      const balanceDue = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
+      if (balanceDue > 0 && invoice.token) {
+        const policy = await loadPaymentFeePolicy(createServiceSupabaseClient(), access.org_id)
         paymentProps = {
-          clientSecret: intent.client_secret,
           publishableKey,
-          token,
-          connectedAccountId: intent.connected_account_id ?? null,
+          portalToken: token,
+          feeQuotes: calculatePaymentFeeQuotes(balanceDue, policy),
         }
       }
     } catch (err) {
-      // If invoice is already paid or payments are not configured (missing Stripe key), skip the payment panel.
-      console.warn("Payment intent not created for portal invoice:", err)
+      // Gracefully degrade: show the invoice and offline payment instructions if payment settings cannot load.
+      console.warn("Payment options not created for portal invoice:", err)
     }
   }
 

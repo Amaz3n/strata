@@ -6,6 +6,7 @@ import { createFilesDownloadUrl, deleteFilesObjects } from "@/lib/storage/files-
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { triggerFileIndexing } from "./files-indexing"
+import { findFileIdsBySourceSearch, listFileSourceContexts } from "./file-source-contexts"
 
 export interface FileRecord {
   id: string
@@ -37,6 +38,7 @@ export interface FileRecord {
   preview_status?: "pending" | "processing" | "ready" | "failed"
   preview_thumbnail_path?: string
   preview_generated_at?: string
+  source_contexts?: FileSourceContext[]
   created_at: string
   updated_at: string
 }
@@ -44,6 +46,35 @@ export interface FileRecord {
 export interface FileWithUrls extends FileRecord {
   download_url?: string
   thumbnail_url?: string
+}
+
+export type FileSourceContextType =
+  | "drawing_set"
+  | "drawing_sheet"
+  | "signature_document"
+  | "executed_signature"
+  | "submittal"
+  | "rfi"
+  | "task"
+  | "punch_item"
+  | "change_order"
+  | "daily_log"
+  | "invoice"
+  | "commitment"
+  | "vendor_bill"
+  | "selection"
+  | "closeout_item"
+  | "warranty_request"
+  | "manual_upload"
+
+export interface FileSourceContext {
+  type: FileSourceContextType
+  entity_id: string
+  label: string
+  status?: string | null
+  href?: string | null
+  role?: string | null
+  primary_action_label?: string | null
 }
 
 function getPreviewMetadata(row: any): Record<string, any> {
@@ -262,6 +293,12 @@ export async function listFiles(
 ): Promise<{ data: FileRecord[]; count: number; hasMore: boolean }> {
   const parsed = fileListFiltersSchema.parse(filters)
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const sourceMatchedFileIds = parsed.search
+    ? await findFileIdsBySourceSearch(parsed.search, resolvedOrgId).catch((error) => {
+        console.warn("[files] Failed to expand source search:", error)
+        return [] as string[]
+      })
+    : []
 
   let query = supabase
     .from("files")
@@ -302,9 +339,13 @@ export async function listFiles(
   if (parsed.search) {
     // Search in file_name, description, and tags safely
     const searchPattern = `%${parsed.search}%`
-    query = query.or(
-      `file_name.ilike.${searchPattern},description.ilike.${searchPattern},tags::text.ilike.${searchPattern}`
-    )
+    const searchClauses = [
+      `file_name.ilike.${searchPattern}`,
+      `description.ilike.${searchPattern}`,
+      `tags::text.ilike.${searchPattern}`,
+      ...sourceMatchedFileIds.map((id) => `id.eq.${id}`),
+    ]
+    query = query.or(searchClauses.join(","))
   }
 
   if (parsed.status) {
@@ -738,6 +779,13 @@ export async function listFilesWithUrls(
   const result = await listFiles(filters, orgId)
 
   if (result.data.length === 0) return { data: [], count: result.count, hasMore: result.hasMore }
+  const sourceContextsByFileId = await listFileSourceContexts(
+    result.data.map((file) => file.id),
+    orgId,
+  ).catch((error) => {
+    console.warn("[files] Failed to load source contexts:", error)
+    return {} as Record<string, FileSourceContext[]>
+  })
 
   const dataWithUrls = result.data.map((file) => {
     const internalUrl = buildInternalFileUrl(file.id)
@@ -745,6 +793,7 @@ export async function listFilesWithUrls(
 
     return {
       ...file,
+      source_contexts: sourceContextsByFileId[file.id] ?? [],
       download_url: internalUrl,
       thumbnail_url:
         previewUrl ??

@@ -194,10 +194,44 @@ export function isVideoFile(mimeType?: string): boolean {
   return mimeType?.startsWith("video/") ?? false
 }
 
-export function isPreviewable(mimeType?: string): boolean {
-  return isBrowserRenderableImage(mimeType) || isPdfFile(mimeType) || isVideoFile(mimeType)
+export function isAudioFile(mimeType?: string): boolean {
+  return mimeType?.startsWith("audio/") ?? false
 }
 
+/** True for any Word document (legacy .doc or modern .docx) — used for iconography. */
+export function isWordFile(mimeType?: string, fileName?: string): boolean {
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+  const lowerName = fileName?.toLowerCase() ?? ""
+  return (
+    lowerMime === "application/msword" ||
+    lowerMime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    lowerName.endsWith(".doc") ||
+    lowerName.endsWith(".docx")
+  )
+}
+
+/**
+ * True only for files we can render an in-app HTML preview for (.docx via mammoth).
+ * Legacy binary .doc is not supported by mammoth and falls back to download.
+ */
+export function isWordPreviewable(mimeType?: string, fileName?: string): boolean {
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+  const lowerName = fileName?.toLowerCase() ?? ""
+  return (
+    lowerMime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    lowerName.endsWith(".docx")
+  )
+}
+
+export function isPreviewable(mimeType?: string, fileName?: string): boolean {
+  return (
+    isBrowserRenderableImage(mimeType) ||
+    isPdfFile(mimeType) ||
+    isVideoFile(mimeType) ||
+    isAudioFile(mimeType) ||
+    isWordPreviewable(mimeType, fileName)
+  )
+}
 
 
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { Check, Copy, FilePlus2, FolderClosed, Link2, Loader2, Search, X } from "lucide-react";
+import { Check, Copy, FileCheck2, FolderClosed, History, Link2, Loader2, Search, Sparkles, UploadCloud, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePageTitle } from "@/components/layout/page-title-context";
@@ -23,7 +23,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,12 +48,11 @@ import { DocumentsToolbar } from "./documents-toolbar";
 import { DocumentsContent } from "./documents-content";
 import { DocumentsMobileLayout } from "./documents-mobile-layout";
 import { formatFileSize } from "./documents-table";
-import { SheetsContent } from "./sheets-content";
 import { FilePropertiesPanel } from "./file-properties-panel";
 import { UploadDialog } from "./upload-dialog";
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
 import type { UnifiedDocumentsLayoutProps } from "./types";
-import { isBrowserRenderableImage, type FileWithDetails } from "@/components/files/types";
+import { isBrowserRenderableImage, isWordPreviewable, type FileWithDetails } from "@/components/files/types";
 import {
   getFileAction,
   getFileDownloadUrlAction,
@@ -75,6 +73,7 @@ import {
   createFileShareLinkAction,
   listFileShareLinksAction,
   revokeFileShareLinkAction,
+  suggestFileNameAction,
 } from "@/app/(app)/documents/actions";
 import type { FileShareLink } from "@/app/(app)/documents/types";
 import type {
@@ -83,7 +82,6 @@ import type {
   FileTimelineEvent,
 } from "@/app/(app)/documents/types";
 import {
-  createDrawingSetFromUpload,
   getSheetDownloadUrlAction,
   getSheetOptimizedImageUrlsAction,
   listDrawingMarkupsAction,
@@ -100,9 +98,7 @@ import type {
   DrawingMarkup,
   DrawingPin,
 } from "@/app/(app)/drawings/types";
-import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client";
 import { uploadDocumentFileDirect } from "@/lib/services/files-client";
-import { DRAWING_SET_TYPE_LABELS } from "@/lib/validation/drawings";
 
 function dispatchNavRefresh() {
   window.dispatchEvent(new CustomEvent("docs-nav-refresh"));
@@ -189,7 +185,15 @@ function normalizeFolderPath(path: string): string | null {
   return normalized.replace(/\/$/, "");
 }
 
-const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS);
+function formatVersionDate(value?: string | null) {
+  if (!value) return "-";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
 const EXPLORER_OPEN_STORAGE_KEY = "documents-explorer-open";
 function shareSummary(withClients: boolean, withSubs: boolean): string {
   if (withClients && withSubs) return "Visible to your team, clients, and subcontractors.";
@@ -229,13 +233,10 @@ function UnifiedDocumentsLayoutInner() {
     files,
     folders,
     folderPermissions,
-    selectedDrawingSetId,
     currentPath,
     setCurrentPath,
     refreshFiles,
-    refreshDrawingSets,
     refreshFolderPermissions,
-    navigateToDrawingSet,
   } = useDocuments();
   const { setBreadcrumbs } = usePageTitle();
   const requestedFileId = searchParams.get("fileId");
@@ -253,16 +254,7 @@ function UnifiedDocumentsLayoutInner() {
   const [versionLabel, setVersionLabel] = useState("");
   const [versionNotes, setVersionNotes] = useState("");
   const [isUploadingVersion, setIsUploadingVersion] = useState(false);
-  const drawingSetFileInputRef = useRef<HTMLInputElement>(null);
-  const [drawingSetUploadOpen, setDrawingSetUploadOpen] = useState(false);
-  const [drawingSetFile, setDrawingSetFile] = useState<File | null>(null);
-  const [drawingSetTitle, setDrawingSetTitle] = useState("");
-  const [drawingSetType, setDrawingSetType] = useState("general");
-  const [drawingSetUploading, setDrawingSetUploading] = useState(false);
-  const [drawingSetUploadStage, setDrawingSetUploadStage] = useState<
-    string | null
-  >(null);
-
+  const [isLoadingVersionHistory, setIsLoadingVersionHistory] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null);
   const [versionsByFile, setVersionsByFile] = useState<
@@ -290,6 +282,7 @@ function UnifiedDocumentsLayoutInner() {
   const [renameFile, setRenameFile] = useState<FileWithUrls | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
+  const [isSuggestingRename, setIsSuggestingRename] = useState(false);
 
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareFile, setShareFile] = useState<FileWithUrls | null>(null);
@@ -364,7 +357,7 @@ function UnifiedDocumentsLayoutInner() {
   useEffect(() => {
     setSelectedFileIds(new Set());
     setSelectedFolderPaths(new Set());
-  }, [currentPath, selectedDrawingSetId]);
+  }, [currentPath]);
 
   useEffect(() => {
     if (!viewerOpen) {
@@ -708,7 +701,7 @@ function UnifiedDocumentsLayoutInner() {
   }, []);
 
   const openVersionUploadDialog = useCallback(
-    (fileId: string) => {
+    async (fileId: string) => {
       const file = files.find((item) => item.id === fileId);
       if (!file) return;
       setVersionTargetFile(file);
@@ -718,6 +711,19 @@ function UnifiedDocumentsLayoutInner() {
       setVersionDialogOpen(true);
       if (versionFileInputRef.current) {
         versionFileInputRef.current.value = "";
+      }
+
+      setIsLoadingVersionHistory(true);
+      try {
+        const versions = await listFileVersionsAction(fileId);
+        setVersionsByFile((prev) => ({
+          ...prev,
+          [fileId]: versions.map(mapVersion),
+        }));
+      } catch (error) {
+        console.error("Failed to load version history:", error);
+      } finally {
+        setIsLoadingVersionHistory(false);
       }
     },
     [files],
@@ -732,94 +738,6 @@ function UnifiedDocumentsLayoutInner() {
     },
     [],
   );
-
-  const resetDrawingSetUploadDialog = useCallback(() => {
-    setDrawingSetFile(null);
-    setDrawingSetTitle("");
-    setDrawingSetType("general");
-    setDrawingSetUploading(false);
-    setDrawingSetUploadStage(null);
-    if (drawingSetFileInputRef.current) {
-      drawingSetFileInputRef.current.value = "";
-    }
-  }, []);
-
-  const handleOpenDrawingSetUpload = useCallback(() => {
-    resetDrawingSetUploadDialog();
-    setDrawingSetUploadOpen(true);
-  }, [resetDrawingSetUploadDialog]);
-
-  const handleDrawingSetFileChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0] ?? null;
-      if (!file) return;
-      setDrawingSetFile(file);
-      setDrawingSetTitle((prev) => {
-        if (prev.trim().length > 0) return prev;
-        return file.name.replace(/\.pdf$/i, "");
-      });
-    },
-    [],
-  );
-
-  const handleUploadDrawingSet = useCallback(async () => {
-    if (!drawingSetFile) {
-      toast.error("Select a PDF file to upload");
-      return;
-    }
-
-    if (drawingSetFile.type !== "application/pdf") {
-      toast.error("Only PDF files are supported for drawing sets");
-      return;
-    }
-
-    const normalizedTitle =
-      drawingSetTitle.trim().length > 0
-        ? drawingSetTitle.trim()
-        : drawingSetFile.name.replace(/\.pdf$/i, "");
-
-    setDrawingSetUploading(true);
-    setDrawingSetUploadStage("Uploading PDF…");
-    try {
-      const { storagePath } = await uploadDrawingFileToStorage(
-        drawingSetFile,
-        projectId,
-      );
-
-      setDrawingSetUploadStage("Queueing sheet processing…");
-      await createDrawingSetFromUpload({
-        projectId,
-        title: normalizedTitle,
-        setType: drawingSetType,
-        fileName: drawingSetFile.name,
-        storagePath,
-        fileSize: drawingSetFile.size,
-        mimeType: drawingSetFile.type,
-      });
-
-      await Promise.all([refreshDrawingSets(), refreshFiles()]);
-      dispatchNavRefresh();
-      toast.success("Drawing set uploaded. Processing has started.");
-      setDrawingSetUploadOpen(false);
-      resetDrawingSetUploadDialog();
-    } catch (error) {
-      console.error("Failed to upload drawing set:", error);
-      toast.error(
-        error instanceof Error ? error.message : "Failed to upload drawing set",
-      );
-    } finally {
-      setDrawingSetUploading(false);
-      setDrawingSetUploadStage(null);
-    }
-  }, [
-    drawingSetFile,
-    drawingSetTitle,
-    drawingSetType,
-    projectId,
-    refreshDrawingSets,
-    refreshFiles,
-    resetDrawingSetUploadDialog,
-  ]);
 
   const handleFileSelectionChange = useCallback(
     (fileId: string, selected: boolean) => {
@@ -1317,6 +1235,26 @@ function UnifiedDocumentsLayoutInner() {
     }
   }, [renameFile, renameValue, refreshFiles]);
 
+  const handleSuggestRename = useCallback(async () => {
+    if (!renameFile) return;
+
+    setIsSuggestingRename(true);
+    try {
+      const result = await suggestFileNameAction(renameFile.id);
+      if (!result.ok) {
+        toast.error("Could not suggest a name", { description: result.error });
+        return;
+      }
+      setRenameValue(result.fileName);
+      toast.success("AI name suggested");
+    } catch (error) {
+      console.error("Failed to suggest file name:", error);
+      toast.error("Could not suggest a name");
+    } finally {
+      setIsSuggestingRename(false);
+    }
+  }, [renameFile]);
+
   const handleShareConfirm = useCallback(async () => {
     if (!shareFile) return;
     setIsSavingShare(true);
@@ -1447,50 +1385,42 @@ function UnifiedDocumentsLayoutInner() {
     const ids = Array.from(selectedFileIds);
     if (ids.length === 0) return;
 
-    const selectedFiles = files.filter((file) => selectedFileIds.has(file.id));
-    if (selectedFiles.length === 0) {
-      toast.error("No selected files available for download");
-      return;
-    }
-
     setIsDownloadingSelected(true);
     try {
-      const downloads = await Promise.all(
-        selectedFiles.map(async (file) => {
-          try {
-            const url = await getFileDownloadUrlAction(file.id);
-            return { fileName: file.file_name, url };
-          } catch {
-            return null;
-          }
-        }),
-      );
-
-      let successCount = 0;
-      for (const download of downloads) {
-        if (!download) continue;
-        try {
-          await downloadUrlToFile(download.url, download.fileName);
-          successCount += 1;
-        } catch {
-          // Skip failed files so other selected downloads can continue.
+      if (ids.length === 1) {
+        const file = files.find((row) => row.id === ids[0]);
+        if (file) {
+          const url = await getFileDownloadUrlAction(file.id);
+          await downloadUrlToFile(url, file.file_name);
+          return;
         }
       }
 
-      if (successCount === 0) {
-        toast.error("Failed to download selected files");
+      const response = await fetch("/api/documents/download-zip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileIds: ids }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        toast.error(payload?.error ?? "Failed to create ZIP download");
         return;
       }
 
-      if (successCount < ids.length) {
-        toast.success(
-          `Downloaded ${successCount} of ${ids.length} selected files`,
-        );
-      } else {
-        toast.success(
-          `Downloading ${successCount} selected file${successCount === 1 ? "" : "s"}`,
-        );
-      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = getDownloadFileName(
+        response.headers.get("content-disposition"),
+        `arc-documents-${new Date().toISOString().slice(0, 10)}.zip`,
+      );
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      toast.success(`Downloading ${ids.length} files as ZIP`);
     } catch (error) {
       console.error("Failed to download selected files:", error);
       toast.error("Failed to download selected files");
@@ -1749,7 +1679,8 @@ function UnifiedDocumentsLayoutInner() {
           mime.startsWith("image/") ||
           mime === "application/pdf" ||
           mime.startsWith("video/") ||
-          mime.startsWith("audio/")
+          mime.startsWith("audio/") ||
+          isWordPreviewable(f.mime_type, f.file_name)
         );
       })
       .map((f) => {
@@ -1811,11 +1742,29 @@ function UnifiedDocumentsLayoutInner() {
     }
 
     void refreshPropertiesTimeline(propertiesFile.id);
+    listFileVersionsAction(propertiesFile.id)
+      .then((versions) => {
+        setVersionsByFile((prev) => ({
+          ...prev,
+          [propertiesFile.id]: versions.map(mapVersion),
+        }));
+      })
+      .catch((error) => {
+        console.error("Failed to load properties version history:", error);
+      });
   }, [propertiesFile, refreshPropertiesTimeline]);
 
   useEffect(() => {
-    const breadcrumbs: Array<{ label: string; href?: string }> = [
-      { label: "Documents", href: `/projects/${projectId}/documents` },
+    const breadcrumbs: Array<{ label: string; href?: string; onClick?: () => void }> = [
+      { label: projectName, href: `/projects/${projectId}` },
+      {
+        label: "Documents",
+        href: `/projects/${projectId}/documents`,
+        onClick: () => {
+          setPropertiesFileId(null);
+          setCurrentPath("");
+        },
+      },
     ];
 
     const segments = activeBreadcrumbPath
@@ -1827,6 +1776,10 @@ function UnifiedDocumentsLayoutInner() {
       breadcrumbs.push({
         label: segment,
         href: `/projects/${projectId}/documents?path=${encodeURIComponent(path)}`,
+        onClick: () => {
+          setPropertiesFileId(null);
+          setCurrentPath(path);
+        },
       });
     });
 
@@ -1835,7 +1788,7 @@ function UnifiedDocumentsLayoutInner() {
     }
 
     setBreadcrumbs(breadcrumbs);
-  }, [activeBreadcrumbPath, projectId, propertiesFile, setBreadcrumbs]);
+  }, [activeBreadcrumbPath, projectId, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
 
   const handleSendForSignature = useCallback(
     (fileId: string) => {
@@ -1855,31 +1808,7 @@ function UnifiedDocumentsLayoutInner() {
     [files, projectId],
   );
 
-  const handleSendForApproval = useCallback(
-    async (fileId: string) => {
-      try {
-        await updateFileAction(fileId, { status: "submitted" } as any);
-        await refreshFiles();
-        toast.success("Document submitted for approval");
-      } catch (error) {
-        toast.error("Failed to submit for approval");
-      }
-    },
-    [refreshFiles],
-  );
-
   const renderContent = () => {
-    // If a drawing set is selected (via sidebar), show sheets
-    if (selectedDrawingSetId) {
-      return (
-        <SheetsContent
-          onSheetClick={handleSheetClick}
-          onUploadDrawingSetClick={handleOpenDrawingSetUpload}
-        />
-      );
-    }
-
-    // Otherwise show files/folders
     return (
         <DocumentsContent
           onFileClick={handleFileClick}
@@ -1899,14 +1828,17 @@ function UnifiedDocumentsLayoutInner() {
         onShareFile={openShareDialog}
         onUploadNewVersion={openVersionUploadDialog}
         onSendForSignature={handleSendForSignature}
-        onSendForApproval={handleSendForApproval}
         onOpenProperties={setPropertiesFileId}
         onFileDragStart={handleFileDragStart}
         onFileDragEnd={handleFileDragEnd}
-        onDrawingSetClick={navigateToDrawingSet}
       />
     );
   };
+
+  const versionDialogHistory = versionTargetFile
+    ? versionsByFile[versionTargetFile.id] ?? []
+    : [];
+  const recentVersionHistory = versionDialogHistory.slice(0, 4);
 
   return (
     <div
@@ -1935,13 +1867,12 @@ function UnifiedDocumentsLayoutInner() {
           onShareFile={openShareDialog}
           onUploadNewVersion={openVersionUploadDialog}
           onSendForSignature={handleSendForSignature}
-          onSendForApproval={handleSendForApproval}
           onOpenProperties={setPropertiesFileId}
-          onSheetClick={handleSheetClick}
-          onUploadDrawingSetClick={handleOpenDrawingSetUpload}
           propertiesFile={propertiesFile}
           onCloseProperties={() => setPropertiesFileId(null)}
           onDownloadFromProperties={handleDownloadFromProperties}
+          propertiesVersions={propertiesFile ? (versionsByFile[propertiesFile.id] ?? []) : []}
+          onDownloadVersion={handleDownloadVersion}
           propertiesTimelineEvents={propertiesTimelineEvents}
           propertiesTimelineLoading={propertiesTimelineLoading}
           onRefreshTimeline={refreshPropertiesTimeline}
@@ -2025,11 +1956,12 @@ function UnifiedDocumentsLayoutInner() {
               onMove={(fileId) => openMoveDialog(fileId)}
               onShare={openShareDialog}
               onUploadNewVersion={openVersionUploadDialog}
+              versions={propertiesFile ? (versionsByFile[propertiesFile.id] ?? []) : []}
+              onDownloadVersion={handleDownloadVersion}
               timelineEvents={propertiesTimelineEvents}
               timelineLoading={propertiesTimelineLoading}
               onRefreshTimeline={refreshPropertiesTimeline}
               onSendForSignature={handleSendForSignature}
-              onSendForApproval={handleSendForApproval}
               onDelete={(fileId) => openDeleteDialog(fileId)}
             />
           </div>
@@ -2056,43 +1988,28 @@ function UnifiedDocumentsLayoutInner() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Upload New Version</DialogTitle>
+            <DialogTitle>Upload new version</DialogTitle>
             <DialogDescription>
-              Replace the current file while preserving version history, approvals, and sharing.
+              Add a revised file while keeping the same document record, sharing, and history.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-5 py-2">
+          <div className="space-y-4 py-2">
             {versionTargetFile ? (
-              <div className="rounded-lg border bg-muted/20 p-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                      Current version
-                    </p>
-                    <p className="truncate text-sm font-medium">
-                      {versionTargetFile.file_name}
-                    </p>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background text-primary shadow-sm">
+                    <FileCheck2 className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Current file</p>
+                    <p className="truncate text-sm font-semibold">{versionTargetFile.file_name}</p>
                     <p className="text-xs text-muted-foreground">
-                      v{versionTargetFile.version_number ?? 1} • {formatFileSize(versionTargetFile.size_bytes)}
+                      Latest v{versionTargetFile.version_number ?? 1} · {formatFileSize(versionTargetFile.size_bytes)}
                     </p>
                   </div>
-                  <div className="rounded-md border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
-                    Existing metadata stays attached
-                  </div>
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  {[
-                    "Version history",
-                    "Sharing access",
-                    "Workflow state",
-                  ].map((item) => (
-                    <div key={item} className="rounded-md border bg-background px-3 py-2 text-sm">
-                      {item}
-                    </div>
-                  ))}
                 </div>
               </div>
             ) : null}
@@ -2110,61 +2027,98 @@ function UnifiedDocumentsLayoutInner() {
               variant="outline"
               onClick={() => versionFileInputRef.current?.click()}
               disabled={isUploadingVersion}
-              className="h-auto w-full justify-start rounded-lg border-dashed px-4 py-4 text-left"
+              className={cn(
+                "h-auto w-full justify-start rounded-lg border-dashed px-4 py-4 text-left transition-colors",
+                versionUploadFile ? "border-primary/40 bg-primary/5" : "hover:bg-muted/40",
+              )}
             >
               <div className="flex items-start gap-3">
-                <FilePlus2 className="mt-0.5 h-4 w-4" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <UploadCloud className="h-4 w-4" />
+                </div>
                 <div>
                   <p className="text-sm font-medium">
-                    {versionUploadFile ? "Choose a different replacement file" : "Choose replacement file"}
+                    {versionUploadFile ? "Replacement file selected" : "Choose the revised file"}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Upload the revised PDF, image, or document to become the latest version.
+                    {versionUploadFile
+                      ? `${versionUploadFile.name} · ${formatFileSize(versionUploadFile.size)}`
+                      : "This becomes the latest version after you click Upload version."}
                   </p>
                 </div>
               </div>
             </Button>
 
-            {versionUploadFile ? (
-              <div className="grid gap-3 rounded-lg border bg-background px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                    Incoming file
-                  </p>
-                  <p className="truncate text-sm font-medium">
-                    {versionUploadFile.name}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatFileSize(versionUploadFile.size)}
-                  </p>
-                </div>
-                <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                  Ready to publish as the latest version
-                </div>
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+              <div className="space-y-2">
+                <Label htmlFor="version-label">Version label</Label>
+                <Input
+                  id="version-label"
+                  value={versionLabel}
+                  onChange={(event) => setVersionLabel(event.target.value)}
+                  placeholder="Addendum 2, final, owner comments"
+                  disabled={isUploadingVersion}
+                />
               </div>
-            ) : null}
 
-            <div className="space-y-2">
-              <Label htmlFor="version-label">Version label</Label>
-              <Input
-                id="version-label"
-                value={versionLabel}
-                onChange={(event) => setVersionLabel(event.target.value)}
-                placeholder="Addendum 2, owner comments, final"
-                disabled={isUploadingVersion}
-              />
+              <div className="space-y-2">
+                <Label htmlFor="version-notes">Notes</Label>
+                <Input
+                  id="version-notes"
+                  value={versionNotes}
+                  onChange={(event) => setVersionNotes(event.target.value)}
+                  placeholder="Short note about what changed"
+                  disabled={isUploadingVersion}
+                />
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="version-notes">Notes</Label>
-              <Textarea
-                id="version-notes"
-                value={versionNotes}
-                onChange={(event) => setVersionNotes(event.target.value)}
-                placeholder="What changed in this version?"
-                disabled={isUploadingVersion}
-                rows={3}
-              />
+            <div className="rounded-lg border">
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <History className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-sm font-medium">Recent versions</p>
+                </div>
+                {versionDialogHistory.length > 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    {versionDialogHistory.length} total
+                  </span>
+                ) : null}
+              </div>
+              {isLoadingVersionHistory ? (
+                <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading history...
+                </div>
+              ) : recentVersionHistory.length > 0 ? (
+                <div className="divide-y">
+                  {recentVersionHistory.map((version) => (
+                    <div key={version.id} className="flex items-center gap-3 px-3 py-2.5">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold">
+                        v{version.version_number}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {version.label || version.file_name || `Version ${version.version_number}`}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {version.creator_name ?? "Unknown"} · {formatVersionDate(version.created_at)}
+                          {version.size_bytes ? ` · ${formatFileSize(version.size_bytes)}` : ""}
+                        </p>
+                      </div>
+                      {version.is_current ? (
+                        <span className="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                          Current
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="px-3 py-4 text-sm text-muted-foreground">
+                  No version history yet. This upload will create the next version.
+                </p>
+              )}
             </div>
           </div>
 
@@ -2208,115 +2162,6 @@ function UnifiedDocumentsLayoutInner() {
           refreshFiles();
         }}
       />
-
-      <Dialog
-        open={drawingSetUploadOpen}
-        onOpenChange={(open) => {
-          setDrawingSetUploadOpen(open);
-          if (!open) {
-            resetDrawingSetUploadDialog();
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Upload Drawing Set</DialogTitle>
-            <DialogDescription>
-              Upload a PDF and we&apos;ll split it into sheets automatically.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="drawing-set-title">Title</Label>
-              <Input
-                id="drawing-set-title"
-                value={drawingSetTitle}
-                onChange={(event) => setDrawingSetTitle(event.target.value)}
-                placeholder="2026 Permit Set"
-                disabled={drawingSetUploading}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="drawing-set-type">Type</Label>
-              <select
-                id="drawing-set-type"
-                value={drawingSetType}
-                onChange={(event) => setDrawingSetType(event.target.value)}
-                disabled={drawingSetUploading}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                {DRAWING_SET_TYPES.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <input
-              ref={drawingSetFileInputRef}
-              type="file"
-              accept=".pdf,application/pdf"
-              className="hidden"
-              onChange={handleDrawingSetFileChange}
-              disabled={drawingSetUploading}
-            />
-
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => drawingSetFileInputRef.current?.click()}
-              disabled={drawingSetUploading}
-              className="w-full justify-start"
-            >
-              Choose PDF file
-            </Button>
-
-            {drawingSetFile && (
-              <div className="rounded-md border bg-muted/40 px-3 py-2">
-                <p className="text-sm font-medium truncate">
-                  {drawingSetFile.name}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {(drawingSetFile.size / 1024 / 1024).toFixed(2)} MB
-                </p>
-              </div>
-            )}
-
-            {drawingSetUploadStage && (
-              <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>{drawingSetUploadStage}</span>
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDrawingSetUploadOpen(false)}
-              disabled={drawingSetUploading}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleUploadDrawingSet}
-              disabled={drawingSetUploading || !drawingSetFile}
-            >
-              {drawingSetUploading ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Uploading...
-                </>
-              ) : (
-                "Upload drawing set"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <FileViewer
         file={viewerFile}
@@ -2671,21 +2516,46 @@ function UnifiedDocumentsLayoutInner() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Input
-              value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
-              disabled={isRenaming}
-            />
+            <div className="flex gap-2">
+              <Input
+                value={renameValue}
+                onChange={(event) => setRenameValue(event.target.value)}
+                disabled={isRenaming || isSuggestingRename}
+                className="min-w-0 flex-1"
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleSuggestRename}
+                disabled={isRenaming || isSuggestingRename || !renameFile}
+                className={cn(
+                  "group relative shrink-0 overflow-hidden border border-primary/20 bg-gradient-to-r from-primary/10 via-background to-primary/10 transition-all",
+                  "before:absolute before:inset-y-0 before:-left-1/2 before:w-1/3 before:skew-x-[-20deg] before:bg-white/60 before:opacity-0 before:transition-all before:duration-700",
+                  "hover:border-primary/40 hover:shadow-[0_0_24px_rgba(59,130,246,0.24)] hover:before:left-[120%] hover:before:opacity-100",
+                  "disabled:before:hidden",
+                )}
+              >
+                {isSuggestingRename ? (
+                  <Loader2 className="relative z-10 h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="relative z-10 h-4 w-4 mr-2 text-primary transition-transform group-hover:scale-110" />
+                )}
+                <span className="relative z-10">AI rename</span>
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              AI reads the file purpose, identifiers, vendors, trades, and scope to suggest a short project-ready name.
+            </p>
           </div>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setRenameDialogOpen(false)}
-              disabled={isRenaming}
+              disabled={isRenaming || isSuggestingRename}
             >
               Cancel
             </Button>
-            <Button onClick={handleRenameConfirm} disabled={isRenaming}>
+            <Button onClick={handleRenameConfirm} disabled={isRenaming || isSuggestingRename}>
               {isRenaming ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />

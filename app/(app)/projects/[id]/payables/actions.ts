@@ -213,13 +213,13 @@ export type PayableInvoiceExtractionResult =
 
 export async function extractPayableInvoiceAction(_projectId: string, formData: FormData): Promise<PayableInvoiceExtractionResult> {
   try {
-    await requireOrgContext()
+    const { orgId } = await requireOrgContext()
     const invoice = formData.get("invoice")
     if (!(invoice instanceof File)) {
       return { ok: false, error: "Choose an invoice to scan" }
     }
 
-    const data = await extractPayableInvoiceFromFile(invoice)
+    const data = await extractPayableInvoiceFromFile(invoice, { orgId })
     return { ok: true, data }
   } catch (error: any) {
     console.warn("[PayableExtraction] Scan failed", error)

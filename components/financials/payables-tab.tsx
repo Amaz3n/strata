@@ -1,6 +1,6 @@
 "use client"
 
-import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
+import type { BudgetLineOption, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ProjectPayablesClient } from "@/components/payables/project-payables-client"
 import { AlertTriangle } from "lucide-react"
@@ -11,6 +11,7 @@ interface PayablesTabProps {
   projectId: string
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
+  budgetLines?: BudgetLineOption[]
   costCodesEnabled?: boolean
   billingModel: ProjectBillingModel
   complianceRules: ComplianceRules
@@ -22,6 +23,7 @@ export function PayablesTab({
   projectId,
   vendorBills,
   costCodes,
+  budgetLines = [],
   costCodesEnabled = true,
   billingModel,
   complianceRules,
@@ -46,6 +48,7 @@ export function PayablesTab({
         projectId={projectId}
         vendorBills={vendorBills}
         costCodes={costCodesEnabled ? costCodes : []}
+        budgetLines={budgetLines}
         costCodesEnabled={costCodesEnabled}
         billingModel={billingModel}
         complianceRules={complianceRules}

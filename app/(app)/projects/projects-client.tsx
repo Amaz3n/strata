@@ -106,7 +106,7 @@ interface ProjectsClientProps {
   scheduleSummaries: Record<string, ProjectScheduleSummary>
 }
 
-type SortKey = "name" | "client" | "status" | "schedule" | "progress" | "value"
+type SortKey = "name" | "client" | "status" | "progress" | "value"
 type SortDir = "asc" | "desc"
 
 function projectValueCents(project: Project): number | null {
@@ -394,10 +394,6 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
       case "status":
         cmp = a.status.localeCompare(b.status)
         break
-      case "schedule":
-        // Sort by start date; projects without a start date sink to the bottom.
-        cmp = (a.start_date ?? "9999-99-99").localeCompare(b.start_date ?? "9999-99-99")
-        break
       case "progress":
         cmp = (scheduleSummaries[a.id]?.percent ?? -1) - (scheduleSummaries[b.id]?.percent ?? -1)
         break
@@ -528,8 +524,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
                     <SortHeader label="Client" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[16%]" />
                     <TableHead>Address</TableHead>
                     <SortHeader label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[11%]" />
-                    <SortHeader label="Schedule" column="schedule" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[15%]" />
-                    <SortHeader label="Progress" column="progress" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[13%]" />
+                    <SortHeader label="Progress" column="progress" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[15%]" />
                     <SortHeader label="Value" column="value" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[11%]" align="right" />
                     <TableHead className="w-[52px] pr-4" />
                   </TableRow>
@@ -559,15 +554,6 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
                           <Badge variant="outline" className={statusColors[project.status]}>
                             {statusLabels[project.status]}
                           </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm py-3">
-                          {project.start_date && project.end_date
-                            ? `${new Date(project.start_date).toLocaleDateString()} - ${new Date(project.end_date).toLocaleDateString()}`
-                            : project.start_date
-                              ? `Starts ${new Date(project.start_date).toLocaleDateString()}`
-                              : project.end_date
-                                ? `Ends ${new Date(project.end_date).toLocaleDateString()}`
-                                : "No schedule"}
                         </TableCell>
                         <TableCell className="py-3">
                           {summary && summary.total > 0 ? (

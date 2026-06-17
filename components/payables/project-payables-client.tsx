@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
+import type { BudgetLineOption, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import {
   getPayablesAccountingContextAction,
   syncProjectVendorBillToQBOAction,
@@ -40,6 +40,7 @@ export function ProjectPayablesClient({
   projectId,
   vendorBills,
   costCodes,
+  budgetLines = [],
   costCodesEnabled = true,
   billingModel,
   complianceRules,
@@ -50,6 +51,7 @@ export function ProjectPayablesClient({
   projectId: string
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
+  budgetLines?: BudgetLineOption[]
   costCodesEnabled?: boolean
   billingModel: ProjectBillingModel
   complianceRules: ComplianceRules
@@ -262,12 +264,12 @@ export function ProjectPayablesClient({
               return
             }
             startTransition(async () => {
-              try {
-                await deleteProjectVendorBillAction(projectId, bill.id)
+              const result = await deleteProjectVendorBillAction(projectId, bill.id)
+              if (result.success) {
                 toast.success("Payable deleted")
                 router.refresh()
-              } catch (error) {
-                toast.error((error as Error).message)
+              } else {
+                toast.error(result.error)
               }
             })
           }}
@@ -284,6 +286,7 @@ export function ProjectPayablesClient({
         selectedBillId={workspaceBillId}
         onSelectBill={openBill}
         costCodes={costCodes}
+        budgetLines={budgetLines}
         costCodesEnabled={costCodesEnabled}
         projects={projects}
         accountingEnabled={accountingEnabled}

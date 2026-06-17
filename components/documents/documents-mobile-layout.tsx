@@ -16,7 +16,6 @@ import {
   FolderPlus,
   HardHat,
   Info,
-  Layers,
   Lock,
   MoreVertical,
   Pencil,
@@ -39,10 +38,8 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer"
 import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/types"
-import type { DrawingSheet } from "@/app/(app)/drawings/types"
 import { useDocuments, buildFolderTree } from "./documents-context"
 import { FilePropertiesPanel } from "./file-properties-panel"
-import { SheetsContent } from "./sheets-content"
 import { getFileIcon, formatFileSize, formatDate } from "./documents-table"
 import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 
@@ -58,14 +55,23 @@ interface DocumentsMobileLayoutProps {
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
-  onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
-  onSheetClick: (sheet: DrawingSheet, sheets?: DrawingSheet[]) => void
-  onUploadDrawingSetClick: () => void
   // Properties drawer
   propertiesFile: FileWithUrls | null
   onCloseProperties: () => void
   onDownloadFromProperties: (file: FileWithUrls) => void
+  propertiesVersions?: Array<{
+    id: string
+    version_number: number
+    label?: string
+    notes?: string
+    file_name?: string
+    size_bytes?: number
+    creator_name?: string
+    created_at: string
+    is_current: boolean
+  }>
+  onDownloadVersion?: (versionId: string) => void
   propertiesTimelineEvents: FileTimelineEvent[]
   propertiesTimelineLoading: boolean
   onRefreshTimeline: (fileId: string) => void
@@ -91,13 +97,12 @@ export function DocumentsMobileLayout({
   onShareFile,
   onUploadNewVersion,
   onSendForSignature,
-  onSendForApproval,
   onOpenProperties,
-  onSheetClick,
-  onUploadDrawingSetClick,
   propertiesFile,
   onCloseProperties,
   onDownloadFromProperties,
+  propertiesVersions = [],
+  onDownloadVersion,
   propertiesTimelineEvents,
   propertiesTimelineLoading,
   onRefreshTimeline,
@@ -106,11 +111,8 @@ export function DocumentsMobileLayout({
     files,
     folders,
     folderItemCounts,
-    drawingSets,
     currentPath,
     setCurrentPath,
-    navigateToRoot,
-    navigateToDrawingSet,
     searchQuery,
     setSearchQuery,
     quickFilter,
@@ -119,8 +121,6 @@ export function DocumentsMobileLayout({
     isLoadingMore,
     hasMore,
     loadMore,
-    selectedDrawingSetId,
-    selectedDrawingSetTitle,
   } = useDocuments()
 
   const [newOpen, setNewOpen] = useState(false)
@@ -177,7 +177,6 @@ export function DocumentsMobileLayout({
   }, [files, currentPath, searchQuery, quickFilter])
 
   const showFolders = !searchQuery || Boolean(currentPath)
-  const showDrawingSets = !currentPath && !searchQuery && drawingSets.length > 0
   const hasFilters = quickFilter !== "all" || Boolean(searchQuery) || Boolean(currentPath)
 
   const goUp = () => {
@@ -189,35 +188,7 @@ export function DocumentsMobileLayout({
   const isEmpty =
     !isLoading &&
     currentFolders.length === 0 &&
-    filteredFiles.length === 0 &&
-    !showDrawingSets
-
-  // Drawing set sheets view (reached by tapping a set card)
-  if (selectedDrawingSetId) {
-    return (
-      <div className="flex h-full flex-col bg-background">
-        <div className="sticky top-0 z-10 flex shrink-0 items-center gap-2 border-b bg-background/95 px-3 py-2.5 backdrop-blur-sm">
-          <button
-            type="button"
-            onClick={navigateToRoot}
-            className="flex h-9 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-muted-foreground active:bg-muted"
-          >
-            <ChevronRight className="h-4 w-4 rotate-180" />
-            Documents
-          </button>
-          <span className="truncate text-sm font-semibold">
-            {selectedDrawingSetTitle ?? "Drawing set"}
-          </span>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-24">
-          <SheetsContent
-            onSheetClick={onSheetClick}
-            onUploadDrawingSetClick={onUploadDrawingSetClick}
-          />
-        </div>
-      </div>
-    )
-  }
+    filteredFiles.length === 0
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -289,35 +260,6 @@ export function DocumentsMobileLayout({
 
       {/* Scrollable content */}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-24">
-        {/* Drawing sets */}
-        {showDrawingSets ? (
-          <div className="border-b px-3 py-3">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Drawing Sets
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              {drawingSets.map((set) => (
-                <button
-                  key={set.id}
-                  type="button"
-                  onClick={() => navigateToDrawingSet(set.id, set.title)}
-                  className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left active:bg-muted"
-                >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-50 dark:bg-blue-950/30">
-                    <Layers className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{set.title}</p>
-                    <span className="text-[11px] text-muted-foreground">
-                      {set.sheet_count ?? 0} sheets
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
         {isLoading && currentFolders.length === 0 && filteredFiles.length === 0 ? (
           <MobileSkeleton />
         ) : isEmpty ? (
@@ -404,7 +346,6 @@ export function DocumentsMobileLayout({
               onOpenProperties={onOpenProperties}
               onUploadNewVersion={onUploadNewVersion}
               onSendForSignature={onSendForSignature}
-              onSendForApproval={onSendForApproval}
               onViewActivity={onViewActivity}
               onRenameFile={onRenameFile}
               onMoveFile={onMoveFile}
@@ -436,11 +377,12 @@ export function DocumentsMobileLayout({
               onMove={onMoveFile}
               onShare={onShareFile}
               onUploadNewVersion={onUploadNewVersion}
+              versions={propertiesVersions}
+              onDownloadVersion={onDownloadVersion}
               timelineEvents={propertiesTimelineEvents}
               timelineLoading={propertiesTimelineLoading}
               onRefreshTimeline={onRefreshTimeline}
               onSendForSignature={(fileId) => onSendForSignature?.(fileId)}
-              onSendForApproval={(fileId) => onSendForApproval?.(fileId)}
               onDelete={onDeleteFile}
             />
           </div>
@@ -643,7 +585,6 @@ function FileActionsSheet({
   onOpenProperties,
   onUploadNewVersion,
   onSendForSignature,
-  onSendForApproval,
   onViewActivity,
   onRenameFile,
   onMoveFile,
@@ -657,7 +598,6 @@ function FileActionsSheet({
   onOpenProperties: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
-  onSendForApproval?: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
@@ -690,13 +630,6 @@ function FileActionsSheet({
             icon={FileSignature}
             label="Send for signature"
             onClick={() => run(() => onSendForSignature(file.id))}
-          />
-        ) : null}
-        {onSendForApproval ? (
-          <ActionItem
-            icon={CheckCircle2}
-            label="Submit for approval"
-            onClick={() => run(() => onSendForApproval(file.id))}
           />
         ) : null}
         <ActionItem icon={Activity} label="Timeline" onClick={() => run(() => onViewActivity(file.id))} />

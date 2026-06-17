@@ -1,9 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
-import { Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
 import { useDocuments, buildFolderTree } from "./documents-context"
 import { DocumentsFileTable } from "./documents-table"
 import type { DocumentTableItem } from "./documents-table"
@@ -26,11 +24,9 @@ interface DocumentsContentProps {
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
-  onSendForApproval?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
-  onDrawingSetClick?: (setId: string, title: string) => void
 }
 
 export function DocumentsContent({
@@ -51,17 +47,14 @@ export function DocumentsContent({
   onShareFile,
   onUploadNewVersion,
   onSendForSignature,
-  onSendForApproval,
   onOpenProperties,
   onFileDragStart,
   onFileDragEnd,
-  onDrawingSetClick,
 }: DocumentsContentProps) {
   const {
     files,
     folders,
     folderItemCounts,
-    drawingSets,
     currentPath,
     quickFilter,
     searchQuery,
@@ -170,45 +163,8 @@ export function DocumentsContent({
 
   const hasFilters = quickFilter !== "all" || Boolean(searchQuery) || Boolean(currentPath)
 
-  // Show drawing sets at root level
-  const showDrawingSets = !currentPath && drawingSets.length > 0 && onDrawingSetClick
-
   return (
     <div className="flex flex-col min-h-full">
-      {showDrawingSets && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 px-4 py-3 border-b shrink-0">
-          {drawingSets.map((set) => (
-            <button
-              key={set.id}
-              type="button"
-              onClick={() => onDrawingSetClick(set.id, set.title)}
-              className={cn(
-                "flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                "hover:bg-muted/50 hover:border-foreground/20",
-              )}
-            >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-blue-50 dark:bg-blue-950/30">
-                <Layers className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium truncate">{set.title}</p>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] text-muted-foreground">
-                    {set.sheet_count ?? 0} sheets
-                  </span>
-                  {set.status === "processing" && (
-                    <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5">Processing</Badge>
-                  )}
-                  {set.status === "failed" && (
-                    <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5">Failed</Badge>
-                  )}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-
       <div className="flex-1 min-h-0">
         <DocumentsFileTable
           items={documentItems}
@@ -232,7 +188,6 @@ export function DocumentsContent({
           onShareFile={onShareFile}
           onUploadNewVersion={onUploadNewVersion}
           onSendForSignature={onSendForSignature}
-          onSendForApproval={onSendForApproval}
           onOpenProperties={onOpenProperties}
           onFileDragStart={onFileDragStart}
           onFileDragEnd={onFileDragEnd}

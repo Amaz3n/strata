@@ -1,37 +1,76 @@
+import Link from "next/link"
+
 export default function TroubleshootingOverviewArticle() {
   return (
     <>
       <p>
-        Start with the checks below when Arc is not behaving as expected. Contact support
-        when the issue continues or affects important project or financial work.
+        Welcome to the Arc Troubleshooting Guide. If you encounter issues with interface visibility, 
+        document uploads, OCR character recognition, QuickBooks Online synchronization, or Stripe credit card/ACH payments, 
+        we provide detailed sub-guides to resolve them.
       </p>
-      <h2>You cannot see a tool or action</h2>
+
+      <h2>Troubleshooting Directories</h2>
       <p>
-        Arc hides tools and actions that are not allowed by your organization or project
-        permissions. Confirm that you are in the correct organization and project, then ask
-        an administrator to review your access.
+        Select the topic below that matches the issue you are experiencing:
       </p>
-      <h2>A page or record is out of date</h2>
+
+      <h3>1. Permissions &amp; Access Issues</h3>
       <p>
-        Refresh the page and confirm your internet connection. If another user recently
-        changed the record, reopen it before making additional edits.
+        Resolve issues regarding hidden buttons, missing tabs, expired user invitations, or problems signing subcontracts and 
+        proposals in client or subcontractor portals.
+        {" "}
+        <Link href="/help/troubleshooting/common-issues/permissions-access-issues">
+          Read the Permissions &amp; Access Guide
+        </Link>
+        .
       </p>
-      <h2>An upload or email failed</h2>
+
+      <h3>2. Document &amp; OCR Upload Issues</h3>
       <p>
-        Check the file type, file size, recipient address, and connection. Keep the original
-        file until Arc confirms the upload or message was completed.
+        Fix stuck drawing uploads, learn how to flatten CAD layers to resolve timeouts, and calibrate drawing title block 
+        selection zones to correct sheet numbers.
+        {" "}
+        <Link href="/help/troubleshooting/common-issues/document-ocr-issues">
+          Read the Document &amp; OCR Upload Guide
+        </Link>
+        .
       </p>
-      <h2>An integration did not sync</h2>
+
+      <h3>3. QuickBooks &amp; Stripe Sync Issues</h3>
       <p>
-        Review the connection status, required record links, accounting coding, and the
-        error shown by Arc. Correct the underlying setup before retrying.
+        Address QuickBooks Online expired tokens, duplicate bill/invoice numbers, Chart of Accounts cache refreshing, 
+        Stripe payouts verification holds, and client ACH micro-deposit verification timelines.
+        {" "}
+        <Link href="/help/troubleshooting/common-issues/integration-sync-issues">
+          Read the QuickBooks &amp; Stripe Sync Guide
+        </Link>
+        .
       </p>
-      <h2>Contact Arc support</h2>
+
+      <h2>General Troubleshooting Checklists</h2>
       <p>
-        Email <a href="mailto:support@arcnaples.com">support@arcnaples.com</a> or use
-        Contact Support from your Arc account menu. Include the organization, project,
-        page, expected result, and error message.
+        Before diving into the detailed guides, try these standard browser troubleshooting practices to resolve temporary cache issues:
       </p>
+      <ul>
+        <li><strong>Force Refresh (Hard Reload):</strong> Hold <code>Shift</code> and click the reload button in your browser, or press <code>Cmd + Shift + R</code> (Mac) / <code>Ctrl + F5</code> (Windows). This forces the browser to discard its cached Javascript bundle and load the latest updates.</li>
+        <li><strong>Test in Incognito:</strong> Open a Private/Incognito window and log into your Arc workspace. If the issue disappears, it points to local browser cookie conflicts or active browser extension blockers (e.g., ad blockers interfering with payment popups).</li>
+        <li><strong>Verify Browser Compatibility:</strong> Ensure your browser is updated. Arc supports the latest versions of Google Chrome, Apple Safari, Microsoft Edge, and Mozilla Firefox.</li>
+      </ul>
+
+      <h2>Contacting Arc Support</h2>
+      <p>
+        If you are unable to resolve the issue using these guides, please reach out to our dedicated support desk:
+      </p>
+      <ul>
+        <li><strong>Support Email:</strong> <a href="mailto:support@arcnaples.com">support@arcnaples.com</a></li>
+        <li><strong>Details to Include:</strong>
+          <ul>
+            <li>Your company/organization name.</li>
+            <li>The active project name and the exact URL where the issue occurs (e.g., <code>/projects/104/budget</code>).</li>
+            <li>A brief description of what you were trying to do, any error codes shown, and a screenshot of the issue.</li>
+          </ul>
+        </li>
+      </ul>
     </>
   )
 }

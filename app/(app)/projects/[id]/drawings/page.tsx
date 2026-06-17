@@ -68,24 +68,16 @@ async function ProjectDrawingsData({
     query.set && sets.some((set) => set.id === query.set) ? query.set : undefined
 
   return (
-    <PageLayout
-      title="Drawings"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Drawings" },
-      ]}
-    >
-      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
-        <DrawingsSetsView
-          initialSets={sets}
-          initialSheets={sheets}
-          projects={[{ id: project.id, name: project.name }]}
-          selectedProjectId={project.id}
-          lockProject
-          initialSelectedSetId={initialSelectedSetId}
-          initialSheetId={query.sheetId}
-        />
-      </div>
-    </PageLayout>
+    <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+      <DrawingsSetsView
+        initialSets={sets}
+        initialSheets={sheets}
+        projects={[{ id: project.id, name: project.name }]}
+        selectedProjectId={project.id}
+        lockProject
+        initialSelectedSetId={initialSelectedSetId}
+        initialSheetId={query.sheetId}
+      />
+    </div>
   )
 }

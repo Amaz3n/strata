@@ -13,20 +13,24 @@ interface ProjectDocumentsPageProps {
 
 export default async function ProjectDocumentsPage({ params }: ProjectDocumentsPageProps) {
   const { id } = await params
+  const project = await getProjectAction(id)
+
+  if (!project) {
+    notFound()
+  }
 
   return (
-    <>
-      <PageLayout
-        title="Project Signatures"
-        breadcrumbs={[
-          { label: "Project" },
-          { label: "Signatures" },
-        ]}
-      />
+    <PageLayout
+      title="Project Signatures"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "Signatures" },
+      ]}
+    >
       <Suspense fallback={<ProjectSignaturesFallback />}>
-        <ProjectSignaturesData id={id} />
+        <ProjectSignaturesData project={project} />
       </Suspense>
-    </>
+    </PageLayout>
   )
 }
 
@@ -43,28 +47,14 @@ function ProjectSignaturesFallback() {
   )
 }
 
-async function ProjectSignaturesData({ id }: { id: string }) {
-  const project = await getProjectAction(id)
-
-  if (!project) {
-    notFound()
-  }
-
-  const data = await listSignaturesHubAction({ projectId: id })
+async function ProjectSignaturesData({ project }: { project: any }) {
+  const data = await listSignaturesHubAction({ projectId: project.id })
 
   return (
-    <PageLayout
-      title="Project Signatures"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Signatures" },
-      ]}
-    >
-      <SignaturesHubClient
-        initialData={data}
-        scope="project"
-        projectsForNewEnvelope={[{ id: project.id, name: project.name }]}
-      />
-    </PageLayout>
+    <SignaturesHubClient
+      initialData={data}
+      scope="project"
+      projectsForNewEnvelope={[{ id: project.id, name: project.name }]}
+    />
   )
 }

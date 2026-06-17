@@ -20,8 +20,6 @@ import {
   type TrustCenterExceptionKind,
   type TrustCenterSeverity,
   type ProjectTrustCenterData,
-  type PortfolioTrustCenterData,
-  type PortfolioTrustCenterSummary,
   TRUST_CENTER_QUEUE_LABELS,
   TRUST_CENTER_QUEUE_ORDER,
 } from "@/lib/financials/trust-center-types"
@@ -795,116 +793,6 @@ export async function getProjectTrustCenterData(
     warning_count: warningCount,
     info_count: infoCount,
     is_clean: exceptions.length === 0,
-    generated_at: new Date().toISOString(),
-  }
-}
-
-// ─── Portfolio Trust Center Rollup ───────────────────────────────────────────
-
-export async function getPortfolioTrustCenterData(orgId?: string): Promise<PortfolioTrustCenterData> {
-  const ctx = await requireOrgContext(orgId)
-
-  await requireAuthorization({
-    permission: "invoice.read",
-    userId: ctx.userId,
-    orgId: ctx.orgId,
-    supabase: ctx.supabase,
-    logDecision: true,
-    resourceType: "org",
-    resourceId: ctx.orgId,
-  })
-
-  // Get all active projects
-  const { data: projects } = await ctx.supabase
-    .from("projects")
-    .select("id, name, status")
-    .eq("org_id", ctx.orgId)
-    .in("status", ["planning", "bidding", "active", "on_hold"])
-    .order("name")
-
-  if (!projects || projects.length === 0) {
-    return {
-      projects: [],
-      aggregate_queues: [],
-      total_exception_count: 0,
-      critical_count: 0,
-      warning_count: 0,
-      clean_project_count: 0,
-      total_project_count: 0,
-      generated_at: new Date().toISOString(),
-    }
-  }
-
-  const allExceptions: TrustCenterException[] = []
-  const projectSummaries: PortfolioTrustCenterSummary[] = []
-  let cleanCount = 0
-
-  // Run checks for all projects in parallel (with concurrency limit)
-  const projectChunks: typeof projects[] = []
-  const chunkSize = 5
-  for (let i = 0; i < projects.length; i += chunkSize) {
-    projectChunks.push(projects.slice(i, i + chunkSize))
-  }
-
-  for (const chunk of projectChunks) {
-    const results = await Promise.allSettled(
-      chunk.map(async (project: any) => {
-        try {
-          const data = await getProjectTrustCenterData(project.id, ctx.orgId)
-          return { project, data }
-        } catch {
-          return { project, data: null }
-        }
-      })
-    )
-
-    for (const result of results) {
-      if (result.status !== "fulfilled" || !result.value.data) continue
-      const { project, data } = result.value
-
-      allExceptions.push(...data.exceptions)
-
-      if (data.is_clean) {
-        cleanCount += 1
-      }
-
-      // Find the most severe exception kind
-      let topException: TrustCenterExceptionKind | null = null
-      if (data.critical_count > 0) {
-        topException = data.exceptions.find((e) => e.severity === "critical")?.kind ?? null
-      } else if (data.warning_count > 0) {
-        topException = data.exceptions.find((e) => e.severity === "warning")?.kind ?? null
-      }
-
-      projectSummaries.push({
-        project_id: project.id,
-        project_name: project.name ?? "Unnamed Project",
-        total_exception_count: data.total_exception_count,
-        critical_count: data.critical_count,
-        warning_count: data.warning_count,
-        info_count: data.info_count,
-        top_exception: topException,
-        total_exception_cents: data.exceptions.reduce((sum, e) => sum + Math.abs(e.amount_cents), 0),
-        href: `/projects/${project.id}/financials/trust-center`,
-      })
-    }
-  }
-
-  // Sort: projects with critical exceptions first, then by exception count
-  projectSummaries.sort((a, b) => {
-    if (a.critical_count !== b.critical_count) return b.critical_count - a.critical_count
-    if (a.warning_count !== b.warning_count) return b.warning_count - a.warning_count
-    return b.total_exception_count - a.total_exception_count
-  })
-
-  return {
-    projects: projectSummaries,
-    aggregate_queues: makeQueueSummaries(allExceptions),
-    total_exception_count: allExceptions.length,
-    critical_count: allExceptions.filter((e) => e.severity === "critical").length,
-    warning_count: allExceptions.filter((e) => e.severity === "warning").length,
-    clean_project_count: cleanCount,
-    total_project_count: projects.length,
     generated_at: new Date().toISOString(),
   }
 }

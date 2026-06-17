@@ -34,6 +34,7 @@ export async function triggerFileIndexing(
   ]
   const previewableMimeTypes = [
     "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "image/jpeg",
     "image/png",
     "image/webp",
@@ -51,8 +52,13 @@ export async function triggerFileIndexing(
     lowerFileName.endsWith(".heif") ||
     lowerStoragePath.endsWith(".heic") ||
     lowerStoragePath.endsWith(".heif")
+  const hasDocxExtension =
+    lowerFileName.endsWith(".docx") || lowerStoragePath.endsWith(".docx")
   const isIndexable = indexableMimeTypes.some(mime => mimeType.startsWith(mime))
-  const isPreviewable = hasHeicExtension || previewableMimeTypes.some(mime => mimeType.startsWith(mime))
+  const isPreviewable =
+    hasHeicExtension ||
+    hasDocxExtension ||
+    previewableMimeTypes.some(mime => mimeType.startsWith(mime))
 
   if (!isIndexable) {
     console.log(`[indexing] Skipping non-indexable file type: ${mimeType}`)

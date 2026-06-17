@@ -11,6 +11,7 @@ import type {
   DrawingRevisionListFilters,
   DrawingSetStatus,
   DrawingDiscipline,
+  DrawingIssuanceType,
 } from "@/lib/validation/drawings"
 import {
   drawingSetInputSchema,
@@ -75,6 +76,12 @@ export interface DrawingRevision {
   revision_label: string
   issued_date?: string
   notes?: string
+  status?: "processing" | "draft" | "published"
+  issuance_type?: DrawingIssuanceType
+  issued_by?: string
+  received_from?: string
+  published_at?: string
+  published_by?: string
   created_by?: string
   creator_name?: string
   created_at: string
@@ -205,6 +212,12 @@ function mapDrawingRevision(row: any): DrawingRevision {
     revision_label: row.revision_label,
     issued_date: row.issued_date ?? undefined,
     notes: row.notes ?? undefined,
+    status: row.status ?? undefined,
+    issuance_type: row.issuance_type ?? undefined,
+    issued_by: row.issued_by ?? undefined,
+    received_from: row.received_from ?? undefined,
+    published_at: row.published_at ?? undefined,
+    published_by: row.published_by ?? undefined,
     created_by: row.created_by ?? undefined,
     creator_name: (row.app_users as any)?.full_name ?? undefined,
     created_at: row.created_at,
@@ -655,8 +668,9 @@ export async function listDrawingRevisions(
     .from("drawing_revisions")
     .select(`
       id, org_id, project_id, drawing_set_id,
-      revision_label, issued_date, notes,
-      created_by, created_at,
+      revision_label, issued_date, notes, status,
+      issuance_type, issued_by, received_from,
+      published_at, published_by, created_by, created_at,
       app_users!drawing_revisions_created_by_fkey(full_name)
     `)
     .eq("org_id", resolvedOrgId)
@@ -669,7 +683,14 @@ export async function listDrawingRevisions(
     query = query.eq("drawing_set_id", parsed.drawing_set_id)
   }
 
+  if (parsed.status) {
+    query = query.eq("status", parsed.status)
+  } else if (!parsed.include_unpublished) {
+    query = query.eq("status", "published")
+  }
+
   const { data, error } = await query
+    .order("published_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
     .range(parsed.offset, parsed.offset + parsed.limit - 1)
 
@@ -693,8 +714,9 @@ export async function getDrawingRevision(
     .from("drawing_revisions")
     .select(`
       id, org_id, project_id, drawing_set_id,
-      revision_label, issued_date, notes,
-      created_by, created_at,
+      revision_label, issued_date, notes, status,
+      issuance_type, issued_by, received_from,
+      published_at, published_by, created_by, created_at,
       app_users!drawing_revisions_created_by_fkey(full_name)
     `)
     .eq("org_id", resolvedOrgId)
@@ -728,12 +750,16 @@ export async function createDrawingRevision(
       revision_label: parsed.revision_label,
       issued_date: parsed.issued_date,
       notes: parsed.notes,
+      issuance_type: parsed.issuance_type,
+      issued_by: parsed.issued_by,
+      received_from: parsed.received_from,
       created_by: userId,
     })
     .select(`
       id, org_id, project_id, drawing_set_id,
-      revision_label, issued_date, notes,
-      created_by, created_at,
+      revision_label, issued_date, notes, status,
+      issuance_type, issued_by, received_from,
+      published_at, published_by, created_by, created_at,
       app_users!drawing_revisions_created_by_fkey(full_name)
     `)
     .single()
@@ -780,6 +806,9 @@ export async function updateDrawingRevision(
   if (parsed.revision_label !== undefined) updateData.revision_label = parsed.revision_label
   if (parsed.issued_date !== undefined) updateData.issued_date = parsed.issued_date
   if (parsed.notes !== undefined) updateData.notes = parsed.notes
+  if (parsed.issuance_type !== undefined) updateData.issuance_type = parsed.issuance_type
+  if (parsed.issued_by !== undefined) updateData.issued_by = parsed.issued_by
+  if (parsed.received_from !== undefined) updateData.received_from = parsed.received_from
 
   const { data, error } = await supabase
     .from("drawing_revisions")
@@ -788,8 +817,9 @@ export async function updateDrawingRevision(
     .eq("id", revisionId)
     .select(`
       id, org_id, project_id, drawing_set_id,
-      revision_label, issued_date, notes,
-      created_by, created_at,
+      revision_label, issued_date, notes, status,
+      issuance_type, issued_by, received_from,
+      published_at, published_by, created_by, created_at,
       app_users!drawing_revisions_created_by_fkey(full_name)
     `)
     .single()
@@ -1571,6 +1601,11 @@ export interface RevisionDraftStatus {
   id: string
   revision_label: string
   status: string
+  issuance_type?: DrawingIssuanceType | null
+  issued_date?: string | null
+  issued_by?: string | null
+  received_from?: string | null
+  notes?: string | null
   processing_stage?: string | null
   processed_pages?: number | null
   total_pages?: number | null
@@ -1605,7 +1640,7 @@ export async function getDraftRevisionStatus(
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("drawing_revisions")
-    .select("id, project_id, drawing_set_id, revision_label, status, processing_stage, processed_pages, total_pages, error_message")
+    .select("id, project_id, drawing_set_id, revision_label, status, issuance_type, issued_date, issued_by, received_from, notes, processing_stage, processed_pages, total_pages, error_message")
     .eq("org_id", resolvedOrgId)
     .eq("id", revisionId)
     .maybeSingle()
@@ -1621,7 +1656,7 @@ export async function getPendingDraftRevision(
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("drawing_revisions")
-    .select("id, project_id, drawing_set_id, revision_label, status, processing_stage, processed_pages, total_pages, error_message")
+    .select("id, project_id, drawing_set_id, revision_label, status, issuance_type, issued_date, issued_by, received_from, notes, processing_stage, processed_pages, total_pages, error_message")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .in("status", ["processing", "draft"])
@@ -1735,6 +1770,11 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
 export interface PublishRevisionInput {
   revisionId: string
   label?: string
+  issuanceType?: DrawingIssuanceType
+  issuedDate?: string
+  issuedBy?: string
+  receivedFrom?: string
+  notes?: string
   decisions?: Record<string, boolean>
   sheetEdits?: Record<string, { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }>
 }
@@ -1752,59 +1792,22 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
   if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
   if (revision.status === "published") throw new Error("Revision already published")
 
-  const { data: draftVersions, error: dvError } = await supabase
-    .from("drawing_sheet_versions")
-    .select("id, drawing_sheet_id, extracted_metadata, drawing_sheets!inner(id, current_revision_id)")
-    .eq("org_id", resolvedOrgId)
-    .eq("drawing_revision_id", input.revisionId)
-  if (dvError) throw new Error(`Failed to load draft versions: ${dvError.message}`)
+  const { error: publishError } = await supabase.rpc("publish_drawing_revision", {
+    p_org_id: resolvedOrgId,
+    p_revision_id: input.revisionId,
+    p_user_id: userId,
+    p_label: input.label?.trim() || null,
+    p_issuance_type: input.issuanceType ?? null,
+    p_issued_date: input.issuedDate || null,
+    p_issued_by: input.issuedBy?.trim() || null,
+    p_received_from: input.receivedFrom?.trim() || null,
+    p_notes: input.notes?.trim() || null,
+    p_decisions: input.decisions ?? {},
+    p_sheet_edits: input.sheetEdits ?? {},
+  })
 
-  for (const dv of draftVersions ?? []) {
-    const sheet = (dv as any).drawing_sheets
-    const accept = input.decisions?.[sheet.id] ?? true
-    const proposed = ((dv as any).extracted_metadata?.proposed ?? {}) as any
-    const edits = input.sheetEdits?.[sheet.id] ?? {}
-    const wasDraftOnly = !sheet.current_revision_id
-
-    if (accept) {
-      const payload: Record<string, unknown> = {
-        current_revision_id: input.revisionId,
-        drawing_set_id: revision.drawing_set_id,
-        updated_at: new Date().toISOString(),
-      }
-      const sheetNumber = edits.sheet_number ?? proposed.sheet_number
-      const sheetTitle = edits.sheet_title ?? proposed.sheet_title
-      const discipline = edits.discipline ?? proposed.discipline
-      if (sheetNumber !== undefined && sheetNumber !== null) payload.sheet_number = sheetNumber
-      if (sheetTitle !== undefined) payload.sheet_title = sheetTitle
-      if (discipline !== undefined && discipline !== null) payload.discipline = discipline
-      await supabase.from("drawing_sheets").update(payload).eq("id", sheet.id)
-    } else {
-      await supabase.from("drawing_sheet_versions").delete().eq("id", (dv as any).id)
-      if (wasDraftOnly) {
-        const { count } = await supabase
-          .from("drawing_sheet_versions")
-          .select("*", { count: "exact", head: true })
-          .eq("drawing_sheet_id", sheet.id)
-        if (!count) await supabase.from("drawing_sheets").delete().eq("id", sheet.id)
-      }
-    }
-  }
-
-  const revUpdate: Record<string, unknown> = {
-    status: "published",
-    processing_stage: "published",
-    published_at: new Date().toISOString(),
-    published_by: userId,
-  }
-  const label = input.label?.trim()
-  if (label) revUpdate.revision_label = label
-  await supabase.from("drawing_revisions").update(revUpdate).eq("id", input.revisionId)
-
-  try {
-    await supabase.rpc("refresh_drawing_sheets_list")
-  } catch (e) {
-    console.error("Failed to refresh drawing sheets list:", e)
+  if (publishError) {
+    throw new Error(`Failed to publish revision: ${publishError.message}`)
   }
 
   await recordEvent({

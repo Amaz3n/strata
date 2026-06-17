@@ -68,6 +68,7 @@ type VisionProvider = 'google' | 'openai';
 export async function processDrawingSet(supabase: SupabaseClient, job: Job): Promise<void> {
   const { drawingSetId, projectId, sourceFileId } = job.payload;
   let draftRevisionId: string | undefined = job.payload.draftRevisionId;
+  const targetSheetId: string | undefined = job.payload.targetSheetId;
 
   console.log(`📄 Processing drawing set ${drawingSetId} (draft revision ${draftRevisionId ?? 'none yet'})`);
 
@@ -185,6 +186,23 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
 
     console.log(`Processing into draft revision ${revision.id}`);
 
+    let targetSheet: any = null;
+    if (targetSheetId) {
+      const { data, error } = await supabase
+        .from('drawing_sheets')
+        .select('*')
+        .eq('org_id', drawingSet.org_id)
+        .eq('project_id', projectId)
+        .eq('id', targetSheetId)
+        .maybeSingle();
+
+      if (error || !data) {
+        throw new Error(`Target sheet not found for one-sheet revision: ${error?.message ?? targetSheetId}`);
+      }
+      targetSheet = data;
+      console.log(`One-sheet issuance target: ${targetSheet.sheet_number} (${targetSheet.id})`);
+    }
+
     // Create content hash for deterministic storage paths
     const hash = createHash('sha256').update(pdfBytes).digest('hex').slice(0, 16);
     const basePath = `${drawingSet.org_id}/${hash}`;
@@ -253,13 +271,14 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
         setTitle,
         pageNumber,
       });
-      const visionSheet = shouldUseVisionFallback(detectedSheet, pageTexts[pageIndex] || '')
+      const visionSheet = shouldUseVisionFallback(detectedSheet, pageTexts[pageIndex] || '', job.payload)
         ? await detectSheetMetadataWithVision({
             localPngPath: tempLocalPngPaths[pageIndex] || null,
             pageText: pageTexts[pageIndex] || '',
             setTitle,
             pageNumber,
             initial: detectedSheet,
+            payload: job.payload,
           })
         : null;
       const resolvedSheet = mergeDetectedSheetMetadata(detectedSheet, visionSheet, setTitle, pageNumber);
@@ -272,16 +291,30 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
         `[SheetDetect] Page ${pageNumber}: ${resolvedSheet.sheetNumber} (${resolvedSheet.method}, ${resolvedSheet.confidence})`
       );
 
-      const targetSheetNumber = ensureUniqueSheetNumber(resolvedSheet.sheetNumber, pageNumber, usedSheetNumbers);
+      const targetSheetNumber =
+        targetSheet && pageIndex === 0
+          ? truncateValue(targetSheet.sheet_number || resolvedSheet.sheetNumber, SHEET_NUMBER_MAX_LENGTH)
+          : ensureUniqueSheetNumber(resolvedSheet.sheetNumber, pageNumber, usedSheetNumbers);
+      const proposedSheetTitle =
+        targetSheet && pageIndex === 0
+          ? truncateValue(targetSheet.sheet_title || sheetTitle, SHEET_TITLE_MAX_LENGTH)
+          : sheetTitle;
+      const proposedDiscipline =
+        targetSheet && pageIndex === 0
+          ? normalizeDiscipline(targetSheet.discipline || resolvedSheet.discipline)
+          : resolvedSheet.discipline;
+      usedSheetNumbers.add(targetSheetNumber.toUpperCase());
 
       // Check if a sheet with this sheet_number already exists in this project
-      const { data: existingSheet, error: findError } = await supabase
-        .from('drawing_sheets')
-        .select('*')
-        .eq('org_id', drawingSet.org_id)
-        .eq('project_id', projectId)
-        .eq('sheet_number', targetSheetNumber)
-        .maybeSingle();
+      const { data: existingSheet, error: findError } = targetSheet && pageIndex === 0
+        ? { data: targetSheet, error: null }
+        : await supabase
+          .from('drawing_sheets')
+          .select('*')
+          .eq('org_id', drawingSet.org_id)
+          .eq('project_id', projectId)
+          .eq('sheet_number', targetSheetNumber)
+          .maybeSingle();
 
       let sheet = existingSheet;
       let isNewSheet = false;
@@ -308,8 +341,8 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
             project_id: projectId,
             drawing_set_id: drawingSetId,
             sheet_number: targetSheetNumber,
-            sheet_title: sheetTitle,
-            discipline: resolvedSheet.discipline,
+            sheet_title: proposedSheetTitle,
+            discipline: proposedDiscipline,
             current_revision_id: null,
             sort_order: pageIndex,
             share_with_clients: false,
@@ -345,8 +378,8 @@ export async function processDrawingSet(supabase: SupabaseClient, job: Job): Pro
             is_new_sheet: isNewSheet,
             proposed: {
               sheet_number: targetSheetNumber,
-              sheet_title: sheetTitle,
-              discipline: resolvedSheet.discipline,
+              sheet_title: proposedSheetTitle,
+              discipline: proposedDiscipline,
             },
             sheet_detection: {
               method: resolvedSheet.method,
@@ -444,8 +477,13 @@ async function updateRevisionStage(
   await supabase.from('drawing_revisions').update(payload).eq('id', revisionId);
 }
 
-function shouldUseVisionFallback(detected: DetectedSheetMetadata, pageText: string): boolean {
-  if (!getVisionApiKey()) return false;
+function shouldUseVisionFallback(
+  detected: DetectedSheetMetadata,
+  pageText: string,
+  payload?: Record<string, any>
+): boolean {
+  const provider = getVisionProvider(payload);
+  if (!getVisionApiKey(provider)) return false;
   if (!pageText.trim()) return true;
   return detected.method !== 'label' || detected.confidence === 'low';
 }
@@ -456,17 +494,18 @@ async function detectSheetMetadataWithVision(input: {
   setTitle: string;
   pageNumber: number;
   initial: DetectedSheetMetadata;
+  payload?: Record<string, any>;
 }): Promise<VisionSheetMetadata | null> {
-  const { localPngPath, pageText, setTitle, pageNumber, initial } = input;
-  const apiKey = getVisionApiKey();
+  const { localPngPath, pageText, setTitle, pageNumber, initial, payload } = input;
+  const provider = getVisionProvider(payload);
+  const apiKey = getVisionApiKey(provider);
   if (!apiKey || !localPngPath) return null;
 
   try {
     const images = await buildVisionInputs(localPngPath);
     if (images.length === 0) return null;
 
-    const provider = getVisionProvider();
-    const model = getVisionModel(provider);
+    const model = getVisionModel(provider, payload);
     const prompt = [
       'You are extracting metadata from one construction drawing page.',
       `Project set title: ${setTitle}`,
@@ -519,7 +558,25 @@ async function detectSheetMetadataWithVision(input: {
   }
 }
 
-function getVisionProvider(): VisionProvider {
+function getPayloadVisionConfig(payload?: Record<string, any>): { provider?: VisionProvider; model?: string } {
+  const raw = payload?.aiVision ?? payload?.ai_vision;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const record = raw as Record<string, unknown>;
+  const providerValue = typeof record.provider === 'string' ? record.provider.trim().toLowerCase() : '';
+  const modelValue = typeof record.model === 'string' ? record.model.trim() : '';
+  const provider = providerValue === 'openai' || providerValue === 'google' ? providerValue : undefined;
+
+  return {
+    provider,
+    model: modelValue || undefined,
+  };
+}
+
+function getVisionProvider(payload?: Record<string, any>): VisionProvider {
+  const payloadProvider = getPayloadVisionConfig(payload).provider;
+  if (payloadProvider) return payloadProvider;
+
   const configured = (
     process.env.DRAWINGS_VISION_PROVIDER ||
     process.env.AI_DRAWINGS_VISION_PROVIDER ||
@@ -532,8 +589,7 @@ function getVisionProvider(): VisionProvider {
   return configured === 'openai' ? 'openai' : 'google';
 }
 
-function getVisionApiKey(): string | null {
-  const provider = getVisionProvider();
+function getVisionApiKey(provider: VisionProvider): string | null {
   if (provider === 'openai') {
     return process.env.OPENAI_API_KEY?.trim() || null;
   }
@@ -544,7 +600,10 @@ function getVisionApiKey(): string | null {
   );
 }
 
-function getVisionModel(provider: VisionProvider): string {
+function getVisionModel(provider: VisionProvider, payload?: Record<string, any>): string {
+  const payloadModel = getPayloadVisionConfig(payload).model;
+  if (payloadModel) return payloadModel;
+
   if (provider === 'openai') {
     return (
       process.env.DRAWINGS_VISION_MODEL ||
@@ -998,6 +1057,11 @@ function detectDiscipline(sheetNumber: string): string {
   if (normalized.startsWith('SP')) return 'SP';
   const single = normalized[0];
   return DISCIPLINE_CODES.has(single) ? single : 'X';
+}
+
+function normalizeDiscipline(value: string | null | undefined): string {
+  const normalized = (value || '').toUpperCase();
+  return DISCIPLINE_CODES.has(normalized) ? normalized : 'X';
 }
 
 function ensureUniqueSheetNumber(baseSheetNumber: string, pageNumber: number, used: Set<string>): string {

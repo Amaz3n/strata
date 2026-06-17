@@ -12,20 +12,24 @@ interface ProjectSubmittalsPageProps {
 
 export default async function ProjectSubmittalsPage({ params }: ProjectSubmittalsPageProps) {
   const { id } = await params
+  const project = await getProjectAction(id)
+
+  if (!project) {
+    notFound()
+  }
 
   return (
-    <>
-      <PageLayout
-        title="Submittals"
-        breadcrumbs={[
-          { label: "Project" },
-          { label: "Submittals" },
-        ]}
-      />
+    <PageLayout
+      title="Submittals"
+      breadcrumbs={[
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: "Submittals" },
+      ]}
+    >
       <Suspense fallback={<ProjectSubmittalsFallback />}>
-        <ProjectSubmittalsData id={id} />
+        <ProjectSubmittalsData project={project} />
       </Suspense>
-    </>
+    </PageLayout>
   )
 }
 
@@ -44,27 +48,12 @@ function ProjectSubmittalsFallback() {
   )
 }
 
-async function ProjectSubmittalsData({ id }: { id: string }) {
-  const [project, submittals] = await Promise.all([
-    getProjectAction(id),
-    listSubmittalsAction(id),
-  ])
-
-  if (!project) {
-    notFound()
-  }
+async function ProjectSubmittalsData({ project }: { project: any }) {
+  const submittals = await listSubmittalsAction(project.id)
 
   return (
-    <PageLayout
-      title="Submittals"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Submittals" },
-      ]}
-    >
-      <div className="space-y-6">
-        <SubmittalsClient submittals={submittals} projects={[project]} />
-      </div>
-    </PageLayout>
+    <div className="space-y-6">
+      <SubmittalsClient submittals={submittals} projects={[project]} />
+    </div>
   )
 }

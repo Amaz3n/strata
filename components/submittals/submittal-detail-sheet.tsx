@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 import { formatLocalDate } from "@/lib/utils"
@@ -8,6 +8,14 @@ import { formatLocalDate } from "@/lib/utils"
 import type { Submittal, Project } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Sheet,
   SheetContent,
@@ -25,6 +33,7 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
+import { decideSubmittalAction } from "@/app/(app)/submittals/actions"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -63,6 +72,9 @@ export function SubmittalDetailSheet({
 }: SubmittalDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
+  const [decisionStatus, setDecisionStatus] = useState("approved")
+  const [decisionNote, setDecisionNote] = useState("")
+  const [isDecisionPending, startDecisionTransition] = useTransition()
 
   const loadAttachments = useCallback(async () => {
     if (!submittal) return
@@ -138,6 +150,28 @@ export function SubmittalDetailSheet({
     },
     [loadAttachments]
   )
+
+  const handleDecision = useCallback(() => {
+    if (!submittal) return
+
+    startDecisionTransition(async () => {
+      try {
+        const updated = await decideSubmittalAction({
+          submittal_id: submittal.id,
+          decision_status: decisionStatus,
+          decision_note: decisionNote.trim() || null,
+        })
+        onUpdate?.(updated as Submittal)
+        toast.success("Submittal decision recorded")
+        setDecisionNote("")
+      } catch (error: any) {
+        console.error("Failed to record submittal decision:", error)
+        toast.error("Failed to record decision", {
+          description: error?.message ?? "Please try again.",
+        })
+      }
+    })
+  }, [decisionNote, decisionStatus, onUpdate, submittal])
 
   if (!submittal) return null
 
@@ -237,6 +271,32 @@ export function SubmittalDetailSheet({
               </div>
             </div>
           )}
+
+          <div className="space-y-3">
+            <h4 className="text-sm font-medium">Record Decision</h4>
+            <div className="rounded-lg border p-4 space-y-3">
+              <Select value={decisionStatus} onValueChange={setDecisionStatus}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select decision" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="approved">Approved</SelectItem>
+                  <SelectItem value="approved_as_noted">Approved as Noted</SelectItem>
+                  <SelectItem value="revise_resubmit">Revise & Resubmit</SelectItem>
+                  <SelectItem value="rejected">Rejected</SelectItem>
+                </SelectContent>
+              </Select>
+              <Textarea
+                value={decisionNote}
+                onChange={(event) => setDecisionNote(event.target.value)}
+                placeholder="Reviewer notes, exceptions, or resubmission instructions"
+                rows={3}
+              />
+              <Button onClick={handleDecision} disabled={isDecisionPending} className="w-full">
+                {isDecisionPending ? "Saving..." : "Save decision"}
+              </Button>
+            </div>
+          </div>
 
           <Separator />
 

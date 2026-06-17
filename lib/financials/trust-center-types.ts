@@ -1,9 +1,8 @@
 /**
  * Trust Center & Reconciliation — Shared Types
  *
- * Used by both the project-level Trust Center page and the portfolio-level
- * Financial Control rollup.  Each exception type maps to one of the queues
- * defined in §5.8 of the financials gameplan.
+ * Used by the project-level Trust Center page.  Each exception type maps to
+ * one of the queues defined in §5.8 of the financials gameplan.
  */
 
 export type TrustCenterExceptionKind =
@@ -55,29 +54,6 @@ export interface ProjectTrustCenterData {
   warning_count: number
   info_count: number
   is_clean: boolean
-  generated_at: string
-}
-
-export interface PortfolioTrustCenterSummary {
-  project_id: string
-  project_name: string
-  total_exception_count: number
-  critical_count: number
-  warning_count: number
-  info_count: number
-  top_exception?: TrustCenterExceptionKind | null
-  total_exception_cents: number
-  href: string
-}
-
-export interface PortfolioTrustCenterData {
-  projects: PortfolioTrustCenterSummary[]
-  aggregate_queues: TrustCenterQueueSummary[]
-  total_exception_count: number
-  critical_count: number
-  warning_count: number
-  clean_project_count: number
-  total_project_count: number
   generated_at: string
 }
 

@@ -1,29 +1,62 @@
+import Link from "next/link"
+
 export default function FieldOperationsOverviewArticle() {
   return (
     <>
       <p>
-        Field Operations contains the day-to-day tools used to coordinate work, record
-        progress, and resolve issues on an active project.
+        Field Operations provides the day-to-day tools used on active job sites to coordinate labor, track construction 
+        progress, manage issues, and document client choices. Keeping active records in Arc ensures full visibility 
+        between the field and the office.
       </p>
-      <h2>Schedule</h2>
+
+      <h2>Core Modules in Field Operations</h2>
       <p>
-        Use the project schedule to organize work items, dates, assignments, dependencies,
-        and progress. Workspace schedule views can help users see work across projects.
+        Field Operations includes four integrated modules. Click the detailed guides below to learn how to manage 
+        each workflow:
       </p>
-      <h2>Daily logs</h2>
+
+      <h3>1. Schedule</h3>
       <p>
-        Daily logs create a dated record of field activity. Teams can capture notes and
-        job information that should remain with the project history.
+        Build Gantt charts, manage FS/SS/FF dependencies, track critical path float, and baseline your timeline to 
+        compare planned vs. actual project completion.
+        {" "}
+        <Link href="/help/field-operations/field-workflows/schedule">
+          Read the Schedule Guide
+        </Link>
+        .
       </p>
-      <h2>Tasks and punch</h2>
+
+      <h3>2. Daily Logs</h3>
       <p>
-        Tasks track actionable work. Punch items are intended for deficiencies and
-        completion items that need an owner, status, and resolution.
+        Record daily site conditions, weather stats, internal/subcontractor manpower, visitor logs, and inspections, 
+        linking entries directly to cost codes and schedule items.
+        {" "}
+        <Link href="/help/field-operations/field-workflows/daily-logs">
+          Read the Daily Logs Guide
+        </Link>
+        .
       </p>
-      <h2>Decisions, RFIs, and submittals</h2>
+
+      <h3>3. Punch</h3>
       <p>
-        Use the structured workflow that best matches the issue. Decisions document an
-        agreed direction, RFIs manage questions, and submittals manage formal review items.
+        Log and verify construction defects and completion items. Assign items to trade subcontractors and let them 
+        mark deficiencies resolved through secure portals.
+        {" "}
+        <Link href="/help/field-operations/field-workflows/punch">
+          Read the Punch Guide
+        </Link>
+        .
+      </p>
+
+      <h3>4. Decisions</h3>
+      <p>
+        Track client and architect selections for finishes, colors, and fixtures, logging official approval dates 
+        and options chosen to prevent delays.
+        {" "}
+        <Link href="/help/field-operations/field-workflows/decisions">
+          Read the Decisions Guide
+        </Link>
+        .
       </p>
     </>
   )

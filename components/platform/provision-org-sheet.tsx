@@ -104,7 +104,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
 
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
+      <Button size="sm" className="h-8 rounded-none" onClick={() => setOpen(true)}>
         <UserPlus data-icon="inline-start" />
         New Client
       </Button>
@@ -112,7 +112,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
         <SheetContent
           side="right"
           mobileFullscreen
-          className="flex flex-col p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-2xl fast-sheet-animation"
+          className="flex flex-col rounded-none p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-2xl sm:rounded-none fast-sheet-animation"
           style={
             {
               animationDuration: "150ms",
@@ -187,7 +187,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                       <Input id="platform-primary-email" name="primaryEmail" type="email" placeholder="owner@acme.com" required />
                     </div>
                   </div>
-                  <div className="flex items-start gap-3 rounded-md border bg-muted/20 px-4 py-3">
+                  <div className="flex items-start gap-3 border bg-muted/20 px-4 py-3">
                     <Checkbox
                       id="platform-send-invites"
                       checked={sendInvites}
@@ -218,11 +218,11 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                   </div>
 
                   {teamMembers.length === 0 ? (
-                    <div className="rounded-md border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">No extra people yet.</div>
+                    <div className="border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">No extra people yet.</div>
                   ) : (
                     <div className="flex flex-col gap-3">
                       {teamMembers.map((member, index) => (
-                        <div key={member.id} className="grid gap-3 rounded-md border bg-background p-3 md:grid-cols-[1fr_1fr_140px_auto]">
+                        <div key={member.id} className="grid gap-3 border bg-background p-3 md:grid-cols-[1fr_1fr_140px_auto]">
                           <div className="flex flex-col gap-2">
                             <Label htmlFor={`team-name-${member.id}`}>Name</Label>
                             <Input
@@ -294,7 +294,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                   </div>
 
                   {billingModel === "subscription" && (
-                    <div className="flex flex-col gap-4 rounded-md border bg-muted/20 p-4">
+                    <div className="flex flex-col gap-4 border bg-muted/20 p-4">
                       <div className="grid gap-4 md:grid-cols-[1fr_auto]">
                         <div className="flex flex-col gap-2">
                           <Label htmlFor="platform-plan-code">Plan</Label>
@@ -325,7 +325,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                         </div>
                       </div>
                       {checkoutReadyPlans.length === 0 && (
-                        <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                        <div className="flex items-start gap-2 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                           <AlertCircle className="mt-0.5 size-4" />
                           <span>Add a Stripe Price ID to an active plan before creating subscription checkout links.</span>
                         </div>
@@ -335,14 +335,14 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                 </section>
 
                 {state.error && (
-                  <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                  <div className="flex items-start gap-2 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                     <AlertCircle className="mt-0.5 size-4" />
                     <span>{state.error}</span>
                   </div>
                 )}
 
                 {state.message && !state.error && (
-                  <div className="flex flex-col gap-3 rounded-md border bg-muted/20 px-4 py-3 text-sm">
+                  <div className="flex flex-col gap-3 border bg-muted/20 px-4 py-3 text-sm">
                     <div className="flex items-start gap-2">
                       <CheckCircle className="mt-0.5 size-4 text-primary" />
                       <div>

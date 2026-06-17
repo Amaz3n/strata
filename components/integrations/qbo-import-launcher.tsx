@@ -13,7 +13,7 @@ type Props = {
   size?: "default" | "sm"
 }
 
-/** Opens the QuickBooks import sheet for the current project. */
+/** Opens the QuickBooks sheet straight to its Import tab (which widens for the import grid). */
 export function QboImportLauncher({ projectId, projectName, variant = "outline", size = "sm" }: Props) {
   const [open, setOpen] = useState(false)
 
@@ -23,13 +23,7 @@ export function QboImportLauncher({ projectId, projectName, variant = "outline",
         <Download className="size-4" />
         Import from QuickBooks
       </Button>
-      <QboSyncSheet
-        open={open}
-        onOpenChange={setOpen}
-        projectId={projectId}
-        projectName={projectName}
-        initialTab="import"
-      />
+      <QboSyncSheet open={open} onOpenChange={setOpen} projectId={projectId} projectName={projectName} initialTab="import" />
     </>
   )
 }

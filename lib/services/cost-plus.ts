@@ -1232,6 +1232,7 @@ export async function approveTimeEntryByToken(token: string) {
 export interface ProjectExpenseLineInput {
   project_id?: string | null
   cost_code_id?: string | null
+  budget_line_id?: string | null
   description?: string | null
   amount_cents: number
   qbo_expense_account_id?: string | null
@@ -1327,6 +1328,7 @@ export async function replaceProjectExpenseLines(args: {
       expense_id: args.expenseId,
       project_id: line.project_id ?? expense.project_id,
       cost_code_id: line.cost_code_id ?? null,
+      budget_line_id: line.budget_line_id ?? null,
       description: line.description?.trim() || null,
       amount_cents: Math.round(Number(line.amount_cents ?? 0)),
       qbo_expense_account_id: line.qbo_expense_account_id ?? null,
@@ -1343,6 +1345,7 @@ export async function replaceProjectExpenseLines(args: {
       .from("project_expenses")
       .update({
         cost_code_id: first.cost_code_id,
+        budget_line_id: first.budget_line_id,
         qbo_expense_account_id: first.qbo_expense_account_id,
         qbo_expense_account_name: first.qbo_expense_account_name,
       })

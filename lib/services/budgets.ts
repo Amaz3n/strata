@@ -368,11 +368,58 @@ export async function getBudgetWithActuals(projectId: string, orgId?: string) {
   return getBudgetWithActualsInternal(supabase, projectId, resolvedOrgId)
 }
 
+/**
+ * Latest budget's lines for a project, used as the cost-bucket picker when a
+ * project has cost codes disabled (the budget line is the bucket).
+ */
+export async function listProjectBudgetLines(
+  projectId: string,
+  orgId?: string,
+): Promise<Array<{ id: string; description: string | null; amount_cents: number | null }>> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { data: budget } = await supabase
+    .from("budgets")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!budget) return []
+  const { data: lines } = await supabase
+    .from("budget_lines")
+    .select("id, description, amount_cents, sort_order")
+    .eq("org_id", resolvedOrgId)
+    .eq("budget_id", budget.id)
+    .order("sort_order", { ascending: true })
+  return (lines ?? []).map((line) => ({
+    id: line.id as string,
+    description: (line.description as string | null) ?? null,
+    amount_cents: (line.amount_cents as number | null) ?? null,
+  }))
+}
+
 async function getBudgetWithActualsInternal(
   supabase: SupabaseClient,
   projectId: string,
   orgId: string,
 ) {
+  // When a project disables cost codes, budget lines themselves are the cost
+  // bucket: actuals/commitments group by budget_line_id instead of cost_code_id.
+  const { data: settingsRow } = await supabase
+    .from("project_financial_settings")
+    .select("cost_codes_enabled")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .maybeSingle()
+  const costCodesEnabled = settingsRow?.cost_codes_enabled ?? true
+  const groupBy = costCodesEnabled ? "cost_code" : "budget_line"
+
+  // Bucket key for a row: the cost code (codes on) or the budget line (codes off).
+  // Rows without the relevant id fall into a shared "uncoded" bucket.
+  const bucketKey = (row: { cost_code_id?: string | null; budget_line_id?: string | null }) =>
+    (costCodesEnabled ? row.cost_code_id : row.budget_line_id) ?? "uncoded"
+
   const { data: budget, error: budgetError } = await supabase
     .from("budgets")
     .select(
@@ -430,7 +477,7 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : await supabase
           .from("commitment_lines")
-          .select("cost_code_id, unit_cost_cents, quantity")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
           .eq("org_id", orgId)
           .in("commitment_id", commitmentIds)
 
@@ -438,7 +485,7 @@ async function getBudgetWithActualsInternal(
     throw new Error(`Failed to load commitments: ${commitmentsError.message}`)
   }
 
-  const jobCostActuals = await getProjectJobCostActualsByCostCode({ projectId, orgId, supabase })
+  const jobCostActuals = await getProjectJobCostActualsByCostCode({ projectId, orgId, supabase, groupBy })
 
   const { data: invoiceLines, error: invoiceLinesError } =
     invoiceIds.length === 0
@@ -497,7 +544,8 @@ async function getBudgetWithActualsInternal(
   >()
 
   for (const line of budget.lines ?? []) {
-    const key = line.cost_code_id ?? "uncoded"
+    // In code-off mode each budget line is its own bucket (keyed by its row id).
+    const key = costCodesEnabled ? line.cost_code_id ?? "uncoded" : line.id
     const existing =
       byCostCode.get(key) ?? {
         budget_cents: 0,
@@ -513,7 +561,7 @@ async function getBudgetWithActualsInternal(
   }
 
   for (const line of commitments ?? []) {
-    const key = line.cost_code_id ?? "uncoded"
+    const key = bucketKey(line)
     const existing =
       byCostCode.get(key) ?? {
         budget_cents: 0,
@@ -529,7 +577,7 @@ async function getBudgetWithActualsInternal(
   }
 
   for (const actual of jobCostActuals) {
-    const key = actual.cost_code_id ?? "uncoded"
+    const key = bucketKey(actual)
     const existing =
       byCostCode.get(key) ?? {
         budget_cents: 0,
@@ -616,7 +664,10 @@ async function getBudgetWithActualsInternal(
   let totalCtc = 0
   let totalVac = 0
 
-  const breakdown = Array.from(byCostCode.entries()).map(([costCodeId, values]) => {
+  const breakdown = Array.from(byCostCode.entries()).map(([bucketId, values]) => {
+    const resolvedId = bucketId === "uncoded" ? null : bucketId
+    const costCodeId = costCodesEnabled ? resolvedId : null
+    const budgetLineId = costCodesEnabled ? null : resolvedId
     totalBudget += values.budget_cents
     totalCommitted += values.committed_cents
     totalActual += values.actual_cents
@@ -638,7 +689,8 @@ async function getBudgetWithActualsInternal(
     totalVac += variance_at_completion_cents
 
     return {
-      cost_code_id: costCodeId === "uncoded" ? null : costCodeId,
+      cost_code_id: costCodeId,
+      budget_line_id: budgetLineId,
       budget_cents: values.budget_cents,
       co_adjustment_cents: values.co_adjustment_cents,
       adjusted_budget_cents: adjustedBudget,
@@ -724,6 +776,11 @@ export async function checkVarianceAlerts(projectId: string, orgId: string, thre
   const alerts: any[] = []
 
   for (const line of data.breakdown) {
+    // variance_alerts is keyed on cost_code_id; for cost-code-disabled projects
+    // (budget-line buckets) we can't dedupe per line yet, so skip per-line alerts
+    // here — the inline over-budget status still renders. Margin warning below
+    // still fires project-wide.
+    if (!line.cost_code_id && (line as any).budget_line_id) continue
     if (line.variance_percent >= thresholds[0]) {
       const { data: existing, error } = await supabase
         .from("variance_alerts")

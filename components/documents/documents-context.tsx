@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { usePathname, useSearchParams } from "next/navigation"
 import { listFilesAction, getFileCountsAction, listChildFoldersAction, listProjectFolderPermissionsAction } from "@/app/(app)/documents/actions"
 import { listDrawingSetsAction, listDrawingSheetsWithUrlsAction } from "@/app/(app)/drawings/actions"
 import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
@@ -48,6 +48,12 @@ const SORT_KEY = "documents-sort"
 const DIRECTION_KEY = "documents-direction"
 const DOCS_DEBUG_FLAG = "__ARC_DOCS_DEBUG__"
 
+interface FileViewCacheEntry {
+  files: FileWithUrls[]
+  totalCount: number
+  hasMore: boolean
+}
+
 function isDocsDebugEnabled(): boolean {
   if (typeof window === "undefined") return false
   return Boolean((window as any)[DOCS_DEBUG_FLAG])
@@ -68,6 +74,28 @@ function normalizeDocsPath(value?: string | null): string {
   return normalized === "/" ? "" : normalized
 }
 
+function buildFileViewCacheKey({
+  path,
+  quickFilter,
+  searchQuery,
+  sort,
+  direction,
+}: {
+  path: string
+  quickFilter: QuickFilter
+  searchQuery: string
+  sort: string
+  direction: string
+}) {
+  return [
+    normalizeDocsPath(path) || "/",
+    quickFilter,
+    searchQuery.trim(),
+    sort,
+    direction,
+  ].join("|")
+}
+
 export function DocumentsProvider({
   children,
   project,
@@ -82,7 +110,6 @@ export function DocumentsProvider({
   initialTotalCount = 0,
   initialHasMore = false,
 }: DocumentsProviderProps) {
-  const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const basePath = useMemo(() => {
@@ -102,6 +129,9 @@ export function DocumentsProvider({
   const [sheetsBySetId, setSheetsBySetId] = useState<Record<string, DrawingSheet[]>>({})
   const [totalCount, setTotalCount] = useState<number>(initialTotalCount)
   const [hasMore, setHasMore] = useState<boolean>(initialHasMore)
+  const fileViewCacheRef = useRef<Map<string, FileViewCacheEntry>>(new Map())
+  const initialCacheSeededRef = useRef(false)
+  const fileRefreshRequestRef = useRef(0)
 
   // Filter state
   const [currentPath, setCurrentPathState] = useState<string>(initialNormalizedPath)
@@ -128,6 +158,42 @@ export function DocumentsProvider({
     if (typeof window === "undefined") return "desc"
     return (localStorage.getItem(DIRECTION_KEY) as any) || "desc"
   })
+
+  useEffect(() => {
+    if (initialCacheSeededRef.current) return
+    initialCacheSeededRef.current = true
+    const key = buildFileViewCacheKey({
+      path: initialNormalizedPath,
+      quickFilter: "all",
+      searchQuery: "",
+      sort,
+      direction,
+    })
+    fileViewCacheRef.current.set(key, {
+      files: initialFiles,
+      totalCount: initialTotalCount,
+      hasMore: initialHasMore,
+    })
+  }, [direction, initialFiles, initialHasMore, initialNormalizedPath, initialTotalCount, sort])
+
+  const hydrateFilesFromCache = useCallback(
+    (path: string, nextQuickFilter = quickFilter) => {
+      const key = buildFileViewCacheKey({
+        path,
+        quickFilter: nextQuickFilter,
+        searchQuery,
+        sort,
+        direction,
+      })
+      const cached = fileViewCacheRef.current.get(key)
+      if (!cached) return false
+      setFiles(cached.files)
+      setTotalCount(cached.totalCount)
+      setHasMore(cached.hasMore)
+      return true
+    },
+    [direction, quickFilter, searchQuery, sort],
+  )
 
   // UI state
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
@@ -178,26 +244,28 @@ export function DocumentsProvider({
       const currentQuery = searchParams.toString()
       const currentUrl = currentQuery ? `${basePath}?${currentQuery}` : basePath
       if (nextUrl !== currentUrl) {
-        router.push(nextUrl)
+        window.history.pushState(null, "", nextUrl)
       }
     },
-    [basePath, router, searchParams, sort, direction]
+    [basePath, searchParams, sort, direction]
   )
 
   const navigateToRoot = useCallback(() => {
     pushDocsState(null, null)
+    hydrateFilesFromCache("", "all")
     setCurrentPathState("")
     setSelectedDrawingSet(null, null)
     setQuickFilter("all")
-  }, [pushDocsState, setSelectedDrawingSet])
+  }, [hydrateFilesFromCache, pushDocsState, setSelectedDrawingSet])
 
   const navigateToFolder = useCallback((path: string) => {
     const normalizedPath = normalizeDocsPath(path)
     pushDocsState(normalizedPath || null, null)
+    hydrateFilesFromCache(normalizedPath, "all")
     setCurrentPathState(normalizedPath)
     setSelectedDrawingSet(null, null)
     setQuickFilter("all")
-  }, [pushDocsState, setSelectedDrawingSet])
+  }, [hydrateFilesFromCache, pushDocsState, setSelectedDrawingSet])
 
   const navigateToDrawingSet = useCallback((id: string, title: string) => {
     pushDocsState(null, id)
@@ -341,6 +409,8 @@ export function DocumentsProvider({
   // Refresh functions
   const refreshFiles = useCallback(async () => {
     if (quickFilter === "drawings") return
+    const requestId = fileRefreshRequestRef.current + 1
+    fileRefreshRequestRef.current = requestId
     const startedAt = performance.now()
     docsDebugLog("refreshFiles:start", {
       projectId: project.id,
@@ -371,6 +441,19 @@ export function DocumentsProvider({
           ? listChildFoldersAction(project.id, currentPath || undefined)
           : Promise.resolve([]),
       ])
+      if (requestId !== fileRefreshRequestRef.current) return
+      const cacheKey = buildFileViewCacheKey({
+        path: currentPath,
+        quickFilter,
+        searchQuery,
+        sort,
+        direction,
+      })
+      fileViewCacheRef.current.set(cacheKey, {
+        files: filesData.data,
+        totalCount: filesData.count,
+        hasMore: filesData.hasMore,
+      })
       setFiles(filesData.data)
       setTotalCount(filesData.count)
       setHasMore(filesData.hasMore)
@@ -406,7 +489,9 @@ export function DocumentsProvider({
       console.error("Failed to refresh files:", error)
       docsDebugLog("refreshFiles:error", error)
     } finally {
-      setIsLoading(false)
+      if (requestId === fileRefreshRequestRef.current) {
+        setIsLoading(false)
+      }
     }
   }, [project.id, quickFilter, searchQuery, currentPath, sort, direction])
 
@@ -436,7 +521,22 @@ export function DocumentsProvider({
         offset: files.length,
       })
 
-      setFiles(prev => [...prev, ...filesData.data])
+      setFiles((prev) => {
+        const nextFiles = [...prev, ...filesData.data]
+        const cacheKey = buildFileViewCacheKey({
+          path: currentPath,
+          quickFilter,
+          searchQuery,
+          sort,
+          direction,
+        })
+        fileViewCacheRef.current.set(cacheKey, {
+          files: nextFiles,
+          totalCount: filesData.count,
+          hasMore: filesData.hasMore,
+        })
+        return nextFiles
+      })
       setHasMore(filesData.hasMore)
       setTotalCount(filesData.count)
     } catch (error) {

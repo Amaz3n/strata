@@ -163,14 +163,16 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     }
   }
 
-  const tabCount = canImport ? 3 : 2
-
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
         mobileFullscreen
-        className="flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-xl"
+        className={cn(
+          "flex w-full flex-col gap-0 overflow-hidden p-0 shadow-2xl transition-[max-width] duration-300 ease-out sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)]",
+          // The import grid needs room for its destination column, so the sheet widens on that tab.
+          activeTab === "import" ? "sm:max-w-5xl" : "sm:max-w-xl",
+        )}
       >
         <SheetHeader className="border-b px-6 pb-4 pt-6">
           <div className="flex items-center gap-2 pr-8">
@@ -203,8 +205,8 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
           >
             <TabsList
               className={cn(
-                "h-11 w-full rounded-none border-b bg-transparent p-0",
-                tabCount === 3 ? "grid grid-cols-3" : "grid grid-cols-2",
+                "grid h-11 w-full rounded-none border-b bg-transparent p-0",
+                canImport ? "grid-cols-3" : "grid-cols-2",
               )}
             >
               {(["sync", canImport ? "import" : null, "history"] as const)
@@ -306,7 +308,12 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
 
             {canImport && projectId ? (
               <TabsContent value="import" className="m-0 flex min-h-0 flex-1 flex-col">
-                <QboImportPanel active={open && activeTab === "import"} projectId={projectId} projectName={projectName} onCancel={() => onOpenChange(false)} />
+                <QboImportPanel
+                  active={open && activeTab === "import"}
+                  projectId={projectId}
+                  projectName={projectName}
+                  onCancel={() => onOpenChange(false)}
+                />
               </TabsContent>
             ) : null}
 

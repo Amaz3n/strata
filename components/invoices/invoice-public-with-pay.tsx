@@ -160,7 +160,8 @@ function ConfirmPaymentForm({
       return
     }
     if (paymentIntent?.status === "succeeded" || paymentIntent?.status === "processing") {
-      setMessage("Payment submitted successfully.")
+      setMessage(paymentIntent.status === "processing" ? "Payment is processing. This page will refresh shortly." : "Payment submitted successfully. This page will refresh shortly.")
+      window.setTimeout(() => window.location.reload(), 2500)
     } else {
       setMessage(`Payment status: ${paymentIntent?.status ?? "unknown"}`)
     }
@@ -238,6 +239,7 @@ function PaymentSection({
   const [stripeAccountId, setStripeAccountId] = useState<string | null>(null)
   const [isCreatingIntent, setIsCreatingIntent] = useState(false)
   const [intentError, setIntentError] = useState<string | null>(null)
+  const [unavailableMethods, setUnavailableMethods] = useState<Array<PaymentFeeQuote["method"]>>([])
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -259,9 +261,13 @@ function PaymentSection({
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
   const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
   const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
+  const availableQuotes = useMemo(
+    () => [payment.feeQuotes.ach, payment.feeQuotes.card].filter((quote) => quote.enabled),
+    [payment.feeQuotes.ach, payment.feeQuotes.card],
+  )
 
   async function handleMethodSelect(quote: PaymentFeeQuote) {
-    if (!quote.enabled || isPaid || isCreatingIntent) return
+    if (!quote.enabled || isPaid || isCreatingIntent || unavailableMethods.includes(quote.method)) return
     setSelectedQuote(quote)
     setClientSecret(null)
     setStripeAccountId(null)
@@ -278,7 +284,12 @@ function PaymentSection({
       setClientSecret(intent.client_secret)
       setStripeAccountId(intent.connected_account_id ?? null)
     } catch (err) {
-      setIntentError(err instanceof Error ? err.message : "Unable to start payment.")
+      setUnavailableMethods((current) => (current.includes(quote.method) ? current : [...current, quote.method]))
+      setIntentError(
+        err instanceof Error
+          ? err.message
+          : `${quote.label} is unavailable. Try another payment method or contact the sender.`,
+      )
     } finally {
       setIsCreatingIntent(false)
     }
@@ -286,7 +297,8 @@ function PaymentSection({
 
   function renderMethodButton(quote: PaymentFeeQuote) {
     const isSelected = selectedQuote?.method === quote.method
-    const disabled = !quote.enabled || isPaid || isCreatingIntent
+    const unavailable = unavailableMethods.includes(quote.method)
+    const disabled = !quote.enabled || unavailable || isPaid || isCreatingIntent
     const Icon = quote.method === "ach" ? Building2 : CreditCard
     return (
       <button
@@ -311,7 +323,9 @@ function PaymentSection({
           </div>
           <div className="min-w-0 flex-1">
             <p className="font-medium leading-tight">{quote.label}</p>
-            <p className="mt-1 text-xs leading-snug text-muted-foreground">{quote.disclosure}</p>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {unavailable ? "Unavailable for this builder's Stripe account." : quote.disclosure}
+            </p>
           </div>
         </div>
         <div className="mt-3 flex items-center justify-between border-t border-dashed pt-3 text-sm">
@@ -328,10 +342,13 @@ function PaymentSection({
     <div className="space-y-5">
       <h3 className="text-sm font-semibold">Payment method</h3>
 
-      <div className="grid gap-2.5">
-        {renderMethodButton(payment.feeQuotes.ach)}
-        {renderMethodButton(payment.feeQuotes.card)}
-      </div>
+      {availableQuotes.length > 0 ? (
+        <div className="grid gap-2.5">{availableQuotes.map(renderMethodButton)}</div>
+      ) : (
+        <div className="border bg-muted/30 p-4 text-sm text-muted-foreground">
+          Online payments are not enabled for this invoice. Please contact the sender for payment instructions.
+        </div>
+      )}
 
       {isCreatingIntent && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

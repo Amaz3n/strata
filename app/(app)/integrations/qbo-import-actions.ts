@@ -32,18 +32,23 @@ export async function listProjectsForImportAction(): Promise<{ id: string; name:
   return projects.map((project) => ({ id: project.id, name: project.name }))
 }
 
-/** Import the selected QBO transactions into a project, creating pre-linked Arc records. */
+/** Import the selected QBO transactions, each into its own destination project, creating pre-linked Arc records. */
 export async function importQboRecordsAction(params: {
-  projectId: string
-  items: { qboId: string; entityType: QboImportEntityType; allocations?: Record<string, string> }[]
+  items: { qboId: string; entityType: QboImportEntityType; projectId?: string; allocations?: Record<string, string> }[]
 }): Promise<QboImportResult> {
-  const result = await importQboRecords({ projectId: params.projectId, items: params.items })
+  const result = await importQboRecords({ items: params.items })
 
   if (result.imported > 0) {
-    revalidatePath(`/projects/${params.projectId}/financials`)
-    revalidatePath(`/projects/${params.projectId}/financials/receivables`)
-    revalidatePath(`/projects/${params.projectId}/financials/payables`)
-    revalidatePath(`/projects/${params.projectId}/expenses`)
+    // Revalidate every project that received a record (records can land in different projects).
+    const projectIds = new Set(
+      params.items.map((item) => item.projectId).filter((id): id is string => Boolean(id)),
+    )
+    for (const projectId of projectIds) {
+      revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/payables`)
+      revalidatePath(`/projects/${projectId}/expenses`)
+    }
   }
 
   return result

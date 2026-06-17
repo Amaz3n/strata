@@ -1,35 +1,52 @@
+import Link from "next/link"
+
 export default function PortalsOverviewArticle() {
   return (
     <>
       <p>
-        Arc portals give clients, subcontractors, vendors, and bidders controlled access
-        to the information and actions intended for them without exposing the internal
-        workspace.
+        Arc Portals provide clients, subcontractors, vendors, and bidders with controlled, secure access to the 
+        specific information and actions intended for them. This keeps external stakeholders updated and active 
+        without exposing your internal company workspace.
       </p>
-      <h2>Client and project access</h2>
+
+      <h2>Core Portal Experiences</h2>
       <p>
-        Project access can be shared through secure invitations or links. The available
-        views depend on the portal type and the records shared with that person.
+        Arc includes three main portal modules. Click the detailed guides below to learn how each portal works 
+        and how to manage them:
       </p>
-      <h2>Bid portals</h2>
+
+      <h3>1. Client Portal</h3>
       <p>
-        Bid portals let invited trade partners review bid documents and addenda, submit
-        RFIs, and provide a bid response.
+        Share schedules, site photos, daily logs, and open-book budgets with project owners. Allow clients to submit 
+        design selections, approve change orders, pay invoices via Stripe, and lodge warranty requests.
+        {" "}
+        <Link href="/help/client-and-partner-portals/external-access/client-portal">
+          Read the Client Portal Guide
+        </Link>
+        .
       </p>
-      <h2>Vendor and subcontractor access</h2>
+
+      <h3>2. Subcontractor Portal</h3>
       <p>
-        External partners may receive access to project documents, requests, compliance
-        workflows, payment information, or other assigned portal features.
+        Enable subcontractors to view active commitments (subcontracts), submit monthly progress bills, upload 
+        insurance compliance documents, answer assigned RFIs, and resolve punch list items.
+        {" "}
+        <Link href="/help/client-and-partner-portals/external-access/subcontractor-portal">
+          Read the Subcontractor Portal Guide
+        </Link>
+        .
       </p>
-      <h2>Account-based access</h2>
+
+      <h3>3. Bid, Proposal, &amp; Invoice Portals</h3>
       <p>
-        When an external participant claims an account, Arc can collect their available
-        project and portal invitations into one external workspace.
+        Manage preconstruction bid packages, distribute specs, collect early trade pricing, send contracts for client 
+        electronic signature, and email invoices with secure Stripe billing links.
+        {" "}
+        <Link href="/help/client-and-partner-portals/external-access/bid-proposal-portals">
+          Read the Bid &amp; Proposal Portals Guide
+        </Link>
+        .
       </p>
-      <blockquote>
-        Review the recipient, project, portal type, and shared records before sending an
-        invitation or direct link.
-      </blockquote>
     </>
   )
 }
