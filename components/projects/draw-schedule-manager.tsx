@@ -76,7 +76,8 @@ function formatCurrency(cents: number) {
   return (cents / 100).toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   })
 }
 
