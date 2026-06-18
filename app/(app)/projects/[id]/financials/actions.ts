@@ -109,7 +109,7 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
     if (!companyName) continue
 
     for (const line of lines) {
-      const key = line.cost_code_id ?? "uncoded"
+      const key = line.cost_code_id ?? line.budget_line_id ?? "uncoded"
       const names = companyNamesByBucket.get(key) ?? new Set<string>()
       names.add(companyName)
       companyNamesByBucket.set(key, names)
@@ -285,7 +285,11 @@ export async function fetchBudgetBreakdownAction(projectId: string) {
   }
 }
 
-export async function fetchBudgetBucketCommitmentsAction(projectId: string, costCodeId?: string | null) {
+export async function fetchBudgetBucketCommitmentsAction(
+  projectId: string,
+  bucketId?: string | null,
+  groupBy: "cost_code" | "budget_line" = "cost_code",
+) {
   const commitments = await listProjectCommitments(projectId).catch(() => [])
   if (commitments.length === 0) return []
 
@@ -299,7 +303,13 @@ export async function fetchBudgetBucketCommitmentsAction(projectId: string, cost
   return commitmentLines
     .map(({ commitment, lines }) => {
       const matching = lines.filter((line) =>
-        costCodeId ? line.cost_code_id === costCodeId : !line.cost_code_id,
+        groupBy === "budget_line"
+          ? bucketId
+            ? line.budget_line_id === bucketId
+            : !line.budget_line_id
+          : bucketId
+            ? line.cost_code_id === bucketId
+            : !line.cost_code_id,
       )
       const allocatedCents = matching.reduce((sum, line) => sum + (line.total_cents ?? 0), 0)
       return {

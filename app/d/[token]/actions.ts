@@ -14,6 +14,7 @@ import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-lin
 import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
 import { approveChangeOrderFromEnvelopeExecution } from "@/lib/services/change-orders"
+import { markCommitmentExecutedFromEnvelope } from "@/lib/services/commitments"
 import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
 import {
   executeEstimateFromEnvelopeExecution,
@@ -577,6 +578,24 @@ export async function submitDocumentSignatureAction(input: {
       await approveChangeOrderFromEnvelopeExecution({
         orgId: signingRequest.org_id,
         changeOrderId,
+        envelopeId,
+        documentId: document.id,
+        executedFileId: executedFile.id,
+        signerName: input.signerName.trim(),
+        signerEmail: submittedSignerEmail,
+        signerIp,
+      })
+    }
+
+    const commitmentId =
+      document.source_entity_type === "subcontract"
+        ? document.source_entity_id
+        : (document.metadata?.subcontract_id as string | undefined)
+
+    if (commitmentId) {
+      await markCommitmentExecutedFromEnvelope({
+        orgId: signingRequest.org_id,
+        commitmentId,
         envelopeId,
         documentId: document.id,
         executedFileId: executedFile.id,

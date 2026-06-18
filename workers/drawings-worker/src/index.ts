@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 import http from 'node:http';
+import { initObservability, workerLogger } from './observability';
 import { Worker, type ProcessOptions } from './worker';
+
+initObservability();
 
 async function main() {
   const worker = new Worker();
@@ -10,7 +13,7 @@ async function main() {
 
   if (processOnce) {
     const summary = await worker.processAvailableJobs(readProcessOptionsFromEnv());
-    console.log('✅ One-off run completed:', summary);
+    workerLogger.info('drawings_worker.once.completed', { summary });
     return;
   }
 
@@ -41,7 +44,7 @@ async function main() {
 
       sendJson(res, 404, { ok: false, error: 'Not found' });
     } catch (error) {
-      console.error('💥 Request failed:', error);
+      workerLogger.error('drawings_worker.request.failed', { error });
       sendJson(res, 500, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -50,13 +53,13 @@ async function main() {
   });
 
   server.listen(port, () => {
-    console.log(`🛰️  Drawings worker listening on port ${port}`);
-    console.log(`🛰️  Process path: ${processPath}`);
+    workerLogger.info('drawings_worker.server.started', { port, processPath });
   });
 
   async function shutdown(signal: string) {
-    console.log(`🛑 Received ${signal}, shutting down gracefully...`);
+    workerLogger.info('drawings_worker.server.shutdown', { signal });
     server.close();
+    await workerLogger.flush();
     process.exit(0);
   }
 
@@ -64,14 +67,19 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   process.on('uncaughtException', async (error) => {
-    console.error('💥 Uncaught exception, shutting down:', error);
+    workerLogger.error('drawings_worker.uncaught_exception', { error });
     await shutdown('uncaughtException');
+  });
+
+  process.on('unhandledRejection', async (reason) => {
+    workerLogger.error('drawings_worker.unhandled_rejection', { error: reason });
+    await shutdown('unhandledRejection');
   });
 }
 
 main().catch((error) => {
-  console.error('💥 Fatal error:', error);
-  process.exit(1);
+  workerLogger.error('drawings_worker.fatal', { error });
+  workerLogger.flush().finally(() => process.exit(1));
 });
 
 function readProcessOptions(body: unknown): ProcessOptions {

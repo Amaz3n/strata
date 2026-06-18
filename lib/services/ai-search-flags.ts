@@ -12,6 +12,7 @@ export const AI_SEARCH_FEATURE_FLAGS = {
   plannerV2: "ai_search_planner_v2",
   hybridRetrieval: "ai_search_hybrid_retrieval",
   conversationMemory: "ai_search_memory",
+  intentRouter: "ai_search_intent_router",
   multiStepPlanning: "ai_search_multistep_planner_v2",
   generalAssistant: "ai_search_general_assistant",
   evalHarness: "ai_search_eval_harness",
@@ -22,6 +23,7 @@ export interface AiSearchRuntimeFlags {
   plannerV2: boolean
   hybridRetrieval: boolean
   conversationMemory: boolean
+  intentRouter: boolean
   multiStepPlanning: boolean
   generalAssistant: boolean
   evalHarness: boolean
@@ -59,11 +61,12 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
   const plannerDefault = parseEnvFlag("AI_SEARCH_PLANNER_V2_DEFAULT", true)
   const hybridDefault = parseEnvFlag("AI_SEARCH_HYBRID_RETRIEVAL_DEFAULT", true)
   const memoryDefault = parseEnvFlag("AI_SEARCH_MEMORY_DEFAULT", true)
+  const intentRouterDefault = parseEnvFlag("AI_SEARCH_INTENT_ROUTER_DEFAULT", true)
   const multiStepDefault = parseEnvFlag("AI_SEARCH_MULTI_STEP_DEFAULT", true)
   const generalDefault = parseEnvFlag("AI_SEARCH_GENERAL_ASSISTANT_DEFAULT", true)
   const evalDefault = parseEnvFlag("AI_SEARCH_EVAL_HARNESS_DEFAULT", false)
 
-  const [enabled, plannerV2, hybridRetrieval, conversationMemory, multiStepPlanning, generalAssistant, evalHarness] = await Promise.all([
+  const [enabled, plannerV2, hybridRetrieval, conversationMemory, intentRouter, multiStepPlanning, generalAssistant, evalHarness] = await Promise.all([
     isFeatureEnabledForOrg({
       supabase: context.supabase,
       orgId: context.orgId,
@@ -91,6 +94,12 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
     isFeatureEnabledForOrg({
       supabase: context.supabase,
       orgId: context.orgId,
+      flagKey: AI_SEARCH_FEATURE_FLAGS.intentRouter,
+      defaultEnabled: intentRouterDefault,
+    }),
+    isFeatureEnabledForOrg({
+      supabase: context.supabase,
+      orgId: context.orgId,
       flagKey: AI_SEARCH_FEATURE_FLAGS.multiStepPlanning,
       defaultEnabled: multiStepDefault,
     }),
@@ -113,6 +122,7 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
     plannerV2,
     hybridRetrieval,
     conversationMemory,
+    intentRouter,
     multiStepPlanning,
     generalAssistant,
     evalHarness,

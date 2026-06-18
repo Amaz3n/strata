@@ -70,10 +70,10 @@ export default async function SubmitInvoicePage({
         {eligibleCommitments.length === 0 ? (
           <div className="rounded-lg border p-6 text-center">
             <p className="text-muted-foreground">
-              No eligible contracts available for invoice submission.
+              No eligible commitments available for invoice submission.
             </p>
             <p className="text-sm text-muted-foreground mt-2">
-              Contracts must be approved and have remaining budget to submit invoices.
+              Commitments must be approved and have remaining budget to submit invoices.
             </p>
             <Button asChild className="mt-4">
               <Link href={`/s/${token}`}>Return to Dashboard</Link>

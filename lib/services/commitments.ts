@@ -4,6 +4,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, type CommitmentInput, type CommitmentUpdateInput, type CommitmentLineInput, type CommitmentLineUpdateInput } from "@/lib/validation/commitments"
 
 export type CommitmentStatus = "draft" | "approved" | "complete" | "canceled"
@@ -19,6 +20,14 @@ export interface CommitmentSummary {
   status: CommitmentStatus | string
   total_cents?: number
   currency: string
+  contract_number?: string
+  scope?: string
+  terms?: string
+  retainage_percent?: number
+  executed_at?: string
+  executed_file_id?: string
+  source_document_id?: string
+  signature_envelope_id?: string
   start_date?: string
   end_date?: string
   issued_at?: string
@@ -33,6 +42,7 @@ export interface CommitmentLine {
   org_id: string
   commitment_id: string
   cost_code_id: string | null
+  budget_line_id?: string | null
   cost_code_code?: string
   cost_code_name?: string
   description: string
@@ -40,6 +50,8 @@ export interface CommitmentLine {
   unit: string
   unit_cost_cents: number
   total_cents: number
+  scheduled_value_cents?: number | null
+  retainage_percent?: number | null
   sort_order: number
 }
 
@@ -55,6 +67,14 @@ function mapCommitment(row: any): CommitmentSummary {
     status: row.status ?? "draft",
     total_cents: row.total_cents ?? undefined,
     currency: row.currency ?? "usd",
+    contract_number: row.contract_number ?? undefined,
+    scope: row.scope ?? undefined,
+    terms: row.terms ?? undefined,
+    retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : undefined,
+    executed_at: row.executed_at ?? undefined,
+    executed_file_id: row.executed_file_id ?? undefined,
+    source_document_id: row.source_document_id ?? undefined,
+    signature_envelope_id: row.signature_envelope_id ?? undefined,
     start_date: row.start_date ?? undefined,
     end_date: row.end_date ?? undefined,
     issued_at: row.issued_at ?? undefined,
@@ -79,7 +99,7 @@ export async function listCompanyCommitments(companyId: string, orgId?: string):
     .from("commitments")
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name),
       company:companies(id, name)
     `,
@@ -147,7 +167,7 @@ export async function listProjectCommitments(projectId: string, orgId?: string):
     .from("commitments")
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name),
       company:companies(id, name)
     `,
@@ -222,12 +242,16 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
       status: parsed.status ?? "draft",
       total_cents: parsed.total_cents,
       currency: "usd",
+      contract_number: parsed.contract_number ?? null,
+      scope: parsed.scope ?? null,
+      terms: parsed.terms ?? null,
+      retainage_percent: parsed.retainage_percent ?? 0,
       start_date: parsed.start_date ?? null,
       end_date: parsed.end_date ?? null,
     })
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name)
     `,
     )
@@ -271,7 +295,7 @@ export async function updateCommitment({
 
   const { data: existing, error: existingError } = await supabase
     .from("commitments")
-    .select("id, org_id, project_id, company_id, title, status, total_cents, currency, start_date, end_date, issued_at, created_at, updated_at")
+    .select("id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, start_date, end_date, issued_at, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", commitmentId)
     .maybeSingle()
@@ -303,6 +327,10 @@ export async function updateCommitment({
       title: parsed.title ?? existing.title,
       status: parsed.status ?? existing.status,
       total_cents: nextTotalCents,
+      contract_number: parsed.contract_number ?? existing.contract_number,
+      scope: parsed.scope ?? existing.scope,
+      terms: parsed.terms ?? existing.terms,
+      retainage_percent: parsed.retainage_percent ?? existing.retainage_percent ?? 0,
       start_date: parsed.start_date ?? existing.start_date,
       end_date: parsed.end_date ?? existing.end_date,
     })
@@ -310,7 +338,7 @@ export async function updateCommitment({
     .eq("id", commitmentId)
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name)
     `,
     )
@@ -333,6 +361,95 @@ export async function updateCommitment({
   return mapCommitment(data)
 }
 
+export async function markCommitmentExecutedFromEnvelope(input: {
+  orgId: string
+  commitmentId: string
+  envelopeId: string
+  documentId: string
+  executedFileId: string
+  signerName?: string | null
+  signerEmail?: string | null
+  signerIp?: string | null
+}): Promise<CommitmentSummary> {
+  const supabase = createServiceSupabaseClient()
+  const nowIso = new Date().toISOString()
+
+  const { data: existing, error: existingError } = await supabase
+    .from("commitments")
+    .select("id, org_id, project_id, company_id, title, status, total_cents, executed_at, executed_file_id, source_document_id, signature_envelope_id, metadata")
+    .eq("org_id", input.orgId)
+    .eq("id", input.commitmentId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error(`Commitment not found for executed subcontract: ${existingError?.message ?? "not found"}`)
+  }
+
+  const nextMetadata = {
+    ...((existing as any).metadata ?? {}),
+    executed_signature: {
+      signer_name: input.signerName ?? null,
+      signer_email: input.signerEmail ?? null,
+      signer_ip: input.signerIp ?? null,
+      executed_at: nowIso,
+      envelope_id: input.envelopeId,
+      document_id: input.documentId,
+      executed_file_id: input.executedFileId,
+    },
+  }
+
+  const { data, error } = await supabase
+    .from("commitments")
+    .update({
+      status: existing.status === "draft" ? "approved" : existing.status,
+      executed_at: nowIso,
+      executed_file_id: input.executedFileId,
+      source_document_id: input.documentId,
+      signature_envelope_id: input.envelopeId,
+      metadata: nextMetadata,
+    })
+    .eq("org_id", input.orgId)
+    .eq("id", input.commitmentId)
+    .select(
+      `
+      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
+      project:projects(id, name),
+      company:companies(id, name)
+    `,
+    )
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to mark commitment executed: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: input.orgId,
+    actorId: undefined,
+    action: "update",
+    entityType: "commitment",
+    entityId: input.commitmentId,
+    before: existing,
+    after: data,
+  })
+
+  await recordEvent({
+    orgId: input.orgId,
+    eventType: "commitment_executed",
+    entityType: "commitment",
+    entityId: input.commitmentId,
+    payload: {
+      project_id: existing.project_id,
+      envelope_id: input.envelopeId,
+      document_id: input.documentId,
+      executed_file_id: input.executedFileId,
+      signer_email: input.signerEmail ?? null,
+    },
+  })
+
+  return mapCommitment(data)
+}
+
 // ============================================================================
 // Commitment Lines
 // ============================================================================
@@ -343,6 +460,7 @@ function mapCommitmentLine(row: any): CommitmentLine {
     org_id: row.org_id,
     commitment_id: row.commitment_id,
     cost_code_id: row.cost_code_id,
+    budget_line_id: row.budget_line_id ?? null,
     cost_code_code: row.cost_code?.code ?? undefined,
     cost_code_name: row.cost_code?.name ?? undefined,
     description: row.description,
@@ -350,6 +468,8 @@ function mapCommitmentLine(row: any): CommitmentLine {
     unit: row.unit,
     unit_cost_cents: row.unit_cost_cents,
     total_cents: (row.quantity ?? 1) * row.unit_cost_cents,
+    scheduled_value_cents: row.scheduled_value_cents ?? null,
+    retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : null,
     sort_order: row.sort_order ?? 0,
   }
 }
@@ -426,7 +546,7 @@ export async function listCommitmentLines(commitmentId: string): Promise<Commitm
   const { data, error } = await supabase
     .from("commitment_lines")
     .select(`
-      id, org_id, commitment_id, cost_code_id, description, quantity, unit, unit_cost_cents, sort_order,
+      id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
       cost_code:cost_codes(code, name)
     `)
     .eq("org_id", orgId)
@@ -476,7 +596,7 @@ export async function createCommitmentLine(commitmentId: string, input: Commitme
       ...validated,
     })
     .select(`
-      id, org_id, commitment_id, cost_code_id, description, quantity, unit, unit_cost_cents, sort_order,
+      id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
       cost_code:cost_codes(code, name)
     `)
     .single()
@@ -519,7 +639,7 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
   const { data: existing, error: existingError } = await supabase
     .from("commitment_lines")
     .select(`
-      id, commitment_id, cost_code_id, description, quantity, unit, unit_cost_cents, sort_order,
+      id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
       commitment:commitments(project_id)
     `)
     .eq("id", lineId)
@@ -547,7 +667,7 @@ export async function updateCommitmentLine(lineId: string, input: CommitmentLine
     .eq("id", lineId)
     .eq("org_id", orgId)
     .select(`
-      id, org_id, commitment_id, cost_code_id, description, quantity, unit, unit_cost_cents, sort_order,
+      id, org_id, commitment_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, scheduled_value_cents, retainage_percent, sort_order,
       cost_code:cost_codes(code, name)
     `)
     .single()

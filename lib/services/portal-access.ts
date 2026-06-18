@@ -441,7 +441,7 @@ async function loadPortalFinancialSummary({
 }): Promise<PortalFinancialSummary> {
   const supabase = createServiceSupabaseClient()
 
-  const [contractResult, projectResult, approvedCosResult, paymentsResult, nextDrawResult, drawsResult] = await Promise.all([
+  const [contractResult, projectResult, approvedCosResult, paymentsResult, allocationResult, nextDrawResult, drawsResult] = await Promise.all([
     supabase
       .from("contracts")
       .select("total_cents")
@@ -469,6 +469,13 @@ async function loadPortalFinancialSummary({
       .not("invoice_id", "is", null)
       .eq("status", "succeeded"),
     supabase
+      .from("payment_allocations")
+      .select("amount_cents, payment:payments!inner(status)")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .not("invoice_id", "is", null)
+      .eq("payment.status", "succeeded"),
+    supabase
       .from("draw_schedules")
       .select("id, draw_number, title, amount_cents, percent_of_contract, due_date, status")
       .eq("org_id", orgId)
@@ -489,7 +496,9 @@ async function loadPortalFinancialSummary({
     (projectResult.data?.total_value ? projectResult.data.total_value * 100 : 0)
   const approvedChangesTotal = (approvedCosResult.data ?? []).reduce((sum, row) => sum + (row.total_cents ?? 0), 0)
   const contractTotal = baseContractTotal + approvedChangesTotal
-  const totalPaid = (paymentsResult.data ?? []).reduce((sum, p) => sum + (p.amount_cents ?? 0), 0)
+  const totalPaid =
+    (paymentsResult.data ?? []).reduce((sum, p) => sum + (p.amount_cents ?? 0), 0) +
+    (allocationResult.data ?? []).reduce((sum, p) => sum + (p.amount_cents ?? 0), 0)
 
   const draws = (drawsResult.data ?? []) as DrawSchedule[]
   const normalizedDraws = draws.map((draw) => {

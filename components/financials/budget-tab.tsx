@@ -4,11 +4,14 @@ import { useEffect, useMemo, useState, useTransition, type CSSProperties } from 
 import { useRouter } from "next/navigation"
 import {
   AlertTriangle,
+  Download,
   Info,
   ListOrdered,
   MoreHorizontal,
   Plus,
+  Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react"
 
 import type { CostCode, Company } from "@/lib/types"
@@ -20,7 +23,10 @@ import { useToast } from "@/hooks/use-toast"
 
 import {
   acknowledgeVarianceAlertAction,
+  applyBudgetFromEstimateAction,
   createProjectBudgetAction,
+  listBudgetEstimateSourcesAction,
+  proposeBudgetFromEstimateAction,
   replaceProjectBudgetLinesAction,
   runVarianceScanAction,
   updateCostCodeProgressAction,
@@ -57,6 +63,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -66,6 +73,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -178,6 +186,106 @@ function SummaryMetric({ label, value, hint }: { label: string; value: string; h
   )
 }
 
+// Full-bleed KPI cells matching the project overview stat row. Borders are
+// applied per position so the cells read as one continuous strip.
+const kpiCellBorders: Record<number, string> = {
+  0: "border-b sm:border-r lg:border-b-0 lg:border-r",
+  1: "border-b lg:border-b-0 lg:border-r",
+  2: "border-b sm:border-r lg:border-b-0 lg:border-r",
+  3: "border-b lg:border-b-0 lg:border-r",
+  4: "",
+}
+
+/** Click-to-edit currency cell used for the budget amount in the table. */
+function InlineBudgetAmount({
+  cents,
+  editable,
+  onCommit,
+}: {
+  cents: number
+  editable: boolean
+  onCommit: (amountDollars: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState("")
+
+  if (!editable) {
+    return <span className="text-sm font-medium">{formatCurrency(cents)}</span>
+  }
+
+  if (editing) {
+    return (
+      <Input
+        autoFocus
+        inputMode="decimal"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        onBlur={() => {
+          setEditing(false)
+          onCommit(value)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            setEditing(false)
+            onCommit(value)
+          } else if (event.key === "Escape") {
+            event.preventDefault()
+            setEditing(false)
+          }
+        }}
+        className="ml-auto h-7 w-[110px] text-right text-sm tabular-nums"
+      />
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        setValue((cents / 100).toFixed(2))
+        setEditing(true)
+      }}
+      className="ml-auto rounded px-1.5 py-0.5 text-sm font-medium tabular-nums hover:bg-muted hover:ring-1 hover:ring-border"
+      title="Click to edit"
+    >
+      {formatCurrency(cents)}
+    </button>
+  )
+}
+
+function KpiCell({
+  label,
+  value,
+  hint,
+  valueClass,
+  position,
+}: {
+  label: string
+  value: string
+  hint?: string
+  valueClass?: string
+  position: number
+}) {
+  return (
+    <div className={cn("flex flex-col gap-2.5 px-6 py-6 sm:px-8", kpiCellBorders[position])}>
+      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
+        {hint ? <Hint label={label} hint={hint} /> : label}
+      </div>
+      <div
+        className={cn(
+          "text-[26px] leading-none font-semibold tracking-tight tabular-nums text-foreground sm:text-[30px]",
+          valueClass,
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
 function toLineState(lines: any[] | undefined): EditableBudgetLine[] {
   return (lines ?? []).map((line) => ({
     id: line.id ?? crypto.randomUUID(),
@@ -256,6 +364,30 @@ export function BudgetTab({
     Array<CommitmentSummary & { allocated_cents: number; matching_line_count: number }>
   >([])
   const [activeBucketCommitmentsLoading, setActiveBucketCommitmentsLoading] = useState(false)
+  // Simple view hides the WIP/forecast columns (EAC/VAC/CTC); detailed shows everything.
+  const [viewMode, setViewMode] = useState<"simple" | "detailed">("simple")
+  const [onlyAttention, setOnlyAttention] = useState(false)
+  const [estimateImportOpen, setEstimateImportOpen] = useState(false)
+  const [csvImportOpen, setCsvImportOpen] = useState(false)
+
+  // Restore persisted view preference once on mount.
+  useEffect(() => {
+    try {
+      const storedView = window.localStorage.getItem("budget:viewMode")
+      if (storedView === "simple" || storedView === "detailed") setViewMode(storedView)
+    } catch {
+      /* ignore read failures */
+    }
+  }, [])
+
+  const changeViewMode = (mode: "simple" | "detailed") => {
+    setViewMode(mode)
+    try {
+      window.localStorage.setItem("budget:viewMode", mode)
+    } catch {
+      /* ignore persistence failures */
+    }
+  }
 
   useEffect(() => {
     setLines(currentBudget ? toLineState(currentBudget.lines) : [])
@@ -402,11 +534,28 @@ export function BudgetTab({
     const ids = new Set(lineIds)
     const nextLines = lines.filter((line) => !ids.has(line.id))
     if (nextLines.length === 0) {
-      toast({ title: "At least one cost bucket is required" })
+      toast({ title: "At least one budget line is required" })
       return
     }
     setLines(nextLines)
-    persistBudgetLines(nextLines, "Cost bucket removed")
+    persistBudgetLines(nextLines, "Budget line removed")
+  }
+
+  // Inline edit of a single budget line's amount (used by the editable Budget cell).
+  const updateLineAmount = (lineId: string, amountDollars: string) => {
+    const target = lines.find((line) => line.id === lineId)
+    if (!target) return
+    const nextCents = dollarsToCents(amountDollars)
+    if (nextCents === null || nextCents < 0) {
+      toast({ title: "Enter a valid amount" })
+      return
+    }
+    if (nextCents === (dollarsToCents(target.amount_dollars) ?? 0)) return // no change
+    const nextLines = lines.map((line) =>
+      line.id === lineId ? { ...line, amount_dollars: (nextCents / 100).toFixed(2) } : line,
+    )
+    setLines(nextLines)
+    persistBudgetLines(nextLines, "Budget updated")
   }
 
   const acknowledge = (alertId: string, status: "acknowledged" | "resolved") => {
@@ -447,6 +596,7 @@ export function BudgetTab({
   const [editCommitment, setEditCommitment] = useState<CommitmentSummary | null>(null)
   const [linesCommitment, setLinesCommitment] = useState<CommitmentSummary | null>(null)
   const [filesCommitment, setFilesCommitment] = useState<CommitmentSummary | null>(null)
+  const [signatureCommitment, setSignatureCommitment] = useState<CommitmentSummary | null>(null)
 
   const breakdownByCostCode = useMemo(() => {
     const map = new Map<string, any>()
@@ -560,10 +710,19 @@ export function BudgetTab({
     })
   }, [breakdownByCostCode, budgetBucketCompanies, costCodeById, costCodesEnabled, lines])
 
+  const attentionCount = useMemo(
+    () => unifiedRows.filter((row) => row.status === "over" || row.status === "warning").length,
+    [unifiedRows],
+  )
+
   const filteredUnifiedRows = useMemo(() => {
     const term = budgetLineSearch.trim().toLowerCase()
-    if (!term) return unifiedRows
-    return unifiedRows.filter((row) =>
+    let rows = unifiedRows
+    if (onlyAttention) {
+      rows = rows.filter((row) => row.status === "over" || row.status === "warning")
+    }
+    if (!term) return rows
+    return rows.filter((row) =>
       [
         row.code,
         row.name,
@@ -574,7 +733,81 @@ export function BudgetTab({
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(term)),
     )
-  }, [budgetLineSearch, unifiedRows])
+  }, [budgetLineSearch, onlyAttention, unifiedRows])
+
+  // Column totals for the table footer — reconciles rows to the KPI strip.
+  const columnTotals = useMemo(() => {
+    return filteredUnifiedRows.reduce(
+      (acc, row) => {
+        acc.budgetCents += row.budgetCents
+        acc.coAdjustmentCents += row.coAdjustmentCents
+        acc.adjustedBudgetCents += row.adjustedBudgetCents
+        acc.committedCents += row.committedCents
+        acc.actualCents += row.actualCents
+        acc.costToCompleteCents += row.costToCompleteCents
+        acc.eacCents += row.eacCents
+        acc.varianceAtCompletionCents += row.varianceAtCompletionCents
+        acc.remainingToBuyCents += Math.max(0, row.budgetCents - row.committedCents)
+        acc.leftToSpendCents += row.adjustedBudgetCents - row.actualCents
+        return acc
+      },
+      {
+        budgetCents: 0,
+        coAdjustmentCents: 0,
+        adjustedBudgetCents: 0,
+        committedCents: 0,
+        actualCents: 0,
+        costToCompleteCents: 0,
+        eacCents: 0,
+        varianceAtCompletionCents: 0,
+        remainingToBuyCents: 0,
+        leftToSpendCents: 0,
+      },
+    )
+  }, [filteredUnifiedRows])
+
+  const exportBudgetCsv = () => {
+    const headers = [
+      ...(costCodesEnabled ? ["Code"] : []),
+      "Budget line",
+      "Budget",
+      "Approved CO",
+      "Revised",
+      "Committed",
+      "Spent",
+      "Left to spend",
+      "EAC",
+      "% spent",
+    ]
+    const escape = (value: string) => `"${value.replaceAll('"', '""')}"`
+    const toAmount = (cents: number) => (cents / 100).toFixed(2)
+    const rows = filteredUnifiedRows.map((row) =>
+      [
+        ...(costCodesEnabled ? [row.code ?? "Uncoded"] : []),
+        row.name,
+        toAmount(row.budgetCents),
+        toAmount(row.coAdjustmentCents),
+        toAmount(row.adjustedBudgetCents),
+        toAmount(row.committedCents),
+        toAmount(row.actualCents),
+        toAmount(row.adjustedBudgetCents - row.actualCents),
+        toAmount(row.eacCents),
+        String(row.variancePercent ?? 0),
+      ]
+        .map((cell) => escape(String(cell)))
+        .join(","),
+    )
+    const csv = [headers.map(escape).join(","), ...rows].join("\n")
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement("a")
+    anchor.href = url
+    const safeName = (project?.name ?? "project").replace(/[^a-z0-9]+/gi, "-").toLowerCase()
+    anchor.download = `${safeName}-budget.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    toast({ title: "Budget exported" })
+  }
 
   const activeBucket = unifiedRows.find((row) => row.key === activeBucketKey) ?? null
 
@@ -612,7 +845,11 @@ export function BudgetTab({
 
     let cancelled = false
     setActiveBucketCommitmentsLoading(true)
-    fetchBudgetBucketCommitmentsAction(projectId, costCodesEnabled ? activeBucket.costCodeId : null)
+    fetchBudgetBucketCommitmentsAction(
+      projectId,
+      costCodesEnabled ? activeBucket.costCodeId : activeBucket.key,
+      costCodesEnabled ? "cost_code" : "budget_line",
+    )
       .then((rows) => {
         if (!cancelled) {
           setActiveBucketCommitments(rows as Array<CommitmentSummary & { allocated_cents: number; matching_line_count: number }>)
@@ -640,6 +877,12 @@ export function BudgetTab({
   const earnedRevenue = Math.round(contractValue * percentComplete)
   const overUnderBilling = contractBilled - earnedRevenue
   const showFeeSummary = feeSummary?.enabled || feeSummary?.billing_model === "cost_plus_fixed_fee"
+
+  const isDetailed = viewMode === "detailed"
+  // Column count for the empty-state colSpan: code? + name + budget + committed +
+  // spent + (simple: left,%spent | detailed: original,co,ctc,eac,vac,%comp) + actions.
+  const tableColCount =
+    (costCodesEnabled ? 1 : 0) + 4 + (isDetailed ? 6 : 2) + 1
 
   return (
     <div className="-mx-4 -mt-6 -mb-4 flex flex-col bg-card">
@@ -677,42 +920,42 @@ export function BudgetTab({
         </div>
       )}
 
-      {/* Project WIP Summary */}
-      <div className="border-b px-6 py-4">
-        <div className="mb-3 text-sm font-semibold">Project WIP & Forecast</div>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
-          <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Contract Value</span>
-            <span className="font-mono text-sm">{formatCurrency(contractValue)}</span>
-          </div>
-          <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              <Hint label="Earned Rev" hint="Earned revenue — contract value times percent complete. What you've actually earned so far." />
-            </span>
-            <span className="font-mono text-sm">{formatCurrency(earnedRevenue)}</span>
-          </div>
-          <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Billed Rev</span>
-            <span className="font-mono text-sm">{formatCurrency(contractBilled)}</span>
-          </div>
-          <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              <Hint label="Over/(Under)" hint="Over/under billing — billed revenue minus earned revenue. Positive means you've billed ahead of work completed." />
-            </span>
-            <span className={cn("font-mono text-sm", overUnderBilling > 0 ? "text-emerald-600 dark:text-emerald-400" : overUnderBilling < 0 ? "text-destructive" : "")}>
-              {formatCurrency(overUnderBilling)}
-            </span>
-          </div>
-          <div className="flex flex-col gap-1 rounded-md border p-3">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              <Hint label="EAC" hint="Estimate at Completion — projected total project cost when finished." />
-            </span>
-            <span className="font-mono text-sm">{formatCurrency(summary?.total_eac_cents)}</span>
-          </div>
-        </div>
-        {showFeeSummary ? (
-          <div className="mt-4 border-t pt-4">
-            <div className="mb-3 text-sm font-semibold">Fixed Fee</div>
+      {/* Project WIP & Forecast — full-bleed KPIs */}
+      <div className="grid grid-cols-1 border-b sm:grid-cols-2 lg:grid-cols-5">
+        <KpiCell label="Contract Value" value={formatCurrency(contractValue)} position={0} />
+        <KpiCell
+          label="Earned Rev"
+          hint="Earned revenue — contract value times percent complete. What you've actually earned so far."
+          value={formatCurrency(earnedRevenue)}
+          position={1}
+        />
+        <KpiCell label="Billed Rev" value={formatCurrency(contractBilled)} position={2} />
+        <KpiCell
+          label="Over/(Under)"
+          hint="Over/under billing — billed revenue minus earned revenue. Positive means you've billed ahead of work completed."
+          value={formatCurrency(overUnderBilling)}
+          valueClass={cn(
+            overUnderBilling > 0
+              ? "text-emerald-600 dark:text-emerald-400"
+              : overUnderBilling < 0
+                ? "text-destructive"
+                : "",
+          )}
+          position={3}
+        />
+        <KpiCell
+          label="EAC"
+          hint="Estimate at Completion — projected total project cost when finished."
+          value={formatCurrency(summary?.total_eac_cents)}
+          position={4}
+        />
+      </div>
+
+      {showFeeSummary || gmpSummary?.enabled ? (
+        <div className="divide-y border-b">
+          {showFeeSummary ? (
+            <div className="px-6 py-4">
+              <div className="mb-3 text-sm font-semibold">Fixed Fee</div>
             {feeSummary?.enabled ? (
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-5">
                 <SummaryMetric label="Total fee" value={formatCurrency(feeSummary.total_fee_cents)} />
@@ -728,8 +971,8 @@ export function BudgetTab({
             )}
           </div>
         ) : null}
-        {gmpSummary?.enabled ? (
-          <div className="mt-4 border-t pt-4">
+          {gmpSummary?.enabled ? (
+            <div className="px-6 py-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-semibold">GMP Control</div>
               <span
@@ -780,22 +1023,53 @@ export function BudgetTab({
               </div>
             ) : null}
           </div>
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Sticky controls bar - sits flush below the tab bar when scrolled */}
       <div className="sticky top-11 z-[5] flex items-center gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-background/70">
         <Input
-          placeholder="Search cost codes or scope..."
-          className="h-9 flex-1 sm:max-w-md"
+          placeholder="Search by code, line, or scope..."
+          className="h-9 flex-1 sm:max-w-xs"
           value={budgetLineSearch}
           onChange={(event) => setBudgetLineSearch(event.target.value)}
         />
+        {/* Simple / Detailed segmented control */}
+        <div className="hidden h-9 items-center rounded-md border p-0.5 sm:flex">
+          {(["simple", "detailed"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => changeViewMode(mode)}
+              className={cn(
+                "flex h-full items-center rounded px-2.5 text-xs font-medium capitalize transition-colors",
+                viewMode === mode
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+        {(attentionCount > 0 || onlyAttention) && (
+          <Button
+            variant={onlyAttention ? "default" : "outline"}
+            size="sm"
+            className="h-9 gap-1.5"
+            onClick={() => setOnlyAttention((prev) => !prev)}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            <span className="tabular-nums">{attentionCount}</span>
+            <span className="hidden sm:inline">need attention</span>
+          </Button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {editable && (
             <Button size="sm" onClick={openCreateBucket}>
               <Plus className="h-4 w-4" />
-              <span className="hidden sm:inline">{costCodesEnabled ? "Add bucket" : "Add line"}</span>
+              <span className="hidden sm:inline">Add line</span>
             </Button>
           )}
           <DropdownMenu>
@@ -806,14 +1080,22 @@ export function BudgetTab({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={() => openCreateCommitment()}
-                disabled={companyOptions.length === 0}
-              >
-                New commitment
+              <DropdownMenuItem disabled className="justify-between gap-3">
+                <span className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  Start from estimate
+                </span>
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Coming soon
+                </span>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={runScan} disabled={isPending || !currentBudget}>
-                Refresh budget alerts
+              <DropdownMenuItem onClick={() => setCsvImportOpen(true)}>
+                <Upload className="h-4 w-4" />
+                Import CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportBudgetCsv} disabled={unifiedRows.length === 0}>
+                <Download className="h-4 w-4" />
+                Export CSV
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -824,7 +1106,11 @@ export function BudgetTab({
       <div className="border-t md:hidden">
         {filteredUnifiedRows.length === 0 ? (
           <div className="px-4 py-12">
-            <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} />
+            <UnifiedBudgetEmptyState
+              editable={editable}
+              onCreate={openCreateBucket}
+              filtered={onlyAttention || budgetLineSearch.trim().length > 0}
+            />
           </div>
         ) : (
           <ul className="divide-y">
@@ -912,7 +1198,7 @@ export function BudgetTab({
 
       {/* Desktop unified table */}
       <div className="hidden border-t md:block overflow-x-auto">
-        <Table className="w-full min-w-[1000px]">
+        <Table className="w-full min-w-[820px]">
           <TableHeader>
             <TableRow className="border-b bg-muted/30 hover:bg-muted/30">
               {costCodesEnabled && (
@@ -921,52 +1207,60 @@ export function BudgetTab({
               <TableHead className="min-w-[200px] px-4 text-xs uppercase tracking-wide">
                 {costCodesEnabled ? "Scope" : "Budget line"}
               </TableHead>
-              <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
-              <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Approved CO</TableHead>
-              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">Revised</TableHead>
+              {isDetailed && (
+                <>
+                  <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
+                  <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Approved CO</TableHead>
+                </>
+              )}
+              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">
+                {isDetailed ? "Revised" : "Budget"}
+              </TableHead>
               <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
                 <Hint className="justify-end" label="Committed" hint="Committed — amount locked in via approved subcontracts and purchase orders for this line." />
               </TableHead>
               <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
-                <Hint className="justify-end" label="Actual" hint="Actual — costs already incurred (approved bills, expenses, and labor) on this line." />
+                <Hint className="justify-end" label={isDetailed ? "Actual" : "Spent"} hint="Costs already incurred — approved bills, expenses, and labor on this line." />
               </TableHead>
-              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
-                <Hint className="justify-end" label="CTC" hint="Cost to Complete — estimated remaining cost to finish this line (EAC minus Actual)." />
-              </TableHead>
-              <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">
-                <Hint className="justify-end" label="EAC" hint="Estimate at Completion — projected total cost for this line when finished." />
-              </TableHead>
-              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
-                <Hint className="justify-end" label="VAC" hint="Variance at Completion — revised budget minus EAC. Negative means a projected overrun." />
-              </TableHead>
-              <TableHead className="w-[100px] px-4 text-right text-xs uppercase tracking-wide">% Comp</TableHead>
+              {isDetailed ? (
+                <>
+                  <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                    <Hint className="justify-end" label="CTC" hint="Cost to Complete — estimated remaining cost to finish this line (EAC minus Actual)." />
+                  </TableHead>
+                  <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">
+                    <Hint className="justify-end" label="EAC" hint="Estimate at Completion — projected total cost for this line when finished." />
+                  </TableHead>
+                  <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                    <Hint className="justify-end" label="VAC" hint="Variance at Completion — revised budget minus EAC. Negative means a projected overrun." />
+                  </TableHead>
+                  <TableHead className="w-[100px] px-4 text-right text-xs uppercase tracking-wide">% Comp</TableHead>
+                </>
+              ) : (
+                <>
+                  <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">
+                    <Hint className="justify-end" label="Left" hint="Left to spend — budget minus what you've spent so far." />
+                  </TableHead>
+                  <TableHead className="w-[90px] px-4 text-right text-xs uppercase tracking-wide">% spent</TableHead>
+                </>
+              )}
               <TableHead className="w-[56px] px-2" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredUnifiedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={costCodesEnabled ? 12 : 11} className="h-56 text-center hover:bg-transparent">
-                  <UnifiedBudgetEmptyState editable={editable} onCreate={openCreateBucket} costCodesEnabled={costCodesEnabled} />
+                <TableCell colSpan={tableColCount} className="h-56 text-center hover:bg-transparent">
+                  <UnifiedBudgetEmptyState
+                    editable={editable}
+                    onCreate={openCreateBucket}
+                    filtered={onlyAttention || budgetLineSearch.trim().length > 0}
+                  />
                 </TableCell>
               </TableRow>
             ) : (
               filteredUnifiedRows.map((row) => {
-                const toneClass =
-                  row.status === "over"
-                    ? "text-destructive"
-                    : row.status === "warning"
-                      ? "text-amber-600 dark:text-amber-400"
-                      : ""
-                const rowRemainingToBuy = Math.max(0, row.budgetCents - row.committedCents)
-                const rowActualPct =
-                  row.budgetCents > 0
-                    ? Math.min(100, (row.actualCents / row.budgetCents) * 100)
-                    : 0
-                const rowCommittedPct =
-                  row.budgetCents > 0
-                    ? Math.min(100, (row.committedCents / row.budgetCents) * 100)
-                    : 0
+                const leftToSpend = row.adjustedBudgetCents - row.actualCents
+                const inlineEditable = editable && row.lines.length === 1 && row.coAdjustmentCents === 0
                 return (
                   <TableRow
                     key={row.key}
@@ -1009,14 +1303,22 @@ export function BudgetTab({
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
-                      <span className="text-sm">{formatCurrency(row.budgetCents)}</span>
-                    </TableCell>
-                    <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
-                      <span className="text-sm">{formatCurrency(row.coAdjustmentCents)}</span>
-                    </TableCell>
+                    {isDetailed && (
+                      <>
+                        <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
+                          <span className="text-sm">{formatCurrency(row.budgetCents)}</span>
+                        </TableCell>
+                        <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
+                          <span className="text-sm">{formatCurrency(row.coAdjustmentCents)}</span>
+                        </TableCell>
+                      </>
+                    )}
                     <TableCell className="px-4 text-right tabular-nums">
-                      <span className="text-sm font-medium">{formatCurrency(row.adjustedBudgetCents)}</span>
+                      <InlineBudgetAmount
+                        cents={row.adjustedBudgetCents}
+                        editable={inlineEditable}
+                        onCommit={(amount) => updateLineAmount(row.lines[0].id, amount)}
+                      />
                     </TableCell>
                     <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                       <span className="text-sm">{formatCurrency(row.committedCents)}</span>
@@ -1024,22 +1326,48 @@ export function BudgetTab({
                     <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                       <span className="text-sm">{formatCurrency(row.actualCents)}</span>
                     </TableCell>
-                    <TableCell className="px-4 text-right tabular-nums">
-                      <span className="text-sm text-muted-foreground">{formatCurrency(row.costToCompleteCents)}</span>
-                    </TableCell>
-                    <TableCell className="px-4 text-right tabular-nums">
-                      <span className="text-sm font-medium">{formatCurrency(row.eacCents)}</span>
-                    </TableCell>
-                    <TableCell className="px-4 text-right tabular-nums">
-                      <span className={cn("text-sm", row.varianceAtCompletionCents < 0 ? "text-destructive" : "text-muted-foreground")}>
-                        {formatCurrency(row.varianceAtCompletionCents)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="px-4 text-right tabular-nums">
-                      <span className="text-sm text-muted-foreground">
-                        {row.percentComplete != null ? `${row.percentComplete}%` : "—"}
-                      </span>
-                    </TableCell>
+                    {isDetailed ? (
+                      <>
+                        <TableCell className="px-4 text-right tabular-nums">
+                          <span className="text-sm text-muted-foreground">{formatCurrency(row.costToCompleteCents)}</span>
+                        </TableCell>
+                        <TableCell className="px-4 text-right tabular-nums">
+                          <span className="text-sm font-medium">{formatCurrency(row.eacCents)}</span>
+                        </TableCell>
+                        <TableCell className="px-4 text-right tabular-nums">
+                          <span className={cn("text-sm", row.varianceAtCompletionCents < 0 ? "text-destructive" : "text-muted-foreground")}>
+                            {formatCurrency(row.varianceAtCompletionCents)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-4 text-right tabular-nums">
+                          <span className="text-sm text-muted-foreground">
+                            {row.percentComplete != null ? `${row.percentComplete}%` : "—"}
+                          </span>
+                        </TableCell>
+                      </>
+                    ) : (
+                      <>
+                        <TableCell className="px-4 text-right tabular-nums">
+                          <span className={cn("text-sm font-medium", leftToSpend < 0 ? "text-destructive" : "")}>
+                            {formatCurrency(leftToSpend)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-4 text-right tabular-nums">
+                          <span
+                            className={cn(
+                              "text-sm",
+                              row.status === "over"
+                                ? "text-destructive"
+                                : row.status === "warning"
+                                  ? "text-amber-600 dark:text-amber-400"
+                                  : "text-muted-foreground",
+                            )}
+                          >
+                            {row.variancePercent}%
+                          </span>
+                        </TableCell>
+                      </>
+                    )}
                     <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -1065,6 +1393,65 @@ export function BudgetTab({
                   </TableRow>
                 )
               })
+            )}
+            {filteredUnifiedRows.length > 0 && (
+              <TableRow className="border-t-2 bg-muted/20 font-medium hover:bg-muted/20">
+                <TableCell
+                  colSpan={(costCodesEnabled ? 1 : 0) + 1}
+                  className="px-4 text-xs uppercase tracking-wide text-muted-foreground"
+                >
+                  Total · {filteredUnifiedRows.length} {filteredUnifiedRows.length === 1 ? "line" : "lines"}
+                </TableCell>
+                {isDetailed && (
+                  <>
+                    <TableCell className="hidden px-4 text-right text-sm tabular-nums xl:table-cell">
+                      {formatCurrency(columnTotals.budgetCents)}
+                    </TableCell>
+                    <TableCell className="hidden px-4 text-right text-sm tabular-nums xl:table-cell">
+                      {formatCurrency(columnTotals.coAdjustmentCents)}
+                    </TableCell>
+                  </>
+                )}
+                <TableCell className="px-4 text-right text-sm tabular-nums">
+                  {formatCurrency(columnTotals.adjustedBudgetCents)}
+                </TableCell>
+                <TableCell className="px-4 text-right text-sm tabular-nums">
+                  {formatCurrency(columnTotals.committedCents)}
+                </TableCell>
+                <TableCell className="px-4 text-right text-sm tabular-nums">
+                  {formatCurrency(columnTotals.actualCents)}
+                </TableCell>
+                {isDetailed ? (
+                  <>
+                    <TableCell className="px-4 text-right text-sm tabular-nums">
+                      {formatCurrency(columnTotals.costToCompleteCents)}
+                    </TableCell>
+                    <TableCell className="px-4 text-right text-sm tabular-nums">
+                      {formatCurrency(columnTotals.eacCents)}
+                    </TableCell>
+                    <TableCell className="px-4 text-right text-sm tabular-nums">
+                      <span className={cn(columnTotals.varianceAtCompletionCents < 0 ? "text-destructive" : "")}>
+                        {formatCurrency(columnTotals.varianceAtCompletionCents)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="px-4" />
+                  </>
+                ) : (
+                  <>
+                    <TableCell className="px-4 text-right text-sm tabular-nums">
+                      <span className={cn(columnTotals.leftToSpendCents < 0 ? "text-destructive" : "")}>
+                        {formatCurrency(columnTotals.leftToSpendCents)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="px-4 text-right text-sm tabular-nums text-muted-foreground">
+                      {columnTotals.adjustedBudgetCents > 0
+                        ? `${Math.round((columnTotals.actualCents / columnTotals.adjustedBudgetCents) * 100)}%`
+                        : "—"}
+                    </TableCell>
+                  </>
+                )}
+                <TableCell className="px-2" />
+              </TableRow>
             )}
           </TableBody>
         </Table>
@@ -1101,6 +1488,7 @@ export function BudgetTab({
         onEditCommitment={(commitment) => setEditCommitment(commitment)}
         onCommitmentLines={(commitment) => setLinesCommitment(commitment)}
         onCommitmentFiles={(commitment) => setFilesCommitment(commitment)}
+        onCommitmentSignature={(commitment) => setSignatureCommitment(commitment)}
       />
       <CommitmentCreateDialog
         open={createOpen}
@@ -1123,11 +1511,51 @@ export function BudgetTab({
         commitment={linesCommitment}
         onClose={() => setLinesCommitment(null)}
         costCodesEnabled={costCodesEnabled}
+        defaultBudgetLineId={!costCodesEnabled && activeBucket?.key !== "uncoded" ? activeBucket?.key ?? null : null}
       />
       <CommitmentFilesDialog
         commitment={filesCommitment}
         projectId={projectId}
         onClose={() => setFilesCommitment(null)}
+      />
+      <EnvelopeWizard
+        open={signatureCommitment !== null}
+        onOpenChange={(open) => {
+          if (!open) setSignatureCommitment(null)
+        }}
+        sourceEntity={
+          signatureCommitment
+            ? ({
+                type: "subcontract",
+                id: signatureCommitment.id,
+                project_id: signatureCommitment.project_id,
+                title: signatureCommitment.title,
+                document_type: "contract",
+              } satisfies EnvelopeWizardSourceEntity)
+            : null
+        }
+        sourceLabel="Commitment"
+        sheetTitle="Send commitment for signature"
+        sheetDescription="Upload the subcontract or PO and send it to the vendor/sub for execution."
+        onEnvelopeSent={() => {
+          setSignatureCommitment(null)
+          router.refresh()
+        }}
+      />
+      <EstimateImportDialog
+        open={estimateImportOpen}
+        onOpenChange={setEstimateImportOpen}
+        projectId={projectId}
+        hasExistingBudget={lines.length > 0}
+        costCodesEnabled={costCodesEnabled}
+      />
+      <CsvImportDialog
+        open={csvImportOpen}
+        onOpenChange={setCsvImportOpen}
+        projectId={projectId}
+        hasExistingBudget={lines.length > 0}
+        costCodesEnabled={costCodesEnabled}
+        costCodes={costCodeOptions}
       />
     </div>
   )
@@ -1153,34 +1581,612 @@ function FinancialLoadWarning({ errors }: { errors: string[] }) {
 function UnifiedBudgetEmptyState({
   editable,
   onCreate,
-  costCodesEnabled = true,
+  filtered = false,
 }: {
   editable: boolean
   onCreate: () => void
-  costCodesEnabled?: boolean
+  filtered?: boolean
 }) {
+  // When the empty state is the result of a search/filter, keep it minimal.
+  if (filtered) {
+    return (
+      <div className="flex flex-col items-center gap-2">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+          <ListOrdered className="h-6 w-6" />
+        </div>
+        <p className="font-medium">No matching budget lines</p>
+        <p className="text-sm text-muted-foreground">Try clearing the search or the “need attention” filter.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col items-center gap-4 py-2">
       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
         <ListOrdered className="h-6 w-6" />
       </div>
-      <div className="max-w-[420px] text-center">
-        <p className="font-medium">
-          {costCodesEnabled ? "No cost buckets found" : "No budget lines yet"}
-        </p>
+      <div className="max-w-[460px] text-center">
+        <p className="font-medium">Build your project budget</p>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          {costCodesEnabled
-            ? "Add cost-code buckets for labor, materials, subs, and allowances."
-            : "Add a budget line for each part of the job — e.g. framing, plumbing, allowances — with an amount you expect to spend."}
+          Start a line for each part of the job — framing, plumbing, allowances — with the amount you
+          expect to spend. Then buy it out with subcontracts &amp; POs and track spend as bills come in.
         </p>
       </div>
+      {/* Three-step primer mirrors the workflow helper above the table. */}
+      <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground">
+        <span className="rounded-full bg-muted px-2.5 py-1">1 · Set budget</span>
+        <span className="rounded-full bg-muted px-2.5 py-1">2 · Buy it out</span>
+        <span className="rounded-full bg-muted px-2.5 py-1">3 · Track spend</span>
+      </div>
       {editable && (
-        <Button size="sm" onClick={onCreate}>
-          <Plus className="h-4 w-4" />
-          {costCodesEnabled ? "Add cost bucket" : "Add budget line"}
-        </Button>
+        <div className="flex flex-col items-center gap-2">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button size="sm" onClick={onCreate}>
+              <Plus className="h-4 w-4" />
+              Add line
+            </Button>
+            <Button size="sm" variant="outline" disabled>
+              <Sparkles className="h-4 w-4" />
+              Start from estimate
+            </Button>
+          </div>
+          <span className="text-[11px] text-muted-foreground">“Start from estimate” — coming soon</span>
+        </div>
       )}
     </div>
+  )
+}
+
+type EstimateSourceOption = {
+  id: string
+  label: string
+  status: string
+  total_cents: number
+  line_count: number
+}
+
+type ReviewLine = {
+  cost_code_id: string | null
+  cost_code_label: string | null
+  description: string
+  amountDollars: string
+  include: boolean
+}
+
+/**
+ * "Start from estimate" — picks a project estimate, proposes budget lines from
+ * its cost basis (AI tidies the scope notes), and lets the user review/edit
+ * before saving. AI proposes; the human approves.
+ */
+function EstimateImportDialog({
+  open,
+  onOpenChange,
+  projectId,
+  hasExistingBudget,
+  costCodesEnabled,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  projectId: string
+  hasExistingBudget: boolean
+  costCodesEnabled: boolean
+}) {
+  const { toast } = useToast()
+  const router = useRouter()
+  const [isApplying, startApply] = useTransition()
+
+  const [loadingSources, setLoadingSources] = useState(false)
+  const [sources, setSources] = useState<EstimateSourceOption[]>([])
+  const [selectedId, setSelectedId] = useState<string>("")
+  const [generating, setGenerating] = useState(false)
+  const [usedAi, setUsedAi] = useState(false)
+  const [reviewLines, setReviewLines] = useState<ReviewLine[] | null>(null)
+
+  // Load the project's estimates whenever the dialog opens.
+  useEffect(() => {
+    if (!open) {
+      setSources([])
+      setSelectedId("")
+      setReviewLines(null)
+      setUsedAi(false)
+      return
+    }
+    let cancelled = false
+    setLoadingSources(true)
+    listBudgetEstimateSourcesAction(projectId)
+      .then((rows) => {
+        if (cancelled) return
+        setSources(rows)
+        if (rows.length === 1) setSelectedId(rows[0].id)
+      })
+      .catch((error) => {
+        if (!cancelled) toast({ title: "Couldn't load estimates", description: (error as Error).message })
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSources(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, projectId, toast])
+
+  const generate = (estimateId: string) => {
+    if (!estimateId) return
+    setGenerating(true)
+    setReviewLines(null)
+    proposeBudgetFromEstimateAction(projectId, estimateId, costCodesEnabled)
+      .then((draft) => {
+        setUsedAi(draft.used_ai)
+        setReviewLines(
+          draft.lines.map((line) => ({
+            cost_code_id: line.cost_code_id,
+            cost_code_label: line.cost_code_label,
+            description: line.description,
+            amountDollars: (line.amount_cents / 100).toFixed(2),
+            include: true,
+          })),
+        )
+      })
+      .catch((error) => {
+        toast({ title: "Couldn't build the budget", description: (error as Error).message })
+      })
+      .finally(() => setGenerating(false))
+  }
+
+  const includedLines = (reviewLines ?? []).filter((line) => line.include)
+  const totalCents = includedLines.reduce(
+    (sum, line) => sum + (dollarsToCents(line.amountDollars) ?? 0),
+    0,
+  )
+
+  const apply = () => {
+    const payloadLines = includedLines
+      .map((line) => ({
+        cost_code_id: costCodesEnabled ? line.cost_code_id : null,
+        description: line.description.trim() || "Budget line",
+        amount_cents: dollarsToCents(line.amountDollars) ?? 0,
+      }))
+      .filter((line) => line.amount_cents >= 0)
+
+    if (payloadLines.length === 0) {
+      toast({ title: "Select at least one line" })
+      return
+    }
+
+    startApply(async () => {
+      try {
+        await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines })
+        toast({ title: "Budget created from estimate" })
+        onOpenChange(false)
+        router.refresh()
+      } catch (error) {
+        toast({ title: "Couldn't save the budget", description: (error as Error).message })
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>Start budget from estimate</DialogTitle>
+          <DialogDescription>
+            We&apos;ll turn an accepted estimate into budget lines using its cost basis (excluding
+            markup). Review and adjust before saving.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 space-y-4 overflow-y-auto">
+          {loadingSources ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">Loading estimates…</p>
+          ) : sources.length === 0 ? (
+            <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+              No estimates with cost lines were found for this project.
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="flex-1 space-y-1.5">
+                  <Label>Estimate</Label>
+                  <Select value={selectedId} onValueChange={setSelectedId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select an estimate" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sources.map((source) => (
+                        <SelectItem key={source.id} value={source.id}>
+                          {source.label} · {source.line_count} {source.line_count === 1 ? "line" : "lines"} ·{" "}
+                          {formatCurrency(source.total_cents, { compact: true })}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button onClick={() => generate(selectedId)} disabled={!selectedId || generating}>
+                  <Sparkles className="h-4 w-4" />
+                  {generating ? "Building…" : reviewLines ? "Rebuild" : "Build budget"}
+                </Button>
+              </div>
+
+              {hasExistingBudget && (
+                <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  This project already has a budget. Saving will replace its current lines.
+                </div>
+              )}
+
+              {reviewLines && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {includedLines.length} of {reviewLines.length} lines selected
+                      {usedAi ? " · scope notes tidied by AI" : ""}
+                    </p>
+                    <p className="text-sm font-semibold tabular-nums">{formatCurrency(totalCents)}</p>
+                  </div>
+                  <div className="overflow-hidden rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40">
+                          <TableHead className="w-10 px-3" />
+                          {costCodesEnabled && <TableHead className="px-3">Code</TableHead>}
+                          <TableHead className="px-3">Scope</TableHead>
+                          <TableHead className="w-[130px] px-3 text-right">Amount</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {reviewLines.map((line, index) => (
+                          <TableRow key={index} className={cn(!line.include && "opacity-50")}>
+                            <TableCell className="px-3">
+                              <input
+                                type="checkbox"
+                                checked={line.include}
+                                onChange={(event) =>
+                                  setReviewLines((prev) =>
+                                    (prev ?? []).map((item, i) =>
+                                      i === index ? { ...item, include: event.target.checked } : item,
+                                    ),
+                                  )
+                                }
+                                className="h-4 w-4 rounded border-input"
+                              />
+                            </TableCell>
+                            {costCodesEnabled && (
+                              <TableCell className="px-3 font-mono text-xs text-muted-foreground">
+                                {line.cost_code_label ?? "Uncoded"}
+                              </TableCell>
+                            )}
+                            <TableCell className="px-3">
+                              <Input
+                                value={line.description}
+                                onChange={(event) =>
+                                  setReviewLines((prev) =>
+                                    (prev ?? []).map((item, i) =>
+                                      i === index ? { ...item, description: event.target.value } : item,
+                                    ),
+                                  )
+                                }
+                                className="h-8"
+                              />
+                            </TableCell>
+                            <TableCell className="px-3 text-right">
+                              <Input
+                                value={line.amountDollars}
+                                inputMode="decimal"
+                                onChange={(event) =>
+                                  setReviewLines((prev) =>
+                                    (prev ?? []).map((item, i) =>
+                                      i === index ? { ...item, amountDollars: event.target.value } : item,
+                                    ),
+                                  )
+                                }
+                                className="h-8 text-right tabular-nums"
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t pt-3">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={apply} disabled={!reviewLines || includedLines.length === 0 || isApplying}>
+            {isApplying ? "Saving…" : `Create budget (${includedLines.length})`}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Parses a CSV string into rows of fields (handles quoted fields and commas). */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let field = ""
+  let row: string[] = []
+  let inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          field += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        field += char
+      }
+    } else if (char === '"') {
+      inQuotes = true
+    } else if (char === ",") {
+      row.push(field)
+      field = ""
+    } else if (char === "\n" || char === "\r") {
+      if (char === "\r" && text[i + 1] === "\n") i++
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ""
+    } else {
+      field += char
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field)
+    rows.push(row)
+  }
+  return rows.filter((r) => r.some((cell) => cell.trim().length > 0))
+}
+
+/** Imports budget lines from a CSV with code/description/amount columns. */
+function CsvImportDialog({
+  open,
+  onOpenChange,
+  projectId,
+  hasExistingBudget,
+  costCodesEnabled,
+  costCodes,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  projectId: string
+  hasExistingBudget: boolean
+  costCodesEnabled: boolean
+  costCodes: CostCode[]
+}) {
+  const { toast } = useToast()
+  const router = useRouter()
+  const [isApplying, startApply] = useTransition()
+  const [reviewLines, setReviewLines] = useState<ReviewLine[] | null>(null)
+  const [parseError, setParseError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      setReviewLines(null)
+      setParseError(null)
+    }
+  }, [open])
+
+  const codeIdByCode = useMemo(() => {
+    const map = new Map<string, { id: string; label: string }>()
+    for (const code of costCodes) {
+      if (code.code) {
+        const label = [code.code, code.name].filter(Boolean).join(" — ")
+        map.set(code.code.trim().toLowerCase(), { id: code.id, label })
+      }
+    }
+    return map
+  }, [costCodes])
+
+  const handleFile = async (file: File) => {
+    setParseError(null)
+    try {
+      const text = await file.text()
+      const rows = parseCsv(text)
+      if (rows.length === 0) {
+        setParseError("That file looks empty.")
+        return
+      }
+      // Locate columns from the header row.
+      const header = rows[0].map((cell) => cell.trim().toLowerCase())
+      const findCol = (names: string[]) => header.findIndex((cell) => names.includes(cell))
+      const codeCol = findCol(["code", "cost code", "cost_code"])
+      const descCol = findCol(["description", "scope", "name", "budget line", "line"])
+      const amountCol = findCol(["amount", "budget", "total", "cost", "revised"])
+      if (descCol === -1 || amountCol === -1) {
+        setParseError("Couldn't find a description and amount column. Use headers like: code, description, amount.")
+        return
+      }
+      const parsed: ReviewLine[] = rows.slice(1).flatMap((cells) => {
+        const description = (cells[descCol] ?? "").trim()
+        const rawAmount = (cells[amountCol] ?? "").replace(/[$,]/g, "").trim()
+        if (!description && !rawAmount) return []
+        const codeText = codeCol >= 0 ? (cells[codeCol] ?? "").trim() : ""
+        const matched = codeText ? codeIdByCode.get(codeText.toLowerCase()) : undefined
+        const cents = dollarsToCents(rawAmount)
+        return [
+          {
+            cost_code_id: costCodesEnabled ? matched?.id ?? null : null,
+            cost_code_label: costCodesEnabled ? matched?.label ?? (codeText || null) : null,
+            description: description || "Budget line",
+            amountDollars: cents != null ? (cents / 100).toFixed(2) : "0.00",
+            include: true,
+          },
+        ]
+      })
+      if (parsed.length === 0) {
+        setParseError("No data rows found under the header.")
+        return
+      }
+      setReviewLines(parsed)
+    } catch (error) {
+      setParseError((error as Error).message)
+    }
+  }
+
+  const includedLines = (reviewLines ?? []).filter((line) => line.include)
+  const totalCents = includedLines.reduce(
+    (sum, line) => sum + (dollarsToCents(line.amountDollars) ?? 0),
+    0,
+  )
+
+  const apply = () => {
+    const payloadLines = includedLines.map((line) => ({
+      cost_code_id: costCodesEnabled ? line.cost_code_id : null,
+      description: line.description.trim() || "Budget line",
+      amount_cents: dollarsToCents(line.amountDollars) ?? 0,
+    }))
+    if (payloadLines.length === 0) {
+      toast({ title: "Select at least one line" })
+      return
+    }
+    startApply(async () => {
+      try {
+        await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines })
+        toast({ title: "Budget imported" })
+        onOpenChange(false)
+        router.refresh()
+      } catch (error) {
+        toast({ title: "Couldn't import the budget", description: (error as Error).message })
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>Import budget from CSV</DialogTitle>
+          <DialogDescription>
+            Upload a CSV with <span className="font-medium">description</span> and{" "}
+            <span className="font-medium">amount</span> columns (and an optional{" "}
+            <span className="font-medium">code</span> column). Review before saving.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 space-y-4 overflow-y-auto">
+          <div className="flex items-center gap-3">
+            <Input
+              type="file"
+              accept=".csv,text/csv"
+              className="cursor-pointer"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) handleFile(file)
+              }}
+            />
+          </div>
+
+          {parseError && (
+            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {parseError}
+            </div>
+          )}
+
+          {hasExistingBudget && reviewLines && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              This project already has a budget. Saving will replace its current lines.
+            </div>
+          )}
+
+          {reviewLines && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  {includedLines.length} of {reviewLines.length} lines selected
+                </p>
+                <p className="text-sm font-semibold tabular-nums">{formatCurrency(totalCents)}</p>
+              </div>
+              <div className="overflow-hidden rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="w-10 px-3" />
+                      {costCodesEnabled && <TableHead className="px-3">Code</TableHead>}
+                      <TableHead className="px-3">Description</TableHead>
+                      <TableHead className="w-[130px] px-3 text-right">Amount</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {reviewLines.map((line, index) => (
+                      <TableRow key={index} className={cn(!line.include && "opacity-50")}>
+                        <TableCell className="px-3">
+                          <input
+                            type="checkbox"
+                            checked={line.include}
+                            onChange={(event) =>
+                              setReviewLines((prev) =>
+                                (prev ?? []).map((item, i) =>
+                                  i === index ? { ...item, include: event.target.checked } : item,
+                                ),
+                              )
+                            }
+                            className="h-4 w-4 rounded border-input"
+                          />
+                        </TableCell>
+                        {costCodesEnabled && (
+                          <TableCell className="px-3 font-mono text-xs text-muted-foreground">
+                            {line.cost_code_label ?? "Uncoded"}
+                          </TableCell>
+                        )}
+                        <TableCell className="px-3">
+                          <Input
+                            value={line.description}
+                            onChange={(event) =>
+                              setReviewLines((prev) =>
+                                (prev ?? []).map((item, i) =>
+                                  i === index ? { ...item, description: event.target.value } : item,
+                                ),
+                              )
+                            }
+                            className="h-8"
+                          />
+                        </TableCell>
+                        <TableCell className="px-3 text-right">
+                          <Input
+                            value={line.amountDollars}
+                            inputMode="decimal"
+                            onChange={(event) =>
+                              setReviewLines((prev) =>
+                                (prev ?? []).map((item, i) =>
+                                  i === index ? { ...item, amountDollars: event.target.value } : item,
+                                ),
+                              )
+                            }
+                            className="h-8 text-right tabular-nums"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t pt-3">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={apply} disabled={!reviewLines || includedLines.length === 0 || isApplying}>
+            {isApplying ? "Saving…" : `Import ${includedLines.length} lines`}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1196,6 +2202,7 @@ function BudgetBucketSheet({
   onEditCommitment,
   onCommitmentLines,
   onCommitmentFiles,
+  onCommitmentSignature,
 }: {
   projectId: string
   bucket: {
@@ -1224,6 +2231,7 @@ function BudgetBucketSheet({
   onEditCommitment: (commitment: CommitmentSummary) => void
   onCommitmentLines: (commitment: CommitmentSummary) => void
   onCommitmentFiles: (commitment: CommitmentSummary) => void
+  onCommitmentSignature: (commitment: CommitmentSummary) => void
 }) {
   const remainingToBuyCents = Math.max(
     0,
@@ -1405,6 +2413,9 @@ function BudgetBucketSheet({
                                   </DropdownMenuItem>
                                   <DropdownMenuItem onClick={() => onCommitmentFiles(c)}>
                                     Files
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => onCommitmentSignature(c)}>
+                                    Send for signature
                                   </DropdownMenuItem>
                                   <DropdownMenuItem onClick={() => onEditCommitment(c)}>
                                     Edit commitment
@@ -1640,6 +2651,9 @@ function CommitmentCreateDialog({
   const [scope, setScope] = useState("")
   const [amountDollars, setAmountDollars] = useState("")
   const [status, setStatus] = useState("draft")
+  const [contractNumber, setContractNumber] = useState("")
+  const [retainagePercent, setRetainagePercent] = useState("")
+  const [terms, setTerms] = useState("")
 
   useEffect(() => {
     if (open) {
@@ -1649,6 +2663,9 @@ function CommitmentCreateDialog({
       setScope(draft?.defaultScope ?? "")
       setAmountDollars(draft?.defaultAmountDollars ?? "")
       setStatus("draft")
+      setContractNumber("")
+      setRetainagePercent("")
+      setTerms("")
     }
   }, [open, companies, costCodes, costCodesEnabled, draft])
 
@@ -1674,6 +2691,11 @@ function CommitmentCreateDialog({
       toast({ title: "Scope required" })
       return
     }
+    const retainage = retainagePercent.trim() ? Number(retainagePercent) : null
+    if (retainage != null && (!Number.isFinite(retainage) || retainage < 0 || retainage > 100)) {
+      toast({ title: "Invalid retainage" })
+      return
+    }
 
     startTransition(async () => {
       try {
@@ -1683,6 +2705,10 @@ function CommitmentCreateDialog({
           title: title.trim(),
           total_cents: Math.round(n * 100),
           status,
+          contract_number: contractNumber.trim() || null,
+          retainage_percent: retainage,
+          scope: scope.trim(),
+          terms: terms.trim() || null,
         })
         await createCommitmentLineAction(commitment.id, {
           cost_code_id: costCodesEnabled ? costCodeId : null,
@@ -1756,12 +2782,41 @@ function CommitmentCreateDialog({
               placeholder="e.g., Plumbing subcontract"
             />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Commitment #</Label>
+              <Input
+                value={contractNumber}
+                onChange={(e) => setContractNumber(e.target.value)}
+                placeholder="e.g., SUB-004"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Retainage (%)</Label>
+              <Input
+                value={retainagePercent}
+                onChange={(e) => setRetainagePercent(e.target.value)}
+                inputMode="decimal"
+                placeholder="10"
+              />
+            </div>
+          </div>
           <div className="space-y-1.5">
             <Label>Allocated scope</Label>
-            <Input
+            <Textarea
               value={scope}
               onChange={(e) => setScope(e.target.value)}
               placeholder="e.g., Rough plumbing labor and trim"
+              rows={3}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Terms</Label>
+            <Textarea
+              value={terms}
+              onChange={(e) => setTerms(e.target.value)}
+              placeholder="Billing terms, insurance, lien waivers, schedule"
+              rows={3}
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -1819,12 +2874,20 @@ function CommitmentEditDialog({
   const [title, setTitle] = useState("")
   const [totalDollars, setTotalDollars] = useState("")
   const [status, setStatus] = useState("draft")
+  const [contractNumber, setContractNumber] = useState("")
+  const [retainagePercent, setRetainagePercent] = useState("")
+  const [scope, setScope] = useState("")
+  const [terms, setTerms] = useState("")
 
   useEffect(() => {
     if (commitment) {
       setTitle(commitment.title ?? "")
       setTotalDollars(((commitment.total_cents ?? 0) / 100).toFixed(2))
       setStatus(String(commitment.status ?? "draft"))
+      setContractNumber(commitment.contract_number ?? "")
+      setRetainagePercent(commitment.retainage_percent != null ? String(commitment.retainage_percent) : "")
+      setScope(commitment.scope ?? "")
+      setTerms(commitment.terms ?? "")
     }
   }, [commitment])
 
@@ -1839,6 +2902,11 @@ function CommitmentEditDialog({
       toast({ title: "Invalid total" })
       return
     }
+    const retainage = retainagePercent.trim() ? Number(retainagePercent) : null
+    if (retainage != null && (!Number.isFinite(retainage) || retainage < 0 || retainage > 100)) {
+      toast({ title: "Invalid retainage" })
+      return
+    }
 
     startTransition(async () => {
       try {
@@ -1846,6 +2914,10 @@ function CommitmentEditDialog({
           title: title.trim(),
           status,
           total_cents: Math.round(n * 100),
+          contract_number: contractNumber.trim() || null,
+          retainage_percent: retainage,
+          scope: scope.trim() || null,
+          terms: terms.trim() || null,
         })
         toast({ title: "Commitment updated" })
         onClose()
@@ -1864,12 +2936,26 @@ function CommitmentEditDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit commitment</DialogTitle>
-          <DialogDescription>Update title, total, and status.</DialogDescription>
+          <DialogDescription>Update amount, status, scope, and commercial terms.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
             <Label>Title</Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Commitment #</Label>
+              <Input value={contractNumber} onChange={(e) => setContractNumber(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Retainage (%)</Label>
+              <Input
+                value={retainagePercent}
+                onChange={(e) => setRetainagePercent(e.target.value)}
+                inputMode="decimal"
+              />
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -1898,6 +2984,14 @@ function CommitmentEditDialog({
               </Select>
             </div>
           </div>
+          <div className="space-y-1.5">
+            <Label>Scope</Label>
+            <Textarea value={scope} onChange={(e) => setScope(e.target.value)} rows={3} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Terms</Label>
+            <Textarea value={terms} onChange={(e) => setTerms(e.target.value)} rows={3} />
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={onClose}>
               Cancel
@@ -1916,10 +3010,12 @@ function CommitmentLinesDialog({
   commitment,
   onClose,
   costCodesEnabled,
+  defaultBudgetLineId,
 }: {
   commitment: CommitmentSummary | null
   onClose: () => void
   costCodesEnabled: boolean
+  defaultBudgetLineId?: string | null
 }) {
   const { toast } = useToast()
   const [lines, setLines] = useState<CommitmentLine[]>([])
@@ -2062,6 +3158,7 @@ function CommitmentLinesDialog({
           line={editingLine}
           costCodes={codes}
           costCodesEnabled={costCodesEnabled}
+          defaultBudgetLineId={defaultBudgetLineId}
           onSaved={async () => {
             setCreating(false)
             setEditingLine(null)
@@ -2080,6 +3177,7 @@ function CommitmentLineDialog({
   line,
   costCodes,
   costCodesEnabled,
+  defaultBudgetLineId,
   onSaved,
 }: {
   open: boolean
@@ -2088,6 +3186,7 @@ function CommitmentLineDialog({
   line: CommitmentLine | null
   costCodes: CostCode[]
   costCodesEnabled: boolean
+  defaultBudgetLineId?: string | null
   onSaved: () => void
 }) {
   const { toast } = useToast()
@@ -2140,6 +3239,7 @@ function CommitmentLineDialog({
       try {
         const payload = {
           cost_code_id: costCodesEnabled ? costCodeId : null,
+          budget_line_id: costCodesEnabled ? null : line?.budget_line_id ?? defaultBudgetLineId ?? null,
           description: description.trim(),
           quantity: qty,
           unit: unit.trim(),

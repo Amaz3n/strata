@@ -13,8 +13,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { useToast } from "@/hooks/use-toast"
 import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import type { CostCode } from "@/lib/types"
@@ -198,6 +200,10 @@ type CommitmentFormState = {
   title: string
   total_dollars: string
   status: string
+  contract_number: string
+  retainage_percent: string
+  scope: string
+  terms: string
 }
 
 export function ProjectCommitmentsClient({
@@ -217,6 +223,7 @@ export function ProjectCommitmentsClient({
   const [attachmentsOpen, setAttachmentsOpen] = useState(false)
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [signatureCommitment, setSignatureCommitment] = useState<CommitmentSummary | null>(null)
 
   const [selectedCommitment, setSelectedCommitment] = useState<CommitmentSummary | null>(null)
   const [commitmentLines, setCommitmentLines] = useState<CommitmentLine[]>([])
@@ -235,6 +242,10 @@ export function ProjectCommitmentsClient({
     title: "",
     total_dollars: "",
     status: "approved",
+    contract_number: "",
+    retainage_percent: "",
+    scope: "",
+    terms: "",
   }))
 
   useEffect(() => {
@@ -248,6 +259,10 @@ export function ProjectCommitmentsClient({
     title: "",
     total_dollars: "",
     status: "draft",
+    contract_number: "",
+    retainage_percent: "",
+    scope: "",
+    terms: "",
   }))
 
   const totals = useMemo(() => {
@@ -290,15 +305,24 @@ export function ProjectCommitmentsClient({
       return
     }
     const totalCents = Math.round(totalDollars * 100)
+    const retainagePercent = createForm.retainage_percent.trim() ? Number(createForm.retainage_percent) : null
+    if (retainagePercent != null && (!Number.isFinite(retainagePercent) || retainagePercent < 0 || retainagePercent > 100)) {
+      toast({ title: "Invalid retainage", description: "Enter a retainage percent from 0 to 100." })
+      return
+    }
 
     startTransition(async () => {
       try {
         await createProjectCommitmentAction(projectId, {
           project_id: projectId,
           company_id: createForm.company_id,
-          title: createForm.title,
+          title: createForm.title.trim(),
           total_cents: totalCents,
           status: createForm.status,
+          contract_number: createForm.contract_number.trim() || null,
+          retainage_percent: retainagePercent,
+          scope: createForm.scope.trim() || null,
+          terms: createForm.terms.trim() || null,
         })
         toast({ title: "Commitment created" })
         setCreateOpen(false)
@@ -315,6 +339,11 @@ export function ProjectCommitmentsClient({
       title: commitment.title ?? "",
       total_dollars: String(((commitment.total_cents ?? 0) / 100).toFixed(2)),
       status: String(commitment.status ?? "draft"),
+      contract_number: commitment.contract_number ?? "",
+      retainage_percent:
+        commitment.retainage_percent != null ? String(commitment.retainage_percent) : "",
+      scope: commitment.scope ?? "",
+      terms: commitment.terms ?? "",
     })
     setEditOpen(true)
   }
@@ -331,13 +360,22 @@ export function ProjectCommitmentsClient({
       return
     }
     const totalCents = Math.round(totalDollars * 100)
+    const retainagePercent = editForm.retainage_percent.trim() ? Number(editForm.retainage_percent) : null
+    if (retainagePercent != null && (!Number.isFinite(retainagePercent) || retainagePercent < 0 || retainagePercent > 100)) {
+      toast({ title: "Invalid retainage", description: "Enter a retainage percent from 0 to 100." })
+      return
+    }
 
     startTransition(async () => {
       try {
         await updateProjectCommitmentAction(projectId, selectedCommitment.id, {
-          title: editForm.title,
+          title: editForm.title.trim(),
           status: editForm.status,
           total_cents: totalCents,
+          contract_number: editForm.contract_number.trim() || null,
+          retainage_percent: retainagePercent,
+          scope: editForm.scope.trim() || null,
+          terms: editForm.terms.trim() || null,
         })
         toast({ title: "Commitment updated" })
         setEditOpen(false)
@@ -458,6 +496,25 @@ export function ProjectCommitmentsClient({
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
+                  <Label>Commitment #</Label>
+                  <Input
+                    value={createForm.contract_number}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, contract_number: e.target.value }))}
+                    placeholder="e.g., SUB-004"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Retainage (%)</Label>
+                  <Input
+                    value={createForm.retainage_percent}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, retainage_percent: e.target.value }))}
+                    inputMode="decimal"
+                    placeholder="10"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
                   <Label>Total ($)</Label>
                   <Input value={createForm.total_dollars} onChange={(e) => setCreateForm((prev) => ({ ...prev, total_dollars: e.target.value }))} inputMode="decimal" placeholder="0.00" />
                 </div>
@@ -475,6 +532,24 @@ export function ProjectCommitmentsClient({
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Scope</Label>
+                <Textarea
+                  value={createForm.scope}
+                  onChange={(e) => setCreateForm((prev) => ({ ...prev, scope: e.target.value }))}
+                  placeholder="Included scope, exclusions, allowances, alternates"
+                  rows={3}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Terms</Label>
+                <Textarea
+                  value={createForm.terms}
+                  onChange={(e) => setCreateForm((prev) => ({ ...prev, terms: e.target.value }))}
+                  placeholder="Billing terms, insurance, lien waivers, schedule, retainage release"
+                  rows={3}
+                />
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setCreateOpen(false)}>
@@ -510,7 +585,13 @@ export function ProjectCommitmentsClient({
               return (
                 <TableRow key={c.id} className="divide-x align-top hover:bg-muted/40">
                   <TableCell className="text-sm px-4 py-3">{c.company_name ?? "—"}</TableCell>
-                  <TableCell className="font-medium px-4 py-3">{c.title}</TableCell>
+                  <TableCell className="px-4 py-3">
+                    <div className="font-medium">{c.title}</div>
+                    <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                      {c.contract_number ? <span>{c.contract_number}</span> : null}
+                      {c.executed_at ? <span>Executed</span> : null}
+                    </div>
+                  </TableCell>
                   <TableCell className="px-4 py-3">{statusBadge(c.status)}</TableCell>
                   <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(total)}</TableCell>
                   <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(billed)}</TableCell>
@@ -526,6 +607,13 @@ export function ProjectCommitmentsClient({
                         }}
                       >
                         Files
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setSignatureCommitment(c)}
+                      >
+                        Sign
                       </Button>
                       <Button
                         size="sm"
@@ -757,12 +845,29 @@ export function ProjectCommitmentsClient({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Edit commitment</DialogTitle>
-            <DialogDescription>Update title, total, and status.</DialogDescription>
+            <DialogDescription>Update amount, status, scope, and commercial terms.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-2">
               <Label>Title</Label>
               <Input value={editForm.title} onChange={(e) => setEditForm((prev) => ({ ...prev, title: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Commitment #</Label>
+                <Input
+                  value={editForm.contract_number}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, contract_number: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Retainage (%)</Label>
+                <Input
+                  value={editForm.retainage_percent}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, retainage_percent: e.target.value }))}
+                  inputMode="decimal"
+                />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
@@ -784,6 +889,22 @@ export function ProjectCommitmentsClient({
                 </Select>
               </div>
             </div>
+            <div className="space-y-2">
+              <Label>Scope</Label>
+              <Textarea
+                value={editForm.scope}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, scope: e.target.value }))}
+                rows={3}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Terms</Label>
+              <Textarea
+                value={editForm.terms}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, terms: e.target.value }))}
+                rows={3}
+              />
+            </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setEditOpen(false)}>
                 Cancel
@@ -795,7 +916,30 @@ export function ProjectCommitmentsClient({
           </div>
         </DialogContent>
       </Dialog>
+      <EnvelopeWizard
+        open={signatureCommitment !== null}
+        onOpenChange={(open) => {
+          if (!open) setSignatureCommitment(null)
+        }}
+        sourceEntity={
+          signatureCommitment
+            ? ({
+                type: "subcontract",
+                id: signatureCommitment.id,
+                project_id: signatureCommitment.project_id,
+                title: signatureCommitment.title,
+                document_type: "contract",
+              } satisfies EnvelopeWizardSourceEntity)
+            : null
+        }
+        sourceLabel="Commitment"
+        sheetTitle="Send commitment for signature"
+        sheetDescription="Upload the subcontract or PO and send it to the vendor/sub for execution."
+        onEnvelopeSent={() => {
+          setSignatureCommitment(null)
+          router.refresh()
+        }}
+      />
     </div>
   )
 }
-

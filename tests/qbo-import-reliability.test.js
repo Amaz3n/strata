@@ -134,14 +134,33 @@ test("outbound vendor bills preserve job costing without creating billable custo
   assert.match(vendorBillSync, /BillableStatus: billableToCustomer \? "Billable" : "NotBillable"/)
 })
 
+test("QBO-imported payables can split by line project while whole-payable reassign stays guarded", () => {
+  const workspaceSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../components/payables/payables-workspace.tsx"),
+    "utf8",
+  )
+
+  const lineProjectSelect = workspaceSource.slice(
+    workspaceSource.indexOf("<Label className=\"mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground\">Project</Label>"),
+    workspaceSource.indexOf("<Label className=\"mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground\">Amount</Label>"),
+  )
+
+  assert.match(lineProjectSelect, /projectId: value/)
+  assert.doesNotMatch(lineProjectSelect, /disabled=\{selectedIsReassignablePayable\}/)
+  assert.match(workspaceSource, /const reassignBlockedBySplit = selectedIsReassignablePayable && isSplitAcrossProjects/)
+  assert.match(workspaceSource, /disabled=\{isPending \|\| reassignBlockedBySplit \|\| !creditProjectId \|\| creditProjectId === selectedBill\.project_id\}/)
+  assert.match(workspaceSource, /project_id: line\.projectId \|\| selectedBill\.project_id/)
+})
+
 test("imported vendor credits can be reassigned without deleting their QBO mapping", () => {
   const source = require("node:fs").readFileSync(
     require("node:path").join(__dirname, "../lib/services/vendor-bills.ts"),
     "utf8",
   )
-  const reassign = source.slice(source.indexOf("export async function reassignImportedVendorCredit"))
+  const reassign = source.slice(source.indexOf("export async function reassignImportedPayable"))
 
-  assert.match(reassign, /metadata\.source !== "vendor_credit"/)
+  assert.match(reassign, /const isVendorCredit = metadata\.source === "vendor_credit"/)
+  assert.match(reassign, /metadata\.imported_from_qbo !== true \|\| !existing\.qbo_id/)
   assert.match(reassign, /voidJobCostEntriesForVendorBill/)
   assert.match(reassign, /from\("bill_lines"\)[\s\S]*project_id: targetProjectId/)
   assert.match(reassign, /from\("vendor_bills"\)[\s\S]*project_id: targetProjectId/)

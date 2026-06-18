@@ -85,6 +85,50 @@ export async function getPaymentsLedgerReport({
     provider_payment_id: row.provider_payment_id ?? null,
   }))
 
+  if (kind === "ar") {
+    let allocationQuery = supabase
+      .from("payment_allocations")
+      .select(
+        "id, org_id, project_id, invoice_id, amount_cents, payment:payments!inner(id, currency, status, received_at, method, reference, provider, provider_payment_id), project:projects(name), invoice:invoices(invoice_number)",
+      )
+      .eq("org_id", resolvedOrgId)
+      .not("invoice_id", "is", null)
+      .neq("payment.status", "failed")
+
+    if (projectId) {
+      allocationQuery = allocationQuery.eq("project_id", projectId)
+    }
+
+    const { data: allocationData, error: allocationError } = await allocationQuery
+    if (allocationError) {
+      throw new Error(`Failed to load payment allocations ledger: ${allocationError.message}`)
+    }
+
+    rows.push(
+      ...(allocationData ?? []).map((row: any) => {
+        const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment
+        return {
+          payment_id: payment?.id ?? row.id,
+          kind,
+          project_id: row.project_id ?? null,
+          project_name: row.project?.name ?? null,
+          invoice_id: row.invoice_id ?? null,
+          invoice_number: row.invoice?.invoice_number ?? null,
+          bill_id: null,
+          bill_number: null,
+          amount_cents: typeof row.amount_cents === "number" ? row.amount_cents : 0,
+          currency: payment?.currency ?? null,
+          status: payment?.status ?? null,
+          received_at: payment?.received_at ?? null,
+          method: payment?.method ?? null,
+          reference: payment?.reference ?? null,
+          provider: payment?.provider ?? null,
+          provider_payment_id: payment?.provider_payment_id ?? null,
+        } satisfies PaymentsLedgerRow
+      }),
+    )
+    rows.sort((a, b) => String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")))
+  }
+
   return { as_of: asOfDate, project_id: projectId, kind, rows }
 }
-

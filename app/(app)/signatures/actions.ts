@@ -108,6 +108,7 @@ function getSourceEntityCompletionEvent(sourceEntityType: UnifiedSignableEntityT
   if (sourceEntityType === "change_order") return completionEventByEntityType.change_order
   if (sourceEntityType === "lien_waiver") return completionEventByEntityType.lien_waiver
   if (sourceEntityType === "selection") return completionEventByEntityType.selection
+  if (sourceEntityType === "subcontract") return completionEventByEntityType.subcontract
   return null
 }
 
@@ -1398,11 +1399,11 @@ type SignaturesHubSummary = {
 
 export type SignatureStartTarget = {
   id: string
-  type: "proposal" | "change_order" | "selection"
+  type: "proposal" | "change_order" | "selection" | "subcontract"
   project_id: string
   project_name: string | null
   title: string
-  document_type: "proposal" | "change_order" | "other"
+  document_type: "proposal" | "change_order" | "contract" | "other"
 }
 
 export type SignatureEnvelopeProject = {
@@ -1463,16 +1464,28 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
     .order("updated_at", { ascending: false })
     .limit(200)
 
+  let commitmentQuery = supabase
+    .from("commitments")
+    .select("id, project_id, company_id, title, status, executed_at")
+    .eq("org_id", orgId)
+    .not("project_id", "is", null)
+    .is("executed_at", null)
+    .in("status", ["draft", "approved"])
+    .order("updated_at", { ascending: false })
+    .limit(200)
+
   if (input?.projectId) {
     proposalQuery = proposalQuery.eq("project_id", input.projectId)
     changeOrderQuery = changeOrderQuery.eq("project_id", input.projectId)
     selectionQuery = selectionQuery.eq("project_id", input.projectId)
+    commitmentQuery = commitmentQuery.eq("project_id", input.projectId)
   }
 
-  const [proposalsResult, changeOrdersResult, selectionsResult] = await Promise.all([
+  const [proposalsResult, changeOrdersResult, selectionsResult, commitmentsResult] = await Promise.all([
     proposalQuery,
     changeOrderQuery,
     selectionQuery,
+    commitmentQuery,
   ])
 
   if (proposalsResult.error) {
@@ -1484,14 +1497,18 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
   if (selectionsResult.error) {
     throw new Error(`Failed to load selection signature targets: ${selectionsResult.error.message}`)
   }
+  if (commitmentsResult.error) {
+    throw new Error(`Failed to load commitment signature targets: ${commitmentsResult.error.message}`)
+  }
 
   const proposals = proposalsResult.data ?? []
   const changeOrders = changeOrdersResult.data ?? []
   const selections = selectionsResult.data ?? []
+  const commitments = commitmentsResult.data ?? []
 
   const projectIds = Array.from(
     new Set(
-      [...proposals, ...changeOrders, ...selections]
+      [...proposals, ...changeOrders, ...selections, ...commitments]
         .map((row: any) => row.project_id as string | null)
         .filter((value): value is string => !!value),
     ),
@@ -1570,6 +1587,14 @@ export async function listSignatureStartTargetsAction(input?: { projectId?: stri
         document_type: "other" as const,
       }
     }),
+    ...commitments.map((commitment: any) => ({
+      id: commitment.id,
+      type: "subcontract" as const,
+      project_id: commitment.project_id,
+      project_name: projectNameById.get(commitment.project_id) ?? null,
+      title: commitment.title?.trim() || "Commitment",
+      document_type: "contract" as const,
+    })),
   ]
 
   targets.sort((a, b) => {

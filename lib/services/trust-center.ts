@@ -296,7 +296,20 @@ async function checkUnlinkedPayments(
 
   if (error || !data) return []
 
-  return (data as any[]).map((payment) => ({
+  const paymentIds = (data as any[]).map((payment) => payment.id).filter(Boolean)
+  const allocatedPaymentIds = new Set<string>()
+  if (paymentIds.length > 0) {
+    const { data: allocations } = await ctx.supabase
+      .from("payment_allocations")
+      .select("payment_id")
+      .eq("org_id", ctx.orgId)
+      .in("payment_id", paymentIds)
+    for (const allocation of allocations ?? []) {
+      if ((allocation as any).payment_id) allocatedPaymentIds.add((allocation as any).payment_id)
+    }
+  }
+
+  return (data as any[]).filter((payment) => !allocatedPaymentIds.has(payment.id)).map((payment) => ({
     id: `payment-unlinked-${payment.id}`,
     kind: "payment_unlinked" as const,
     severity: "warning" as const,

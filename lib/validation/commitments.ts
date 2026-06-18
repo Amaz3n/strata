@@ -9,6 +9,10 @@ export const commitmentInputSchema = z.object({
   company_id: z.string().uuid(),
   title: z.string().min(2, "Title is required"),
   total_cents: z.number().int().min(0),
+  contract_number: z.string().max(100).nullable().optional(),
+  scope: z.string().max(5000).nullable().optional(),
+  terms: z.string().max(10000).nullable().optional(),
+  retainage_percent: z.number().min(0).max(100).nullable().optional(),
   start_date: z.string().optional(),
   end_date: z.string().optional(),
   status: commitmentStatusEnum.optional(),
@@ -23,6 +27,8 @@ export const commitmentLineInputSchema = z.object({
   quantity: z.number().min(0),
   unit: z.string().min(1, "Unit is required"),
   unit_cost_cents: z.number().int().min(0),
+  scheduled_value_cents: z.number().int().min(0).nullable().optional(),
+  retainage_percent: z.number().min(0).max(100).nullable().optional(),
 })
 
 export const commitmentLineUpdateSchema = commitmentLineInputSchema.partial()

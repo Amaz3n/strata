@@ -258,9 +258,8 @@ export function PayablesWorkspace({
     [bills, selectedBillId],
   )
   const selectedIsVendorCredit = selectedBill ? isVendorCredit(selectedBill) : false
-  // Payables imported from QuickBooks (credits or regular bills) are owned by QBO.
-  // Their project is moved via "Reassign" — which re-posts job costs safely —
-  // rather than editing line projects or deleting.
+  // Payables imported from QuickBooks (credits or regular bills) can be split
+  // across projects at the line level, while Reassign moves the whole payable.
   const selectedIsReassignablePayable = selectedBill
     ? selectedIsVendorCredit || selectedBill.imported_from_qbo === true
     : false
@@ -422,6 +421,7 @@ export function PayablesWorkspace({
 
   const distinctSplitProjects = Array.from(new Set(splitLines.map((line) => line.projectId).filter(Boolean)))
   const isSplitAcrossProjects = distinctSplitProjects.length > 1
+  const reassignBlockedBySplit = selectedIsReassignablePayable && isSplitAcrossProjects
 
   const splitTotalCents = splitLines.reduce((sum, line) => sum + (dollarsToCents(line.amountDollars) ?? 0), 0)
   const billTotalCents = selectedBill.total_cents ?? 0
@@ -509,6 +509,10 @@ export function PayablesWorkspace({
 
   const reassignPayable = () => {
     if (!selectedBill || !selectedIsReassignablePayable || !creditProjectId || creditProjectId === selectedBill.project_id) return
+    if (reassignBlockedBySplit) {
+      toast.error("Reassign is only available when all line items are assigned to one project.")
+      return
+    }
     startTransition(async () => {
       const result = await reassignProjectPayableAction(projectId, selectedBill.id, creditProjectId)
       if (result.success) {
@@ -1028,7 +1032,7 @@ export function PayablesWorkspace({
             {isSplitAcrossProjects ? (
               <div className="flex items-center gap-2 rounded-md bg-indigo-50 px-3 py-1.5 text-[11px] font-medium text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300">
                 <Layers className="h-3.5 w-3.5" />
-                Split across {distinctSplitProjects.length} projects — one bill, one payment, synced to QuickBooks.
+                Split across {distinctSplitProjects.length} projects — one {selectedIsVendorCredit ? "credit" : "bill"}, one payment{selectedIsVendorCredit ? "." : ", synced to QuickBooks."}
               </div>
             ) : null}
 
@@ -1041,7 +1045,6 @@ export function PayablesWorkspace({
                       <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Project</Label>
                       <Select
                         value={line.projectId}
-                        disabled={selectedIsReassignablePayable}
                         onValueChange={(value) =>
                           setSplitLines((prev) =>
                             prev.map((item) =>
@@ -1070,7 +1073,7 @@ export function PayablesWorkspace({
                       </Select>
                       {selectedIsReassignablePayable ? (
                         <p className="mt-1 text-[10px] text-muted-foreground">
-                          Use Reassign below to move this QuickBooks {selectedIsVendorCredit ? "credit" : "bill"} to another project safely.
+                          Change line projects to split this QuickBooks {selectedIsVendorCredit ? "credit" : "bill"}; use Reassign below only to move the whole unsplit {selectedIsVendorCredit ? "credit" : "bill"}.
                         </p>
                       ) : null}
                     </div>
@@ -1254,7 +1257,7 @@ export function PayablesWorkspace({
           {selectedIsReassignablePayable ? (
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <span className="shrink-0 text-xs font-medium text-muted-foreground">Assigned project</span>
-              <Select value={creditProjectId} onValueChange={setCreditProjectId}>
+              <Select value={creditProjectId} onValueChange={setCreditProjectId} disabled={reassignBlockedBySplit}>
                 <SelectTrigger className="h-9 max-w-xs">
                   <SelectValue placeholder="Select project" />
                 </SelectTrigger>
@@ -1268,11 +1271,16 @@ export function PayablesWorkspace({
               </Select>
               <Button
                 variant="outline"
-                disabled={isPending || !creditProjectId || creditProjectId === selectedBill.project_id}
+                disabled={isPending || reassignBlockedBySplit || !creditProjectId || creditProjectId === selectedBill.project_id}
                 onClick={reassignPayable}
               >
                 {isPending ? "Moving..." : "Reassign"}
               </Button>
+              {reassignBlockedBySplit ? (
+                <span className="truncate text-[11px] text-muted-foreground">
+                  Reassign is available when all lines are on one project.
+                </span>
+              ) : null}
             </div>
           ) : (
             <Button variant="ghost" disabled={isPending || effectiveSyncStatus === "synced"} onClick={syncToQbo}>

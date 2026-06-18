@@ -212,7 +212,7 @@ export function SubInvoiceForm({
     setError(null)
 
     if (!commitmentId) {
-      setError("Please select a contract")
+      setError("Please select a commitment")
       return
     }
     if (!billNumber.trim()) {
@@ -278,17 +278,17 @@ export function SubInvoiceForm({
         </Alert>
       )}
 
-      {/* Contract Selection */}
+      {/* Commitment Selection */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Select Contract</CardTitle>
+          <CardTitle className="text-base">Select Commitment</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="commitment">Contract</Label>
+            <Label htmlFor="commitment">Commitment</Label>
             <Select value={commitmentId} onValueChange={setCommitmentId}>
               <SelectTrigger id="commitment">
-                <SelectValue placeholder="Select a contract" />
+                <SelectValue placeholder="Select a commitment" />
               </SelectTrigger>
               <SelectContent>
                 {commitments.map((c) => (
@@ -308,7 +308,7 @@ export function SubInvoiceForm({
           {selectedCommitment && (
             <div className="rounded-lg border p-3 bg-muted/30 space-y-2">
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Contract Total</span>
+                <span className="text-muted-foreground">Commitment Total</span>
                 <span className="font-medium">
                   {formatCurrency(selectedCommitment.total_cents)}
                 </span>

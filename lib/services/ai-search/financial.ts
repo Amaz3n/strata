@@ -393,15 +393,42 @@ export async function executeDrawPaymentStatusIntent(
       }
     }
 
-    const { data: paymentData, error: paymentError } = await context.supabase
-      .from("payments")
-      .select("id,invoice_id,reference,method,status,amount_cents,project_id,projects(name),received_at,created_at")
-      .eq("org_id", context.orgId)
-      .in("invoice_id", invoiceIds)
+    const [paymentResult, allocationResult] = await Promise.all([
+      context.supabase
+        .from("payments")
+        .select("id,invoice_id,reference,method,status,amount_cents,project_id,projects(name),received_at,created_at")
+        .eq("org_id", context.orgId)
+        .in("invoice_id", invoiceIds),
+      context.supabase
+        .from("payment_allocations")
+        .select("id,invoice_id,amount_cents,project_id,payment:payments!inner(id,reference,method,status,received_at,created_at),projects(name)")
+        .eq("org_id", context.orgId)
+        .in("invoice_id", invoiceIds),
+    ])
 
-    if (!paymentError && Array.isArray(paymentData)) {
-      for (const payment of paymentData) {
+    if (!paymentResult.error && Array.isArray(paymentResult.data)) {
+      for (const payment of paymentResult.data) {
         const record = payment as Record<string, unknown>
+        const invoiceId = typeof record.invoice_id === "string" ? record.invoice_id : ""
+        if (!invoiceId) continue
+        const bucket = paymentsByInvoiceId.get(invoiceId) ?? []
+        bucket.push(record)
+        paymentsByInvoiceId.set(invoiceId, bucket)
+        relatedResults.push(mapPaymentMetricResult(record))
+      }
+    }
+    if (!allocationResult.error && Array.isArray(allocationResult.data)) {
+      for (const allocation of allocationResult.data) {
+        const row = allocation as Record<string, unknown>
+        const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment
+        const record = {
+          ...(payment && typeof payment === "object" ? payment : {}),
+          id: row.id,
+          invoice_id: row.invoice_id,
+          amount_cents: row.amount_cents,
+          project_id: row.project_id,
+          projects: row.projects,
+        } as Record<string, unknown>
         const invoiceId = typeof record.invoice_id === "string" ? record.invoice_id : ""
         if (!invoiceId) continue
         const bucket = paymentsByInvoiceId.get(invoiceId) ?? []
@@ -823,4 +850,3 @@ export function buildAnalysisFallbackAnswer({
 
   return `I couldn't find matching records for "${query}" in your org context.`
 }
-

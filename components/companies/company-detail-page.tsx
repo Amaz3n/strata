@@ -411,7 +411,7 @@ export function CompanyDetailPage({
 
   const navItems: Array<{ value: DetailView; label: string }> = [
     { value: "overview", label: "Overview" },
-    { value: "contracts", label: "Contracts" },
+    { value: "contracts", label: "Commitments" },
     { value: "invoices", label: "Invoices" },
     ...(showCompliance
       ? [{ value: "compliance" as const, label: "Compliance" }]

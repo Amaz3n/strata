@@ -16,6 +16,11 @@ type PaymentRow = {
   status: string | null
 }
 
+type PaymentAllocationRow = {
+  amount_cents: number | null
+  payment: { status: string | null } | { status: string | null }[] | null
+}
+
 type PaymentReversalRow = {
   amount_cents: number | null
   status: string | null
@@ -77,7 +82,7 @@ export async function recalcInvoiceBalanceAndStatus({
     throw new Error(invoiceError?.message ?? "Invoice not found or inaccessible")
   }
 
-  const [paymentsResult, reversalsResult] = await Promise.all([
+  const [paymentsResult, allocationsResult, reversalsResult] = await Promise.all([
     supabase
       .from("payments")
       .select("amount_cents, status")
@@ -85,6 +90,12 @@ export async function recalcInvoiceBalanceAndStatus({
       .eq("invoice_id", invoiceId)
       .in("status", ["succeeded", "completed", "processing", "refunded"])
       .returns<PaymentRow[]>(),
+    supabase
+      .from("payment_allocations")
+      .select("amount_cents, payment:payments(status)")
+      .eq("org_id", orgId)
+      .eq("invoice_id", invoiceId)
+      .returns<PaymentAllocationRow[]>(),
     supabase
       .from("payment_reversals")
       .select("amount_cents, status")
@@ -97,12 +108,22 @@ export async function recalcInvoiceBalanceAndStatus({
   if (paymentsResult.error) {
     throw new Error(`Failed to aggregate payments: ${paymentsResult.error.message}`)
   }
+  if (allocationsResult.error) {
+    throw new Error(`Failed to aggregate payment allocations: ${allocationsResult.error.message}`)
+  }
   if (reversalsResult.error) {
     throw new Error(`Failed to aggregate payment reversals: ${reversalsResult.error.message}`)
   }
 
   const invoiceRow = invoice as unknown as InvoiceRow
-  const grossPaidCents = (paymentsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
+  const directPaidCents = (paymentsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
+  const allocatedPaidCents = (allocationsResult.data ?? []).reduce((sum, row) => {
+    const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment
+    const status = payment?.status ?? null
+    if (!status || !["succeeded", "completed", "processing", "refunded"].includes(status)) return sum
+    return sum + (row.amount_cents ?? 0)
+  }, 0)
+  const grossPaidCents = directPaidCents + allocatedPaidCents
   const reversedCents = (reversalsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
   const paidCents = Math.max(grossPaidCents - reversedCents, 0)
   const totalCents = invoiceRow.total_cents ?? 0
@@ -156,32 +177,40 @@ export async function syncDrawStatusForInvoice({
   invoiceStatus: string
 }) {
   try {
-    const { data: draw, error } = await supabase
+    const { data: draws, error } = await supabase
       .from("draw_schedules")
       .select("id, status")
       .eq("org_id", orgId)
       .eq("invoice_id", invoiceId)
-      .maybeSingle()
 
-    if (error || !draw) return
-    const drawRow = draw as unknown as { id: string; status: string }
+    if (error || !draws || draws.length === 0) return
+    const drawIds = (draws as Array<{ id: string }>).map((draw) => draw.id)
 
     if (invoiceStatus === "paid") {
       await supabase
         .from("draw_schedules")
         .update({ status: "paid", paid_at: new Date().toISOString() })
-        .eq("id", drawRow.id)
         .eq("org_id", orgId)
+        .in("id", drawIds)
       return
     }
 
     if (invoiceStatus === "partial") {
-      await supabase.from("draw_schedules").update({ status: "partial" }).eq("id", drawRow.id).eq("org_id", orgId)
+      await supabase.from("draw_schedules").update({ status: "partial" }).eq("org_id", orgId).in("id", drawIds)
       return
     }
 
     if (invoiceStatus === "sent" || invoiceStatus === "overdue") {
-      await supabase.from("draw_schedules").update({ status: "invoiced" }).eq("id", drawRow.id).eq("org_id", orgId)
+      await supabase.from("draw_schedules").update({ status: "invoiced" }).eq("org_id", orgId).in("id", drawIds)
+      return
+    }
+
+    if (invoiceStatus === "void") {
+      await supabase
+        .from("draw_schedules")
+        .update({ invoice_id: null, status: "pending", invoiced_at: null, paid_at: null })
+        .eq("org_id", orgId)
+        .in("id", drawIds)
     }
   } catch (err) {
     console.warn("Failed to sync draw status for invoice", err)

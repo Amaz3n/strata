@@ -406,6 +406,17 @@ function shouldQueueQboSync(status?: string | null, clientVisible?: boolean | nu
   return normalized === "saved" || normalized === "sent" || normalized === "partial" || normalized === "paid" || normalized === "overdue"
 }
 
+function invoiceMetadataDrawIds(metadata: Record<string, any> | null | undefined): string[] {
+  const sourceDrawIds = Array.isArray(metadata?.source_draw_ids) ? metadata?.source_draw_ids : []
+  return Array.from(
+    new Set(
+      [metadata?.source_draw_id, metadata?.draw_id, ...sourceDrawIds].filter(
+        (value): value is string => typeof value === "string" && value.length > 0,
+      ),
+    ),
+  )
+}
+
 async function assertSourceNotAlreadyBilled(params: {
   supabase: SupabaseClient
   orgId: string
@@ -429,7 +440,7 @@ async function assertSourceNotAlreadyBilled(params: {
     if (row.status === "void") return false
     const metadata = (row.metadata ?? {}) as Record<string, any>
     if (sourceType === "draw" && sourceDrawId) {
-      return metadata.source_type === "draw" && metadata.source_draw_id === sourceDrawId
+      return metadata.source_type === "draw" && invoiceMetadataDrawIds(metadata).includes(sourceDrawId)
     }
     if (sourceType === "change_order" && sourceChangeOrderId) {
       return metadata.source_type === "change_order" && metadata.source_change_order_id === sourceChangeOrderId
@@ -496,15 +507,15 @@ async function releaseInvoiceSourceLinks(params: {
   metadata?: Record<string, any> | null
 }) {
   const { supabase, orgId, invoiceId, metadata } = params
-  const sourceDrawId = typeof metadata?.source_draw_id === "string" ? metadata.source_draw_id : null
+  const sourceDrawIds = invoiceMetadataDrawIds(metadata)
   const sourceType = typeof metadata?.source_type === "string" ? metadata.source_type : null
 
-  if (sourceDrawId) {
+  if (sourceDrawIds.length > 0) {
     const { error } = await supabase
       .from("draw_schedules")
       .update({ invoice_id: null, status: "pending" })
       .eq("org_id", orgId)
-      .eq("id", sourceDrawId)
+      .in("id", sourceDrawIds)
       .eq("invoice_id", invoiceId)
 
     if (error) {
@@ -1315,17 +1326,28 @@ export async function updateInvoice({
 
 async function assertInvoiceHasNoPayments(params: { supabase: SupabaseClient; orgId: string; invoiceId: string }) {
   const { supabase, orgId, invoiceId } = params
-  const { count, error } = await supabase
-    .from("payments")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", orgId)
-    .eq("invoice_id", invoiceId)
-    .neq("status", "failed")
+  const [paymentsResult, allocationsResult] = await Promise.all([
+    supabase
+      .from("payments")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("invoice_id", invoiceId)
+      .neq("status", "failed"),
+    supabase
+      .from("payment_allocations")
+      .select("id, payment:payments!inner(status)", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("invoice_id", invoiceId)
+      .neq("payment.status", "failed"),
+  ])
 
-  if (error) {
-    throw new Error(`Failed to check invoice payments: ${error.message}`)
+  if (paymentsResult.error) {
+    throw new Error(`Failed to check invoice payments: ${paymentsResult.error.message}`)
   }
-  if ((count ?? 0) > 0) {
+  if (allocationsResult.error) {
+    throw new Error(`Failed to check invoice payment allocations: ${allocationsResult.error.message}`)
+  }
+  if ((paymentsResult.count ?? 0) + (allocationsResult.count ?? 0) > 0) {
     throw new Error("Invoices with recorded payments cannot be deleted or voided.")
   }
 }

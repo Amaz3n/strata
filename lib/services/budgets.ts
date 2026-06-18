@@ -505,7 +505,7 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : await supabase
           .from("change_order_lines")
-          .select("cost_code_id, unit_cost_cents, quantity, metadata")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, metadata")
           .eq("org_id", orgId)
           .in("change_order_id", changeOrderIds)
 
@@ -515,7 +515,7 @@ async function getBudgetWithActualsInternal(
 
   const { data: revisionLines, error: revisionLinesError } = await supabase
     .from("budget_revision_lines")
-    .select("cost_code_id, amount_cents, allowance_draw_cents, revision:budget_revisions!inner(project_id, status)")
+    .select("cost_code_id, budget_line_id, amount_cents, allowance_draw_cents, revision:budget_revisions!inner(project_id, status)")
     .eq("org_id", orgId)
     .eq("revision.project_id", projectId)
     .eq("revision.status", "posted")
@@ -612,7 +612,7 @@ async function getBudgetWithActualsInternal(
   const coAdjustmentSource = postedRevisionLines.length > 0 ? postedRevisionLines : coLines ?? []
 
   for (const line of coAdjustmentSource) {
-    const key = line.cost_code_id ?? "uncoded"
+    const key = bucketKey(line)
     const existing =
       byCostCode.get(key) ?? {
         budget_cents: 0,

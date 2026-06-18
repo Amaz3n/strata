@@ -78,6 +78,10 @@ function pluralize(word: string, count: number) {
 
 function buildMultiStepPlans(query: string, basePlan: QueryAgentPlan, maxSteps = 3): QueryAgentPlan[] {
   const plans: QueryAgentPlan[] = [basePlan]
+  if (basePlan.groupBy === "aging") {
+    return plans
+  }
+
   const mentioned = Array.from(
     new Set<SearchEntityType>([...(basePlan.relatedEntityTypes ?? []), ...detectEntityMentions(query)]),
   )

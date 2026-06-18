@@ -66,6 +66,8 @@ type LinkableInvoice = {
   title: string | null
   status: string
   total_cents: number
+  linked_draw_cents: number
+  remaining_draw_cents: number
   issue_date: string | null
   from_qbo: boolean
 }
@@ -362,7 +364,7 @@ export function DrawScheduleManager({
     setLinkPickerOpen(true)
     setLinkableLoading(true)
     try {
-      const invoices = await listLinkableInvoicesForDrawAction(projectId)
+      const invoices = await listLinkableInvoicesForDrawAction(projectId, selectedDraw.id)
       setLinkableInvoices(invoices)
     } catch (err: any) {
       toast.error("Could not load invoices", { description: err?.message ?? "Please try again." })
@@ -1016,6 +1018,7 @@ function LinkInvoiceDialog({
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     {formatCurrency(invoice.total_cents)}
+                    {invoice.linked_draw_cents > 0 ? ` · ${formatCurrency(invoice.remaining_draw_cents)} remaining for draws` : ""}
                     {invoice.title ? ` · ${invoice.title}` : ""}
                     {invoice.issue_date ? ` · ${formatLocalDate(invoice.issue_date, "MMM d, yyyy")}` : ""}
                   </p>

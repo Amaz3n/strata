@@ -109,7 +109,7 @@ export const ENVELOPE_EVENT_TYPES = {
 } as const
 
 export const completionEventByEntityType: Record<
-  Extract<UnifiedSignableEntityType, "estimate" | "proposal" | "change_order" | "lien_waiver" | "selection">,
+  Extract<UnifiedSignableEntityType, "estimate" | "proposal" | "change_order" | "lien_waiver" | "selection" | "subcontract">,
   string
 > = {
   estimate: "estimate.executed",
@@ -117,6 +117,7 @@ export const completionEventByEntityType: Record<
   change_order: "change_order.approved",
   lien_waiver: "lien_waiver.signed",
   selection: "selection.confirmed",
+  subcontract: "commitment.executed",
 }
 
 export function buildUnifiedSigningUrl(token: string) {

@@ -4,6 +4,10 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { createBudget, duplicateBudgetVersion, replaceBudgetLines, updateBudgetStatus, acknowledgeVarianceAlert, checkVarianceAlerts, updateCostCodeProgress } from "@/lib/services/budgets"
+import {
+  buildBudgetDraftFromEstimate,
+  listBudgetEstimateSources,
+} from "@/lib/services/budget-from-estimate"
 import { requireOrgContext } from "@/lib/services/context"
 
 function revalidateBudgetPages(projectId: string) {
@@ -78,6 +82,55 @@ const progressInputSchema = z.object({
   estimate_remaining_cents: z.number().min(0).nullable().optional(),
   notes: z.string().nullable().optional(),
 })
+
+export async function listBudgetEstimateSourcesAction(projectId: string) {
+  return listBudgetEstimateSources(projectId)
+}
+
+export async function proposeBudgetFromEstimateAction(
+  projectId: string,
+  estimateId: string,
+  costCodesEnabled: boolean,
+) {
+  return buildBudgetDraftFromEstimate({ projectId, estimateId, costCodesEnabled })
+}
+
+const applyBudgetSchema = z.object({
+  project_id: z.string().uuid(),
+  lines: z.array(budgetLineInputSchema).min(1),
+})
+
+/**
+ * Creates a project budget from reviewed lines, or replaces the latest budget's
+ * lines if one already exists. Used by "Start from estimate".
+ */
+export async function applyBudgetFromEstimateAction(input: unknown) {
+  const parsed = applyBudgetSchema.parse(input)
+  const { supabase, orgId } = await requireOrgContext()
+
+  const lines = parsed.lines.map((line) => ({
+    ...line,
+    cost_code_id: line.cost_code_id ?? undefined,
+  }))
+
+  const { data: latest } = await supabase
+    .from("budgets")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", parsed.project_id)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (latest?.id) {
+    await replaceBudgetLines({ budgetId: latest.id as string, lines })
+  } else {
+    await createBudget({ project_id: parsed.project_id, status: "draft", lines }, orgId)
+  }
+
+  revalidateBudgetPages(parsed.project_id)
+  return { success: true }
+}
 
 export async function updateCostCodeProgressAction(projectId: string, costCodeId: string, input: unknown) {
   const { orgId } = await requireOrgContext()

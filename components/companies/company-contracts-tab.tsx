@@ -68,11 +68,11 @@ export function CompanyContractsTab({
 
   const submit = () => {
     if (form.project_id === "none") {
-      toast({ title: "Project required", description: "Select a project for this contract." })
+      toast({ title: "Project required", description: "Select a project for this commitment." })
       return
     }
     if (!form.title.trim() || form.title.trim().length < 2) {
-      toast({ title: "Title required", description: "Enter a short contract title." })
+      toast({ title: "Title required", description: "Enter a short commitment title." })
       return
     }
     const totalDollars = Number(form.total_dollars)
@@ -90,11 +90,11 @@ export function CompanyContractsTab({
           total_cents: totalCents,
           status: form.status,
         })
-        toast({ title: "Contract created" })
+        toast({ title: "Commitment created" })
         setOpen(false)
         router.refresh()
       } catch (error) {
-        toast({ title: "Unable to create contract", description: (error as Error).message })
+        toast({ title: "Unable to create commitment", description: (error as Error).message })
       }
     })
   }
@@ -180,12 +180,12 @@ export function CompanyContractsTab({
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button>New contract</Button>
+            <Button>New commitment</Button>
           </DialogTrigger>
           <DialogContent className="max-w-lg">
             <DialogHeader>
-              <DialogTitle>New contract</DialogTitle>
-              <DialogDescription>Create a commitment for this vendor to track invoices against.</DialogDescription>
+              <DialogTitle>New commitment</DialogTitle>
+              <DialogDescription>Create a vendor/sub commitment to track invoices against.</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div className="space-y-2">
@@ -209,7 +209,7 @@ export function CompanyContractsTab({
                 <Input value={form.title} onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))} placeholder="Plumbing rough-in" />
               </div>
               <div className="space-y-2">
-                <Label>Contract total</Label>
+                <Label>Commitment total</Label>
                 <Input
                   value={form.total_dollars}
                   onChange={(e) => setForm((p) => ({ ...p, total_dollars: e.target.value }))}
@@ -304,7 +304,7 @@ export function CompanyContractsTab({
             {commitments.length === 0 && (
               <TableRow className="divide-x">
                 <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
-                  No contracts yet.
+                  No commitments yet.
                 </TableCell>
               </TableRow>
             )}
@@ -326,7 +326,7 @@ export function CompanyContractsTab({
           <DialogHeader>
             <DialogTitle>{selectedCommitment?.title ?? "Commitment files"}</DialogTitle>
             <DialogDescription>
-              Attach contracts, invoices, and supporting documentation for this commitment.
+              Attach executed agreements, invoices, and supporting documentation for this commitment.
             </DialogDescription>
           </DialogHeader>
           {selectedCommitment && (

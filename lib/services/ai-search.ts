@@ -14,12 +14,14 @@ import {
 import type { AnalyticsExecution, AnalyticsGroupBy, AnalyticsIntent, AnalyticsMetric } from "@/lib/services/ai-search/analytics"
 import { runPlannerExecutorLoop } from "@/lib/services/ai-search/agent-executor"
 import {
+  buildArArtifact,
   buildArtifactForAnalysisIntent,
   buildArtifactForAnalyticsIntent,
   buildArtifactForFallback,
   buildArtifactForStructuredIntent,
   buildTableArtifact,
 } from "@/lib/services/ai-search/artifacts"
+import { getArAgingReport } from "@/lib/services/reports/ar-aging"
 import {
   ANALYTICS_ENTITY_CONFIGS,
   ATTRIBUTE_TARGET_NOISE_TOKENS,
@@ -41,6 +43,11 @@ import {
   getOpenAiBaseUrl,
   resolveLanguageModel,
 } from "@/lib/services/ai-search/llm"
+import {
+  pruneUnifiedIntentRouterCache,
+  routeUnifiedIntent,
+  type UnifiedIntentRoute,
+} from "@/lib/services/ai-search/intent-router"
 import {
   buildAnalysisFallbackAnswer,
   executeCanonicalMetricIntent,
@@ -82,6 +89,7 @@ import {
   requiresClarification,
   resolveAssistantMode,
   buildGreetingResponse,
+  type ActionWorkflowPlan,
   type AnalysisIntent,
 } from "@/lib/services/ai-search/planning"
 import { buildTextSearchOrCondition } from "@/lib/services/ai-search/sql"
@@ -139,10 +147,33 @@ export interface AiChartSeries {
   label: string
 }
 
+// A single headline metric shown in the full-bleed report surface.
+export interface AiArtifactKpi {
+  label: string
+  value: string
+  tone?: "neutral" | "danger" | "warning" | "success"
+}
+
+// A collapsible detail section rendered under the chart (e.g. one AR aging
+// bucket and the invoices that fall in it). Collapsed by default in the UI.
+export interface AiArtifactGroup {
+  label: string
+  total?: string
+  count?: number
+  columns: string[]
+  rows: AiArtifactValue[][]
+}
+
 export interface AiSearchArtifact {
-  kind: "table" | "chart"
+  kind: "table" | "chart" | "report"
   datasetId: string
   title: string
+  // Distinguishes canonical reports (e.g. AR aging) from generic analytics so
+  // the surface can apply report-specific affordances.
+  reportType?: "ar_aging" | "analytics"
+  summary?: string
+  kpis?: AiArtifactKpi[]
+  groups?: AiArtifactGroup[]
   table?: {
     columns: string[]
     rows: AiArtifactValue[][]
@@ -402,6 +433,15 @@ function mapCitation(source: RetrievedSource): AiSearchCitation {
   }
 }
 
+function workflowPlanFromIntentRoute(route: UnifiedIntentRoute | null): ActionWorkflowPlan | null {
+  if (!route || route.intent !== "start_workflow" || route.workflowKey !== "invoices.create") return null
+  return {
+    workflowKey: route.workflowKey,
+    confidence: route.confidence,
+    slots: route.slots,
+  }
+}
+
 function pruneCache() {
   const now = Date.now()
   for (const [key, value] of aiAnswerCache.entries()) {
@@ -411,6 +451,7 @@ function pruneCache() {
   }
 
   pruneAiPlannerCache(now)
+  pruneUnifiedIntentRouterCache(now)
 }
 
 export async function askAiSearch(query: string, options: AskAiSearchOptions = {}): Promise<AskAiSearchResponse> {
@@ -475,17 +516,52 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     throw new Error("AI search is turned off for this organization.")
   }
   const assistantRuntimeInfoQuery = isAssistantRuntimeInfoQuery(normalizedQuery)
+  const socialPreflight = isGreetingOrSmallTalkQuery(normalizedQuery)
+  const intentRoute =
+    runtimeFlags.intentRouter && !assistantRuntimeInfoQuery && !socialPreflight
+      ? await routeUnifiedIntent({
+          query: normalizedQuery,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          requestedMode: options.mode,
+          currentProjectId: options.currentProjectId,
+        })
+      : null
+  const routedMode =
+    !options.mode && intentRoute && intentRoute.confidence >= 0.55
+      ? intentRoute.mode === "social"
+        ? "general"
+        : intentRoute.mode
+      : null
   const assistantMode = assistantRuntimeInfoQuery
     ? "general"
-    : await resolveAssistantMode(options.mode, runtimeFlags, normalizedQuery, aiConfig.provider, aiConfig.model)
+    : socialPreflight
+      ? "general"
+      : routedMode ?? await resolveAssistantMode(options.mode, runtimeFlags, normalizedQuery, aiConfig.provider, aiConfig.model)
   const limit = clampLimit(options.limit)
   const sessionId = await ensureAiSearchSession(context, assistantMode, options.sessionId)
   const sessionContext = runtimeFlags.conversationMemory
     ? await loadAiSearchSessionContext({ context, sessionId, memoryFactLimit: MEMORY_FACT_LIMIT })
     : ""
   const memoryFacts = runtimeFlags.conversationMemory ? extractSessionMemoryFacts(normalizedQuery) : []
-  const plannerQuery = sessionContext ? `${sessionContext}\nUSER: ${normalizedQuery}` : normalizedQuery
-  const cacheKey = `${AI_SEARCH_CACHE_VERSION}:${orgId}:${sessionId}:${assistantMode}:${options.currentProjectId ?? "no-page-project"}:${aiConfig.provider}:${aiConfig.model}:${runtimeFlags.hybridRetrieval ? "hybrid" : "lexical"}:${normalizedQuery.toLowerCase()}:${limit}`
+  const routeContext = intentRoute
+    ? [
+        `ROUTER: intent=${intentRoute.intent}; mode=${intentRoute.mode}; confidence=${intentRoute.confidence}`,
+        intentRoute.entityTypes.length > 0 ? `ROUTER_ENTITIES: ${intentRoute.entityTypes.join(",")}` : "",
+        intentRoute.workflowKey ? `ROUTER_WORKFLOW: ${intentRoute.workflowKey}` : "",
+        intentRoute.slots.reportType === "ar_aging" || intentRoute.slots.groupBy === "aging"
+          ? `ROUTER_ANALYTICS: reportType=${intentRoute.slots.reportType ?? "analytics"}; entityType=invoice; groupBy=aging; metric=${intentRoute.slots.metric ?? "sum_amount"}; chartType=${intentRoute.slots.chartType ?? "bar"}`
+          : intentRoute.slots.groupBy || intentRoute.slots.metric || intentRoute.slots.chartType
+            ? `ROUTER_ANALYTICS: groupBy=${intentRoute.slots.groupBy ?? "none"}; metric=${intentRoute.slots.metric ?? "count"}; chartType=${intentRoute.slots.chartType ?? "auto"}`
+          : "",
+      ]
+        .filter((line) => line.trim().length > 0)
+        .join("\n")
+    : ""
+  const plannerQuery = [sessionContext, routeContext, `USER: ${normalizedQuery}`]
+    .filter((line) => line.trim().length > 0)
+    .join("\n")
+  const cacheKey = `${AI_SEARCH_CACHE_VERSION}:${orgId}:${sessionId}:${assistantMode}:${options.currentProjectId ?? "no-page-project"}:${aiConfig.provider}:${aiConfig.model}:${runtimeFlags.hybridRetrieval ? "hybrid" : "lexical"}:${runtimeFlags.intentRouter ? "router" : "legacy"}:${normalizedQuery.toLowerCase()}:${limit}`
   const sessionContextBlock = sessionContext ? `Conversation context:\n${sessionContext}` : ""
   await emitTrace(options, {
     id: "resolve-context",
@@ -500,6 +576,15 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         ? "Org scope is locked, so I will only query your company records."
         : "Non-org mode is active; response quality will rely on model knowledge instead of company data.",
   })
+  if (intentRoute) {
+    await emitTrace(options, {
+      id: "intent-router",
+      status: intentRoute.needsClarification ? "warning" : "completed",
+      label: "Intent routed",
+      detail: `${intentRoute.intent} / ${intentRoute.mode} (${Math.round(intentRoute.confidence * 100)}% confidence).`,
+      thought: intentRoute.reason,
+    })
+  }
   if (memoryFacts.length > 0) {
     await emitTrace(options, {
       id: "memory-context",
@@ -545,7 +630,12 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
       assistantMode,
       success: true,
       plan: { cache: true },
-      metrics: { cache_hit: true, planner_v2: runtimeFlags.plannerV2 },
+      metrics: {
+        cache_hit: true,
+        planner_v2: runtimeFlags.plannerV2,
+        intent_router: runtimeFlags.intentRouter,
+        intent_router_intent: intentRoute?.intent ?? null,
+      },
       citationsCount: cached.response.citations.length,
       resultsCount: cached.response.relatedResults.length,
       latencyMs: Date.now() - startedAt,
@@ -615,6 +705,9 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         planner_v2: runtimeFlags.plannerV2,
         hybrid_retrieval: runtimeFlags.hybridRetrieval,
         conversation_memory: runtimeFlags.conversationMemory,
+        intent_router: runtimeFlags.intentRouter,
+        intent_router_intent: intentRoute?.intent ?? null,
+        intent_router_confidence: intentRoute?.confidence ?? null,
         ...(meta.metrics ?? {}),
       },
       citationsCount: withSession.citations.length,
@@ -659,7 +752,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     )
   }
 
-  if (isGreetingOrSmallTalkQuery(normalizedQuery)) {
+  if (isGreetingOrSmallTalkQuery(normalizedQuery) || intentRoute?.mode === "social") {
     await emitTrace(options, {
       id: "social-intent",
       status: "completed",
@@ -683,7 +776,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         missingData: [],
       },
       {
-        plan: { social_intent: true },
+        plan: { social_intent: true, routed_intent: intentRoute?.intent ?? null },
         metrics: { social_intent: true },
       },
     )
@@ -732,7 +825,11 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     )
   }
 
-  const clarification = requiresClarification({
+  const routedClarification =
+    intentRoute?.needsClarification && intentRoute.intent !== "start_workflow" && intentRoute.confidence >= 0.65
+      ? intentRoute.clarificationQuestion ?? "Can you clarify the scope or records you want me to use?"
+      : null
+  const clarification = routedClarification ?? requiresClarification({
     query: normalizedQuery,
     mode: assistantMode,
     sessionContext,
@@ -760,8 +857,8 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         missingData: ["Scope or time range was ambiguous."],
       },
       {
-        plan: { clarification: true },
-        metrics: { clarification: true },
+        plan: { clarification: true, source: routedClarification ? "intent_router" : "heuristic" },
+        metrics: { clarification: true, clarification_source: routedClarification ? "intent_router" : "heuristic" },
       },
     )
   }
@@ -935,6 +1032,79 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     )
   }
 
+  // AR aging is fully deterministic: pull from the canonical report so the
+  // figures match /reports exactly, then render a full-bleed report artifact.
+  if (assistantMode === "org" && intentRoute?.slots.reportType === "ar_aging") {
+    await emitTrace(options, {
+      id: "ar-aging-report",
+      status: "running",
+      label: "Building AR aging report",
+      detail: "Pulling open balances from the canonical AR aging source.",
+      thought: "AR aging has a single source of truth, so I'll use it directly instead of re-bucketing invoices.",
+    })
+
+    try {
+      const scopedProjectId = options.currentProjectId ?? undefined
+      const report = await getArAgingReport({ projectId: scopedProjectId, orgId })
+      const projectName = scopedProjectId
+        ? report.rows.find((row) => row.project_id === scopedProjectId)?.project_name ?? null
+        : null
+      const { artifact, exports } = buildArArtifact({ orgId, report, projectId: scopedProjectId, projectName })
+
+      await emitTrace(options, {
+        id: "ar-aging-ready",
+        status: "completed",
+        label: "AR aging report ready",
+        detail: `${artifact.kpis?.[0]?.value ?? "$0"} outstanding across ${report.rows.length.toLocaleString()} invoices.`,
+        thought: "Canonical AR aging report is ready.",
+      })
+      await emitTrace(options, {
+        id: "done",
+        status: "completed",
+        label: "Answer ready",
+        detail: "Delivered from canonical AR aging report.",
+      })
+
+      const hasOpenBalance = report.totals.total_open_cents > 0
+      return finalizeResponse(
+        {
+          answer: artifact.summary ?? "AR aging report",
+          citations: [],
+          relatedResults: [],
+          generatedAt: nowIso,
+          assistantMode,
+          mode: "fallback",
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          configSource: aiConfig.source,
+          confidence: hasOpenBalance ? "high" : "medium",
+          missingData: hasOpenBalance ? [] : ["No open receivables found for this scope."],
+          artifact,
+          exports,
+        },
+        {
+          plan: {
+            planner: "ar_aging_report",
+            project: scopedProjectId ?? null,
+            as_of: report.as_of,
+          },
+          metrics: {
+            ar_aging_report: true,
+            rows_scanned: report.rows.length,
+          },
+        },
+      )
+    } catch (error) {
+      await emitTrace(options, {
+        id: "ar-aging-failed",
+        status: "warning",
+        label: "AR aging report unavailable",
+        detail: "Falling back to the planner path.",
+      })
+      console.error("AR aging report short-circuit failed", error)
+    }
+  }
+
   const canonicalMetricIntent = detectCanonicalMetricIntent(normalizedQuery, limit)
   if (!REQUIRE_LLM_FOR_AI_SEARCH && assistantMode === "org" && canonicalMetricIntent) {
     await emitTrace(options, {
@@ -971,18 +1141,13 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
       aiConfig.model,
       [sessionContextBlock, canonicalContext].filter((line) => line.trim().length > 0).join("\n\n") || undefined,
     )
-    if (REQUIRE_LLM_FOR_AI_SEARCH && !llmAnswer) {
-      return finalizeLlmUnavailable("Canonical metric synthesis failed or timed out.", {
-        plan: {
-          planner: "canonical_metric",
-          metric: canonicalMetricIntent.key,
-          project: canonicalMetricIntent.projectName ?? null,
-          groupBy: canonicalMetricIntent.groupBy,
-        },
-        metrics: {
-          canonical_metric: canonicalMetricIntent.key,
-          rows_scanned: canonicalExecution.rowCount,
-        },
+    if (!llmAnswer) {
+      await emitTrace(options, {
+        id: "synthesis-fallback",
+        status: "warning",
+        label: "Model synthesis unavailable",
+        detail: "Using grounded deterministic metric summary instead.",
+        thought: "The model did not return synthesis, but the canonical metric tool already produced grounded output.",
       })
     }
 
@@ -1046,8 +1211,9 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     )
   }
 
+  const routedWorkflow = assistantMode === "org" ? workflowPlanFromIntentRoute(intentRoute) : null
   const llmMappedWorkflow =
-    assistantMode === "org"
+    assistantMode === "org" && !routedWorkflow && !runtimeFlags.intentRouter
       ? await planActionWorkflowWithLlm({
           query: normalizedQuery,
           provider: aiConfig.provider,
@@ -1056,7 +1222,9 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         })
       : null
   const mappedWorkflow =
-    llmMappedWorkflow && llmMappedWorkflow.confidence >= 0.75
+    routedWorkflow && routedWorkflow.confidence >= 0.65
+      ? routedWorkflow
+      : llmMappedWorkflow && llmMappedWorkflow.confidence >= 0.75
       ? llmMappedWorkflow
       : planAiWorkflowFromQuery(normalizedQuery, {
           currentProjectId: options.currentProjectId,
@@ -1103,12 +1271,14 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         },
         {
           plan: {
-            planner: "workflow_router",
+            planner: routedWorkflow === mappedWorkflow ? "unified_intent_router" : "workflow_router",
             workflow: mappedWorkflow.workflowKey,
             confidence: mappedWorkflow.confidence,
+            routed_intent: intentRoute?.intent ?? null,
           },
           metrics: {
             workflow_started: true,
+            workflow_router_source: routedWorkflow === mappedWorkflow ? "unified_intent_router" : "legacy",
           },
         },
       )
@@ -1300,18 +1470,13 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
           aiConfig.model,
           [sessionContextBlock, toolContext].filter((line) => line.trim().length > 0).join("\n\n") || undefined,
         )
-        if (REQUIRE_LLM_FOR_AI_SEARCH && !llmAnswer) {
-          return finalizeLlmUnavailable("Tool synthesis failed or timed out.", {
-            plan: {
-              planner: "tool_router",
-              tool: mappedTool.toolKey,
-              reason: mappedTool.reason,
-              confidence: mappedTool.confidence,
-            },
-            metrics: {
-              tool_rows: toolExecution.rows,
-              tool_metric: typeof toolExecution.metric === "number" ? toolExecution.metric : null,
-            },
+        if (!llmAnswer) {
+          await emitTrace(options, {
+            id: "synthesis-fallback",
+            status: "warning",
+            label: "Model synthesis unavailable",
+            detail: "Using deterministic tool summary instead.",
+            thought: "The tool produced grounded output, so I can still answer without model synthesis.",
           })
         }
         const citations = resolveCitations(sources, llmAnswer?.citationIds ?? []).map(mapCitation)
@@ -1499,26 +1664,13 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
       aiConfig.model,
       [sessionContextBlock, agentContext].filter((line) => line.trim().length > 0).join("\n\n") || undefined,
     )
-    if (REQUIRE_LLM_FOR_AI_SEARCH && !llmAnswer) {
-      return finalizeLlmUnavailable("Planner synthesis failed or timed out.", {
-        plan: {
-          planner: "v2_loop",
-          operation: finalPlan.operation,
-          entity: finalPlan.entityType,
-          planned_from_query: plannedFromQuery,
-          attempts: attempt,
-          steps: stepPlans.map((step) => ({
-            operation: step.operation,
-            entity: step.entityType,
-            metric: step.metric,
-            groupBy: step.groupBy,
-          })),
-        },
-        metrics: {
-          rows_scanned: execution.rowCount,
-          step_count: stepPlans.length,
-          planner_attempts: attempt,
-        },
+    if (!llmAnswer) {
+      await emitTrace(options, {
+        id: "synthesis-fallback",
+        status: "warning",
+        label: "Model synthesis unavailable",
+        detail: "Using deterministic planner summary instead.",
+        thought: "Planner execution produced grounded output, so I can still answer without model synthesis.",
       })
     }
     const verification = verifyGroundedAnswer({
@@ -1583,13 +1735,6 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
         planner_attempts: attempt,
         verification_downgraded: verification.downgradedToFallback,
       },
-    })
-  }
-
-  if (REQUIRE_LLM_FOR_AI_SEARCH && runtimeFlags.plannerV2) {
-    return finalizeLlmUnavailable("Planner model was unavailable, so no query plan could be generated.", {
-      plan: { planner: "v2_loop", planner_result: "none" },
-      metrics: { planner_v2: true, planner_result_none: true },
     })
   }
 
@@ -1688,15 +1833,13 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     aiConfig.model,
     sessionContextBlock || undefined,
   )
-  if (REQUIRE_LLM_FOR_AI_SEARCH && !llmAnswer) {
-    return finalizeLlmUnavailable("Grounded retrieval synthesis failed or timed out.", {
-      plan: {
-        planner: "v2_retrieval_fallback",
-        entity_types: entityTypes,
-      },
-      metrics: {
-        rows_scanned: relatedResults.length,
-      },
+  if (!llmAnswer) {
+    await emitTrace(options, {
+      id: "synthesis-fallback",
+      status: "warning",
+      label: "Model synthesis unavailable",
+      detail: "Using grounded retrieval summary instead.",
+      thought: "Retrieval completed, so I can still return a grounded fallback answer.",
     })
   }
   const fallbackAnswer = buildFallbackAnswer(normalizedQuery, relatedResults)

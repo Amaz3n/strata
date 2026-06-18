@@ -4,6 +4,7 @@ exports.Worker = void 0;
 const supabase_js_1 = require("@supabase/supabase-js");
 const process_drawing_set_1 = require("./jobs/process-drawing-set");
 const generate_drawing_tiles_1 = require("./jobs/generate-drawing-tiles");
+const observability_1 = require("./observability");
 class Worker {
     supabase;
     constructor() {
@@ -42,7 +43,11 @@ class Worker {
             }
             summary.batches += 1;
             summary.claimed += jobs.length;
-            console.log(`📋 Processing batch ${batch + 1}/${maxBatches} (${jobs.length} jobs)`);
+            observability_1.workerLogger.info('drawings_worker.batch.claimed', {
+                batch: batch + 1,
+                maxBatches,
+                jobCount: jobs.length,
+            });
             const results = await Promise.all(jobs.map((job) => this.processJob(job)));
             for (const ok of results) {
                 summary.processed += 1;
@@ -72,7 +77,12 @@ class Worker {
     }
     async processJob(job) {
         const startTime = Date.now();
-        console.log(`🔄 Processing job ${job.job_id} (${job.job_type})`);
+        observability_1.workerLogger.info('drawings_worker.job.started', {
+            orgId: job.org_id,
+            jobId: job.job_id,
+            jobType: job.job_type,
+            retryCount: job.retry_count,
+        });
         try {
             switch (job.job_type) {
                 case 'process_drawing_set':
@@ -93,16 +103,31 @@ class Worker {
             })
                 .eq('id', job.job_id);
             const duration = Date.now() - startTime;
-            console.log(`✅ Completed job ${job.job_id} in ${duration}ms`);
+            observability_1.workerLogger.info('drawings_worker.job.completed', {
+                orgId: job.org_id,
+                jobId: job.job_id,
+                jobType: job.job_type,
+                durationMs: duration,
+            });
             return true;
         }
         catch (error) {
             const duration = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error(`❌ Failed job ${job.job_id} after ${duration}ms:`, errorMessage);
             // Handle retry logic
             const newRetryCount = job.retry_count + 1;
             const shouldRetry = newRetryCount < 3; // Max 3 retries
+            observability_1.workerLogger.error('drawings_worker.job.failed', {
+                orgId: job.org_id,
+                jobId: job.job_id,
+                jobType: job.job_type,
+                durationMs: duration,
+                retryCount: job.retry_count,
+                nextRetryCount: newRetryCount,
+                shouldRetry,
+                error,
+                errorMessage,
+            });
             await this.supabase
                 .from('outbox')
                 .update({

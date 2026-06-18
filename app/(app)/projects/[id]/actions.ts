@@ -961,21 +961,60 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
 }
 
 /**
- * List invoices in this project that can be attached to a draw: ones that are
- * not voided and not already tied to a draw or change order. Used by the draw
- * detail sheet's "Link existing invoice" picker.
+ * List invoices in this project that can be attached to a draw. Invoices can
+ * cover multiple draws as long as their unlinked invoice amount can still cover
+ * the selected draw amount.
  */
-export async function listLinkableInvoicesForDrawAction(projectId: string) {
-  const { orgId } = await requireOrgContext()
-  const invoices = await listInvoices({ orgId, projectId })
+export async function listLinkableInvoicesForDrawAction(projectId: string, drawId?: string) {
+  const { supabase, orgId } = await requireOrgContext()
+  const [invoices, drawResult] = await Promise.all([
+    listInvoices({ orgId, projectId }),
+    drawId
+      ? supabase
+          .from("draw_schedules")
+          .select("id, amount_cents")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("id", drawId)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null } as any),
+  ])
+
+  if (drawResult.error) {
+    throw new Error(`Failed to load selected draw: ${drawResult.error.message}`)
+  }
+
+  const drawAmountCents = Number(drawResult.data?.amount_cents ?? 0)
+  const invoiceIds = invoices.map((invoice) => invoice.id)
+  const linkedDrawCentsByInvoiceId = new Map<string, number>()
+  if (invoiceIds.length > 0) {
+    const { data: linkedDraws, error: linkedDrawsError } = await supabase
+      .from("draw_schedules")
+      .select("invoice_id, amount_cents")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .in("invoice_id", invoiceIds)
+
+    if (linkedDrawsError) {
+      throw new Error(`Failed to load linked draw amounts: ${linkedDrawsError.message}`)
+    }
+
+    for (const row of linkedDraws ?? []) {
+      if (!row.invoice_id) continue
+      linkedDrawCentsByInvoiceId.set(row.invoice_id, (linkedDrawCentsByInvoiceId.get(row.invoice_id) ?? 0) + Number(row.amount_cents ?? 0))
+    }
+  }
 
   return invoices
     .filter((invoice) => {
       if (String(invoice.status).toLowerCase() === "void") return false
       const metadata = (invoice.metadata ?? {}) as Record<string, any>
-      if (metadata.source_draw_id) return false
       const sourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
-      if (sourceType && sourceType !== "manual" && sourceType !== "qbo") return false
+      if (sourceType && sourceType !== "manual" && sourceType !== "draw" && sourceType !== "qbo") return false
+      const totalCents = invoice.total_cents ?? invoice.totals?.total_cents ?? 0
+      const linkedDrawCents = linkedDrawCentsByInvoiceId.get(invoice.id) ?? 0
+      const remainingDrawCents = totalCents > 0 ? Math.max(totalCents - linkedDrawCents, 0) : Number.MAX_SAFE_INTEGER
+      if (drawAmountCents > 0 && remainingDrawCents < drawAmountCents) return false
       return true
     })
     .map((invoice) => ({
@@ -984,6 +1023,8 @@ export async function listLinkableInvoicesForDrawAction(projectId: string) {
       title: invoice.title ?? null,
       status: invoice.status,
       total_cents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
+      linked_draw_cents: linkedDrawCentsByInvoiceId.get(invoice.id) ?? 0,
+      remaining_draw_cents: Math.max((invoice.total_cents ?? invoice.totals?.total_cents ?? 0) - (linkedDrawCentsByInvoiceId.get(invoice.id) ?? 0), 0),
       issue_date: invoice.issue_date ?? null,
       from_qbo: Boolean(invoice.qbo_id) || (invoice.metadata as any)?.source_type === "qbo",
     }))

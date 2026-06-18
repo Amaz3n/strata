@@ -16,6 +16,99 @@ function drawStatusForInvoice(invoiceStatus: string | null | undefined): "invoic
   return "invoiced"
 }
 
+function uniqueStrings(values: unknown[]): string[] {
+  return Array.from(new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0)))
+}
+
+function linkedDrawIdsFromMetadata(metadata: Record<string, any>): string[] {
+  const ids = Array.isArray(metadata.source_draw_ids) ? metadata.source_draw_ids : []
+  return uniqueStrings([metadata.source_draw_id, metadata.draw_id, ...ids])
+}
+
+function linkedDrawSummariesFromMetadata(metadata: Record<string, any>): Array<{
+  id: string
+  draw_number?: number | null
+  title?: string | null
+  amount_cents?: number | null
+  percent_of_contract?: number | null
+}> {
+  const summaries = Array.isArray(metadata.linked_draws) ? metadata.linked_draws : []
+  return summaries.filter((summary: any) => typeof summary?.id === "string")
+}
+
+function buildDrawLinkMetadata(metadata: Record<string, any>, draw: any, nowIso: string) {
+  const linkedDrawIds = uniqueStrings([...linkedDrawIdsFromMetadata(metadata), draw.id])
+  const existingSummaries = linkedDrawSummariesFromMetadata(metadata).filter((summary) => summary.id !== draw.id)
+  const linkedDraws = [
+    ...existingSummaries,
+    {
+      id: draw.id,
+      draw_number: draw.draw_number ?? null,
+      title: draw.title ?? null,
+      amount_cents: draw.amount_cents ?? null,
+      percent_of_contract: draw.percent_of_contract ?? null,
+      linked_at: nowIso,
+    },
+  ].sort((a, b) => Number(a.draw_number ?? 0) - Number(b.draw_number ?? 0))
+
+  return {
+    ...metadata,
+    source_type: "draw",
+    source_draw_id: linkedDrawIds[0] ?? draw.id,
+    source_draw_ids: linkedDrawIds,
+    linked_draws: linkedDraws,
+    draw_id: linkedDrawIds[0] ?? draw.id,
+    draw_number: linkedDraws[0]?.draw_number ?? draw.draw_number,
+    draw_title: linkedDraws[0]?.title ?? draw.title,
+    draw_amount_cents: linkedDraws[0]?.amount_cents ?? draw.amount_cents,
+    draw_percent_of_contract: linkedDraws[0]?.percent_of_contract ?? draw.percent_of_contract,
+    draw_linked_at: nowIso,
+    draw_linked_manually: true,
+    multi_draw_invoice: linkedDrawIds.length > 1,
+  }
+}
+
+function removeDrawLinkMetadata(metadata: Record<string, any>, drawId: string) {
+  const nextDrawIds = linkedDrawIdsFromMetadata(metadata).filter((id) => id !== drawId)
+  const nextDraws = linkedDrawSummariesFromMetadata(metadata).filter((summary) => summary.id !== drawId)
+  const {
+    source_draw_id: _sourceDrawId,
+    source_draw_ids: _sourceDrawIds,
+    linked_draws: _linkedDraws,
+    draw_id: _drawId,
+    draw_number: _drawNumber,
+    draw_title: _drawTitle,
+    draw_amount_cents: _drawAmountCents,
+    draw_percent_of_contract: _drawPercent,
+    draw_linked_at: _drawLinkedAt,
+    draw_linked_manually: _drawLinkedManually,
+    multi_draw_invoice: _multiDrawInvoice,
+    ...rest
+  } = metadata
+
+  if (nextDrawIds.length === 0) {
+    return {
+      ...rest,
+      source_type: metadata.source_type === "draw" ? "manual" : metadata.source_type,
+    }
+  }
+
+  const firstDraw = nextDraws[0]
+  return {
+    ...rest,
+    source_type: "draw",
+    source_draw_id: nextDrawIds[0],
+    source_draw_ids: nextDrawIds,
+    linked_draws: nextDraws,
+    draw_id: nextDrawIds[0],
+    draw_number: firstDraw?.draw_number ?? null,
+    draw_title: firstDraw?.title ?? null,
+    draw_amount_cents: firstDraw?.amount_cents ?? null,
+    draw_percent_of_contract: firstDraw?.percent_of_contract ?? null,
+    multi_draw_invoice: nextDrawIds.length > 1,
+  }
+}
+
 /**
  * Link an already-existing invoice to a pending draw. Used when an invoice was
  * created (or imported from QBO) before the draw, and the builder wants the two
@@ -86,13 +179,34 @@ export async function linkInvoiceToDraw({
     throw new Error("Voided invoices cannot be linked to a draw.")
   }
 
+  const drawAmountCents = Number(draw.amount_cents ?? 0)
+  const invoiceTotalCents = Number(invoice.total_cents ?? 0)
+  if (invoiceTotalCents > 0 && drawAmountCents > 0) {
+    const { data: linkedDraws, error: linkedDrawsError } = await supabase
+      .from("draw_schedules")
+      .select("id, amount_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("invoice_id", invoice.id)
+      .neq("id", draw.id)
+
+    if (linkedDrawsError) {
+      throw new Error(`Failed to check invoice draw balance: ${linkedDrawsError.message}`)
+    }
+
+    const linkedDrawCents = (linkedDraws ?? []).reduce((sum: number, row: any) => sum + Number(row.amount_cents ?? 0), 0)
+    if (linkedDrawCents + drawAmountCents > invoiceTotalCents) {
+      const remainingCents = Math.max(invoiceTotalCents - linkedDrawCents, 0)
+      throw new Error(
+        `This invoice only has ${(remainingCents / 100).toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        })} of unlinked draw amount remaining.`,
+      )
+    }
+  }
+
   const metadata = (invoice.metadata ?? {}) as Record<string, any>
   const existingSourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
-  const existingSourceDrawId = typeof metadata.source_draw_id === "string" ? metadata.source_draw_id : null
-
-  if (existingSourceDrawId && existingSourceDrawId !== drawId) {
-    throw new Error("This invoice is already linked to another draw.")
-  }
 
   if (existingSourceType && existingSourceType !== "manual" && existingSourceType !== "draw" && existingSourceType !== "qbo") {
     throw new Error(`This invoice was generated from a ${existingSourceType.replace(/_/g, " ")} and can't be linked to a draw.`)
@@ -115,18 +229,7 @@ export async function linkInvoiceToDraw({
     throw new Error(`Failed to link invoice to draw: ${drawUpdateError.message}`)
   }
 
-  const nextMetadata = {
-    ...metadata,
-    source_type: "draw",
-    source_draw_id: draw.id,
-    draw_id: draw.id,
-    draw_number: draw.draw_number,
-    draw_title: draw.title,
-    draw_amount_cents: draw.amount_cents,
-    draw_percent_of_contract: draw.percent_of_contract,
-    draw_linked_at: nowIso,
-    draw_linked_manually: true,
-  }
+  const nextMetadata = buildDrawLinkMetadata(metadata, draw, nowIso)
 
   const { error: invoiceUpdateError } = await supabase
     .from("invoices")
@@ -229,21 +332,7 @@ export async function unlinkInvoiceFromDraw({
 
   if (invoice) {
     const metadata = (invoice.metadata ?? {}) as Record<string, any>
-    const {
-      source_draw_id: _sourceDrawId,
-      draw_id: _drawId,
-      draw_number: _drawNumber,
-      draw_title: _drawTitle,
-      draw_amount_cents: _drawAmountCents,
-      draw_percent_of_contract: _drawPercent,
-      draw_linked_at: _drawLinkedAt,
-      draw_linked_manually: _drawLinkedManually,
-      ...rest
-    } = metadata
-    const nextMetadata = {
-      ...rest,
-      source_type: metadata.source_type === "draw" ? "manual" : metadata.source_type,
-    }
+    const nextMetadata = removeDrawLinkMetadata(metadata, drawId)
 
     await supabase
       .from("invoices")
@@ -550,7 +639,7 @@ async function generateAndAttachDrawSummary({
   invoiceNumber: string
   issueDate: string
 }): Promise<string> {
-  const [orgResult, projectResult, contractResult, approvedCosResult, paymentsResult] = await Promise.all([
+  const [orgResult, projectResult, contractResult, approvedCosResult, paymentsResult, allocationResult] = await Promise.all([
     supabase.from("orgs").select("name").eq("id", orgId).maybeSingle(),
     supabase.from("projects").select("name, total_value").eq("id", projectId).maybeSingle(),
     supabase
@@ -574,6 +663,13 @@ async function generateAndAttachDrawSummary({
       .eq("project_id", projectId)
       .not("invoice_id", "is", null)
       .eq("status", "succeeded"),
+    supabase
+      .from("payment_allocations")
+      .select("amount_cents, payment:payments!inner(status)")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .not("invoice_id", "is", null)
+      .eq("payment.status", "succeeded"),
   ])
 
   const baseContractTotal =
@@ -581,7 +677,9 @@ async function generateAndAttachDrawSummary({
     (projectResult.data?.total_value ? Math.round(projectResult.data.total_value * 100) : 0)
   const approvedChangesTotal = (approvedCosResult.data ?? []).reduce((sum: number, row: any) => sum + (row.total_cents ?? 0), 0)
   const revisedContractCents = baseContractTotal + approvedChangesTotal
-  const paidToDateCents = (paymentsResult.data ?? []).reduce((sum: number, row: any) => sum + (row.amount_cents ?? 0), 0)
+  const directPaidToDateCents = (paymentsResult.data ?? []).reduce((sum: number, row: any) => sum + (row.amount_cents ?? 0), 0)
+  const allocatedPaidToDateCents = (allocationResult.data ?? []).reduce((sum: number, row: any) => sum + (row.amount_cents ?? 0), 0)
+  const paidToDateCents = directPaidToDateCents + allocatedPaidToDateCents
   const drawAmountCents =
     typeof draw.percent_of_contract === "number" && revisedContractCents > 0
       ? Math.round((revisedContractCents * draw.percent_of_contract) / 100)
@@ -659,5 +757,3 @@ async function generateAndAttachDrawSummary({
 
   return record.id
 }
-
-

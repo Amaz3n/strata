@@ -4,7 +4,7 @@ import Link from "next/link"
 import { useEffect, useState } from "react"
 import { format } from "date-fns"
 import NumberFlow from "@number-flow/react"
-import { ArrowDown, ArrowUp, ArrowUpRight } from "@/components/icons"
+import { ArrowDown, ArrowUp, ArrowUpRight, Download } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import type {
@@ -794,6 +794,13 @@ function CashSheet({
         <FootLink href="/invoices">Invoices</FootLink>
         <span className="text-muted-foreground/40">·</span>
         <FootLink href="/invoices?status=overdue">Overdue</FootLink>
+        <a
+          href="/api/reports/ar-aging/export?format=pdf"
+          className="group ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-foreground/80 transition-colors hover:text-foreground"
+        >
+          <Download className="h-3 w-3" />
+          Export PDF
+        </a>
       </SheetFootLinks>
     </>
   )

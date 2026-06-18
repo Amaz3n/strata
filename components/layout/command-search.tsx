@@ -305,9 +305,19 @@ interface AiAnswerState {
   confidence?: "low" | "medium" | "high"
   missingData?: string[]
   artifact?: {
-    kind: "table" | "chart"
+    kind: "table" | "chart" | "report"
     datasetId: string
     title: string
+    reportType?: "ar_aging" | "analytics"
+    summary?: string
+    kpis?: Array<{ label: string; value: string; tone?: "neutral" | "danger" | "warning" | "success" }>
+    groups?: Array<{
+      label: string
+      total?: string
+      count?: number
+      columns: string[]
+      rows: Array<Array<string | number | null>>
+    }>
     table?: {
       columns: string[]
       rows: Array<Array<string | number | null>>
@@ -519,16 +529,70 @@ function toRelatedResult(raw: unknown) {
   return normalized
 }
 
+type ArtifactKpi = NonNullable<NonNullable<AiAnswerState["artifact"]>["kpis"]>[number]
+type ArtifactGroup = NonNullable<NonNullable<AiAnswerState["artifact"]>["groups"]>[number]
+
 function toAiArtifact(raw: unknown): AiAnswerState["artifact"] | undefined {
   if (!raw || typeof raw !== "object") return undefined
   const value = raw as Record<string, unknown>
   if (
-    (value.kind !== "table" && value.kind !== "chart") ||
+    (value.kind !== "table" && value.kind !== "chart" && value.kind !== "report") ||
     typeof value.datasetId !== "string" ||
     typeof value.title !== "string"
   ) {
     return undefined
   }
+
+  const reportType = value.reportType === "ar_aging" || value.reportType === "analytics" ? value.reportType : undefined
+  const summary = typeof value.summary === "string" ? value.summary : undefined
+
+  const kpis = Array.isArray(value.kpis)
+    ? value.kpis
+        .map((entry): ArtifactKpi | null => {
+          if (!entry || typeof entry !== "object") return null
+          const kpi = entry as Record<string, unknown>
+          if (typeof kpi.label !== "string" || typeof kpi.value !== "string") return null
+          const tone =
+            kpi.tone === "danger" || kpi.tone === "warning" || kpi.tone === "success" || kpi.tone === "neutral"
+              ? kpi.tone
+              : undefined
+          return { label: kpi.label, value: kpi.value, tone }
+        })
+        .filter((kpi): kpi is ArtifactKpi => kpi !== null)
+        .slice(0, 4)
+    : undefined
+
+  const groups = Array.isArray(value.groups)
+    ? value.groups
+        .map((entry): ArtifactGroup | null => {
+          if (!entry || typeof entry !== "object") return null
+          const group = entry as Record<string, unknown>
+          if (typeof group.label !== "string") return null
+          const columns = Array.isArray(group.columns)
+            ? group.columns.filter((column): column is string => typeof column === "string").slice(0, 8)
+            : []
+          if (columns.length === 0) return null
+          const rows = Array.isArray(group.rows)
+            ? group.rows
+                .map((row): Array<string | number | null> | null =>
+                  Array.isArray(row)
+                    ? row.map((cell) => (typeof cell === "number" || typeof cell === "string" || cell === null ? cell : String(cell)))
+                    : null,
+                )
+                .filter((row): row is Array<string | number | null> => row !== null)
+                .slice(0, 200)
+            : []
+          return {
+            label: group.label,
+            total: typeof group.total === "string" ? group.total : undefined,
+            count: typeof group.count === "number" ? group.count : undefined,
+            columns,
+            rows,
+          }
+        })
+        .filter((group): group is ArtifactGroup => group !== null)
+        .slice(0, 12)
+    : undefined
 
   const table =
     value.table && typeof value.table === "object"
@@ -605,6 +669,10 @@ function toAiArtifact(raw: unknown): AiAnswerState["artifact"] | undefined {
     kind: value.kind,
     datasetId: value.datasetId,
     title: value.title,
+    reportType,
+    summary,
+    kpis,
+    groups,
     table,
     chart,
   }
@@ -1029,7 +1097,13 @@ function truncateChartLabel(value: string): string {
   return value.length > 14 ? `${value.slice(0, 13)}…` : value
 }
 
-function AiChart({ chart }: { chart: NonNullable<NonNullable<AiAnswerState["artifact"]>["chart"]> }) {
+function AiChart({
+  chart,
+  containerClass = "aspect-auto h-[200px] w-full",
+}: {
+  chart: NonNullable<NonNullable<AiAnswerState["artifact"]>["chart"]>
+  containerClass?: string
+}) {
   const { type, points, series, data, valuePrefix, valueSuffix } = chart
   const isMulti = Boolean(series && series.length > 0 && data && data.length > 0)
 
@@ -1044,7 +1118,6 @@ function AiChart({ chart }: { chart: NonNullable<NonNullable<AiAnswerState["arti
 
   const chartData = isMulti ? data! : points.map((point) => ({ label: point.label, value: point.value }))
   const tickFormatter = (value: number) => formatChartTick(value, valuePrefix, valueSuffix)
-  const containerClass = "aspect-auto h-[200px] w-full"
 
   // Pie / donut — composition of a single series.
   if ((type === "pie" || type === "donut") && !isMulti) {
@@ -1128,6 +1201,152 @@ function AiChart({ chart }: { chart: NonNullable<NonNullable<AiAnswerState["arti
         ))}
       </BarChart>
     </ChartContainer>
+  )
+}
+
+// ---------- Full-bleed report surface ----------
+
+type ReportArtifact = NonNullable<AiAnswerState["artifact"]>
+type ReportGroup = ArtifactGroup
+
+const REPORT_KPI_TONE: Record<NonNullable<NonNullable<ReportArtifact["kpis"]>[number]["tone"]>, string> = {
+  neutral: "text-foreground",
+  success: "text-emerald-600 dark:text-emerald-400",
+  warning: "text-amber-600 dark:text-amber-400",
+  danger: "text-red-600 dark:text-red-400",
+}
+
+// One collapsible detail section (e.g. an AR aging bucket). Collapsed by default.
+function ReportGroupSection({ group }: { group: ReportGroup }) {
+  const [open, setOpen] = useState(false)
+  const hasRows = group.rows.length > 0
+
+  return (
+    <div className="border-t border-border/40 first:border-t-0">
+      <button
+        type="button"
+        onClick={() => hasRows && setOpen((prev) => !prev)}
+        disabled={!hasRows}
+        className="flex w-full items-center gap-2 py-2.5 text-left transition-colors hover:bg-accent/40 disabled:cursor-default disabled:hover:bg-transparent"
+      >
+        {hasRows ? (
+          open ? (
+            <ChevronUp className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+          )
+        ) : (
+          <span className="size-3.5 shrink-0" />
+        )}
+        <span className="text-sm font-medium text-foreground">{group.label}</span>
+        {typeof group.count === "number" && (
+          <span className="text-xs text-muted-foreground/70">
+            {group.count} {group.count === 1 ? "item" : "items"}
+          </span>
+        )}
+        {group.total && <span className="ml-auto text-sm font-medium tabular-nums text-foreground">{group.total}</span>}
+      </button>
+      {open && hasRows && (
+        <div className="overflow-x-auto pb-2">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/40">
+                {group.columns.map((column) => (
+                  <th key={column} className="px-2 py-1.5 text-left font-medium text-muted-foreground">
+                    {column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {group.rows.map((row, rowIndex) => (
+                <tr key={`${group.label}-row-${rowIndex}`} className="border-b border-border/20 last:border-b-0">
+                  {group.columns.map((column, columnIndex) => (
+                    <td
+                      key={`${column}-${rowIndex}`}
+                      className={cn(
+                        "px-2 py-1.5 text-foreground/80",
+                        columnIndex === group.columns.length - 1 && "text-right tabular-nums",
+                      )}
+                    >
+                      {formatArtifactValue(row[columnIndex])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Full-bleed report layout used whenever the AI emits an artifact (a canonical
+// report like AR aging, or any analytics chart). Drops the chat chrome.
+function ReportView({
+  artifact,
+  exports,
+}: {
+  artifact: ReportArtifact
+  exports: AiAnswerState["exports"]
+}) {
+  const kpis = artifact.kpis ?? []
+  const groups = artifact.groups ?? []
+
+  return (
+    <div className="flex flex-col">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-5 pt-4 pb-2">
+        <Sparkles className="size-4 shrink-0 text-muted-foreground" />
+        <h2 className="text-base font-semibold text-foreground">{artifact.title}</h2>
+      </div>
+      {artifact.summary && <p className="px-5 pb-1 text-sm text-muted-foreground">{artifact.summary}</p>}
+
+      {/* KPIs */}
+      {kpis.length > 0 && (
+        <div className="grid grid-cols-2 gap-px border-y border-border/40 bg-border/40 sm:grid-cols-3">
+          {kpis.map((kpi) => (
+            <div key={kpi.label} className="bg-popover px-5 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground/70">{kpi.label}</div>
+              <div className={cn("mt-0.5 text-xl font-semibold tabular-nums", REPORT_KPI_TONE[kpi.tone ?? "neutral"])}>
+                {kpi.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Chart */}
+      {artifact.chart && (
+        <div className="px-5 pt-4 pb-2">
+          <AiChart chart={artifact.chart} containerClass="aspect-auto h-[260px] w-full" />
+        </div>
+      )}
+
+      {/* Collapsible detail list */}
+      {groups.length > 0 && (
+        <div className="px-5 pt-1">
+          {groups.map((group) => (
+            <ReportGroupSection key={group.label} group={group} />
+          ))}
+        </div>
+      )}
+
+      {/* Exports */}
+      {exports && exports.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border/40 px-5 py-4">
+          {exports.map((item) => (
+            <Button key={item.href} asChild type="button" size="sm" variant="outline" className="h-8 rounded-none text-xs">
+              <a href={item.href} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                <Download className="mr-1.5 size-3.5" />
+                {item.label}
+              </a>
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1686,6 +1905,12 @@ function AiResponsePanel({
         isExecuting={executingWorkflowId === aiAnswer.workflow.id}
       />
     )
+  }
+
+  // Analytics/report artifacts render in a dedicated full-bleed surface instead
+  // of the chat-style answer (no user echo, avatar, confidence chip, or summary).
+  if (aiAnswer.artifact && (aiAnswer.artifact.kind === "report" || aiAnswer.artifact.kind === "chart")) {
+    return <ReportView artifact={aiAnswer.artifact} exports={aiAnswer.exports} />
   }
 
   return (

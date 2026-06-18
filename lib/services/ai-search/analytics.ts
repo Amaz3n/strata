@@ -162,7 +162,7 @@ function buildAnalyticsFallbackAnswer({
   }
 
   const topGroups = buckets
-    .slice(0, 4)
+    .slice(0, groupBy === "aging" ? AGING_BUCKET_ORDER.length : 4)
     .map((bucket) => `${bucket.label}: ${formatAnalyticsMetricValue(metric, bucket.metricValue)}`)
     .join("; ")
 
@@ -354,6 +354,11 @@ export async function executeAnalyticsToolLayer(
   }
 
   const bucketMap = new Map<string, { label: string; count: number; amountCents: number }>()
+  if (intent.groupBy === "aging") {
+    for (const label of AGING_BUCKET_ORDER) {
+      bucketMap.set(label, { label, count: 0, amountCents: 0 })
+    }
+  }
   for (const row of rows) {
     let label = "Total"
     if (intent.groupBy === "status") {
@@ -390,7 +395,7 @@ export async function executeAnalyticsToolLayer(
       amountCents: bucket.amountCents,
       metricValue: toAnalyticsMetricValue(intent.metric, bucket),
     }))
-    .filter((bucket) => bucket.count > 0)
+    .filter((bucket) => intent.groupBy === "aging" || bucket.count > 0)
 
   if (intent.groupBy === "month") {
     buckets.sort((a, b) => a.label.localeCompare(b.label))
@@ -423,7 +428,7 @@ export async function executeAnalyticsToolLayer(
     answer: "",
     entityLabel,
     project: resolvedProject,
-    rowCount: rows.length,
+    rowCount: intent.groupBy === "aging" ? buckets.reduce((sum, bucket) => sum + bucket.count, 0) : rows.length,
     metric: intent.metric,
     groupBy: normalizedGroupBy,
     buckets,
@@ -440,4 +445,3 @@ export async function executeAnalyticsToolLayer(
 
   return execution
 }
-

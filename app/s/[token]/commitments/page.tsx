@@ -40,15 +40,15 @@ export default async function SubCommitmentsPage({ params }: SubCommitmentsPageP
               Back to Dashboard
             </Link>
           </Button>
-          <h1 className="text-xl font-semibold">My Contracts</h1>
+          <h1 className="text-xl font-semibold">My Commitments</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Contracts and remaining budget for this project.
+            Awarded scopes, billed amounts, and remaining commitment balance for this project.
           </p>
         </div>
 
         {data.commitments.length === 0 ? (
           <div className="rounded-lg border p-6 text-center text-muted-foreground">
-            No contracts assigned yet.
+            No commitments assigned yet.
           </div>
         ) : (
           <div className="space-y-3">
@@ -66,4 +66,3 @@ export default async function SubCommitmentsPage({ params }: SubCommitmentsPageP
     </div>
   )
 }
-

@@ -33,6 +33,7 @@ type ChangeOrderRow = {
 function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
   return lines.map((line) => ({
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",
@@ -88,13 +89,13 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
       gmp_impact: "none",
       budget_distributions: [],
       billing_status: "tracking_only",
-      posting_skipped_reason: "No cost-coded line items were provided.",
+      posting_skipped_reason: "No budget-coded line items were provided.",
       posted_at: new Date().toISOString(),
       posted_by: actorId ?? null,
     }
   }
 
-  const uncodedLines = lines.filter((line) => !line.cost_code_id)
+  const uncodedLines = lines.filter((line) => !line.cost_code_id && !line.budget_line_id)
   if (uncodedLines.length > 0) {
     return {
       budget_revision_cents: changeOrder.total_cents ?? lines.reduce((sum, line) => sum + calculateLineBudgetRevisionCents(line), 0),
@@ -105,7 +106,7 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
       gmp_impact: "none",
       budget_distributions: [],
       billing_status: "tracking_only",
-      posting_skipped_reason: "Budget posting skipped because one or more lines are not assigned to a cost code.",
+      posting_skipped_reason: "Budget posting skipped because one or more lines are not assigned to a cost code or budget line.",
       posted_at: new Date().toISOString(),
       posted_by: actorId ?? null,
     }
@@ -117,6 +118,7 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
     const gmpDeltaCents = calculateGmpDeltaCents(budgetRevisionCents, gmpImpact)
     return {
       cost_code_id: line.cost_code_id,
+      budget_line_id: line.budget_line_id,
       description: line.description,
       budget_revision_cents: budgetRevisionCents,
       allowance_draw_cents: line.allowance_cents ?? 0,
@@ -209,7 +211,8 @@ async function postBudgetRevisionForChangeOrder({
   const lineRows = financialImpact.budget_distributions.map((line, index) => ({
     org_id: changeOrder.org_id,
     budget_revision_id: revision.id,
-    cost_code_id: line.cost_code_id,
+    cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
     description: line.description,
     amount_cents: line.budget_revision_cents,
     allowance_draw_cents: line.allowance_draw_cents,
@@ -219,6 +222,7 @@ async function postBudgetRevisionForChangeOrder({
     sort_order: index,
     metadata: {
       source_line_index: line.source_line_index,
+      budget_line_id: line.budget_line_id ?? null,
       gmp_classification: line.gmp_classification,
       gmp_impact: line.gmp_impact,
       gmp_delta_cents: line.gmp_delta_cents,
@@ -453,6 +457,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     org_id: resolvedOrgId,
     change_order_id: data.id,
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",
@@ -1586,4 +1591,3 @@ export async function deleteChangeOrder({
 
   return existing
 }
-

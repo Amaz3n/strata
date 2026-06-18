@@ -3,6 +3,8 @@ import "server-only"
 import { randomUUID } from "node:crypto"
 
 import type {
+  AiArtifactGroup,
+  AiArtifactKpi,
   AiArtifactValue,
   AiChartPoint,
   AiChartType,
@@ -10,6 +12,8 @@ import type {
   AiSearchArtifactDataset,
   AiSearchExportLink,
 } from "@/lib/services/ai-search"
+import type { AgingBucket } from "@/lib/services/reports/aging"
+import type { ARAgingReport } from "@/lib/services/reports/ar-aging"
 import type { SearchEntityType, SearchResult } from "@/lib/services/search"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -377,6 +381,133 @@ function buildChartArtifact({
   }
 }
 
+// ---------- AR aging report ----------
+
+// Display order for AR aging buckets. `no_due_date` is only surfaced when it
+// carries an open balance; `paid` is never shown (those invoices aren't owing).
+const AR_AGING_DISPLAY: Array<{ key: Exclude<AgingBucket, "paid">; label: string }> = [
+  { key: "current", label: "Current" },
+  { key: "1_30", label: "1–30" },
+  { key: "31_60", label: "31–60" },
+  { key: "61_90", label: "61–90" },
+  { key: "90_plus", label: "90+" },
+  { key: "no_due_date", label: "No due date" },
+]
+
+function moneyFromCents(cents: number) {
+  return `$${Math.round(cents / 100).toLocaleString()}`
+}
+
+function buildArExportLinks(projectId?: string, asOf?: string): AiSearchExportLink[] {
+  const params = new URLSearchParams()
+  if (projectId) params.set("projectId", projectId)
+  if (asOf) params.set("asOf", asOf)
+  const suffix = params.toString() ? `&${params.toString()}` : ""
+  return [
+    { format: "csv", label: "Export CSV", href: `/api/reports/ar-aging/export?format=csv${suffix}` },
+    { format: "pdf", label: "Export PDF", href: `/api/reports/ar-aging/export?format=pdf${suffix}` },
+  ]
+}
+
+// Builds the full-bleed AR aging report artifact from the canonical
+// getArAgingReport result, so AI output matches the /reports figures exactly.
+export function buildArArtifact({
+  orgId,
+  report,
+  projectId,
+  projectName,
+}: {
+  orgId: string
+  report: ARAgingReport
+  projectId?: string
+  projectName?: string | null
+}): { artifact: AiSearchArtifact; exports: AiSearchExportLink[] } {
+  const title = projectName ? `AR aging report — ${projectName}` : "AR aging report"
+
+  // Only invoices that are still owing belong in the aging view.
+  const openRows = report.rows.filter((row) => row.bucket !== "paid" && row.open_balance_cents > 0)
+
+  const visibleBuckets = AR_AGING_DISPLAY.filter(
+    (entry) => entry.key !== "no_due_date" || report.totals[entry.key] > 0,
+  )
+
+  const points: AiChartPoint[] = visibleBuckets.map((entry) => ({
+    label: entry.label,
+    value: Math.round(report.totals[entry.key] / 100),
+  }))
+
+  const groups: AiArtifactGroup[] = visibleBuckets
+    .map((entry): AiArtifactGroup | null => {
+      const bucketRows = openRows.filter((row) => row.bucket === entry.key)
+      if (bucketRows.length === 0 && report.totals[entry.key] === 0) return null
+      return {
+        label: entry.label,
+        count: bucketRows.length,
+        total: moneyFromCents(report.totals[entry.key]),
+        columns: ["Invoice", "Customer", "Project", "Due", "Days past due", "Open balance"],
+        rows: bucketRows
+          .slice()
+          .sort((a, b) => b.open_balance_cents - a.open_balance_cents)
+          .map(
+            (row) =>
+              [
+                row.invoice_number ?? row.title ?? "—",
+                row.customer_name ?? "—",
+                row.project_name ?? "—",
+                row.due_date ?? "—",
+                row.days_past_due,
+                moneyFromCents(row.open_balance_cents),
+              ] satisfies AiArtifactValue[],
+          ),
+      }
+    })
+    .filter((group): group is AiArtifactGroup => group !== null)
+
+  const pastDueCents =
+    report.totals["1_30"] + report.totals["31_60"] + report.totals["61_90"] + report.totals["90_plus"]
+  const kpis: AiArtifactKpi[] = [
+    { label: "Total open", value: moneyFromCents(report.totals.total_open_cents) },
+    { label: "Open invoices", value: openRows.length.toLocaleString() },
+    { label: "Past due", value: moneyFromCents(pastDueCents), tone: pastDueCents > 0 ? "danger" : "neutral" },
+  ]
+
+  // Persist a row-per-invoice dataset so the datasetId contract holds (the
+  // visible CSV/PDF exports re-run the canonical report instead).
+  const dataset = storeArtifactDataset(
+    orgId,
+    title,
+    ["Invoice", "Customer", "Project", "Bucket", "Due", "Days past due", "Open balance (USD)"],
+    openRows.map(
+      (row) =>
+        [
+          row.invoice_number ?? row.title ?? "",
+          row.customer_name ?? "",
+          row.project_name ?? "",
+          AR_AGING_DISPLAY.find((entry) => entry.key === row.bucket)?.label ?? row.bucket,
+          row.due_date ?? "",
+          row.days_past_due,
+          Number((row.open_balance_cents / 100).toFixed(2)),
+        ] satisfies AiArtifactValue[],
+    ),
+  )
+
+  return {
+    artifact: {
+      kind: "report",
+      datasetId: dataset.id,
+      title,
+      reportType: "ar_aging",
+      summary: `${openRows.length.toLocaleString()} open ${
+        openRows.length === 1 ? "invoice" : "invoices"
+      } · ${moneyFromCents(report.totals.total_open_cents)} outstanding as of ${report.as_of}.`,
+      kpis,
+      chart: { type: "bar", points, valuePrefix: "$" },
+      groups,
+    },
+    exports: buildArExportLinks(projectId, report.as_of),
+  }
+}
+
 export function buildArtifactForStructuredIntent(
   orgId: string,
   intent: StructuredIntent,
@@ -460,7 +591,11 @@ export function buildArtifactForAnalyticsIntent({
 
   const valuePrefix = execution.metric === "count" ? undefined : "$"
   const titleSuffix = execution.project?.name ? ` - ${execution.project.name}` : ""
-  const title = `${execution.entityLabel.replace(/^./, (char) => char.toUpperCase())} analytics${titleSuffix}`
+  const baseTitle =
+    execution.groupBy === "aging"
+      ? "AR aging report"
+      : `${execution.entityLabel.replace(/^./, (char) => char.toUpperCase())} analytics`
+  const title = `${baseTitle}${titleSuffix}`
 
   if (execution.groupBy !== "none") {
     const chart = buildChartArtifact({
@@ -473,7 +608,29 @@ export function buildArtifactForAnalyticsIntent({
       })),
       valuePrefix,
     })
-    if (chart) return chart
+    if (chart) {
+      // Attach a breakdown list so the full-bleed surface can show a
+      // collapsible detail table beneath the chart.
+      const detailColumns =
+        execution.metric === "count" ? ["Group", "Records"] : ["Group", "Value", "Records"]
+      chart.artifact.groups = [
+        {
+          label: "Breakdown",
+          count: execution.buckets.length,
+          columns: detailColumns,
+          rows: execution.buckets.map((bucket) =>
+            execution.metric === "count"
+              ? ([bucket.label, bucket.count] satisfies AiArtifactValue[])
+              : ([
+                  bucket.label,
+                  `${valuePrefix ?? ""}${Math.round(bucket.metricValue).toLocaleString()}`,
+                  bucket.count,
+                ] satisfies AiArtifactValue[]),
+          ),
+        },
+      ]
+      return chart
+    }
   }
 
   const table = buildTableArtifact({

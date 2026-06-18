@@ -10,6 +10,7 @@ import { recordPayment, recordPaymentReversal, resolvePaymentReversal } from "@/
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { upsertSubscriptionFromStripe } from "@/lib/services/subscriptions"
 import { authorize } from "@/lib/services/authorization"
+import { logger } from "@/lib/logging/logger"
 import { syncStripeConnectedAccountFromStripeAccount } from "@/lib/services/stripe-connected-accounts"
 
 function resolveActorUserId(metadata: unknown): string | undefined {
@@ -48,7 +49,11 @@ export async function POST(request: NextRequest) {
   try {
     event = constructWebhookEvent(payload, signature)
   } catch (err) {
-    console.error("Webhook signature verification failed:", err)
+    logger.warn("stripe.webhook.signature_verification_failed", {
+      domain: "stripe",
+      integration: "stripe",
+      error: err,
+    })
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 })
   }
 
@@ -136,7 +141,9 @@ export async function POST(request: NextRequest) {
         })
 
         if (!decision.allowed) {
-          console.warn("Stripe webhook skipped payment side-effect due to authorization denial", {
+          logger.warn("stripe.webhook.payment_side_effect_denied", {
+            domain: "stripe",
+            integration: "stripe",
             eventId: event.id,
             actorUserId,
             orgId: domainEvent.org_id,
@@ -278,7 +285,15 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ received: true })
   } catch (error) {
-    console.error("Webhook processing error:", error)
+    logger.error("stripe.webhook.processing_failed", {
+      domain: "stripe",
+      integration: "stripe",
+      orgId,
+      eventId: event.id,
+      eventType: event.type,
+      connectedAccountId: typeof event.account === "string" ? event.account : undefined,
+      error,
+    })
     await supabase
       .from("webhook_events")
       .update({ status: "failed" })

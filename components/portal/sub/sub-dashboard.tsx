@@ -117,10 +117,10 @@ export function SubDashboard({
       {/* Financial Summary */}
       <SubFinancialSummary summary={data.financialSummary} />
 
-      {/* Contracts/Commitments */}
+      {/* Commitments */}
       <Card>
         <CardHeader className="pb-2 flex flex-row items-center justify-between">
-          <CardTitle className="text-base">My Contracts</CardTitle>
+          <CardTitle className="text-base">My Commitments</CardTitle>
           {data.commitments.length > 2 && (
             <Link
               href={`/s/${token}/commitments`}
@@ -133,7 +133,7 @@ export function SubDashboard({
         <CardContent className="space-y-3">
           {data.commitments.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No contracts assigned yet
+              No commitments assigned yet
             </p>
           ) : (
             data.commitments

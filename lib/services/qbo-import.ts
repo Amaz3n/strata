@@ -1832,6 +1832,66 @@ async function importVendorCredit(
   return { skipped: false as const, entityId: creditRow.id }
 }
 
+async function upsertPaymentAllocation({
+  supabase,
+  orgId,
+  paymentId,
+  invoiceId,
+  projectId,
+  amountCents,
+  metadata,
+}: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  paymentId: string
+  invoiceId: string
+  projectId?: string | null
+  amountCents: number
+  metadata: Record<string, any>
+}) {
+  const { data: existing, error: existingError } = await supabase
+    .from("payment_allocations")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("payment_id", paymentId)
+    .eq("invoice_id", invoiceId)
+    .maybeSingle()
+
+  if (existingError) {
+    throw new Error(`Failed to check payment allocation: ${existingError.message}`)
+  }
+
+  if (existing?.id) {
+    const { error } = await supabase
+      .from("payment_allocations")
+      .update({
+        project_id: projectId ?? null,
+        amount_cents: amountCents,
+        metadata,
+      })
+      .eq("org_id", orgId)
+      .eq("id", existing.id)
+    if (error) throw new Error(`Failed to update payment allocation: ${error.message}`)
+    return existing.id as string
+  }
+
+  const { data, error } = await supabase
+    .from("payment_allocations")
+    .insert({
+      org_id: orgId,
+      project_id: projectId ?? null,
+      payment_id: paymentId,
+      invoice_id: invoiceId,
+      amount_cents: amountCents,
+      metadata,
+    })
+    .select("id")
+    .single()
+
+  if (error || !data) throw new Error(error?.message ?? "Failed to create payment allocation")
+  return data.id as string
+}
+
 async function importPayment(ctx: ResolvedContext, client: QBOClient, connectionId: string, qboId: string) {
   const { supabase, orgId } = ctx
 
@@ -1861,28 +1921,157 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
   let created = 0
   let firstEntityId: string | null = null
 
-  // A payment might apply to multiple invoices. Create a payment record for each.
-  const paymentLines = (qbo.Line ?? []).filter((line: any) =>
-    line?.LinkedTxn?.some((txn: any) => String(txn?.TxnType ?? "").toLowerCase() === "invoice"),
-  ) as any[]
-  const shouldSplit = paymentLines.length > 1
+  const paymentApplications = extractLinkedDocAmounts(qbo, "invoice").filter((application) => application.amountCents > 0)
+  const isAllocatedPayment = paymentApplications.length > 1
 
-  for (const line of paymentLines) {
-    const linkedTxn = line.LinkedTxn.find((txn: any) => String(txn?.TxnType ?? "").toLowerCase() === "invoice")
-    if (!linkedTxn?.TxnId) continue
+  if (isAllocatedPayment) {
+    const { data: legacySplitRows } = await supabase
+      .from("payments")
+      .select("id, invoice_id")
+      .eq("org_id", orgId)
+      .eq("provider", "qbo")
+      .like("provider_payment_id", `qbo_payment_${qboId}_%`)
 
-    const invoice = invoiceByQboId.get(String(linkedTxn.TxnId))
-    if (!invoice) {
-      throw new Error(`Linked invoice ${linkedTxn.TxnId} not found in Arc. Import all linked invoices first.`)
+    if ((legacySplitRows ?? []).length > 0) {
+      firstEntityId = legacySplitRows?.[0]?.id ?? null
+      for (const row of legacySplitRows ?? []) {
+        await linkSyncRecord({
+          supabase,
+          orgId,
+          connectionId,
+          entityType: "payment",
+          entityId: row.id,
+          qboId,
+          pushable: false,
+          metadata: { source: "legacy_payment_split" },
+        })
+        if (row.invoice_id) {
+          await recalcInvoiceBalanceAndStatus({ supabase, orgId, invoiceId: row.invoice_id })
+        }
+      }
+      await markEventsResolved(supabase, qboId)
+      return { skipped: true as const, entityId: firstEntityId ?? undefined }
+    }
+  }
+
+  if (isAllocatedPayment) {
+    const totalCents = paymentApplications.reduce((sum, application) => sum + application.amountCents, 0)
+    const firstInvoice = invoiceByQboId.get(paymentApplications[0]?.qboId)
+    const providerPaymentId = qboImportProviderPaymentId({
+      kind: "payment",
+      qboId,
+      split: false,
+      lineId: "payment",
+    })
+
+    const { data: existingPayment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("provider", "qbo")
+      .eq("provider_payment_id", providerPaymentId)
+      .maybeSingle()
+
+    let paymentId = existingPayment?.id as string | undefined
+    if (!paymentId) {
+      const { data: paymentRow, error: paymentError } = await supabase
+        .from("payments")
+        .insert({
+          org_id: orgId,
+          project_id: firstInvoice?.project_id ?? null,
+          invoice_id: null,
+          amount_cents: totalCents,
+          gross_cents: totalCents,
+          net_cents: totalCents,
+          currency: "usd",
+          method: "other",
+          provider: "qbo",
+          provider_payment_id: providerPaymentId,
+          status: "succeeded",
+          received_at: receivedAt ? new Date(receivedAt).toISOString() : nowIso,
+          metadata: {
+            imported_from_qbo: true,
+            qbo_id: qboId,
+            qbo_imported_at: nowIso,
+            source: "payment_allocation",
+            allocation_count: paymentApplications.length,
+          },
+        })
+        .select("id")
+        .single()
+
+      if (paymentError || !paymentRow) throw new Error(paymentError?.message ?? "Failed to record payment")
+      paymentId = paymentRow.id
+      created += 1
+    }
+    if (!paymentId) throw new Error("Failed to resolve imported payment")
+
+    firstEntityId = paymentId
+
+    await linkSyncRecord({
+      supabase,
+      orgId,
+      connectionId,
+      entityType: "payment",
+      entityId: paymentId,
+      qboId,
+      pushable: false,
+      metadata: { source: "payment_allocation", allocation_count: paymentApplications.length },
+    })
+
+    for (const application of paymentApplications) {
+      const invoice = invoiceByQboId.get(application.qboId)
+      if (!invoice) {
+        throw new Error(`Linked invoice ${application.qboId} not found in Arc. Import all linked invoices first.`)
+      }
+      await upsertPaymentAllocation({
+        supabase,
+        orgId,
+        paymentId,
+        invoiceId: invoice.id,
+        projectId: invoice.project_id,
+        amountCents: application.amountCents,
+        metadata: {
+          imported_from_qbo: true,
+          qbo_id: qboId,
+          qbo_invoice_id: application.qboId,
+          qbo_imported_at: nowIso,
+        },
+      })
+      await recalcInvoiceBalanceAndStatus({ supabase, orgId, invoiceId: invoice.id })
     }
 
-    const amountCents = toCents(line.Amount)
+    await recordEvent({
+      orgId,
+      actorId: ctx.userId,
+      eventType: "payment_imported_from_qbo",
+      entityType: "payment",
+      entityId: paymentId,
+      payload: {
+        qbo_id: qboId,
+        amount_cents: totalCents,
+        source: "payment_allocation",
+        allocation_count: paymentApplications.length,
+      },
+    })
+
+    await markEventsResolved(supabase, qboId)
+    return { skipped: created === 0, entityId: firstEntityId ?? undefined }
+  }
+
+  for (const application of paymentApplications) {
+    const invoice = invoiceByQboId.get(application.qboId)
+    if (!invoice) {
+      throw new Error(`Linked invoice ${application.qboId} not found in Arc. Import all linked invoices first.`)
+    }
+
+    const amountCents = application.amountCents
     if (amountCents <= 0) continue
     const providerPaymentId = qboImportProviderPaymentId({
       kind: "payment",
       qboId,
-      split: shouldSplit,
-      lineId: String(line.Id || linkedTxn.TxnId),
+      split: false,
+      lineId: "payment",
     })
 
     const { data: existingPayment } = await supabase
@@ -1901,8 +2090,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
         entityType: "payment",
         entityId: existingPayment.id,
         qboId,
-        pushable: !shouldSplit,
-        metadata: shouldSplit ? { source: "payment_split", qbo_payment_line_id: String(line.Id || linkedTxn.TxnId) } : undefined,
+        pushable: true,
       })
       await recalcInvoiceBalanceAndStatus({ supabase, orgId, invoiceId: invoice.id })
       continue
@@ -1927,7 +2115,6 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
           imported_from_qbo: true,
           qbo_id: qboId,
           qbo_imported_at: nowIso,
-          ...(shouldSplit ? { source: "payment_split", qbo_payment_line_id: String(line.Id || linkedTxn.TxnId) } : {}),
         },
       })
       .select("id")
@@ -1944,8 +2131,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
       entityType: "payment",
       entityId: paymentRow.id,
       qboId,
-      pushable: !shouldSplit,
-      metadata: shouldSplit ? { source: "payment_split", qbo_payment_line_id: String(line.Id || linkedTxn.TxnId) } : undefined,
+      pushable: true,
     })
     await recalcInvoiceBalanceAndStatus({ supabase, orgId, invoiceId: invoice.id })
     await recordEvent({
@@ -1958,7 +2144,6 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
         qbo_id: qboId,
         amount_cents: amountCents,
         invoice_id: invoice.id,
-        ...(shouldSplit ? { source: "payment_split" } : {}),
       },
     })
 

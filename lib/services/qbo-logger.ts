@@ -1,3 +1,5 @@
+import { logger } from "@/lib/logging/logger"
+
 type QBOLogLevel = "info" | "warn" | "error"
 
 function sanitizeContext(context: Record<string, unknown>) {
@@ -14,19 +16,16 @@ function sanitizeContext(context: Record<string, unknown>) {
 export function logQBO(level: QBOLogLevel, event: string, context: Record<string, unknown> = {}) {
   const payload = {
     domain: "qbo",
-    event,
-    timestamp: new Date().toISOString(),
     ...sanitizeContext(context),
   }
-  const line = JSON.stringify(payload)
 
   if (level === "error") {
-    console.error(line)
+    logger.error(event, payload)
     return
   }
   if (level === "warn") {
-    console.warn(line)
+    logger.warn(event, payload)
     return
   }
-  console.log(line)
+  logger.info(event, payload)
 }

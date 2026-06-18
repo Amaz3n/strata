@@ -1,14 +1,20 @@
 import { NextResponse } from "next/server"
 
+import { logger } from "@/lib/logging/logger"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 
 export async function POST(request: Request) {
+  let orgId: string | undefined
+  let projectId: string | null = null
+
   try {
-    const { supabase, orgId } = await requireOrgContext()
+    const context = await requireOrgContext()
+    const supabase = context.supabase
+    orgId = context.orgId
     const formData = await request.formData()
-    const projectId =
+    projectId =
       typeof formData.get("projectId") === "string"
         ? (formData.get("projectId") as string)
         : null
@@ -49,7 +55,13 @@ export async function POST(request: Request) {
       provider: "r2",
     })
   } catch (error) {
-    console.error("[documents upload-file] failed:", error)
+    logger.error("documents.upload_file.failed", {
+      domain: "documents",
+      route: "/api/documents/upload-file",
+      orgId,
+      projectId,
+      error,
+    })
     return NextResponse.json({ error: "Failed to upload file." }, { status: 500 })
   }
 }

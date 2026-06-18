@@ -655,6 +655,7 @@ export interface Photo {
 export interface ChangeOrderLine {
   id?: string
   cost_code_id?: string | null
+  budget_line_id?: string | null
   description: string
   quantity: number
   unit?: string | null

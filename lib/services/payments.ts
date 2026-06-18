@@ -75,6 +75,23 @@ function mapPayment(row: any): Payment {
   }
 }
 
+function mapAllocatedPayment(row: any, invoiceId: string): Payment {
+  const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment
+  return mapPayment({
+    ...(payment ?? {}),
+    invoice_id: invoiceId,
+    amount_cents: row.amount_cents,
+    project_id: row.project_id ?? payment?.project_id,
+    metadata: {
+      ...(payment?.metadata ?? {}),
+      payment_allocation_id: row.id,
+      allocated_payment_id: row.payment_id,
+      allocated_amount_cents: row.amount_cents,
+      allocation_metadata: row.metadata ?? {},
+    },
+  })
+}
+
 function mapPaymentReversal(row: any): PaymentReversal {
   return {
     id: row.id,
@@ -1048,15 +1065,26 @@ export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) 
     resourceType: "invoice",
     resourceId: invoiceId,
   })
-  const { data, error } = await supabase
-    .from("payments")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("invoice_id", invoiceId)
-    .order("received_at", { ascending: false })
+  const [paymentsRes, allocationsRes] = await Promise.all([
+    supabase
+      .from("payments")
+      .select("*")
+      .eq("org_id", resolvedOrgId)
+      .eq("invoice_id", invoiceId),
+    supabase
+      .from("payment_allocations")
+      .select("*, payment:payments(*)")
+      .eq("org_id", resolvedOrgId)
+      .eq("invoice_id", invoiceId),
+  ])
 
-  if (error) throw new Error(`Failed to list payments: ${error.message}`)
-  return (data ?? []).map(mapPayment)
+  if (paymentsRes.error) throw new Error(`Failed to list payments: ${paymentsRes.error.message}`)
+  if (allocationsRes.error) throw new Error(`Failed to list payment allocations: ${allocationsRes.error.message}`)
+
+  return [
+    ...(paymentsRes.data ?? []).map(mapPayment),
+    ...(allocationsRes.data ?? []).map((row: any) => mapAllocatedPayment(row, invoiceId)),
+  ].sort((a, b) => String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")))
 }
 
 /**
@@ -1077,13 +1105,17 @@ export async function getInvoicePaymentActivity(invoiceId: string, orgId?: strin
     resourceId: invoiceId,
   })
 
-  const [paymentsRes, reversalsRes] = await Promise.all([
+  const [paymentsRes, allocationsRes, reversalsRes] = await Promise.all([
     supabase
       .from("payments")
       .select("*")
       .eq("org_id", resolvedOrgId)
-      .eq("invoice_id", invoiceId)
-      .order("received_at", { ascending: false }),
+      .eq("invoice_id", invoiceId),
+    supabase
+      .from("payment_allocations")
+      .select("*, payment:payments(*)")
+      .eq("org_id", resolvedOrgId)
+      .eq("invoice_id", invoiceId),
     supabase
       .from("payment_reversals")
       .select("*")
@@ -1093,10 +1125,14 @@ export async function getInvoicePaymentActivity(invoiceId: string, orgId?: strin
   ])
 
   if (paymentsRes.error) throw new Error(`Failed to list payments: ${paymentsRes.error.message}`)
+  if (allocationsRes.error) throw new Error(`Failed to list payment allocations: ${allocationsRes.error.message}`)
   if (reversalsRes.error) throw new Error(`Failed to list payment reversals: ${reversalsRes.error.message}`)
 
   return {
-    payments: (paymentsRes.data ?? []).map(mapPayment),
+    payments: [
+      ...(paymentsRes.data ?? []).map(mapPayment),
+      ...(allocationsRes.data ?? []).map((row: any) => mapAllocatedPayment(row, invoiceId)),
+    ].sort((a, b) => String(b.received_at ?? "").localeCompare(String(a.received_at ?? ""))),
     reversals: (reversalsRes.data ?? []).map(mapPaymentReversal),
   }
 }

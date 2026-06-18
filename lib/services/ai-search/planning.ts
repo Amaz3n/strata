@@ -112,7 +112,7 @@ Rules:
 - Use "list" for record lookup/open-ended listing requests.
 - Keep textQuery empty unless specific keywords materially constrain matching.
 - statuses must be lowercase snake_case when applicable.
-- Use groupBy "aging" for accounts-receivable aging / how-overdue / by-age questions about invoices (buckets unpaid invoices by days past due). Pair it with metric "sum_amount" (or "count") and chartType "bar".
+- Use groupBy "aging" for accounts-receivable aging / how-overdue / by-age questions about invoices (buckets unpaid invoices by days past due). AR aging is invoice-only: use entityType "invoice", metric "sum_amount", chartType "bar", and relatedEntityTypes [].
 - chartType: pick the clearest visualization for an aggregate, else null. Use "line" or "area" for time/month trends; "bar" for counts/amounts across categories, statuses, or aging buckets; "horizontalBar" when there are many categories or long labels (e.g. by project, by vendor); "pie" or "donut" for composition/share-of-total (few slices). Use null for "list" operations or single-number answers.
 - If question is unrelated to org data, return operation "none".`
 const QUERY_DOMAIN_CLASSIFIER_SYSTEM_PROMPT = `Classify the user's question into one domain and return strict JSON only.
@@ -1306,7 +1306,7 @@ function normalizePlannerChartType(raw: unknown, groupBy: AnalyticsGroupBy): AiC
     if (value === "doughnut") return "donut"
   }
   if (groupBy === "month") return "line"
-  if (groupBy === "status" || groupBy === "project") return "bar"
+  if (groupBy === "status" || groupBy === "project" || groupBy === "aging") return "bar"
   return undefined
 }
 
@@ -1366,15 +1366,18 @@ function parseQueryAgentPlan(raw: string, query: string, fallbackLimit: number):
         Boolean(ANALYTICS_ENTITY_CONFIGS[entityType]?.amountField)
 
       if (operation === "aggregate" || shouldForceAggregate) {
-        const metric = normalizePlannerAnalyticsMetric(parsed.metric, entityType, query)
         const groupBy = normalizePlannerAnalyticsGroupBy(parsed.groupBy, entityType, query)
+        const metric =
+          groupBy === "aging"
+            ? "sum_amount"
+            : normalizePlannerAnalyticsMetric(parsed.metric, entityType, query)
         const entityTokens = ENTITY_INTENTS.find((entity) => entity.type === entityType)?.tokens ?? [entityType]
         const rawText = typeof parsed.textQuery === "string" ? parsed.textQuery.trim() : ""
         const querySeed = rawText || stripIntentTokens(query, entityTokens, statuses)
         return {
           operation: "aggregate",
           entityType,
-          relatedEntityTypes,
+          relatedEntityTypes: groupBy === "aging" ? [] : relatedEntityTypes,
           metric,
           groupBy,
           statuses,

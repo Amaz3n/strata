@@ -276,7 +276,10 @@ export function planAiToolInvocation(query: string): PlannedAiToolInvocation | n
     }
   }
 
-  if (/\b(accounts receivable|ar|outstanding receivables|overdue ar)\b/.test(normalized)) {
+  if (
+    /\b(accounts receivable|ar|outstanding receivables|overdue ar)\b/.test(normalized) &&
+    !/\b(aging|age buckets?|aging buckets?|aging report|graph|chart|breakdown by age|by age)\b/.test(normalized)
+  ) {
     return {
       toolKey: "finance.ar_snapshot",
       reason: "AR snapshot intent detected.",

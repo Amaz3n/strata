@@ -54,10 +54,10 @@ export function CompanyInvoicesTab({
   const [selectedBill, setSelectedBill] = useState<VendorBillSummary | null>(null)
 
   const totals = useMemo(() => {
-    const contractTotal = commitments.reduce((sum, c) => sum + (c.total_cents ?? 0), 0)
+    const commitmentTotal = commitments.reduce((sum, c) => sum + (c.total_cents ?? 0), 0)
     const billed = vendorBills.reduce((sum, b) => sum + (b.total_cents ?? 0), 0)
     const paid = vendorBills.reduce((sum, b) => sum + (b.paid_cents ?? (b.status === "paid" ? b.total_cents ?? 0 : 0)), 0)
-    return { contractTotal, billed, paid, remaining: Math.max(0, contractTotal - billed) }
+    return { commitmentTotal, billed, paid, remaining: Math.max(0, commitmentTotal - billed) }
   }, [commitments, vendorBills])
 
   const billedByCommitment = useMemo(() => {
@@ -163,11 +163,11 @@ export function CompanyInvoicesTab({
             <TableRow className="divide-x">
               <TableHead className="px-4 py-3">Invoice date</TableHead>
               <TableHead className="px-4 py-3">Project</TableHead>
-              <TableHead className="px-4 py-3">Contract</TableHead>
+              <TableHead className="px-4 py-3">Commitment</TableHead>
               <TableHead className="px-4 py-3">Invoice No.</TableHead>
               <TableHead className="px-4 py-3">Status</TableHead>
               <TableHead className="text-right px-4 py-3">Amount</TableHead>
-              <TableHead className="text-right px-4 py-3">Contract remaining</TableHead>
+              <TableHead className="text-right px-4 py-3">Commitment remaining</TableHead>
               <TableHead className="w-32 px-4 py-3">Method</TableHead>
               <TableHead className="w-56 px-4 py-3">Payment ref</TableHead>
               <TableHead className="w-32 px-4 py-3 text-right">Attachments</TableHead>

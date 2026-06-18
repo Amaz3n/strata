@@ -54,7 +54,9 @@ function formatMoneyFromCents(cents?: number | null) {
 
 function paymentSourceLabel(payment: Payment): string {
   const metaSource = (payment.metadata as Record<string, any> | undefined)?.source
+  const hasAllocation = Boolean((payment.metadata as Record<string, any> | undefined)?.payment_allocation_id)
   if (payment.provider === "qbo") {
+    if (hasAllocation || metaSource === "payment_allocation") return "QuickBooks allocation"
     return metaSource === "client_deposit" ? "Client deposit · QuickBooks" : "QuickBooks"
   }
   if (payment.provider === "stripe") return "Online payment"

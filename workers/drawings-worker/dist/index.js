@@ -5,14 +5,16 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_http_1 = __importDefault(require("node:http"));
+const observability_1 = require("./observability");
 const worker_1 = require("./worker");
+(0, observability_1.initObservability)();
 async function main() {
     const worker = new worker_1.Worker();
     const processOnce = process.argv.includes('--once');
     const processPath = process.env.DRAWINGS_WORKER_PROCESS_PATH ?? '/process';
     if (processOnce) {
         const summary = await worker.processAvailableJobs(readProcessOptionsFromEnv());
-        console.log('✅ One-off run completed:', summary);
+        observability_1.workerLogger.info('drawings_worker.once.completed', { summary });
         return;
     }
     const port = Number(process.env.PORT ?? 8080);
@@ -39,7 +41,7 @@ async function main() {
             sendJson(res, 404, { ok: false, error: 'Not found' });
         }
         catch (error) {
-            console.error('💥 Request failed:', error);
+            observability_1.workerLogger.error('drawings_worker.request.failed', { error });
             sendJson(res, 500, {
                 ok: false,
                 error: error instanceof Error ? error.message : String(error),
@@ -47,24 +49,28 @@ async function main() {
         }
     });
     server.listen(port, () => {
-        console.log(`🛰️  Drawings worker listening on port ${port}`);
-        console.log(`🛰️  Process path: ${processPath}`);
+        observability_1.workerLogger.info('drawings_worker.server.started', { port, processPath });
     });
     async function shutdown(signal) {
-        console.log(`🛑 Received ${signal}, shutting down gracefully...`);
+        observability_1.workerLogger.info('drawings_worker.server.shutdown', { signal });
         server.close();
+        await observability_1.workerLogger.flush();
         process.exit(0);
     }
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('uncaughtException', async (error) => {
-        console.error('💥 Uncaught exception, shutting down:', error);
+        observability_1.workerLogger.error('drawings_worker.uncaught_exception', { error });
         await shutdown('uncaughtException');
+    });
+    process.on('unhandledRejection', async (reason) => {
+        observability_1.workerLogger.error('drawings_worker.unhandled_rejection', { error: reason });
+        await shutdown('unhandledRejection');
     });
 }
 main().catch((error) => {
-    console.error('💥 Fatal error:', error);
-    process.exit(1);
+    observability_1.workerLogger.error('drawings_worker.fatal', { error });
+    observability_1.workerLogger.flush().finally(() => process.exit(1));
 });
 function readProcessOptions(body) {
     const fromBody = typeof body === 'object' && body !== null ? body : {};

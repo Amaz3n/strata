@@ -129,6 +129,67 @@ function pickSharedLineValue(values: Array<string | null | undefined>): string |
   return distinct.size === 1 ? [...distinct][0] : undefined
 }
 
+async function buildBillLinesFromCommitment({
+  supabase,
+  orgId,
+  commitmentId,
+  billAmountCents,
+  projectId,
+  fallbackDescription,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  commitmentId: string
+  billAmountCents: number
+  projectId: string | null
+  fallbackDescription: string
+}) {
+  const { data: lines, error } = await supabase
+    .from("commitment_lines")
+    .select("cost_code_id, budget_line_id, description, quantity, unit_cost_cents, scheduled_value_cents, sort_order")
+    .eq("org_id", orgId)
+    .eq("commitment_id", commitmentId)
+    .order("sort_order", { ascending: true })
+
+  if (error) {
+    throw new Error(`Failed to inherit commitment coding: ${error.message}`)
+  }
+
+  const commitmentLines = lines ?? []
+  if (commitmentLines.length === 0) return null
+
+  const basis = commitmentLines.map((line) => {
+    const scheduled = Number(line.scheduled_value_cents ?? 0)
+    const lineTotal = Math.round(Number(line.unit_cost_cents ?? 0) * Number(line.quantity ?? 1))
+    return Math.max(0, scheduled || lineTotal)
+  })
+  const basisTotal = basis.reduce((sum, amount) => sum + amount, 0)
+  if (basisTotal <= 0) return null
+
+  let allocated = 0
+  return commitmentLines.map((line, index) => {
+    const amountCents =
+      index === commitmentLines.length - 1
+        ? billAmountCents - allocated
+        : Math.round((basis[index] / basisTotal) * billAmountCents)
+    allocated += amountCents
+    return {
+      cost_code_id: line.cost_code_id ?? null,
+      budget_line_id: line.budget_line_id ?? null,
+      description: line.description?.trim() || fallbackDescription,
+      amount_cents: amountCents,
+      project_id: projectId,
+      billable_to_customer: false,
+      qbo_expense_account_id: undefined,
+      qbo_expense_account_name: undefined,
+      qbo_ap_account_id: undefined,
+      qbo_ap_account_name: undefined,
+      qbo_vendor_id: undefined,
+      qbo_vendor_name: undefined,
+    }
+  })
+}
+
 export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: string, paymentRows?: any[]): VendorBillSummary {
   const metadata = row?.metadata ?? {}
   const payableType: PayableKind = metadata.source === "vendor_credit" ? "vendor_credit" : "bill"
@@ -743,22 +804,38 @@ export async function updateVendorBillStatus({
       existingLineCount === 0 || (existingLineCount === 1 && Boolean(parsed.cost_code_id))
 
     if (shouldSynthesizeSingleLine) {
-      actualLines = [
-        {
-          cost_code_id: parsed.cost_code_id ?? null,
-          budget_line_id: null,
-          description: existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill",
-          amount_cents: totalCents,
-          project_id: existing.project_id ?? null,
-          billable_to_customer: false,
-          qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
-          qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
-          qbo_ap_account_id: parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
-          qbo_ap_account_name: parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
-          qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
-          qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
-        },
-      ]
+      const fallbackDescription = existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"
+      const inheritedLines =
+        !parsed.cost_code_id && existing.commitment_id
+          ? await buildBillLinesFromCommitment({
+              supabase,
+              orgId: resolvedOrgId,
+              commitmentId: existing.commitment_id,
+              billAmountCents: totalCents,
+              projectId: existing.project_id ?? null,
+              fallbackDescription,
+            })
+          : null
+
+      actualLines =
+        inheritedLines && inheritedLines.length > 0
+          ? inheritedLines
+          : [
+              {
+                cost_code_id: parsed.cost_code_id ?? null,
+                budget_line_id: null,
+                description: fallbackDescription,
+                amount_cents: totalCents,
+                project_id: existing.project_id ?? null,
+                billable_to_customer: false,
+                qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
+                qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
+                qbo_ap_account_id: parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
+                qbo_ap_account_name: parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
+                qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
+                qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
+              },
+            ]
     }
   }
 

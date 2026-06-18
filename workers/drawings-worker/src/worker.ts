@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { processDrawingSet } from './jobs/process-drawing-set';
 import { generateDrawingTiles } from './jobs/generate-drawing-tiles';
+import { workerLogger } from './observability';
 
 export interface Job {
   job_id: number | string;
@@ -83,7 +84,11 @@ export class Worker {
 
       summary.batches += 1;
       summary.claimed += jobs.length;
-      console.log(`📋 Processing batch ${batch + 1}/${maxBatches} (${jobs.length} jobs)`);
+      workerLogger.info('drawings_worker.batch.claimed', {
+        batch: batch + 1,
+        maxBatches,
+        jobCount: jobs.length,
+      });
 
       const results = await Promise.all(jobs.map((job) => this.processJob(job)));
       for (const ok of results) {
@@ -119,7 +124,12 @@ export class Worker {
 
   private async processJob(job: Job): Promise<boolean> {
     const startTime = Date.now();
-    console.log(`🔄 Processing job ${job.job_id} (${job.job_type})`);
+    workerLogger.info('drawings_worker.job.started', {
+      orgId: job.org_id,
+      jobId: job.job_id,
+      jobType: job.job_type,
+      retryCount: job.retry_count,
+    });
 
     try {
       switch (job.job_type) {
@@ -145,18 +155,33 @@ export class Worker {
         .eq('id', job.job_id);
 
       const duration = Date.now() - startTime;
-      console.log(`✅ Completed job ${job.job_id} in ${duration}ms`);
+      workerLogger.info('drawings_worker.job.completed', {
+        orgId: job.org_id,
+        jobId: job.job_id,
+        jobType: job.job_type,
+        durationMs: duration,
+      });
       return true;
 
     } catch (error) {
       const duration = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      console.error(`❌ Failed job ${job.job_id} after ${duration}ms:`, errorMessage);
-
       // Handle retry logic
       const newRetryCount = job.retry_count + 1;
       const shouldRetry = newRetryCount < 3; // Max 3 retries
+
+      workerLogger.error('drawings_worker.job.failed', {
+        orgId: job.org_id,
+        jobId: job.job_id,
+        jobType: job.job_type,
+        durationMs: duration,
+        retryCount: job.retry_count,
+        nextRetryCount: newRetryCount,
+        shouldRetry,
+        error,
+        errorMessage,
+      });
 
       await this.supabase
         .from('outbox')

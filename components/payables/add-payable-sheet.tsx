@@ -377,7 +377,7 @@ export function AddPayableSheet({
               <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Source Commitment</Label>
               <Select value={commitmentId} onValueChange={handleCommitmentChange}>
                 <SelectTrigger className="h-11">
-                  <SelectValue placeholder={loadingCommitments ? "Loading..." : "Select commitment or contract"} />
+                  <SelectValue placeholder={loadingCommitments ? "Loading..." : "Select commitment"} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NO_COMMITMENT}>

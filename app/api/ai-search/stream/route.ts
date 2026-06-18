@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server"
 
+import { logger } from "@/lib/logging/logger"
 import { askAiSearch, type AiSearchTraceEvent } from "@/lib/services/ai-search"
 
 export const runtime = "nodejs"
@@ -104,6 +105,15 @@ function buildStreamResponse(request: NextRequest, payload: StreamPayload) {
 
         send("result", response)
       } catch (error: any) {
+        logger.error("ai_search.stream.failed", {
+          domain: "ai-search",
+          route: "/api/ai-search/stream",
+          sessionId: payload.sessionId,
+          projectId: payload.currentProjectId,
+          mode: payload.mode,
+          queryLength: payload.query.length,
+          error,
+        })
         send("error", {
           message: error?.message ?? "Unable to stream AI response.",
         })
