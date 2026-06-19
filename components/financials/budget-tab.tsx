@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition, type CSSProperties } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   AlertTriangle,
@@ -8,6 +9,8 @@ import {
   Info,
   ListOrdered,
   MoreHorizontal,
+  LineChart,
+  Lock,
   Plus,
   Sparkles,
   Trash2,
@@ -25,13 +28,17 @@ import {
   acknowledgeVarianceAlertAction,
   applyBudgetFromEstimateAction,
   createProjectBudgetAction,
+  lockBudgetBaselineAction,
   listBudgetEstimateSourcesAction,
   proposeBudgetFromEstimateAction,
   replaceProjectBudgetLinesAction,
   runVarianceScanAction,
   updateCostCodeProgressAction,
 } from "@/app/(app)/projects/[id]/budget/actions"
-import { fetchBudgetBucketCommitmentsAction } from "@/app/(app)/projects/[id]/financials/actions"
+import {
+  fetchBudgetBucketChangeOrdersAction,
+  fetchBudgetBucketCommitmentsAction,
+} from "@/app/(app)/projects/[id]/financials/actions"
 import {
   createCommitmentLineAction,
   createProjectCommitmentAction,
@@ -120,6 +127,7 @@ type CommitmentCreateDraft = {
 interface BudgetTabProps {
   projectId: string
   project: any // Project
+  contractValueCents?: number
   budgetData: any | null
   costCodes: CostCode[]
   costCodesEnabled?: boolean
@@ -334,6 +342,7 @@ function CommitmentStatusBadge({ status }: { status?: string }) {
 export function BudgetTab({
   projectId,
   project,
+  contractValueCents,
   budgetData,
   costCodes,
   costCodesEnabled = true,
@@ -369,6 +378,7 @@ export function BudgetTab({
   const [onlyAttention, setOnlyAttention] = useState(false)
   const [estimateImportOpen, setEstimateImportOpen] = useState(false)
   const [csvImportOpen, setCsvImportOpen] = useState(false)
+  const [cashFlowOpen, setCashFlowOpen] = useState(false)
 
   // Restore persisted view preference once on mount.
   useEffect(() => {
@@ -618,6 +628,7 @@ export function BudgetTab({
         category?: string | null
         lines: EditableBudgetLine[]
         budgetCents: number
+        baselineCents: number | null
         coAdjustmentCents: number
         adjustedBudgetCents: number
         committedCents: number
@@ -652,6 +663,7 @@ export function BudgetTab({
         category: code?.category ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: 0,
+        baselineCents: breakdown?.baseline_cents ?? null,
         coAdjustmentCents: breakdown?.co_adjustment_cents ?? 0,
         adjustedBudgetCents: breakdown?.adjusted_budget_cents ?? 0,
         committedCents: breakdown?.committed_cents ?? 0,
@@ -687,6 +699,7 @@ export function BudgetTab({
         category: code?.category ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: breakdown.budget_cents ?? 0,
+        baselineCents: breakdown.baseline_cents ?? null,
         coAdjustmentCents: breakdown.co_adjustment_cents ?? 0,
         adjustedBudgetCents: breakdown.adjusted_budget_cents ?? 0,
         committedCents: breakdown.committed_cents ?? 0,
@@ -740,6 +753,7 @@ export function BudgetTab({
     return filteredUnifiedRows.reduce(
       (acc, row) => {
         acc.budgetCents += row.budgetCents
+        acc.baselineCents += row.baselineCents ?? row.budgetCents
         acc.coAdjustmentCents += row.coAdjustmentCents
         acc.adjustedBudgetCents += row.adjustedBudgetCents
         acc.committedCents += row.committedCents
@@ -753,6 +767,7 @@ export function BudgetTab({
       },
       {
         budgetCents: 0,
+        baselineCents: 0,
         coAdjustmentCents: 0,
         adjustedBudgetCents: 0,
         committedCents: 0,
@@ -868,7 +883,10 @@ export function BudgetTab({
   }, [activeBucket, costCodesEnabled, projectId])
 
   // ---------- Render ----------
+  // The real contract total comes from the project's contract record (passed in
+  // as contractValueCents). Fall back to legacy project fields, then 0.
   const contractValue =
+    contractValueCents ??
     project?.billing_contract?.total_cents ??
     project?.total_contract_value_cents ??
     0
@@ -883,6 +901,19 @@ export function BudgetTab({
   // spent + (simple: left,%spent | detailed: original,co,ctc,eac,vac,%comp) + actions.
   const tableColCount =
     (costCodesEnabled ? 1 : 0) + 4 + (isDetailed ? 6 : 2) + 1
+
+  const baselineLockedAt: string | null = summary?.baseline_locked_at ?? null
+
+  const lockBaseline = () =>
+    startTransition(async () => {
+      try {
+        await lockBudgetBaselineAction(projectId)
+        toast({ title: baselineLockedAt ? "Baseline updated" : "Baseline locked" })
+        router.refresh()
+      } catch (error) {
+        toast({ title: "Unable to lock baseline", description: (error as Error).message })
+      }
+    })
 
   return (
     <div className="-mx-4 -mt-6 -mb-4 flex flex-col bg-card">
@@ -1065,6 +1096,15 @@ export function BudgetTab({
             <span className="hidden sm:inline">need attention</span>
           </Button>
         )}
+        {baselineLockedAt && (
+          <span
+            className="hidden items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-muted-foreground lg:inline-flex"
+            title={`Baseline locked ${new Date(baselineLockedAt).toLocaleString()}`}
+          >
+            <Lock className="h-3 w-3" />
+            Baseline {new Date(baselineLockedAt).toLocaleDateString()}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {editable && (
             <Button size="sm" onClick={openCreateBucket}>
@@ -1096,6 +1136,14 @@ export function BudgetTab({
               <DropdownMenuItem onClick={exportBudgetCsv} disabled={unifiedRows.length === 0}>
                 <Download className="h-4 w-4" />
                 Export CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={lockBaseline} disabled={isPending || unifiedRows.length === 0}>
+                <Lock className="h-4 w-4" />
+                {baselineLockedAt ? "Re-baseline budget" : "Lock budget baseline"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setCashFlowOpen(true)} disabled={unifiedRows.length === 0}>
+                <LineChart className="h-4 w-4" />
+                Cash flow forecast
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1306,7 +1354,7 @@ export function BudgetTab({
                     {isDetailed && (
                       <>
                         <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
-                          <span className="text-sm">{formatCurrency(row.budgetCents)}</span>
+                          <span className="text-sm">{formatCurrency(row.baselineCents ?? row.budgetCents)}</span>
                         </TableCell>
                         <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
                           <span className="text-sm">{formatCurrency(row.coAdjustmentCents)}</span>
@@ -1405,7 +1453,7 @@ export function BudgetTab({
                 {isDetailed && (
                   <>
                     <TableCell className="hidden px-4 text-right text-sm tabular-nums xl:table-cell">
-                      {formatCurrency(columnTotals.budgetCents)}
+                      {formatCurrency(columnTotals.baselineCents)}
                     </TableCell>
                     <TableCell className="hidden px-4 text-right text-sm tabular-nums xl:table-cell">
                       {formatCurrency(columnTotals.coAdjustmentCents)}
@@ -1483,6 +1531,7 @@ export function BudgetTab({
         }}
         commitments={activeBucketCommitments}
         commitmentsLoading={activeBucketCommitmentsLoading}
+        costCodesEnabled={costCodesEnabled}
         onEditBucket={() => activeBucket && openEditBucket(activeBucket)}
         onCreateCommitment={() => openCreateCommitment(activeBucket)}
         onEditCommitment={(commitment) => setEditCommitment(commitment)}
@@ -1556,6 +1605,15 @@ export function BudgetTab({
         hasExistingBudget={lines.length > 0}
         costCodesEnabled={costCodesEnabled}
         costCodes={costCodeOptions}
+      />
+      <CashFlowDialog
+        open={cashFlowOpen}
+        onOpenChange={setCashFlowOpen}
+        startDate={project?.start_date ?? null}
+        endDate={project?.end_date ?? null}
+        remainingCostCents={summary?.total_ctc_cents ?? 0}
+        contractValueCents={contractValue}
+        contractBilledCents={contractBilled}
       />
     </div>
   )
@@ -2190,6 +2248,174 @@ function CsvImportDialog({
   )
 }
 
+type CashFlowRow = {
+  label: string
+  spendCents: number
+  billingCents: number
+  netCents: number
+  cumulativeCents: number
+}
+
+/**
+ * Straight-line cash-flow forecast. Spreads remaining cost (cost-to-complete)
+ * and remaining billing evenly across the months left in the project schedule,
+ * then shows net and cumulative cash position so crunch months stand out. This
+ * is a projection, not a committed draw schedule.
+ */
+function CashFlowDialog({
+  open,
+  onOpenChange,
+  startDate,
+  endDate,
+  remainingCostCents,
+  contractValueCents,
+  contractBilledCents,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  startDate: string | null
+  endDate: string | null
+  remainingCostCents: number
+  contractValueCents: number
+  contractBilledCents: number
+}) {
+  const forecast = useMemo(() => {
+    if (!endDate) return null
+    const end = new Date(endDate)
+    if (Number.isNaN(end.getTime())) return null
+
+    const now = new Date()
+    const start = startDate ? new Date(startDate) : now
+    const firstMonth = new Date(Math.max(now.getTime(), Number.isNaN(start.getTime()) ? now.getTime() : start.getTime()))
+    firstMonth.setDate(1)
+    firstMonth.setHours(0, 0, 0, 0)
+    const lastMonth = new Date(end.getFullYear(), end.getMonth(), 1)
+    if (lastMonth < firstMonth) return null
+
+    const months: Date[] = []
+    const cursor = new Date(firstMonth)
+    while (cursor <= lastMonth && months.length < 60) {
+      months.push(new Date(cursor))
+      cursor.setMonth(cursor.getMonth() + 1)
+    }
+    const n = months.length
+    if (n === 0) return null
+
+    const remainingBilling = Math.max(0, contractValueCents - contractBilledCents)
+    const spendPer = Math.round(remainingCostCents / n)
+    const billPer = Math.round(remainingBilling / n)
+
+    let cumulative = 0
+    const rows: CashFlowRow[] = months.map((month, index) => {
+      const isLast = index === n - 1
+      const spend = isLast ? remainingCostCents - spendPer * (n - 1) : spendPer
+      const billing = isLast ? remainingBilling - billPer * (n - 1) : billPer
+      const net = billing - spend
+      cumulative += net
+      return {
+        label: month.toLocaleDateString(undefined, { month: "short", year: "2-digit" }),
+        spendCents: spend,
+        billingCents: billing,
+        netCents: net,
+        cumulativeCents: cumulative,
+      }
+    })
+
+    const peakSpend = Math.max(1, ...rows.map((row) => row.spendCents))
+    const lowestCumulative = Math.min(...rows.map((row) => row.cumulativeCents))
+    return { rows, peakSpend, remainingBilling, lowestCumulative }
+  }, [startDate, endDate, remainingCostCents, contractValueCents, contractBilledCents])
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>Cash flow forecast</DialogTitle>
+          <DialogDescription>
+            Remaining cost and billing spread evenly across the months left in the schedule. A
+            projection to spot crunch months — not a committed draw schedule.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto">
+          {!forecast ? (
+            <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+              Add project start and end dates to forecast cash flow.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {forecast.lowestCumulative < 0 && (
+                <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  Projected cash dips to {formatCurrency(forecast.lowestCumulative)} — you may need to
+                  bill earlier or carry the gap.
+                </div>
+              )}
+              <div className="overflow-hidden rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="px-4">Month</TableHead>
+                      <TableHead className="px-4">Spend</TableHead>
+                      <TableHead className="w-[110px] px-4 text-right">Billing</TableHead>
+                      <TableHead className="w-[110px] px-4 text-right">Net</TableHead>
+                      <TableHead className="w-[120px] px-4 text-right">Cumulative</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {forecast.rows.map((row) => (
+                      <TableRow key={row.label}>
+                        <TableCell className="px-4 text-sm font-medium">{row.label}</TableCell>
+                        <TableCell className="px-4">
+                          <div className="flex items-center gap-2">
+                            <div className="h-1.5 w-full max-w-[120px] overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-foreground/60"
+                                style={{ width: `${Math.round((row.spendCents / forecast.peakSpend) * 100)}%` }}
+                              />
+                            </div>
+                            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                              {formatCurrency(row.spendCents, { compact: true })}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-4 text-right text-sm tabular-nums text-muted-foreground">
+                          {formatCurrency(row.billingCents, { compact: true })}
+                        </TableCell>
+                        <TableCell className="px-4 text-right text-sm tabular-nums">
+                          <span className={cn(row.netCents < 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400")}>
+                            {formatCurrency(row.netCents, { compact: true })}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-4 text-right text-sm font-medium tabular-nums">
+                          <span className={cn(row.cumulativeCents < 0 ? "text-destructive" : "")}>
+                            {formatCurrency(row.cumulativeCents, { compact: true })}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Based on {formatCurrency(remainingCostCents)} remaining cost and{" "}
+                {formatCurrency(forecast.remainingBilling)} left to bill over {forecast.rows.length}{" "}
+                {forecast.rows.length === 1 ? "month" : "months"}.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end border-t pt-3">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function BudgetBucketSheet({
   projectId,
   bucket,
@@ -2197,6 +2423,7 @@ function BudgetBucketSheet({
   onOpenChange,
   commitments,
   commitmentsLoading,
+  costCodesEnabled,
   onEditBucket,
   onCreateCommitment,
   onEditCommitment,
@@ -2213,6 +2440,9 @@ function BudgetBucketSheet({
     category?: string | null
     lines: EditableBudgetLine[]
     budgetCents: number
+    coAdjustmentCents: number
+    adjustedBudgetCents: number
+    baselineCents?: number | null
     committedCents: number
     actualCents: number
     varianceCents: number
@@ -2226,6 +2456,7 @@ function BudgetBucketSheet({
   onOpenChange: (open: boolean) => void
   commitments: Array<CommitmentSummary & { allocated_cents: number; matching_line_count: number }>
   commitmentsLoading: boolean
+  costCodesEnabled: boolean
   onEditBucket: () => void
   onCreateCommitment: () => void
   onEditCommitment: (commitment: CommitmentSummary) => void
@@ -2233,6 +2464,41 @@ function BudgetBucketSheet({
   onCommitmentFiles: (commitment: CommitmentSummary) => void
   onCommitmentSignature: (commitment: CommitmentSummary) => void
 }) {
+  const [changeOrders, setChangeOrders] = useState<
+    Array<{ id: string; title: string; status: string; approved_at: string | null; amount_cents: number }>
+  >([])
+  const [changeOrdersLoading, setChangeOrdersLoading] = useState(false)
+
+  const bucketCoKey = costCodesEnabled ? bucket?.costCodeId ?? null : bucket?.key ?? null
+  const hasCoAdjustment = (bucket?.coAdjustmentCents ?? 0) !== 0
+
+  // Load the change orders that adjusted this bucket when the sheet opens.
+  useEffect(() => {
+    if (!open || !bucket || !hasCoAdjustment || !bucketCoKey) {
+      setChangeOrders([])
+      return
+    }
+    let cancelled = false
+    setChangeOrdersLoading(true)
+    fetchBudgetBucketChangeOrdersAction(
+      projectId,
+      bucketCoKey,
+      costCodesEnabled ? "cost_code" : "budget_line",
+    )
+      .then((rows) => {
+        if (!cancelled) setChangeOrders(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setChangeOrders([])
+      })
+      .finally(() => {
+        if (!cancelled) setChangeOrdersLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, bucket, bucketCoKey, costCodesEnabled, hasCoAdjustment, projectId])
+
   const remainingToBuyCents = Math.max(
     0,
     (bucket?.budgetCents ?? 0) - (bucket?.committedCents ?? 0),
@@ -2267,6 +2533,15 @@ function BudgetBucketSheet({
               <div className="rounded-lg border bg-card p-4">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Budget</p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums">{formatCurrency(bucket?.budgetCents)}</p>
+                {bucket && bucket.baselineCents != null && bucket.baselineCents !== bucket.budgetCents && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Original {formatCurrency(bucket.baselineCents)} ·{" "}
+                    <span className={cn(bucket.budgetCents - bucket.baselineCents > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400")}>
+                      {bucket.budgetCents - bucket.baselineCents > 0 ? "+" : ""}
+                      {formatCurrency(bucket.budgetCents - bucket.baselineCents)} since baseline
+                    </span>
+                  </p>
+                )}
               </div>
               <div className="rounded-lg border bg-card p-4">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Committed</p>
@@ -2325,6 +2600,59 @@ function BudgetBucketSheet({
                 </div>
               </div>
             </div>
+
+            {hasCoAdjustment && (
+              <div className="space-y-3">
+                <div>
+                  <h4 className="text-sm font-semibold">Change orders</h4>
+                  <p className="text-xs text-muted-foreground">
+                    Approved change orders that moved this line&apos;s budget.
+                  </p>
+                </div>
+                {changeOrdersLoading ? (
+                  <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+                    Loading change orders…
+                  </div>
+                ) : changeOrders.length > 0 ? (
+                  <div className="overflow-hidden rounded-lg border">
+                    {changeOrders.map((co) => (
+                      <Link
+                        key={co.id}
+                        href={`/projects/${projectId}/change-orders?co=${co.id}`}
+                        className="flex items-center justify-between gap-3 border-b px-4 py-2.5 text-sm last:border-b-0 hover:bg-muted/40"
+                      >
+                        <div className="min-w-0">
+                          <span className="block truncate font-medium">{co.title}</span>
+                          {co.approved_at && (
+                            <span className="block text-xs text-muted-foreground">
+                              Approved {new Date(co.approved_at).toLocaleDateString()}
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={cn(
+                            "shrink-0 tabular-nums",
+                            co.amount_cents < 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400",
+                          )}
+                        >
+                          {co.amount_cents > 0 ? "+" : ""}
+                          {formatCurrency(co.amount_cents)}
+                        </span>
+                      </Link>
+                    ))}
+                    <div className="flex items-center justify-between bg-muted/30 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      <span>Total adjustment</span>
+                      <span className="tabular-nums">{formatCurrency(bucket?.coAdjustmentCents ?? 0)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed px-4 py-3 text-xs text-muted-foreground">
+                    This line&apos;s budget was adjusted by {formatCurrency(bucket?.coAdjustmentCents ?? 0)} via change
+                    orders or posted revisions.
+                  </div>
+                )}
+              </div>
+            )}
 
             {bucket?.costCodeId && (
               <CostCodeProgressEditor

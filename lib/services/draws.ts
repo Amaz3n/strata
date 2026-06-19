@@ -208,8 +208,14 @@ export async function linkInvoiceToDraw({
   const metadata = (invoice.metadata ?? {}) as Record<string, any>
   const existingSourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
 
-  if (existingSourceType && existingSourceType !== "manual" && existingSourceType !== "draw" && existingSourceType !== "qbo") {
-    throw new Error(`This invoice was generated from a ${existingSourceType.replace(/_/g, " ")} and can't be linked to a draw.`)
+  if (
+    existingSourceType === "change_order" ||
+    existingSourceType === "fee" ||
+    existingSourceType === "from_costs" ||
+    metadata.source_change_order_id
+  ) {
+    const sourceLabel = existingSourceType ? existingSourceType.replace(/_/g, " ") : "different source"
+    throw new Error(`This invoice was generated from a ${sourceLabel} and can't be linked to a draw.`)
   }
 
   const nextStatus = drawStatusForInvoice(invoice.status)

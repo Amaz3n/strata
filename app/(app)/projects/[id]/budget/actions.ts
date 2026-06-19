@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
-import { createBudget, duplicateBudgetVersion, replaceBudgetLines, updateBudgetStatus, acknowledgeVarianceAlert, checkVarianceAlerts, updateCostCodeProgress } from "@/lib/services/budgets"
+import { createBudget, duplicateBudgetVersion, lockBudgetBaseline, replaceBudgetLines, updateBudgetStatus, acknowledgeVarianceAlert, checkVarianceAlerts, updateCostCodeProgress } from "@/lib/services/budgets"
 import {
   buildBudgetDraftFromEstimate,
   listBudgetEstimateSources,
@@ -82,6 +82,12 @@ const progressInputSchema = z.object({
   estimate_remaining_cents: z.number().min(0).nullable().optional(),
   notes: z.string().nullable().optional(),
 })
+
+export async function lockBudgetBaselineAction(projectId: string) {
+  const result = await lockBudgetBaseline(projectId)
+  revalidateBudgetPages(projectId)
+  return result
+}
 
 export async function listBudgetEstimateSourcesAction(projectId: string) {
   return listBudgetEstimateSources(projectId)

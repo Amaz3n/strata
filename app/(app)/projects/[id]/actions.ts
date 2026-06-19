@@ -1010,7 +1010,14 @@ export async function listLinkableInvoicesForDrawAction(projectId: string, drawI
       if (String(invoice.status).toLowerCase() === "void") return false
       const metadata = (invoice.metadata ?? {}) as Record<string, any>
       const sourceType = typeof metadata.source_type === "string" ? metadata.source_type : null
-      if (sourceType && sourceType !== "manual" && sourceType !== "draw" && sourceType !== "qbo") return false
+      if (
+        sourceType === "change_order" ||
+        sourceType === "fee" ||
+        sourceType === "from_costs" ||
+        metadata.source_change_order_id
+      ) {
+        return false
+      }
       const totalCents = invoice.total_cents ?? invoice.totals?.total_cents ?? 0
       const linkedDrawCents = linkedDrawCentsByInvoiceId.get(invoice.id) ?? 0
       const remainingDrawCents = totalCents > 0 ? Math.max(totalCents - linkedDrawCents, 0) : Number.MAX_SAFE_INTEGER

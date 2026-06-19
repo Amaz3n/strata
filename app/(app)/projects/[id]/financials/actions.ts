@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
-import { getBudgetWithActuals, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
+import { getBudgetWithActuals, listBudgetBucketChangeOrders, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listCommitmentLines, listProjectCommitments } from "@/lib/services/commitments"
 import { listCompanies } from "@/lib/services/companies"
@@ -283,6 +283,14 @@ export async function fetchBudgetBreakdownAction(projectId: string) {
     breakdown: budgetData?.breakdown ?? [],
     costCodes,
   }
+}
+
+export async function fetchBudgetBucketChangeOrdersAction(
+  projectId: string,
+  bucketId: string | null,
+  groupBy: "cost_code" | "budget_line" = "cost_code",
+) {
+  return listBudgetBucketChangeOrders(projectId, bucketId, groupBy).catch(() => [])
 }
 
 export async function fetchBudgetBucketCommitmentsAction(

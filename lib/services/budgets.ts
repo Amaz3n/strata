@@ -345,6 +345,55 @@ export async function replaceBudgetLines({
   return updatedBudget
 }
 
+/**
+ * Freezes the latest budget's current line amounts as its baseline ("Original").
+ * Re-running overwrites the baseline (re-baseline). This does not lock editing —
+ * the budget stays a living document; only the Original comparison point freezes.
+ */
+export async function lockBudgetBaseline(projectId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: budget, error: budgetError } = await supabase
+    .from("budgets")
+    .select("id, project_id, lines:budget_lines(cost_code_id, description, amount_cents)")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (budgetError) throw new Error(`Failed to load budget: ${budgetError.message}`)
+  if (!budget) throw new Error("Create a budget before locking a baseline")
+
+  const baselineLines = (budget.lines ?? []).map((line: any) => ({
+    cost_code_id: line.cost_code_id ?? null,
+    description: line.description ?? "",
+    amount_cents: line.amount_cents ?? 0,
+  }))
+
+  const { error: updateError } = await supabase
+    .from("budgets")
+    .update({
+      baseline_lines: baselineLines,
+      baseline_locked_at: new Date().toISOString(),
+      baseline_locked_by: userId,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", budget.id)
+
+  if (updateError) throw new Error(`Failed to lock baseline: ${updateError.message}`)
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "budget_baseline_locked",
+    entityType: "budget",
+    entityId: budget.id as string,
+    payload: { project_id: projectId, line_count: baselineLines.length },
+  })
+
+  return { success: true, line_count: baselineLines.length }
+}
+
 export async function listVarianceAlertsForProject(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
@@ -366,6 +415,77 @@ export async function listVarianceAlertsForProject(projectId: string, orgId?: st
 export async function getBudgetWithActuals(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   return getBudgetWithActualsInternal(supabase, projectId, resolvedOrgId)
+}
+
+export type BudgetBucketChangeOrder = {
+  id: string
+  title: string
+  status: string
+  approved_at: string | null
+  created_at: string | null
+  amount_cents: number
+}
+
+/**
+ * Approved change orders that adjusted a single budget bucket, summed per CO.
+ * `bucketKey` is a cost_code_id (codes on) or budget_line_id (codes off);
+ * `groupBy` selects which column on change_order_lines to match.
+ */
+export async function listBudgetBucketChangeOrders(
+  projectId: string,
+  bucketKey: string | null,
+  groupBy: "cost_code" | "budget_line",
+  orgId?: string,
+): Promise<BudgetBucketChangeOrder[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  if (!bucketKey) return []
+
+  const { data: cos, error: coError } = await supabase
+    .from("change_orders")
+    .select("id, title, status, approved_at, created_at")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("status", "approved")
+
+  if (coError) throw new Error(`Failed to load change orders: ${coError.message}`)
+  const coById = new Map((cos ?? []).map((co) => [co.id as string, co]))
+  if (coById.size === 0) return []
+
+  const matchColumn = groupBy === "cost_code" ? "cost_code_id" : "budget_line_id"
+  const { data: lines, error: linesError } = await supabase
+    .from("change_order_lines")
+    .select("change_order_id, unit_cost_cents, quantity, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq(matchColumn, bucketKey)
+    .in("change_order_id", Array.from(coById.keys()))
+
+  if (linesError) throw new Error(`Failed to load change order lines: ${linesError.message}`)
+
+  const amountByCo = new Map<string, number>()
+  for (const line of lines ?? []) {
+    const coId = line.change_order_id as string
+    const metadata = (line.metadata ?? {}) as Record<string, any>
+    const allowanceCents = metadata.allowance_draw_cents ?? metadata.allowance_cents ?? 0
+    const amount =
+      typeof metadata.budget_revision_cents === "number"
+        ? metadata.budget_revision_cents
+        : (line.unit_cost_cents ?? 0) * (line.quantity ?? 1) + allowanceCents
+    amountByCo.set(coId, (amountByCo.get(coId) ?? 0) + amount)
+  }
+
+  return Array.from(amountByCo.entries())
+    .map(([coId, amount]) => {
+      const co = coById.get(coId)!
+      return {
+        id: coId,
+        title: (co.title as string) ?? "Change order",
+        status: (co.status as string) ?? "approved",
+        approved_at: (co.approved_at as string) ?? null,
+        created_at: (co.created_at as string) ?? null,
+        amount_cents: amount,
+      }
+    })
+    .sort((a, b) => (b.approved_at ?? "").localeCompare(a.approved_at ?? ""))
 }
 
 /**
@@ -655,6 +775,29 @@ async function getBudgetWithActualsInternal(
     byCostCode.set(key, existing)
   }
 
+  // Baseline (frozen "Original" budget) is stored on the budget row. Match by
+  // cost_code_id when codes are on; by description otherwise (line ids change on
+  // every save). When no baseline is locked, baseline_cents stays null and the
+  // UI falls back to the live base amount.
+  const baselineLines = (Array.isArray((budget as any).baseline_lines)
+    ? (budget as any).baseline_lines
+    : []) as Array<{ cost_code_id?: string | null; description?: string | null; amount_cents?: number | null }>
+  const hasBaseline = baselineLines.length > 0
+  const baselineByCostCode = new Map<string, number>()
+  const baselineByDescription = new Map<string, number>()
+  for (const bl of baselineLines) {
+    const amount = bl.amount_cents ?? 0
+    if (bl.cost_code_id) {
+      baselineByCostCode.set(bl.cost_code_id, (baselineByCostCode.get(bl.cost_code_id) ?? 0) + amount)
+    }
+    const desc = (bl.description ?? "").trim().toLowerCase()
+    if (desc) baselineByDescription.set(desc, (baselineByDescription.get(desc) ?? 0) + amount)
+  }
+  const lineDescById = new Map<string, string>()
+  for (const line of budget.lines ?? []) {
+    lineDescById.set(line.id, (line.description ?? "").trim().toLowerCase())
+  }
+
   let totalBudget = 0
   let totalCommitted = 0
   let totalActual = 0
@@ -663,6 +806,7 @@ async function getBudgetWithActualsInternal(
   let totalEac = 0
   let totalCtc = 0
   let totalVac = 0
+  let totalBaseline = 0
 
   const breakdown = Array.from(byCostCode.entries()).map(([bucketId, values]) => {
     const resolvedId = bucketId === "uncoded" ? null : bucketId
@@ -673,6 +817,17 @@ async function getBudgetWithActualsInternal(
     totalActual += values.actual_cents
     totalInvoiced += values.invoiced_cents
     totalCOAdjustment += values.co_adjustment_cents
+
+    let baseline_cents: number | null = null
+    if (hasBaseline) {
+      if (costCodesEnabled) {
+        baseline_cents = resolvedId ? baselineByCostCode.get(resolvedId) ?? 0 : 0
+      } else {
+        const desc = lineDescById.get(bucketId)
+        baseline_cents = desc ? baselineByDescription.get(desc) ?? 0 : 0
+      }
+      totalBaseline += baseline_cents ?? 0
+    }
 
     const adjustedBudget = values.budget_cents + values.co_adjustment_cents
     const variance = adjustedBudget - values.actual_cents
@@ -692,6 +847,7 @@ async function getBudgetWithActualsInternal(
       cost_code_id: costCodeId,
       budget_line_id: budgetLineId,
       budget_cents: values.budget_cents,
+      baseline_cents,
       co_adjustment_cents: values.co_adjustment_cents,
       adjusted_budget_cents: adjustedBudget,
       committed_cents: values.committed_cents,
@@ -715,6 +871,8 @@ async function getBudgetWithActualsInternal(
     budget,
     summary: {
       total_budget_cents: totalBudget,
+      total_baseline_cents: hasBaseline ? totalBaseline : null,
+      baseline_locked_at: ((budget as any).baseline_locked_at as string | null) ?? null,
       total_co_adjustment_cents: totalCOAdjustment,
       adjusted_budget_cents: adjustedTotalBudget,
       total_committed_cents: totalCommitted,

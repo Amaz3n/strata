@@ -25,7 +25,7 @@ export default async function FinancialsBudgetPage({ params }: PageProps) {
 }
 
 async function FinancialsBudgetData({ id }: { id: string }) {
-  const [{ project }, data, setupStatus] = await Promise.all([
+  const [{ project, contract }, data, setupStatus] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchBudgetTabDataAction(id),
     getProjectFinancialSetupStatusForProject(id),
@@ -44,6 +44,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
       <BudgetTab
         projectId={project.id}
         project={project}
+        contractValueCents={contract?.total_cents ?? 0}
         budgetData={data.budgetData}
         costCodes={data.costCodes}
         costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
