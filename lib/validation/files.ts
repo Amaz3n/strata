@@ -70,7 +70,7 @@ export const fileListFiltersSchema = z.object({
   status: z.string().optional(),
   signature_status: z.string().optional(),
   source_entity_type: z.string().optional(),
-  sort: z.enum(["name", "updated_at", "created_at", "size"]).optional(),
+  sort: z.enum(["name", "workflow", "updated_at", "created_at", "size"]).optional(),
   direction: z.enum(["asc", "desc"]).optional(),
   share_with_clients: z.boolean().optional(),
   share_with_subs: z.boolean().optional(),

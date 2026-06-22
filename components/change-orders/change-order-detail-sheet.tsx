@@ -5,6 +5,7 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { ChangeOrder, Project } from "@/lib/types"
+import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,7 +20,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
-import { Clock, Sparkles, Ban } from "@/components/icons"
+import { Clock, Ban } from "@/components/icons"
 import { Link2, Loader2, Receipt, Unlink } from "lucide-react"
 import {
   approveChangeOrderAction,
@@ -75,6 +76,7 @@ interface ChangeOrderDetailSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onUpdate?: (changeOrder: ChangeOrder) => void
+  onPrepareInvoice?: (changeOrder: ChangeOrder) => void
 }
 
 function formatMoney(cents?: number | null) {
@@ -101,9 +103,11 @@ function formatGmpImpact(value?: string | null) {
 
 export function ChangeOrderDetailSheet({
   changeOrder,
+  project,
   open,
   onOpenChange,
   onUpdate,
+  onPrepareInvoice,
 }: ChangeOrderDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
@@ -266,23 +270,9 @@ export function ChangeOrderDetailSheet({
 
   const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
   const isVoided = changeOrder.status === "cancelled"
+  const isGmpProject = project ? resolveProjectBillingModel(project) === "cost_plus_gmp" : false
   const canApprove = changeOrder.status !== "approved" && !isVoided
   const canVoid = changeOrder.status === "approved"
-  const financialImpact = changeOrder.metadata?.financial_impact as
-    | {
-        budget_revision_cents?: number
-        allowance_draw_cents?: number
-        gmp_delta_cents?: number
-        outside_gmp_cents?: number
-        billing_status?: string
-        budget_distributions?: Array<{
-          description?: string
-          budget_revision_cents?: number
-          allowance_draw_cents?: number
-          gmp_classification?: string
-        }>
-      }
-    | undefined
 
   const handleApprove = async () => {
     if (!canApprove) return
@@ -313,7 +303,9 @@ export function ChangeOrderDetailSheet({
       setVoidDialogOpen(false)
       setVoidReason("")
       toast.success("Change order voided", {
-        description: "Its impact on the contract value, GMP, budget, and draws has been reversed.",
+        description: isGmpProject
+          ? "Its impact on the contract value, GMP, budget, and draws has been reversed."
+          : "Its impact on the contract value, budget, and draws has been reversed.",
       })
     } catch (error: any) {
       toast.error("Could not void change order", { description: error?.message ?? "Please try again." })
@@ -335,17 +327,38 @@ export function ChangeOrderDetailSheet({
           }}
         >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <SheetTitle className="flex-1">
-              {changeOrder.title}
-            </SheetTitle>
-            <Badge
-              variant="secondary"
-              className={`capitalize border ${statusStyles[changeOrder.status] ?? ""}`}
-            >
-              {statusLabels[changeOrder.status] ?? changeOrder.status}
-            </Badge>
+          <div className="flex items-start gap-4">
+            <div className="min-w-0 flex-1">
+              <SheetTitle className="text-left text-lg leading-6">
+                {changeOrder.title}
+              </SheetTitle>
+              {(changeOrder.status === "approved" || (changeOrder.days_impact != null && changeOrder.days_impact !== 0)) ? (
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                  {changeOrder.status === "approved" ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+                      Approved{changeOrder.approved_at ? ` ${formatDate(changeOrder.approved_at)}` : ""}
+                    </span>
+                  ) : null}
+                  {changeOrder.days_impact != null && changeOrder.days_impact !== 0 ? (
+                    <>
+                      {changeOrder.status === "approved" ? <span aria-hidden="true">·</span> : null}
+                      <span>
+                        {changeOrder.days_impact > 0 ? "+" : ""}{changeOrder.days_impact} day{Math.abs(changeOrder.days_impact) === 1 ? "" : "s"}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            {changeOrder.status !== "approved" ? (
+              <Badge
+                variant="secondary"
+                className={`shrink-0 capitalize border ${statusStyles[changeOrder.status] ?? ""}`}
+              >
+                {statusLabels[changeOrder.status] ?? changeOrder.status}
+              </Badge>
+            ) : null}
           </div>
         </SheetHeader>
 
@@ -371,93 +384,76 @@ export function ChangeOrderDetailSheet({
             </div>
           )}
 
-          {/* Line items */}
-          {changeOrder.lines && changeOrder.lines.length > 0 && (
+          {/* Pricing */}
+          {((changeOrder.lines?.length ?? 0) > 0 || changeOrder.totals) && (
             <div className="space-y-3">
-              <h4 className="text-sm font-semibold">Line Items</h4>
-              <div className="space-y-2">
-                {changeOrder.lines.map((line, idx) => {
+              <h4 className="text-sm font-semibold">Pricing</h4>
+              <div className="overflow-hidden rounded-xl border bg-background">
+                {changeOrder.lines?.map((line, idx) => {
                   const lineTotal = (line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0)
                   return (
-                    <div key={line.id ?? idx} className="rounded-lg border p-4 bg-muted/30">
+                    <div key={line.id ?? idx} className="border-b px-4 py-3.5 last:border-b-0">
                       <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 space-y-1">
-                          <p className="text-sm font-medium">{line.description}</p>
-                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                            <span>{line.quantity} {line.unit ?? "units"}</span>
-                            {line.unit_cost_cents && (
-                              <>
-                                <span>@</span>
-                                <span>{formatMoney(line.unit_cost_cents)}</span>
-                              </>
-                            )}
-                            {line.allowance_cents && line.allowance_cents > 0 && (
-                              <>
-                                <span>+</span>
-                                <span>Allowance: {formatMoney(line.allowance_cents)}</span>
-                              </>
-                            )}
-                            {line.taxable && (
-                              <Badge variant="outline" className="text-xs">Taxable</Badge>
-                            )}
-                            {line.gmp_classification || line.gmp_impact ? (
-                              <Badge variant="outline" className="text-xs">
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <p className="text-sm font-medium leading-5">{line.description}</p>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                            <span>
+                              {line.quantity ?? 1} {line.unit ?? "units"} × {formatMoney(line.unit_cost_cents)}
+                            </span>
+                            {line.allowance_cents != null && line.allowance_cents > 0 ? (
+                              <span>· {formatMoney(line.allowance_cents)} allowance</span>
+                            ) : null}
+                            {line.taxable ? <span>· Taxable</span> : null}
+                            {isGmpProject && (line.gmp_classification || line.gmp_impact) ? (
+                              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
                                 {formatGmpClassification(line.gmp_classification)}
                               </Badge>
                             ) : null}
-                            {line.gmp_impact && line.gmp_impact !== "none" ? (
-                              <Badge variant="outline" className="text-xs">
+                            {isGmpProject && line.gmp_impact && line.gmp_impact !== "none" ? (
+                              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
                                 {formatGmpImpact(line.gmp_impact)}
                               </Badge>
                             ) : null}
                           </div>
                         </div>
-                        <span className="font-semibold text-sm">
+                        <span className="shrink-0 text-sm font-semibold tabular-nums">
                           {formatMoney(lineTotal)}
                         </span>
                       </div>
                     </div>
                   )
                 })}
-              </div>
-            </div>
-          )}
-
-          {/* Totals */}
-          {changeOrder.totals && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-semibold">Totals</h4>
-              <div className="rounded-lg border bg-muted/40 p-4 space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span className="font-medium">{formatMoney(changeOrder.totals.subtotal_cents)}</span>
-                </div>
-                {changeOrder.totals.allowance_cents != null && changeOrder.totals.allowance_cents > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Allowances</span>
-                    <span className="font-medium">{formatMoney(changeOrder.totals.allowance_cents)}</span>
+                <div className="space-y-2 border-t bg-muted/30 px-4 py-3 text-sm">
+                  {changeOrder.totals ? (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Subtotal</span>
+                        <span className="tabular-nums">{formatMoney(changeOrder.totals.subtotal_cents)}</span>
+                      </div>
+                      {changeOrder.totals.allowance_cents != null && changeOrder.totals.allowance_cents > 0 ? (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Allowances</span>
+                          <span className="tabular-nums">{formatMoney(changeOrder.totals.allowance_cents)}</span>
+                        </div>
+                      ) : null}
+                      {changeOrder.totals.markup_cents != null && changeOrder.totals.markup_cents > 0 ? (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Markup ({changeOrder.totals.markup_percent ?? 0}%)</span>
+                          <span className="tabular-nums">{formatMoney(changeOrder.totals.markup_cents)}</span>
+                        </div>
+                      ) : null}
+                      {changeOrder.totals.tax_cents != null && changeOrder.totals.tax_cents > 0 ? (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Tax ({changeOrder.totals.tax_rate ?? 0}%)</span>
+                          <span className="tabular-nums">{formatMoney(changeOrder.totals.tax_cents)}</span>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                  <div className="flex justify-between border-t pt-2 text-base font-semibold">
+                    <span>Total</span>
+                    <span className="tabular-nums">{formatMoney(changeOrder.totals?.total_cents ?? totalCents)}</span>
                   </div>
-                )}
-                {changeOrder.totals.markup_cents != null && changeOrder.totals.markup_cents > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">
-                      Markup ({changeOrder.totals.markup_percent ?? 0}%)
-                    </span>
-                    <span className="font-medium">{formatMoney(changeOrder.totals.markup_cents)}</span>
-                  </div>
-                )}
-                {changeOrder.totals.tax_cents != null && changeOrder.totals.tax_cents > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">
-                      Tax ({changeOrder.totals.tax_rate ?? 0}%)
-                    </span>
-                    <span className="font-medium">{formatMoney(changeOrder.totals.tax_cents)}</span>
-                  </div>
-                )}
-                <Separator />
-                <div className="flex justify-between font-semibold text-base">
-                  <span>Total</span>
-                  <span>{formatMoney(changeOrder.totals.total_cents)}</span>
                 </div>
               </div>
             </div>
@@ -521,69 +517,6 @@ export function ChangeOrderDetailSheet({
             )}
           </div>
 
-          {financialImpact && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-semibold">Financial Posting</h4>
-              <div className="rounded-lg border bg-muted/40 p-4 space-y-3 text-sm">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Budget revision</p>
-                    <p className="font-semibold">{formatMoney(financialImpact.budget_revision_cents)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Allowance draw</p>
-                    <p className="font-semibold">{formatMoney(financialImpact.allowance_draw_cents)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">GMP delta</p>
-                    <p className="font-semibold">{formatMoney(financialImpact.gmp_delta_cents)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Outside GMP</p>
-                    <p className="font-semibold">{formatMoney(financialImpact.outside_gmp_cents)}</p>
-                  </div>
-                </div>
-                <Separator />
-                <div className="space-y-2">
-                  {(financialImpact.budget_distributions ?? []).map((line, index) => (
-                    <div key={`${line.description ?? "line"}-${index}`} className="flex items-center justify-between gap-3 text-xs">
-                      <span className="min-w-0 line-clamp-1 text-muted-foreground">{line.description ?? `Line ${index + 1}`}</span>
-                      <span className="shrink-0 text-muted-foreground">{formatGmpClassification(line.gmp_classification)}</span>
-                      <span className="shrink-0 font-medium">{formatMoney(line.budget_revision_cents)}</span>
-                    </div>
-                  ))}
-                </div>
-                {financialImpact.billing_status && (
-                  <Badge variant="outline" className="text-xs">
-                    Billing: {financialImpact.billing_status.replaceAll("_", " ")}
-                  </Badge>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Approval info */}
-          {(changeOrder.approved_at || (changeOrder.days_impact != null && changeOrder.days_impact > 0)) && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-medium">Approval</h4>
-              <div className="rounded-lg border bg-success/5 border-success/20 p-4 space-y-2">
-                {changeOrder.approved_at && (
-                  <>
-                    <Badge variant="default">Approved</Badge>
-                    <p className="text-xs text-muted-foreground">
-                      Approved {formatDate(changeOrder.approved_at)}
-                    </p>
-                  </>
-                )}
-                {changeOrder.days_impact != null && changeOrder.days_impact > 0 && (
-                  <Badge variant="outline" className="text-xs">
-                    +{changeOrder.days_impact} days impact
-                  </Badge>
-                )}
-              </div>
-            </div>
-          )}
-
           <Separator />
 
           {/* Attachments */}
@@ -634,7 +567,9 @@ export function ChangeOrderDetailSheet({
                   <div>
                     <p className="font-medium">This change order has been voided.</p>
                     <p className="text-xs text-destructive/80">
-                      Its impact on the contract value, GMP, budget, and draw schedule was reversed.
+                      {isGmpProject
+                        ? "Its impact on the contract value, GMP, budget, and draw schedule was reversed."
+                        : "Its impact on the contract value, budget, and draw schedule was reversed."}
                       {changeOrder.metadata?.void_reason ? ` Reason: ${changeOrder.metadata.void_reason}` : ""}
                     </p>
                   </div>
@@ -644,32 +579,45 @@ export function ChangeOrderDetailSheet({
                 </Button>
               </div>
             ) : (
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="default"
-                  onClick={() => setSignatureWizardOpen(true)}
-                  className="flex-1"
-                  disabled={!changeOrder.project_id}
-                >
-                  Send for signature
-                </Button>
-                {canApprove && (
-                  <Button onClick={handleApprove} disabled={approving} variant="outline" className="flex-1">
-                    {approving ? "Recording..." : "Record offline approval"}
-                  </Button>
+              <div className="flex items-center gap-2">
+                {canVoid ? (
+                  <>
+                    <Button
+                      type="button"
+                      onClick={() => onPrepareInvoice?.(changeOrder)}
+                      disabled={!project || linkedInvoicesLoading || linkedInvoices.length > 0}
+                      className="flex-1"
+                    >
+                      <Receipt className="mr-2 h-4 w-4" />
+                      {linkedInvoices.length > 0 ? "Invoice prepared" : "Prepare invoice"}
+                    </Button>
+                    <Button
+                      onClick={() => setVoidDialogOpen(true)}
+                      variant="outline"
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Ban className="mr-2 h-4 w-4" />
+                      Void
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      onClick={() => setSignatureWizardOpen(true)}
+                      className="flex-1"
+                      disabled={!changeOrder.project_id}
+                    >
+                      Send for signature
+                    </Button>
+                    {canApprove ? (
+                      <Button onClick={handleApprove} disabled={approving} variant="outline">
+                        {approving ? "Recording..." : "Record offline approval"}
+                      </Button>
+                    ) : null}
+                  </>
                 )}
-                {canVoid && (
-                  <Button
-                    onClick={() => setVoidDialogOpen(true)}
-                    variant="outline"
-                    className="flex-1 text-destructive hover:text-destructive"
-                  >
-                    <Ban className="mr-2 h-4 w-4" />
-                    Void
-                  </Button>
-                )}
-                <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">
+                <Button variant="ghost" onClick={() => onOpenChange(false)}>
                   Close
                 </Button>
               </div>
@@ -689,7 +637,8 @@ export function ChangeOrderDetailSheet({
           <DialogHeader>
             <DialogTitle>Void this change order?</DialogTitle>
             <DialogDescription>
-              Voiding reverses {changeOrder.title}&apos;s impact on the contract value, GMP, budget, and pending draws.
+              Voiding reverses {changeOrder.title}&apos;s impact on the contract value
+              {isGmpProject ? ", GMP," : ","} budget, and pending draws.
               The change order is kept for the record but marked cancelled. This is the right way to back out an
               approved change order — it can&apos;t be deleted.
             </DialogDescription>

@@ -351,6 +351,29 @@ export async function listChangeOrders({
     return changeOrders
   }
 
+  const { data: linkedInvoices, error: linkedInvoicesError } = await supabase
+    .from("invoices")
+    .select("id, invoice_number, status, metadata, created_at")
+    .eq("org_id", resolvedOrgId)
+    .in("project_id", projectIds)
+    .not("metadata->>source_change_order_id", "is", null)
+    .order("created_at", { ascending: false })
+
+  if (linkedInvoicesError) {
+    throw new Error(`Failed to load linked change order invoices: ${linkedInvoicesError.message}`)
+  }
+
+  const invoiceByChangeOrderId = new Map<string, ChangeOrder["linked_invoice"]>()
+  for (const invoice of linkedInvoices ?? []) {
+    const changeOrderId = invoice.metadata?.source_change_order_id
+    if (typeof changeOrderId !== "string" || invoiceByChangeOrderId.has(changeOrderId)) continue
+    invoiceByChangeOrderId.set(changeOrderId, {
+      id: invoice.id as string,
+      invoice_number: invoice.invoice_number as string | number | null,
+      status: invoice.status as string | null,
+    })
+  }
+
   const { data: documents, error: documentsError } = await supabase
     .from("documents")
     .select("id, status, source_entity_id, metadata, created_at")
@@ -398,6 +421,7 @@ export async function listChangeOrders({
       ...changeOrder,
       esign_status: linkedDocument?.status ?? "not_prepared",
       esign_document_id: linkedDocument?.id ?? null,
+      linked_invoice: invoiceByChangeOrderId.get(changeOrder.id) ?? null,
     }
   })
 }
@@ -1093,6 +1117,10 @@ export async function linkInvoiceToChangeOrder({
   const changeOrder = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
   if (!changeOrder) {
     throw new Error("Change order not found")
+  }
+
+  if (changeOrder.status !== "approved") {
+    throw new Error("Approve this change order before linking an invoice.")
   }
 
   await requireAuthorization({

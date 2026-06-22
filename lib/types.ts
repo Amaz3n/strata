@@ -737,6 +737,11 @@ export interface ChangeOrder {
   requires_signature?: boolean | null
   esign_status?: "not_prepared" | "draft" | "sent" | "signed" | "voided" | "expired" | null
   esign_document_id?: string | null
+  linked_invoice?: {
+    id: string
+    invoice_number?: string | number | null
+    status?: string | null
+  } | null
   created_at?: string
   updated_at?: string
   metadata?: Record<string, any>

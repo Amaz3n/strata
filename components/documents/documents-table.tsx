@@ -186,7 +186,7 @@ export interface SheetsTableProps {
   onAddVersion: (sheet: DrawingSheet) => void
 }
 
-type SortableFileColumn = "name" | "updated_at" | "size"
+type SortableFileColumn = "name" | "workflow" | "updated_at" | "size"
 
 function SortableTableHead({
   label,
@@ -199,7 +199,7 @@ function SortableTableHead({
 }: {
   label: string
   sortKey: SortableFileColumn
-  currentSort: "name" | "updated_at" | "created_at" | "size"
+  currentSort: "name" | "workflow" | "updated_at" | "created_at" | "size"
   direction: "asc" | "desc"
   onSort: (sortKey: SortableFileColumn) => void
   className?: string
@@ -297,7 +297,14 @@ export function DocumentsFileTable({
             className="w-[40%] min-w-[320px]"
           />
           <TableHead className="hidden sm:table-cell w-[128px]">Category</TableHead>
-          <TableHead className="hidden md:table-cell w-[184px]">Workflow</TableHead>
+          <SortableTableHead
+            label="Workflow"
+            sortKey="workflow"
+            currentSort={sort}
+            direction={direction}
+            onSort={toggleSort}
+            className="hidden md:table-cell w-[184px]"
+          />
           <TableHead className="hidden lg:table-cell w-[128px]">Shared</TableHead>
           <SortableTableHead
             label="Modified"

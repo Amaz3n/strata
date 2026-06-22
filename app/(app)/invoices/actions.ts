@@ -378,7 +378,7 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
         .then((rows) =>
           rows.filter((co) => {
             const status = String(co.status ?? "").toLowerCase()
-            return (status === "approved" || status === "pending") && !billedChangeOrderIds.has(co.id)
+            return status === "approved" && !billedChangeOrderIds.has(co.id)
           }),
         )
         .catch(() => [])

@@ -1,20 +1,25 @@
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
+import dynamic from "next/dynamic"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { ChangeOrder, Project } from "@/lib/types"
+import type { ChangeOrder, Invoice, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
+import type { InvoiceInput } from "@/lib/validation/invoices"
 import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import {
+  approveChangeOrderAction,
   createChangeOrderAction,
   updateChangeOrderAction,
   deleteChangeOrderAction,
   voidChangeOrderAction,
+  publishChangeOrderAction,
 } from "@/app/(app)/change-orders/actions"
-import { Ban, Pencil, Trash2 } from "lucide-react"
+import { createInvoiceAction } from "@/app/(app)/invoices/actions"
+import { Ban, FileCheck2, Pencil, Receipt, Trash2 } from "lucide-react"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
@@ -27,26 +32,29 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Plus, FolderOpen, MoreHorizontal, PenLine } from "@/components/icons"
 
-type StatusKey = "draft" | "pending" | "sent" | "approved" | "requested_changes" | "cancelled"
+const InvoiceComposerSheet = dynamic(() =>
+  import("@/components/invoices/invoice-composer-sheet").then((module) => module.InvoiceComposerSheet),
+)
+
+type StatusKey = "draft" | "awaiting_approval" | "approved" | "requested_changes" | "voided"
 type StatusFilter = StatusKey | "all"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
-  pending: "Pending",
-  sent: "Sent",
+  awaiting_approval: "Awaiting approval",
   approved: "Approved",
   requested_changes: "Needs changes",
-  cancelled: "Cancelled",
+  voided: "Voided",
 }
 
 function resolveESignStatus(status?: ChangeOrder["esign_status"]) {
   switch (status) {
     case "draft":
-      return { label: "Draft envelope", className: "bg-muted text-muted-foreground border-muted" }
+      return { label: "Not sent", className: "bg-muted text-muted-foreground border-muted" }
     case "sent":
       return { label: "Out for signature", className: "bg-amber-500/15 text-amber-700 border-amber-500/30" }
     case "signed":
-      return { label: "Executed", className: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30" }
+      return { label: "Signed", className: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30" }
     case "voided":
       return { label: "Voided", className: "bg-rose-500/15 text-rose-700 border-rose-500/30" }
     case "expired":
@@ -58,11 +66,10 @@ function resolveESignStatus(status?: ChangeOrder["esign_status"]) {
 
 const statusStyles: Record<StatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
-  pending: "bg-warning/20 text-warning border-warning/40",
-  sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
+  awaiting_approval: "bg-amber-500/15 text-amber-700 border-amber-500/30",
   approved: "bg-success/20 text-success border-success/30",
   requested_changes: "bg-amber-100 text-amber-800 border-amber-200",
-  cancelled: "bg-destructive/20 text-destructive border-destructive/30",
+  voided: "bg-destructive/20 text-destructive border-destructive/30",
 }
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -72,7 +79,9 @@ function formatMoneyFromCents(cents?: number | null) {
 
 function resolveStatusKey(status?: string | null): StatusKey {
   if (!status) return "draft"
-  const allowed: StatusKey[] = ["draft", "pending", "sent", "approved", "requested_changes", "cancelled"]
+  if (status === "pending" || status === "sent") return "awaiting_approval"
+  if (status === "cancelled" || status === "void") return "voided"
+  const allowed: StatusKey[] = ["draft", "approved", "requested_changes"]
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
 }
 
@@ -110,6 +119,9 @@ const [sheetOpen, setSheetOpen] = useState(false)
   const [editingChangeOrder, setEditingChangeOrder] = useState<ChangeOrder | null>(null)
   const [signatureOpen, setSignatureOpen] = useState(false)
   const [signatureSource, setSignatureSource] = useState<EnvelopeWizardSourceEntity | null>(null)
+  const [invoiceComposerOpen, setInvoiceComposerOpen] = useState(false)
+  const [invoiceSource, setInvoiceSource] = useState<ChangeOrder | null>(null)
+  const [creatingInvoice, setCreatingInvoice] = useState(false)
   const [isPending, startTransition] = useTransition()
 
   const handleRowClick = (changeOrder: ChangeOrder) => {
@@ -118,8 +130,8 @@ const [sheetOpen, setSheetOpen] = useState(false)
   }
 
   const handleUpdate = (updated: ChangeOrder) => {
-    setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-    setSelectedChangeOrder(updated)
+    setItems((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+    setSelectedChangeOrder((current) => current?.id === updated.id ? { ...current, ...updated } : updated)
   }
 
   const handleStartSignature = (changeOrder: ChangeOrder) => {
@@ -131,6 +143,44 @@ const [sheetOpen, setSheetOpen] = useState(false)
       document_type: "change_order",
     })
     setSignatureOpen(true)
+  }
+
+  const handlePrepareInvoice = (changeOrder: ChangeOrder) => {
+    setInvoiceSource(changeOrder)
+    setInvoiceComposerOpen(true)
+  }
+
+  const handleCreateInvoice = async (
+    values: InvoiceInput,
+    sendToClient: boolean,
+    options?: { silent?: boolean },
+  ): Promise<Invoice> => {
+    setCreatingInvoice(true)
+    try {
+      const created = await createInvoiceAction(values)
+      const linkedInvoice = {
+        id: created.id,
+        invoice_number: created.invoice_number,
+        status: created.status,
+      }
+      if (invoiceSource) {
+        setItems((prev) => prev.map((item) => item.id === invoiceSource.id ? { ...item, linked_invoice: linkedInvoice } : item))
+        setSelectedChangeOrder((current) => current?.id === invoiceSource.id ? { ...current, linked_invoice: linkedInvoice } : current)
+      }
+      setInvoiceComposerOpen(false)
+      setInvoiceSource(null)
+      if (!options?.silent) {
+        toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
+          description: sendToClient ? "Client can now view this invoice." : "Invoice saved to receivables.",
+        })
+      }
+      return created
+    } catch (error: any) {
+      toast.error("Could not save invoice", { description: error?.message ?? "Please try again." })
+      throw error
+    } finally {
+      setCreatingInvoice(false)
+    }
   }
 
   const projectLookup = useMemo(() => {
@@ -168,10 +218,25 @@ const [sheetOpen, setSheetOpen] = useState(false)
     startTransition(async () => {
       try {
         if (editingChangeOrder) {
-          const updated = await updateChangeOrderAction(editingChangeOrder.id, values)
-          setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+          const shouldRecordOfflineApproval = values.status === "approved" && editingChangeOrder.status !== "approved"
+          if (shouldRecordOfflineApproval) {
+            const confirmed = window.confirm(
+              "Record this change order as approved without an Arc executed document? Use this only when approval happened outside Arc.",
+            )
+            if (!confirmed) return
+          }
+
+          const updatedDetails = await updateChangeOrderAction(editingChangeOrder.id, {
+            ...values,
+            status: shouldRecordOfflineApproval ? editingChangeOrder.status as ChangeOrderInput["status"] : values.status,
+          })
+          const updated = shouldRecordOfflineApproval
+            ? await approveChangeOrderAction(editingChangeOrder.id)
+            : updatedDetails
+          const mergedUpdated = { ...editingChangeOrder, ...updated }
+          setItems((prev) => prev.map((item) => (item.id === mergedUpdated.id ? mergedUpdated : item)))
           if (selectedChangeOrder?.id === updated.id) {
-            setSelectedChangeOrder(updated)
+            setSelectedChangeOrder(mergedUpdated)
           }
           setSheetOpen(false)
           setEditingChangeOrder(null)
@@ -329,7 +394,21 @@ const [sheetOpen, setSheetOpen] = useState(false)
                             </Badge>
                           ) : null}
                         </div>
-                        <p className="font-semibold mt-1 line-clamp-2">{changeOrder.title}</p>
+                        <div className="mt-1 flex items-start gap-1.5">
+                          <p className="min-w-0 font-semibold line-clamp-2">{changeOrder.title}</p>
+                          {changeOrder.linked_invoice ? (
+                            <FileCheck2
+                              aria-label="Invoice linked"
+                              className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-600"
+                            >
+                              <title>
+                                {changeOrder.linked_invoice.invoice_number
+                                  ? `Linked to invoice ${changeOrder.linked_invoice.invoice_number}`
+                                  : "Linked to an invoice"}
+                              </title>
+                            </FileCheck2>
+                          ) : null}
+                        </div>
                         <p className="text-xs text-muted-foreground mt-1">Project: {projectName}</p>
                         <div className="mt-2 flex items-center gap-4 text-xs">
                           <div className="font-semibold">{total}</div>
@@ -394,7 +473,21 @@ const [sheetOpen, setSheetOpen] = useState(false)
                       onClick={() => handleRowClick(changeOrder)}
                     >
                       <TableCell className="min-w-0 pl-4">
-                        <span className="text-sm font-medium truncate block">{changeOrder.title}</span>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 truncate text-sm font-medium">{changeOrder.title}</span>
+                          {changeOrder.linked_invoice ? (
+                            <FileCheck2
+                              aria-label="Invoice linked"
+                              className="h-3.5 w-3.5 shrink-0 text-sky-600"
+                            >
+                              <title>
+                                {changeOrder.linked_invoice.invoice_number
+                                  ? `Linked to invoice ${changeOrder.linked_invoice.invoice_number}`
+                                  : "Linked to an invoice"}
+                              </title>
+                            </FileCheck2>
+                          ) : null}
+                        </div>
                         {changeOrder.summary ? (
                           <span className="text-xs text-muted-foreground truncate block mt-0.5">{changeOrder.summary}</span>
                         ) : null}
@@ -448,7 +541,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
                         <div className="flex items-center justify-end">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <Button variant="ghost" size="icon" className="h-7 w-7 opacity-60 transition-opacity group-hover:opacity-100">
                                 <MoreHorizontal className="h-3.5 w-3.5" />
                                 <span className="sr-only">Actions</span>
                               </Button>
@@ -462,7 +555,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
                                   setEditingChangeOrder(changeOrder)
                                   setSheetOpen(true)
                                 }}
-                                disabled={changeOrder.status === "approved" || changeOrder.esign_status === "sent" || changeOrder.esign_status === "signed"}
+                                disabled={changeOrder.status === "approved" || changeOrder.status === "cancelled" || changeOrder.esign_status === "sent" || changeOrder.esign_status === "signed"}
                               >
                                 <Pencil className="mr-2 h-4 w-4" />
                                 Edit details
@@ -470,6 +563,13 @@ const [sheetOpen, setSheetOpen] = useState(false)
                               <DropdownMenuItem onClick={() => handleStartSignature(changeOrder)}>
                                 <PenLine className="mr-2 h-4 w-4" />
                                 Send for signature
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => handlePrepareInvoice(changeOrder)}
+                                disabled={changeOrder.status !== "approved" || Boolean(changeOrder.linked_invoice)}
+                              >
+                                <Receipt className="mr-2 h-4 w-4" />
+                                {changeOrder.linked_invoice ? "Invoice prepared" : "Prepare invoice"}
                               </DropdownMenuItem>
                               {changeOrder.status === "approved" && (
                                 <DropdownMenuItem
@@ -554,7 +654,23 @@ const [sheetOpen, setSheetOpen] = useState(false)
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
         onUpdate={handleUpdate}
+        onPrepareInvoice={handlePrepareInvoice}
       />
+
+      {invoiceSource ? (
+        <InvoiceComposerSheet
+          open={invoiceComposerOpen}
+          onOpenChange={(nextOpen) => {
+            setInvoiceComposerOpen(nextOpen)
+            if (!nextOpen) setInvoiceSource(null)
+          }}
+          projects={projects.filter((project) => project.id === invoiceSource.project_id)}
+          defaultProjectId={invoiceSource.project_id}
+          initialSourceChangeOrderId={invoiceSource.id}
+          onSubmit={handleCreateInvoice}
+          isSubmitting={creatingInvoice}
+        />
+      ) : null}
 
       <EnvelopeWizard
         open={signatureOpen}
@@ -565,15 +681,21 @@ const [sheetOpen, setSheetOpen] = useState(false)
         sourceEntity={signatureSource}
         sourceLabel="Change order"
         sheetTitle="Send change order for signature"
-        onEnvelopeSent={({ documentId }) => {
+        onEnvelopeSent={async ({ documentId }) => {
           if (!signatureSource) return
-          setItems((prev) =>
-            prev.map((item) =>
-              item.id === signatureSource.id
-                ? { ...item, esign_status: "sent", esign_document_id: documentId }
-                : item,
-            ),
-          )
+          try {
+            const published = await publishChangeOrderAction(signatureSource.id)
+            setItems((prev) => prev.map((item) => item.id === signatureSource.id
+              ? { ...item, ...published, esign_status: "sent", esign_document_id: documentId }
+              : item))
+          } catch (error: any) {
+            setItems((prev) => prev.map((item) => item.id === signatureSource.id
+              ? { ...item, esign_status: "sent", esign_document_id: documentId }
+              : item))
+            toast.error("Signature sent, but status could not be updated", {
+              description: error?.message ?? "Refresh and try again.",
+            })
+          }
         }}
       />
     </>

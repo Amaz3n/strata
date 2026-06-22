@@ -2,6 +2,7 @@ import { getQBOAccessToken } from "@/lib/services/qbo-connection"
 import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo-config"
 import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo-query"
 import { mapQboAccountRows, pickPreferredQboIncomeAccounts } from "@/lib/integrations/accounting/qbo-account-utils"
+import { isQboMissingEntityFault } from "@/lib/integrations/accounting/qbo-error-rules"
 
 interface QBOFaultError {
   Message?: string
@@ -767,7 +768,11 @@ export class QBOClient {
       )
       return result.Invoice ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // QBO returns ValidationFault 610 (HTTP 400), rather than 404, when a
+      // transaction has been deleted. Treat it as missing only on this direct
+      // lookup; the same fault on a create/update can mean an inactive
+      // customer, item, or account and must still surface as an error.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }

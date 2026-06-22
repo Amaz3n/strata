@@ -710,12 +710,18 @@ export async function updateVendorBillStatus({
     updateData.payment_method = parsed.payment_method
   }
 
+  // Tracks whether any field that QuickBooks cares about (expense/AP account, vendor) changed.
+  // Used below to re-push the recode to an already-linked QBO bill even when the bill isn't
+  // transitioning into an approved/paid status (e.g. recoding a still-pending imported bill).
+  let qboCodingChanged = false
+
   if (parsed.qbo_expense_account_id !== undefined) {
     updateData.qbo_expense_account_id = parsed.qbo_expense_account_id || null
     updateData.qbo_expense_account_name = parsed.qbo_expense_account_name || null
     if (!isVendorCredit && existing.qbo_expense_account_id !== parsed.qbo_expense_account_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
+      qboCodingChanged = true
     }
   }
 
@@ -725,6 +731,7 @@ export async function updateVendorBillStatus({
     if (!isVendorCredit && existing.qbo_ap_account_id !== parsed.qbo_ap_account_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
+      qboCodingChanged = true
     }
   }
 
@@ -747,6 +754,7 @@ export async function updateVendorBillStatus({
     if (!isVendorCredit && existing.company_id !== parsed.company_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
+      qboCodingChanged = true
     }
   }
 
@@ -756,6 +764,7 @@ export async function updateVendorBillStatus({
     if (!isVendorCredit && existing.qbo_vendor_id !== parsed.qbo_vendor_id) {
       updateData.qbo_sync_status = "pending"
       updateData.qbo_sync_error = null
+      qboCodingChanged = true
     }
   }
 
@@ -981,7 +990,15 @@ export async function updateVendorBillStatus({
     throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
   }
 
-  if (!isVendorCredit && ["approved", "partial", "paid"].includes(String(finalStatus))) {
+  // Push to QuickBooks when either (a) the bill enters an approved/paid state, or (b) its QBO
+  // coding (expense/AP account, vendor) changed and the bill is already linked to a QBO record
+  // — so recoding a still-pending or imported bill flows the new account back to QuickBooks.
+  // enqueueVendorBillSync is the durable, deduped path: it respects auto-sync, skips inbound-only
+  // imports (isSyncPushBlocked), and is drained with retries by the process-outbox cron.
+  const billLinkedToQbo = Boolean(data.qbo_id)
+  const shouldEnqueueForStatus = ["approved", "partial", "paid"].includes(String(finalStatus))
+  const shouldEnqueueForRecode = billLinkedToQbo && qboCodingChanged
+  if (!isVendorCredit && (shouldEnqueueForStatus || shouldEnqueueForRecode)) {
     await enqueueVendorBillSync(billId, resolvedOrgId)
   }
 

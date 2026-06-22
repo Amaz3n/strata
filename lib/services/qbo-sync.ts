@@ -223,7 +223,30 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       }
 
       const latestInvoice = await client.getInvoiceById(existingQboId)
-      if (!latestInvoice?.SyncToken) {
+      if (!latestInvoice) {
+        // The desired state is already true when the linked QBO invoice was
+        // deleted. Keep its id as a tombstone so the import sheet cannot adopt
+        // the same QBO identity again, and clear any prior sync error.
+        await upsertSyncRecord({
+          orgId,
+          entityId: invoiceId,
+          qboId: existingQboId,
+          entityType: "invoice",
+        })
+        await supabase
+          .from("invoices")
+          .update({
+            qbo_id: existingQboId,
+            qbo_synced_at: new Date().toISOString(),
+            qbo_sync_status: "synced",
+          })
+          .eq("org_id", orgId)
+          .eq("id", invoiceId)
+        await markConnectionHealthy(orgId)
+        logQBO("info", "invoice_void_sync_already_deleted", { orgId, invoiceId, qboId: existingQboId })
+        return { success: true, qbo_id: existingQboId, already_deleted: true }
+      }
+      if (!latestInvoice.SyncToken) {
         throw new Error("Unable to load the QuickBooks invoice before voiding it.")
       }
       const voided = await client.voidInvoice({

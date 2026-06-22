@@ -370,6 +370,7 @@ export async function listFiles(
 
   let orderCol = "created_at"
   if (parsed.sort === "name") orderCol = "file_name"
+  if (parsed.sort === "workflow") orderCol = "status"
   if (parsed.sort === "updated_at") orderCol = "updated_at"
   if (parsed.sort === "size") orderCol = "size_bytes"
   

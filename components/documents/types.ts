@@ -49,7 +49,7 @@ export interface DocumentsContextValue {
   quickFilter: QuickFilter
   searchQuery: string
   viewMode: ViewMode
-  sort: "name" | "updated_at" | "created_at" | "size"
+  sort: "name" | "workflow" | "updated_at" | "created_at" | "size"
   direction: "asc" | "desc"
 
   // Navigation
@@ -57,9 +57,9 @@ export interface DocumentsContextValue {
   setQuickFilter: (filter: QuickFilter) => void
   setSearchQuery: (query: string) => void
   setViewMode: (mode: ViewMode) => void
-  setSort: (sort: "name" | "updated_at" | "created_at" | "size") => void
+  setSort: (sort: "name" | "workflow" | "updated_at" | "created_at" | "size") => void
   setDirection: (direction: "asc" | "desc") => void
-  toggleSort: (sort: "name" | "updated_at" | "created_at" | "size") => void
+  toggleSort: (sort: "name" | "workflow" | "updated_at" | "created_at" | "size") => void
   setSelectedDrawingSet: (id: string | null, title?: string | null) => void
   navigateToRoot: () => void
   navigateToFolder: (path: string) => void

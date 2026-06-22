@@ -45,6 +45,7 @@ type Props = {
   onOpenChange: (open: boolean) => void
   projects: Project[]
   defaultProjectId?: string
+  initialSourceChangeOrderId?: string
   onSubmit: (values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) => Promise<Invoice>
   isSubmitting?: boolean
   mode?: "create" | "edit"
@@ -411,6 +412,7 @@ export function InvoiceComposerSheet({
   onOpenChange,
   projects,
   defaultProjectId,
+  initialSourceChangeOrderId,
   onSubmit,
   isSubmitting,
   mode = "create",
@@ -499,6 +501,7 @@ export function InvoiceComposerSheet({
   const reservationConsumedRef = useRef(false)
   const submitInFlightRef = useRef(false)
   const pdfInFlightRef = useRef(false)
+  const initialSourceAppliedRef = useRef(false)
 
   const contactsSorted = useMemo(() => [...contacts].sort((a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? "")), [contacts])
 
@@ -745,6 +748,7 @@ export function InvoiceComposerSheet({
     if (!open) return
 
     if (mode === "create") {
+      initialSourceAppliedRef.current = false
       resetForCreate()
       setProjectId(defaultProjectId ?? projects[0]?.id)
       void loadInvoiceNumber()
@@ -820,6 +824,40 @@ export function InvoiceComposerSheet({
         if (cancelled) return
         setDrawOptions(result.draws ?? [])
         setChangeOrderOptions(result.changeOrders ?? [])
+        if (mode === "create" && initialSourceChangeOrderId && !initialSourceAppliedRef.current) {
+          const initialChangeOrder = (result.changeOrders ?? []).find(
+            (changeOrder) => changeOrder.id === initialSourceChangeOrderId,
+          )
+          if (initialChangeOrder) {
+            initialSourceAppliedRef.current = true
+            setSourceChangeOrderId(initialChangeOrder.id)
+            setLines(
+              Array.isArray(initialChangeOrder.lines) && initialChangeOrder.lines.length > 0
+                ? initialChangeOrder.lines.map((line) => ({
+                    id: crypto.randomUUID(),
+                    description: line.description ?? "",
+                    quantity: String(line.quantity ?? 1),
+                    unit: String(line.unit ?? "ea"),
+                    unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
+                    taxable: line.taxable !== false,
+                    cost_code_id: line.cost_code_id ?? null,
+                    qbo_income_account_id: (line as Record<string, any>).qbo_income_account_id ?? null,
+                    qbo_income_account_name: (line as Record<string, any>).qbo_income_account_name ?? null,
+                  }))
+                : [{
+                    id: crypto.randomUUID(),
+                    description: initialChangeOrder.title,
+                    quantity: "1",
+                    unit: "co",
+                    unit_cost: (((initialChangeOrder.total_cents ?? 0) / 100) || 0).toFixed(2),
+                    taxable: true,
+                    cost_code_id: null,
+                    qbo_income_account_id: null,
+                    qbo_income_account_name: null,
+                  }],
+            )
+          }
+        }
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
@@ -870,7 +908,7 @@ export function InvoiceComposerSheet({
     return () => {
       cancelled = true
     }
-  }, [open, projectId, issueDate, mode, notes])
+  }, [open, projectId, issueDate, mode, notes, initialSourceChangeOrderId])
 
   // Live QBO customer search: debounce keystrokes and query QBO directly so we never hold a second
   // customer base in Arc. Only runs while the picker is open and QBO is connected.

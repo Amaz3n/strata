@@ -49,6 +49,7 @@ export function ChangeOrderForm({
   const [amount, setAmount] = useState("")
   const [daysImpact, setDaysImpact] = useState("")
   const [notes, setNotes] = useState("")
+  const [status, setStatus] = useState<ChangeOrderInput["status"]>("draft")
   const [gmpClassification, setGmpClassification] = useState<"inside_gmp" | "outside_gmp">("inside_gmp")
   const [gmpImpact, setGmpImpact] = useState<"none" | "increase_gmp" | "decrease_gmp" | "outside_gmp">("none")
 
@@ -64,6 +65,7 @@ export function ChangeOrderForm({
     setAmount("")
     setDaysImpact("")
     setNotes("")
+    setStatus("draft")
     setGmpClassification("inside_gmp")
     setGmpImpact("none")
     setTitleError(null)
@@ -78,6 +80,7 @@ export function ChangeOrderForm({
       setAmount(totalCents > 0 ? (totalCents / 100).toString() : "")
       setDaysImpact(changeOrder.days_impact != null ? changeOrder.days_impact.toString() : "")
       setNotes(changeOrder.summary ?? changeOrder.description ?? "")
+      setStatus((changeOrder.status === "sent" ? "pending" : changeOrder.status) as ChangeOrderInput["status"])
 
       const firstLine = changeOrder.lines?.[0]
       const financialImpact = changeOrder.metadata?.financial_impact as any
@@ -130,7 +133,7 @@ export function ChangeOrderForm({
       requires_signature: changeOrder ? changeOrder.requires_signature ?? true : true,
       tax_rate: changeOrder ? changeOrder.totals?.tax_rate ?? 0 : 0,
       markup_percent: changeOrder ? changeOrder.totals?.markup_percent ?? 0 : 0,
-      status: changeOrder ? changeOrder.status as any : "draft",
+      status,
       client_visible: changeOrder ? changeOrder.client_visible ?? false : false,
       lines: [
         {
@@ -239,6 +242,26 @@ export function ChangeOrderForm({
                   <span className="font-semibold">{formatMoneyFromCents(amountCents)}</span>
                 </div>
               </div>
+
+              {changeOrder ? (
+                <div className="space-y-2">
+                  <Label>Status</Label>
+                  <Select value={status} onValueChange={(value) => setStatus(value as ChangeOrderInput["status"])}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="draft">Draft</SelectItem>
+                      <SelectItem value="pending">Awaiting approval</SelectItem>
+                      <SelectItem value="requested_changes">Needs changes</SelectItem>
+                      <SelectItem value="approved">Approved</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Only approved change orders can be invoiced. Selecting Approved records an approval completed outside Arc.
+                  </p>
+                </div>
+              ) : null}
 
               {isGmpProject ? (
                 <div className="grid gap-4 sm:grid-cols-2">

@@ -150,7 +150,7 @@ export function DocumentsProvider({
     return (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || "list"
   })
 
-  const [sort, setSort] = useState<"name" | "updated_at" | "created_at" | "size">(() => {
+  const [sort, setSort] = useState<"name" | "workflow" | "updated_at" | "created_at" | "size">(() => {
     if (typeof window === "undefined") return "created_at"
     return (localStorage.getItem(SORT_KEY) as any) || "created_at"
   })

@@ -15,6 +15,30 @@ const {
   payableOutstandingCents,
   summarizePayables,
 } = require("../lib/financials/payables-rules")
+const { isQboMissingEntityFault } = require("../lib/integrations/accounting/qbo-error-rules")
+
+test("direct lookup classification recognizes QBO fault 610 as a deleted transaction", () => {
+  assert.equal(isQboMissingEntityFault({ status: 400, faultCode: "610" }), true)
+  assert.equal(isQboMissingEntityFault({ status: 404, faultCode: null }), true)
+  assert.equal(isQboMissingEntityFault({ status: 400, faultCode: "5010" }), false)
+})
+
+test("invoice void sync treats a missing QBO invoice as success and preserves its tombstone id", () => {
+  const syncSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/qbo-sync.ts"),
+    "utf8",
+  )
+  const voidBranch = syncSource.slice(
+    syncSource.indexOf('if (typedInvoice.status === "void")'),
+    syncSource.indexOf("const metadataQboCustomerId"),
+  )
+
+  assert.match(voidBranch, /if \(!latestInvoice\)/)
+  assert.match(voidBranch, /qbo_id: existingQboId/)
+  assert.match(voidBranch, /qbo_sync_status: "synced"/)
+  assert.match(voidBranch, /invoice_void_sync_already_deleted/)
+  assert.match(voidBranch, /already_deleted: true/)
+})
 
 test("credit-only QBO bill payments retain the bill and vendor-credit settlement amounts", () => {
   const payment = {
