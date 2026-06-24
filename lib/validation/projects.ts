@@ -34,6 +34,7 @@ export const projectInputSchema = z.object({
   qbo_class_name: z.string().optional().nullable(),
   qbo_customer_id: z.string().optional().nullable(),
   qbo_customer_name: z.string().optional().nullable(),
+  excluded_from_reporting: z.boolean().optional(),
 })
 
 export const projectUpdateSchema = projectInputSchema.partial()

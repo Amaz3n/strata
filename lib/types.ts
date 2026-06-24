@@ -190,6 +190,7 @@ export interface Project {
   qbo_class_name?: string | null
   qbo_customer_id?: string | null
   qbo_customer_name?: string | null
+  excluded_from_reporting?: boolean
   financial_settings?: ProjectFinancialSettings | null
   billing_contract?: Contract | null
   created_at: string

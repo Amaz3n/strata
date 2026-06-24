@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Calendar } from "@/components/ui/calendar"
@@ -106,6 +107,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [createCustomerOpen, setCreateCustomerOpen] = useState(false)
   const [newCustomer, setNewCustomer] = useState({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
   const [creatingCustomer, setCreatingCustomer] = useState(false)
+  const [excludedFromReporting, setExcludedFromReporting] = useState<boolean>(project.excluded_from_reporting ?? false)
   const [financialSetup, setFinancialSetup] = useState<FinancialSetupValue>(() => financialSetupFromProject(project, contract))
   const [step, setStep] = useState<"details" | "financials">(initialStep)
   const [saving, setSaving] = useState(false)
@@ -252,6 +254,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       qbo_class_name: qboClassName,
       qbo_customer_id: qboCustomerId,
       qbo_customer_name: qboCustomerName,
+      excluded_from_reporting: excludedFromReporting,
       ...financialSetupToProjectInput(financialSetup),
     }
 
@@ -696,6 +699,25 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   ) : null}
                 </div>
               ) : null}
+
+              <div className="flex items-start justify-between gap-4 rounded-md border bg-muted/30 px-3 py-3">
+                <div className="space-y-1">
+                  <Label htmlFor="exclude-from-reporting" className="text-sm">
+                    Exclude from reports &amp; Control Tower
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Keep this project out of Control Tower metrics and org-wide financial reports (AR/AP aging,
+                    draws, change orders, payments). Useful for test jobs or friends-and-family work. The project
+                    stays fully usable, and its own reports still include it.
+                  </p>
+                </div>
+                <Switch
+                  id="exclude-from-reporting"
+                  checked={excludedFromReporting}
+                  onCheckedChange={setExcludedFromReporting}
+                  className="mt-0.5 shrink-0"
+                />
+              </div>
 
               </div>
 

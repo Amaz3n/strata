@@ -70,6 +70,7 @@ function mapProject(row: any): Project {
     qbo_class_name: row.qbo_class_name ?? null,
     qbo_customer_id: row.qbo_customer_id ?? null,
     qbo_customer_name: row.qbo_customer_name ?? null,
+    excluded_from_reporting: row.excluded_from_reporting ?? false,
     financial_settings: row.project_financial_settings?.[0] ?? null,
     billing_contract: billingContractRow ? mapProjectBillingContract(billingContractRow) : null,
     created_at: row.created_at,
@@ -109,7 +110,7 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, snapshot, created_at, updated_at)
 `
@@ -295,6 +296,7 @@ export async function updateProject({
     qbo_class_name: projectNullableValue<string>(parsed, "qbo_class_name", existing.data.qbo_class_name),
     qbo_customer_id: projectNullableValue<string>(parsed, "qbo_customer_id", existing.data.qbo_customer_id),
     qbo_customer_name: projectNullableValue<string>(parsed, "qbo_customer_name", existing.data.qbo_customer_name),
+    excluded_from_reporting: parsed.excluded_from_reporting ?? existing.data.excluded_from_reporting ?? false,
   }
 
   const { data, error } = await supabase

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { requireOrgContext } from "@/lib/services/context";
+import { getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
 import { listProjectsWithClient } from "@/lib/services/projects";
 import { listTasksWithClient } from "@/lib/services/tasks";
 import type { DashboardStats, Project, Task } from "@/lib/types";
@@ -321,6 +322,10 @@ export async function getControlTowerData(
   const context = await requireOrgContext(orgId);
   const { supabase, orgId: resolvedOrgId } = context;
 
+  // Projects flagged out of reporting (test / friends-and-family jobs) are
+  // dropped from every financial rollup below so they don't skew the numbers.
+  const excludedProjectIds = await getReportingExcludedProjectIds(supabase, resolvedOrgId);
+
   const [
     projectsResult,
     tasksResult,
@@ -381,12 +386,12 @@ export async function getControlTowerData(
       .eq("org_id", resolvedOrgId),
     supabase
       .from("vendor_bills")
-      .select("id, status, amount_cents, balance_due_cents")
+      .select("id, project_id, status, amount_cents, balance_due_cents")
       .eq("org_id", resolvedOrgId)
       .in("status", ["approved", "partial"]),
     supabase
       .from("billable_costs")
-      .select("id, billable_cents")
+      .select("id, project_id, billable_cents")
       .eq("org_id", resolvedOrgId)
       .eq("status", "open")
       .eq("is_billable", true),
@@ -398,13 +403,17 @@ export async function getControlTowerData(
       .limit(20),
   ]);
 
-  const projects = projectsResult.data ?? [];
-  const tasks = tasksResult.data ?? [];
-  const invoices = invoicesResult.data ?? [];
-  const scheduleItems = scheduleResult.data ?? [];
+  const excludedSet = new Set(excludedProjectIds);
+  // Keep rows with no project (org-level invoices, unassigned costs); drop only
+  // rows belonging to an excluded project.
+  const keep = (projectId: string | null | undefined) => !projectId || !excludedSet.has(projectId);
+  const projects = (projectsResult.data ?? []).filter((p) => !excludedSet.has(p.id));
+  const tasks = (tasksResult.data ?? []).filter((t) => keep((t as { project_id?: string | null }).project_id));
+  const invoices = (invoicesResult.data ?? []).filter((i) => keep((i as { project_id?: string | null }).project_id));
+  const scheduleItems = (scheduleResult.data ?? []).filter((s) => keep((s as { project_id?: string | null }).project_id));
   const opportunities = opportunitiesResult.data ?? [];
-  const vendorBills = vendorBillsResult.data ?? [];
-  const billableCosts = billableCostsResult.data ?? [];
+  const vendorBills = (vendorBillsResult.data ?? []).filter((b) => keep((b as { project_id?: string | null }).project_id));
+  const billableCosts = (billableCostsResult.data ?? []).filter((c) => keep((c as { project_id?: string | null }).project_id));
   const events = eventsResult.data ?? [];
 
   const now = new Date();
@@ -1236,11 +1245,17 @@ export async function getDecisionQueue(
       .eq("org_id", resolvedOrgId)
       .eq("status", "open")
       .in("severity", ["high", "urgent"]),
-    supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId),
+    supabase.from("projects").select("id, name, excluded_from_reporting").eq("org_id", resolvedOrgId),
   ]);
 
   const projectMap = new Map(
     (projectsRes.data ?? []).map((p) => [p.id, p.name]),
+  );
+  // Items belonging to reporting-excluded projects are dropped from the queue.
+  const excludedProjects = new Set(
+    (projectsRes.data ?? [])
+      .filter((p) => (p as { excluded_from_reporting?: boolean }).excluded_from_reporting)
+      .map((p) => p.id),
   );
   const pName = (pid?: string) => (pid ? projectMap.get(pid) : undefined);
   const daysSince = (dateStr: string) =>
@@ -1382,15 +1397,19 @@ export async function getDecisionQueue(
     });
   }
 
+  const visibleItems = items.filter(
+    (i) => !i.projectId || !excludedProjects.has(i.projectId),
+  );
+
   // Sort by severity (high first), then by age (oldest first)
   const severityOrder = { high: 0, medium: 1, low: 2 };
-  items.sort((a, b) => {
+  visibleItems.sort((a, b) => {
     const sDiff = severityOrder[a.severity] - severityOrder[b.severity];
     if (sDiff !== 0) return sDiff;
     return b.ageDays - a.ageDays;
   });
 
-  return items.slice(0, 7);
+  return visibleItems.slice(0, 7);
 }
 
 // --- Drift & Trend ---
@@ -1594,6 +1613,7 @@ export async function getWatchlist(
     .from("projects")
     .select("id, name, status, total_value")
     .eq("org_id", resolvedOrgId)
+    .eq("excluded_from_reporting", false)
     .in("status", ["active", "on_hold"]);
 
   if (!projects || projects.length === 0) return [];

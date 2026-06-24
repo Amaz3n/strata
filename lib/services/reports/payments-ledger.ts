@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 
 export type PaymentsLedgerKind = "ar" | "ap"
@@ -42,6 +43,7 @@ export async function getPaymentsLedgerReport({
 }): Promise<PaymentsLedgerReport> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const asOfDate = asOf ?? todayIsoDateOnly()
+  const excludedProjectIds = projectId ? [] : await getReportingExcludedProjectIds(supabase, resolvedOrgId)
 
   let query = supabase
     .from("payments")
@@ -53,6 +55,8 @@ export async function getPaymentsLedgerReport({
 
   if (projectId) {
     query = query.eq("project_id", projectId)
+  } else {
+    query = applyReportingExclusion(query, excludedProjectIds)
   }
 
   if (kind === "ar") {
@@ -97,6 +101,8 @@ export async function getPaymentsLedgerReport({
 
     if (projectId) {
       allocationQuery = allocationQuery.eq("project_id", projectId)
+    } else {
+      allocationQuery = applyReportingExclusion(allocationQuery, excludedProjectIds)
     }
 
     const { data: allocationData, error: allocationError } = await allocationQuery

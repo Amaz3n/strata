@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 
 export type DrawStatusRow = {
@@ -44,6 +45,9 @@ export async function getDrawStatusReport({
 
   if (projectId) {
     query = query.eq("project_id", projectId)
+  } else {
+    const excludedProjectIds = await getReportingExcludedProjectIds(supabase, resolvedOrgId)
+    query = applyReportingExclusion(query, excludedProjectIds)
   }
 
   const { data, error } = await query
