@@ -4,6 +4,7 @@ const assert = require("node:assert/strict")
 const test = require("node:test")
 
 const {
+  collectPaginatedRows,
   extractLinkedQboAmounts,
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
@@ -80,6 +81,26 @@ test("webhook placeholder mappings do not count as imported payments", () => {
     ),
     false,
   )
+})
+
+test("QBO import dedup pagination loads rows beyond the Supabase response cap", async () => {
+  const source = Array.from({ length: 1352 }, (_, index) => ({ id: index + 1 }))
+  const requestedRanges = []
+
+  const rows = await collectPaginatedRows(
+    async (from, to) => {
+      requestedRanges.push([from, to])
+      return { data: source.slice(from, to + 1), error: null }
+    },
+    { pageSize: 1000, label: "test mappings" },
+  )
+
+  assert.equal(rows.length, 1352)
+  assert.deepEqual(rows.at(-1), { id: 1352 })
+  assert.deepEqual(requestedRanges, [
+    [0, 999],
+    [1000, 1999],
+  ])
 })
 
 test("QBO payment provider ids are stable across retries and distinct for credit portions", () => {

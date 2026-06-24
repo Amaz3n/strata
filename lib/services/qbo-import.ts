@@ -3,6 +3,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import {
+  collectPaginatedRows,
   extractLinkedQboAmounts,
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
@@ -297,41 +298,77 @@ async function collectLinkedQboIds(
   const [invoiceRows, expenseRows, billRows, syncRows, paymentRows] = await Promise.all([
     // Exclude client-deposit invoices: their qbo_id is the JournalEntry id (shared across lines) and
     // must not shadow a real Invoice that happens to share that numeric id.
-    supabase.from("invoices").select("qbo_id, metadata").eq("org_id", orgId).not("qbo_id", "is", null),
+    collectPaginatedRows(
+      (from, to) =>
+        supabase
+          .from("invoices")
+          .select("id, qbo_id, metadata")
+          .eq("org_id", orgId)
+          .not("qbo_id", "is", null)
+          .order("id")
+          .range(from, to),
+      { label: "linked QBO invoices" },
+    ),
     // Exclude JE-derived expenses: their qbo_id is the JournalEntry id (shared across lines) and must
     // not shadow a real Purchase that happens to share that numeric id.
-    supabase
-      .from("project_expenses")
-      .select("qbo_id")
-      .eq("org_id", orgId)
-      .not("qbo_id", "is", null)
-      .or("qbo_transaction_type.is.null,qbo_transaction_type.neq.journal_entry"),
+    collectPaginatedRows(
+      (from, to) =>
+        supabase
+          .from("project_expenses")
+          .select("id, qbo_id")
+          .eq("org_id", orgId)
+          .not("qbo_id", "is", null)
+          .or("qbo_transaction_type.is.null,qbo_transaction_type.neq.journal_entry")
+          .order("id")
+          .range(from, to),
+      { label: "linked QBO expenses" },
+    ),
     // Vendor credits also live in vendor_bills (negative rows, metadata.source = "vendor_credit").
     // Route them to the vendor_credit set, not bill — QBO ids aren't unique across entity types, so
     // a Bill and a VendorCredit can share a numeric id.
-    supabase.from("vendor_bills").select("id, qbo_id, metadata").eq("org_id", orgId).not("qbo_id", "is", null),
-    supabase
-      .from("qbo_sync_records")
-      .select("entity_type, entity_id, qbo_id, status, metadata")
-      .eq("org_id", orgId)
-      .in("entity_type", ["invoice", "project_expense", "bill", "vendor_credit", "payment", "bill_payment"]),
-    supabase.from("payments").select("id").eq("org_id", orgId),
+    collectPaginatedRows(
+      (from, to) =>
+        supabase
+          .from("vendor_bills")
+          .select("id, qbo_id, metadata")
+          .eq("org_id", orgId)
+          .not("qbo_id", "is", null)
+          .order("id")
+          .range(from, to),
+      { label: "linked QBO bills" },
+    ),
+    collectPaginatedRows(
+      (from, to) =>
+        supabase
+          .from("qbo_sync_records")
+          .select("id, entity_type, entity_id, qbo_id, status, metadata")
+          .eq("org_id", orgId)
+          .in("entity_type", ["invoice", "project_expense", "bill", "vendor_credit", "payment", "bill_payment"])
+          .order("id")
+          .range(from, to),
+      { label: "QBO sync mappings" },
+    ),
+    collectPaginatedRows(
+      (from, to) =>
+        supabase.from("payments").select("id").eq("org_id", orgId).order("id").range(from, to),
+      { label: "payment ledger rows" },
+    ),
   ])
 
-  for (const row of invoiceRows.data ?? []) {
+  for (const row of invoiceRows) {
     if (!row.qbo_id) continue
     if ((row.metadata as { source?: string } | null)?.source === "client_deposit") continue
     linked.invoice.add(String(row.qbo_id))
   }
-  for (const row of expenseRows.data ?? []) if (row.qbo_id) linked.expense.add(String(row.qbo_id))
-  for (const row of billRows.data ?? []) {
+  for (const row of expenseRows) if (row.qbo_id) linked.expense.add(String(row.qbo_id))
+  for (const row of billRows) {
     if (!row.qbo_id) continue
     if ((row.metadata as { qbo_import_complete?: boolean } | null)?.qbo_import_complete === false) continue
     if ((row.metadata as { source?: string } | null)?.source === "vendor_credit") linked.vendor_credit.add(String(row.qbo_id))
     else linked.bill.add(String(row.qbo_id))
   }
-  const paymentIds = new Set((paymentRows.data ?? []).map((row) => String(row.id)))
-  for (const row of syncRows.data ?? []) {
+  const paymentIds = new Set(paymentRows.map((row) => String(row.id)))
+  for (const row of syncRows) {
     const qboId = row.qbo_id ? String(row.qbo_id) : null
     if (!qboId) continue
     // Native financial rows above are the source of truth for documents. For payments, accept a

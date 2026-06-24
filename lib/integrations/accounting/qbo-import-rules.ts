@@ -7,6 +7,27 @@ export function qboImportCents(value: unknown): number {
   return 0
 }
 
+export async function collectPaginatedRows<T>(
+  fetchPage: (
+    from: number,
+    to: number,
+  ) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  options: { pageSize?: number; label?: string } = {},
+): Promise<T[]> {
+  const pageSize = Math.max(1, options.pageSize ?? 1000)
+  const rows: T[] = []
+
+  while (true) {
+    const from = rows.length
+    const { data, error } = await fetchPage(from, from + pageSize - 1)
+    if (error) throw new Error(`Failed to load ${options.label ?? "paginated rows"}: ${error.message}`)
+
+    const page = data ?? []
+    rows.push(...page)
+    if (page.length < pageSize) return rows
+  }
+}
+
 export function qboVendorCreditCents(value: unknown): number {
   return -Math.abs(qboImportCents(value))
 }
