@@ -57,6 +57,10 @@ export interface DragState {
   itemId: string
   type: "move" | "resize-start" | "resize-end"
   startX: number
+  // Horizontal scroll offset when the drag began. Date math adds the scroll
+  // delta since, so a bar keeps advancing while the timeline auto-scrolls under
+  // a held pointer (drag-to-edge to schedule past the visible range).
+  startScrollLeft: number
   startDate: Date
   endDate: Date
   originalStart: Date

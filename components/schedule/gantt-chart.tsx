@@ -323,11 +323,17 @@ interface DateSelection {
   isDragging: boolean
 }
 
+// Auto-scroll-on-drag tuning
+const AUTO_SCROLL_EDGE_PX = 64 // hot zone width at each viewport edge
+const AUTO_SCROLL_MAX_VELOCITY = 22 // max px scrolled per frame at the very edge
+const AUTO_SCROLL_GROW_DAYS = 14 // how much to extend the range when hitting the end
+
 export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: GanttChartProps) {
   const {
     items: rawItems,
     dependencies,
     viewState,
+    setViewState,
     selectedItem,
     setSelectedItem,
     onItemUpdate,
@@ -349,6 +355,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   const activeDragCaptureTargetRef = useRef<HTMLElement | null>(null)
   const dragFrameRef = useRef<number | null>(null)
   const queuedDragClientXRef = useRef<number | null>(null)
+  // Auto-scroll-on-drag: a rAF loop runs while a bar is being dragged near the
+  // viewport edge, scrolling the timeline (and growing its end when needed).
+  const dragActiveRef = useRef(false)
+  const autoScrollFrameRef = useRef<number | null>(null)
+  const autoScrollDepsRef = useRef({ rangeStart: new Date(), rangeEnd: new Date(), columnWidth: 40 })
   const [dragState, setDragState] = useState<DragState | null>(null)
   const [pendingDateUpdates, setPendingDateUpdates] = useState<Record<string, { requestId: number; startDate: Date; endDate: Date }>>({})
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["all", "Unassigned"]))
@@ -432,6 +443,9 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   // Memoized calculations
   const { start: rangeStart, end: rangeEnd } = viewState.dateRange
   const columnWidth = getColumnWidth(viewState.zoom)
+  // Keep latest range/zoom available to the auto-scroll rAF loop without
+  // re-subscribing it every render.
+  autoScrollDepsRef.current = { rangeStart, rangeEnd, columnWidth }
   const columns = useMemo(() => generateTimelineColumns(rangeStart, rangeEnd, viewState.zoom), [rangeStart, rangeEnd, viewState.zoom])
   const monthHeaders = useMemo(() => generateMonthHeaders(rangeStart, rangeEnd), [rangeStart, rangeEnd])
   const totalWidth = columns.length * columnWidth
@@ -533,7 +547,10 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   }, [items, dependencies, onItemUpdate, onItemsBulkUpdate])
 
   const deriveDragDates = useCallback((state: DragState, clientX: number) => {
-    const deltaX = clientX - state.startX
+    // Include any horizontal scrolling since the drag began, so the bar keeps
+    // tracking real dates while the timeline auto-scrolls under a held pointer.
+    const liveScrollLeft = scrollContainerRef.current?.scrollLeft ?? state.startScrollLeft
+    const deltaX = (clientX - state.startX) + (liveScrollLeft - state.startScrollLeft)
     // Advance only after fully crossing a day boundary to avoid accidental +1 day snaps.
     const daysDelta =
       deltaX >= 0
@@ -600,7 +617,58 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     dragFrameRef.current = requestAnimationFrame(flushQueuedDragUpdate)
   }, [flushQueuedDragUpdate])
 
+  // While a bar is held near the viewport's left/right edge, scroll the timeline
+  // in that direction so you can drag a task beyond the currently visible range.
+  // At the right edge we also grow the range end on demand, giving an effectively
+  // endless runway to schedule into the future without panning first.
+  const autoScrollTick = useCallback(() => {
+    if (!dragActiveRef.current) {
+      autoScrollFrameRef.current = null
+      return
+    }
+
+    const el = scrollContainerRef.current
+    const clientX = queuedDragClientXRef.current
+    if (el && clientX !== null) {
+      const rect = el.getBoundingClientRect()
+      let velocity = 0
+      if (clientX > rect.right - AUTO_SCROLL_EDGE_PX) {
+        const depth = Math.min(1, (clientX - (rect.right - AUTO_SCROLL_EDGE_PX)) / AUTO_SCROLL_EDGE_PX)
+        velocity = AUTO_SCROLL_MAX_VELOCITY * depth
+      } else if (clientX < rect.left + AUTO_SCROLL_EDGE_PX) {
+        const depth = Math.min(1, ((rect.left + AUTO_SCROLL_EDGE_PX) - clientX) / AUTO_SCROLL_EDGE_PX)
+        velocity = -AUTO_SCROLL_MAX_VELOCITY * depth
+      }
+
+      if (velocity > 0) {
+        // Grow the canvas before scrolling into it when we've hit the end.
+        if (el.scrollLeft + el.clientWidth >= el.scrollWidth - 2) {
+          const { rangeStart, rangeEnd } = autoScrollDepsRef.current
+          setViewState({ dateRange: { start: rangeStart, end: dateAddDays(rangeEnd, AUTO_SCROLL_GROW_DAYS) } })
+        }
+        el.scrollLeft += velocity
+        queueDragUpdate(clientX)
+      } else if (velocity < 0 && el.scrollLeft > 0) {
+        // Past direction: scroll within the existing window only (the schedule
+        // already keeps ~6 months of lead room, so no need to grow leftward).
+        el.scrollLeft = Math.max(0, el.scrollLeft + velocity)
+        queueDragUpdate(clientX)
+      }
+    }
+
+    autoScrollFrameRef.current = requestAnimationFrame(autoScrollTick)
+  }, [setViewState, queueDragUpdate])
+
+  const stopAutoScroll = useCallback(() => {
+    dragActiveRef.current = false
+    if (autoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(autoScrollFrameRef.current)
+      autoScrollFrameRef.current = null
+    }
+  }, [])
+
   const finalizeDrag = useCallback(() => {
+    stopAutoScroll()
     if (dragFrameRef.current !== null) {
       cancelAnimationFrame(dragFrameRef.current)
       dragFrameRef.current = null
@@ -647,7 +715,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     }
     dragMovedRef.current = false
     setDragState(null)
-  }, [commitDraggedDates, deriveDragDates, dragState])
+  }, [commitDraggedDates, deriveDragDates, dragState, stopAutoScroll])
 
   // Handle drag start for items
   const handleDragStart = useCallback((e: React.PointerEvent<HTMLElement>, item: ScheduleItem, type: "move" | "resize-start" | "resize-end") => {
@@ -664,17 +732,23 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     const startDate = parseDate(item.start_date) || new Date()
     const endDate = parseDate(item.end_date) || startDate
     dragMovedRef.current = false
-    
+
+    dragActiveRef.current = true
+    if (autoScrollFrameRef.current === null) {
+      autoScrollFrameRef.current = requestAnimationFrame(autoScrollTick)
+    }
+
     setDragState({
       itemId: item.id,
       type,
       startX: e.clientX,
+      startScrollLeft: scrollContainerRef.current?.scrollLeft ?? 0,
       startDate,
       endDate,
       originalStart: startDate,
       originalEnd: endDate,
     })
-  }, [])
+  }, [autoScrollTick])
 
   const handleDragPointerMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
     if (!dragState) return
@@ -698,6 +772,9 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     return () => {
       if (dragFrameRef.current !== null) {
         cancelAnimationFrame(dragFrameRef.current)
+      }
+      if (autoScrollFrameRef.current !== null) {
+        cancelAnimationFrame(autoScrollFrameRef.current)
       }
     }
   }, [])
