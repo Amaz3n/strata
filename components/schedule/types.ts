@@ -100,7 +100,11 @@ export interface ScheduleContextValue {
   // Navigation
   scrollToToday: () => void
   scrollToTodayTrigger: number
-  
+  // Reset the timeline to auto-fit the whole schedule (clears manual panning).
+  fitToSchedule: () => void
+  // True while the timeline is auto-following the schedule (no manual range set).
+  isFollowingSchedule: boolean
+
   // UI state
   isLoading: boolean
   error: string | null

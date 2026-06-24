@@ -39,6 +39,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Maximize2,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -60,7 +61,7 @@ const GROUP_BY_OPTIONS: GroupByOption[] = ["none", "phase", "trade", "status"]
 
 export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToolbarProps) {
   const isMobile = useIsMobile()
-  const { viewState, setViewState, scrollToToday } = useSchedule()
+  const { viewState, setViewState, scrollToToday, fitToSchedule, isFollowingSchedule } = useSchedule()
   const [isExporting, setIsExporting] = useState<"pdf" | "csv" | "gantt-pdf" | null>(null)
 
   const handleExport = async (exportFormat: "pdf" | "gantt-pdf" | "csv") => {
@@ -183,6 +184,22 @@ export function ScheduleToolbar({ className, onAddItem, projectId }: ScheduleToo
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Next period</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={fitToSchedule}
+                  disabled={isFollowingSchedule}
+                  aria-label="Fit timeline to schedule"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Fit to schedule</TooltipContent>
             </Tooltip>
           </div>
         )}

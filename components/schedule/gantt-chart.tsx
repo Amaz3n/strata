@@ -190,6 +190,15 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalP
         >
           {item.name}
         </span>
+        {/* Flag items with no start date: they render a sidebar row but no timeline bar, so they'd otherwise silently "disappear" from the chart. */}
+        {!item.start_date && (
+          <span
+            className="flex-shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-600 dark:text-amber-400"
+            title="This item has no start date, so it won't appear on the timeline. Click to add dates."
+          >
+            No dates
+          </span>
+        )}
       </div>
     </div>
   )

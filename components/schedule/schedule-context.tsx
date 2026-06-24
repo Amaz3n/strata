@@ -11,9 +11,30 @@ import type {
   GroupByOption,
   ScheduleBulkItemUpdate,
 } from "./types"
-import { addDays } from "./types"
+import { addDays, parseDate } from "./types"
 import { useIsMobile } from "@/hooks/use-mobile"
 
+// The timeline's natural span: the window that fits every scheduled item.
+// Floor is today ±6 months (so a sparse/empty schedule still shows a sensible
+// window); we then extend it, with padding, to include any item whose dates
+// fall outside that floor. Pure — derived from items, no state.
+function computeContentBounds(items: ScheduleItem[]): { start: Date; end: Date } {
+  let start = startOfDay(addDays(new Date(), -180)) // 6 months back
+  let end = startOfDay(addDays(new Date(), 180)) // 6 months forward
+
+  for (const item of items) {
+    const itemStart = parseDate(item.start_date)
+    const itemEnd = parseDate(item.end_date) ?? itemStart
+    if (itemStart && itemStart < start) start = startOfDay(addDays(itemStart, -14))
+    if (itemEnd && itemEnd > end) end = startOfDay(addDays(itemEnd, 14))
+  }
+
+  return { start, end }
+}
+
+// dateRange in viewState is derived (content bounds unless the user has panned),
+// so the placeholder here is only a type-level default and is always overridden
+// by the provider before being exposed.
 const defaultViewState: ScheduleViewState = {
   view: "gantt",
   zoom: "week",
@@ -22,10 +43,7 @@ const defaultViewState: ScheduleViewState = {
   showDependencies: true,
   showCriticalPath: true,
   showWeekends: false,
-  dateRange: {
-    start: startOfDay(addDays(new Date(), -180)), // 6 months back
-    end: startOfDay(addDays(new Date(), 180)), // 6 months forward
-  },
+  dateRange: { start: startOfDay(addDays(new Date(), -180)), end: startOfDay(addDays(new Date(), 180)) },
   selectedItemId: null,
   hoveredItemId: null,
   expandedGroups: new Set(),
@@ -73,24 +91,49 @@ export function ScheduleProvider({
   const [dependencies, setDependencies] = useState<ScheduleDependency[]>(initialDependencies)
   const [assignments] = useState<ScheduleAssignment[]>(initialAssignments)
   const [baselines] = useState<ScheduleBaseline[]>(initialBaselines)
-  const [viewState, setViewStateInternal] = useState<ScheduleViewState>(defaultViewState)
+  const [viewStateInternal, setViewStateInternal] = useState<ScheduleViewState>(defaultViewState)
+  // The visible timeline range. `null` means "follow the schedule" — derive it
+  // from item dates (computeContentBounds). Once the user pans/zooms/jumps, we
+  // store their explicit window here and stop auto-following, so adding an item
+  // elsewhere never yanks their viewport. "Fit to schedule" clears it back to null.
+  const [userRange, setUserRange] = useState<{ start: Date; end: Date } | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [scrollToTodayTrigger, setScrollToTodayTrigger] = useState(0)
 
+  // Natural span of the schedule, recomputed only when items change.
+  const contentBounds = useMemo(() => computeContentBounds(items), [items])
+
+  // The range actually shown: the user's explicit window if they've navigated,
+  // otherwise the auto-fitting content bounds.
+  const dateRange = userRange ?? contentBounds
+
+  // Exposed view state, with the derived range merged in.
+  const viewState = useMemo<ScheduleViewState>(
+    () => ({ ...viewStateInternal, dateRange }),
+    [viewStateInternal, dateRange],
+  )
+
   // Force lookahead view on mobile
   useEffect(() => {
-    if (isMobile && viewState.view !== "lookahead") {
+    if (isMobile && viewStateInternal.view !== "lookahead") {
       setViewStateInternal((prev) => ({ ...prev, view: "lookahead" }))
     }
-  }, [isMobile, viewState.view])
+  }, [isMobile, viewStateInternal.view])
 
   // Scroll to today function
   const scrollToToday = useCallback(() => {
     setScrollToTodayTrigger((prev) => prev + 1)
   }, [])
 
-  // Keep local items aligned with parent-provided items (e.g. filter/project changes).
+  // Snap the timeline back to fitting the whole schedule (clears manual panning).
+  const fitToSchedule = useCallback(() => {
+    setUserRange(null)
+  }, [])
+
+  // Keep local items aligned with parent-provided items (e.g. filter/project
+  // changes). The visible range follows automatically via contentBounds unless
+  // the user has taken manual control — no range bookkeeping needed here.
   useEffect(() => {
     setItems(initialItems)
   }, [initialItems])
@@ -102,13 +145,19 @@ export function ScheduleProvider({
 
   // Selected item
   const selectedItem = useMemo(() => {
-    if (!viewState.selectedItemId) return null
-    return items.find((i) => i.id === viewState.selectedItemId) ?? null
-  }, [items, viewState.selectedItemId])
+    if (!viewStateInternal.selectedItemId) return null
+    return items.find((i) => i.id === viewStateInternal.selectedItemId) ?? null
+  }, [items, viewStateInternal.selectedItemId])
 
-  // Set view state
+  // Set view state. A dateRange update is the user taking manual control of the
+  // timeline window, so it's routed to the override rather than the (derived)
+  // viewState; everything else updates view state normally.
   const setViewState = useCallback((updates: Partial<ScheduleViewState>) => {
-    setViewStateInternal((prev) => ({ ...prev, ...updates }))
+    const { dateRange: nextRange, ...rest } = updates
+    if (nextRange) setUserRange(nextRange)
+    if (Object.keys(rest).length > 0) {
+      setViewStateInternal((prev) => ({ ...prev, ...rest }))
+    }
   }, [])
 
   // Set selected item
@@ -291,6 +340,8 @@ export function ScheduleProvider({
     onDependencyDelete: handleDependencyDelete,
     scrollToToday,
     scrollToTodayTrigger,
+    fitToSchedule,
+    isFollowingSchedule: userRange === null,
     isLoading,
     error,
   }), [
@@ -311,6 +362,8 @@ export function ScheduleProvider({
     handleDependencyDelete,
     scrollToToday,
     scrollToTodayTrigger,
+    fitToSchedule,
+    userRange,
     isLoading,
     error,
   ])
