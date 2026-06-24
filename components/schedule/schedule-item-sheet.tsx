@@ -165,7 +165,13 @@ export function ScheduleItemSheet({
 }: ScheduleItemSheetProps) {
   const { items, onItemCreate, onItemUpdate, onItemDelete, isLoading } = useSchedule()
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [dateRange, setDateRange] = useState<DateRange | undefined>()
+  const [dateRange, setDateRangeState] = useState<DateRange | undefined>()
+  const [dateError, setDateError] = useState<string | null>(null)
+  // Wrap the calendar's onSelect so picking a date clears any "required" error.
+  const setDateRange = useCallback((range: DateRange | undefined) => {
+    setDateRangeState(range)
+    if (range?.from) setDateError(null)
+  }, [])
   const [assignableResources, setAssignableResources] = useState<AssignableResource[]>([])
   const [loadingResources, setLoadingResources] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projectId)
@@ -360,7 +366,7 @@ export function ScheduleItemSheet({
       setShareInspectionAttachmentsWithClients(false)
       setNewChecklistItem("")
     }
-  }, [item, activeProjectId, form, initialDates, open])
+  }, [item, activeProjectId, form, initialDates, open, setDateRange])
 
   const isInspection = form.watch("item_type") === "inspection"
   const assignedToValue = form.watch("assigned_to")
@@ -479,12 +485,19 @@ export function ScheduleItemSheet({
 
   // Handle form submission
   async function handleSubmit(values: ScheduleItemInput) {
+    // A schedule item must be placed on the timeline: require at least a start
+    // date (a single day is fine — end defaults to the same day).
+    if (!dateRange?.from) {
+      setDateError("Select a date or date range for this item")
+      return
+    }
+    setDateError(null)
     setIsSubmitting(true)
     try {
       const formattedValues = {
         ...values,
-        start_date: dateRange?.from ? toDateString(dateRange.from) : "",
-        end_date: dateRange?.to ? toDateString(dateRange.to) : "",
+        start_date: toDateString(dateRange.from),
+        end_date: toDateString(dateRange.to ?? dateRange.from),
       }
 
       const assigneeValue = formattedValues.assigned_to as string | undefined
@@ -811,14 +824,17 @@ export function ScheduleItemSheet({
 
                 {/* Date Range */}
                 <FormItem>
-                  <FormLabel>Date Range</FormLabel>
+                  <FormLabel>
+                    Date Range <span className="text-destructive">*</span>
+                  </FormLabel>
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
                         className={cn(
                           "w-full justify-start text-left font-normal",
-                          !dateRange?.from && "text-muted-foreground"
+                          !dateRange?.from && "text-muted-foreground",
+                          dateError && "border-destructive"
                         )}
                       >
                         <CalendarDays className="mr-2 h-4 w-4" />
@@ -846,7 +862,11 @@ export function ScheduleItemSheet({
                       />
                     </PopoverContent>
                   </Popover>
-                  <FormDescription>End date is inclusive.</FormDescription>
+                  {dateError ? (
+                    <p className="text-sm font-medium text-destructive">{dateError}</p>
+                  ) : (
+                    <FormDescription>Pick a single day or a range. End date is inclusive.</FormDescription>
+                  )}
                 </FormItem>
 
                 {/* Assign To */}
