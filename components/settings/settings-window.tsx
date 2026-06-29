@@ -1608,10 +1608,8 @@ export function SettingsWindow({
                 )}
               </TabsContent>
 
-              <TabsContent value="compliance" className="m-0 mt-0 px-5 py-8 lg:px-8 lg:py-10">
-                <div className="mx-auto max-w-6xl">
-                  <ComplianceSettings initialRules={initialComplianceRules} initialRequirementDefaults={initialComplianceRequirementDefaults} canManage={canManageCompliance} />
-                </div>
+              <TabsContent value="compliance" className="m-0 mt-0 h-full min-h-0 outline-none focus-visible:outline-none">
+                <ComplianceSettings initialRules={initialComplianceRules} initialRequirementDefaults={initialComplianceRequirementDefaults} canManage={canManageCompliance} />
               </TabsContent>
 
               <TabsContent value="about" className="m-0 mt-0 h-full">

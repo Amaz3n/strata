@@ -1375,12 +1375,30 @@ export interface ComplianceDocumentType {
   created_at: string
 }
 
+export type ComplianceRequirementSource = "org_default" | "company_override"
+
+export interface ComplianceRequirementWaiver {
+  id: string
+  org_id: string
+  company_id: string
+  document_type_id: string
+  reason?: string | null
+  expires_at?: string | null
+  waived_by?: string | null
+  created_at: string
+  revoked_at?: string | null
+  revoked_by?: string | null
+  revoke_reason?: string | null
+}
+
 export interface ComplianceRequirement {
   id: string
   org_id: string
   company_id: string
   document_type_id: string
   document_type?: ComplianceDocumentType
+  source?: ComplianceRequirementSource
+  waiver?: ComplianceRequirementWaiver | null
   is_required: boolean
   min_coverage_cents?: number | null
   requires_additional_insured: boolean
@@ -1433,6 +1451,7 @@ export interface ComplianceStatusSummary {
   requirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
   missing: ComplianceDocumentType[]
+  waived: ComplianceRequirement[]
   deficiencies: ComplianceRequirementDeficiency[]
   expiring_soon: ComplianceDocument[]  // within 30 days
   expired: ComplianceDocument[]

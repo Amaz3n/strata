@@ -29,6 +29,16 @@ export const setCompanyRequirementsSchema = z.object({
   requirements: z.array(complianceRequirementInputSchema),
 })
 
+export const complianceRequirementWaiverInputSchema = z.object({
+  document_type_id: z.string().uuid(),
+  reason: z.string().max(1000).optional(),
+  expires_at: z.string().optional(),
+})
+
+export const complianceRequirementWaiverRevokeSchema = z.object({
+  reason: z.string().max(1000).optional(),
+})
+
 // Document upload schemas
 export const complianceDocumentStatusEnum = z.enum(["pending_review", "approved", "rejected", "expired"]) satisfies z.ZodType<ComplianceDocumentStatus>
 
@@ -63,6 +73,8 @@ export type ComplianceDocTypeInput = z.infer<typeof complianceDocTypeInputSchema
 export type ComplianceDocTypeUpdateInput = z.infer<typeof complianceDocTypeUpdateSchema>
 export type ComplianceRequirementInput = z.infer<typeof complianceRequirementInputSchema>
 export type SetCompanyRequirementsInput = z.infer<typeof setCompanyRequirementsSchema>
+export type ComplianceRequirementWaiverInput = z.infer<typeof complianceRequirementWaiverInputSchema>
+export type ComplianceRequirementWaiverRevokeInput = z.infer<typeof complianceRequirementWaiverRevokeSchema>
 export type ComplianceDocumentUploadInput = z.infer<typeof complianceDocumentUploadSchema>
 export type ComplianceReviewDecision = z.infer<typeof complianceReviewDecisionSchema>
 export type ComplianceDocumentFilters = z.infer<typeof complianceDocumentFiltersSchema>

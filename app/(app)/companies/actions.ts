@@ -10,13 +10,17 @@ import {
   getCompanyRequirements,
   listComplianceDocumentTypes,
   listComplianceDocuments,
+  revokeCompanyRequirementWaiver,
   reviewComplianceDocument,
   setCompanyRequirements,
   uploadComplianceDocument,
+  waiveCompanyRequirement,
 } from "@/lib/services/compliance-documents"
 import { companyFiltersSchema, companyInputSchema, companyUpdateSchema } from "@/lib/validation/companies"
 import {
   complianceDocumentFiltersSchema,
+  complianceRequirementWaiverInputSchema,
+  complianceRequirementWaiverRevokeSchema,
   complianceReviewDecisionSchema,
   type ComplianceRequirementInput,
   type ComplianceDocumentUploadInput,
@@ -138,6 +142,28 @@ export async function setCompanyRequirementsAction(
   return result
 }
 
+export async function waiveCompanyRequirementAction(
+  companyId: string,
+  input: unknown
+) {
+  const parsed = complianceRequirementWaiverInputSchema.parse(input)
+  const result = await waiveCompanyRequirement({ companyId, input: parsed })
+  revalidatePath(`/companies/${companyId}`)
+  revalidatePath("/companies")
+  return result
+}
+
+export async function revokeCompanyRequirementWaiverAction(
+  waiverId: string,
+  input?: unknown
+) {
+  const parsed = complianceRequirementWaiverRevokeSchema.parse(input ?? {})
+  const result = await revokeCompanyRequirementWaiver({ waiverId, input: parsed })
+  revalidatePath(`/companies/${result.company_id}`)
+  revalidatePath("/companies")
+  return result
+}
+
 export async function listComplianceDocumentsAction(filters?: unknown) {
   const parsed = complianceDocumentFiltersSchema.parse(filters ?? {}) ?? undefined
   return listComplianceDocuments(parsed)
@@ -166,6 +192,5 @@ export async function reviewComplianceDocumentAction(
   revalidatePath(`/companies`)
   return result
 }
-
 
 

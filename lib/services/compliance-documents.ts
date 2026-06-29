@@ -5,6 +5,8 @@ import type {
   ComplianceDocumentType,
   ComplianceRequirementDeficiency,
   ComplianceRequirement,
+  ComplianceRequirementTemplateItem,
+  ComplianceRequirementWaiver,
   ComplianceStatusSummary,
 } from "@/lib/types"
 import {
@@ -12,17 +14,22 @@ import {
   complianceDocumentFiltersSchema,
   complianceDocumentUploadSchema,
   complianceRequirementInputSchema,
+  complianceRequirementWaiverInputSchema,
+  complianceRequirementWaiverRevokeSchema,
   complianceReviewDecisionSchema,
   type ComplianceDocTypeInput,
   type ComplianceDocumentFilters,
   type ComplianceDocumentUploadInput,
   type ComplianceRequirementInput,
+  type ComplianceRequirementWaiverInput,
+  type ComplianceRequirementWaiverRevokeInput,
   type ComplianceReviewDecision,
 } from "@/lib/validation/compliance-documents"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { normalizeComplianceRequirementDefaults } from "@/lib/services/compliance"
 
 // ============ Mappers ============
 
@@ -50,6 +57,8 @@ function mapRequirement(row: any): ComplianceRequirement {
     document_type: row.compliance_document_types
       ? mapDocumentType(row.compliance_document_types)
       : undefined,
+    source: row.source ?? "company_override",
+    waiver: row.waiver ?? null,
     is_required: row.is_required,
     min_coverage_cents: row.min_coverage_cents ?? undefined,
     requires_additional_insured: row.requires_additional_insured ?? false,
@@ -58,6 +67,22 @@ function mapRequirement(row: any): ComplianceRequirement {
     notes: row.notes ?? undefined,
     created_at: row.created_at,
     created_by: row.created_by ?? undefined,
+  }
+}
+
+function mapWaiver(row: any): ComplianceRequirementWaiver {
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    company_id: row.company_id,
+    document_type_id: row.document_type_id,
+    reason: row.reason ?? undefined,
+    expires_at: row.expires_at ?? undefined,
+    waived_by: row.waived_by ?? undefined,
+    created_at: row.created_at,
+    revoked_at: row.revoked_at ?? undefined,
+    revoked_by: row.revoked_by ?? undefined,
+    revoke_reason: row.revoke_reason ?? undefined,
   }
 }
 
@@ -256,6 +281,137 @@ export async function setCompanyRequirements({
   })
 
   return (data ?? []).map(mapRequirement)
+}
+
+// ============ Requirement Waivers ============
+
+export async function waiveCompanyRequirement({
+  companyId,
+  input,
+  orgId,
+}: {
+  companyId: string
+  input: ComplianceRequirementWaiverInput
+  orgId?: string
+}): Promise<ComplianceRequirementWaiver> {
+  const parsed = complianceRequirementWaiverInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: company } = await supabase
+    .from("companies")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", companyId)
+    .maybeSingle()
+
+  if (!company) {
+    throw new Error("Company not found")
+  }
+
+  const { data: documentType } = await supabase
+    .from("compliance_document_types")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", parsed.document_type_id)
+    .maybeSingle()
+
+  if (!documentType) {
+    throw new Error("Compliance document type not found")
+  }
+
+  await supabase
+    .from("company_compliance_requirement_waivers")
+    .update({
+      revoked_at: new Date().toISOString(),
+      revoked_by: userId,
+      revoke_reason: "Replaced by a newer waiver.",
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("company_id", companyId)
+    .eq("document_type_id", parsed.document_type_id)
+    .is("revoked_at", null)
+
+  const { data, error } = await supabase
+    .from("company_compliance_requirement_waivers")
+    .insert({
+      org_id: resolvedOrgId,
+      company_id: companyId,
+      document_type_id: parsed.document_type_id,
+      reason: parsed.reason ?? null,
+      expires_at: parsed.expires_at ?? null,
+      waived_by: userId,
+    })
+    .select("*")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to waive compliance requirement: ${error?.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "compliance_requirement_waived",
+    entityType: "company",
+    entityId: companyId,
+    payload: {
+      document_type_id: parsed.document_type_id,
+      expires_at: parsed.expires_at ?? null,
+    },
+  })
+
+  return mapWaiver(data)
+}
+
+export async function revokeCompanyRequirementWaiver({
+  waiverId,
+  input,
+  orgId,
+}: {
+  waiverId: string
+  input?: ComplianceRequirementWaiverRevokeInput
+  orgId?: string
+}): Promise<ComplianceRequirementWaiver> {
+  const parsed = complianceRequirementWaiverRevokeSchema.parse(input ?? {})
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: existing, error: existingError } = await supabase
+    .from("company_compliance_requirement_waivers")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", waiverId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Compliance waiver not found")
+  }
+
+  const { data, error } = await supabase
+    .from("company_compliance_requirement_waivers")
+    .update({
+      revoked_at: new Date().toISOString(),
+      revoked_by: userId,
+      revoke_reason: parsed.reason ?? null,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", waiverId)
+    .select("*")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to revoke compliance waiver: ${error?.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "compliance_requirement_waiver_revoked",
+    entityType: "company",
+    entityId: existing.company_id,
+    payload: { document_type_id: existing.document_type_id },
+  })
+
+  return mapWaiver(data)
 }
 
 // ============ Documents ============
@@ -582,6 +738,113 @@ function deficiencyMessage(
   return parts.join("; ")
 }
 
+function todayKey(now = new Date()): string {
+  return now.toISOString().slice(0, 10)
+}
+
+function isActiveWaiver(waiver: ComplianceRequirementWaiver, now = new Date()): boolean {
+  if (waiver.revoked_at) return false
+  if (!waiver.expires_at) return true
+  return waiver.expires_at >= todayKey(now)
+}
+
+function orgDefaultToRequirement({
+  orgId,
+  companyId,
+  template,
+  documentType,
+}: {
+  orgId: string
+  companyId: string
+  template: ComplianceRequirementTemplateItem
+  documentType?: ComplianceDocumentType
+}): ComplianceRequirement {
+  return {
+    id: `org-default:${companyId}:${template.document_type_id}`,
+    org_id: orgId,
+    company_id: companyId,
+    document_type_id: template.document_type_id,
+    document_type: documentType,
+    source: "org_default",
+    waiver: null,
+    is_required: true,
+    min_coverage_cents: template.min_coverage_cents ?? undefined,
+    requires_additional_insured: template.requires_additional_insured ?? false,
+    requires_primary_noncontributory: template.requires_primary_noncontributory ?? false,
+    requires_waiver_of_subrogation: template.requires_waiver_of_subrogation ?? false,
+    notes: template.notes ?? undefined,
+    created_at: "",
+    created_by: null,
+  }
+}
+
+function resolveEffectiveRequirements({
+  orgId,
+  companyId,
+  defaultRequirements,
+  companyRequirements,
+  documentTypes,
+  waivers,
+}: {
+  orgId: string
+  companyId: string
+  defaultRequirements: ComplianceRequirementTemplateItem[]
+  companyRequirements: ComplianceRequirement[]
+  documentTypes: ComplianceDocumentType[]
+  waivers: ComplianceRequirementWaiver[]
+}): ComplianceRequirement[] {
+  const documentTypesById = new Map(documentTypes.map((type) => [type.id, type]))
+  const activeWaiversByTypeId = new Map(
+    waivers
+      .filter((waiver) => isActiveWaiver(waiver))
+      .map((waiver) => [waiver.document_type_id, waiver])
+  )
+  const byTypeId = new Map<string, ComplianceRequirement>()
+
+  for (const template of defaultRequirements) {
+    byTypeId.set(
+      template.document_type_id,
+      orgDefaultToRequirement({
+        orgId,
+        companyId,
+        template,
+        documentType: documentTypesById.get(template.document_type_id),
+      })
+    )
+  }
+
+  for (const requirement of companyRequirements) {
+    if (!requirement.is_required) continue
+    byTypeId.set(requirement.document_type_id, {
+      ...requirement,
+      document_type: requirement.document_type ?? documentTypesById.get(requirement.document_type_id),
+      source: "company_override",
+    })
+  }
+
+  return Array.from(byTypeId.values()).map((requirement) => ({
+    ...requirement,
+    waiver: activeWaiversByTypeId.get(requirement.document_type_id) ?? null,
+  }))
+}
+
+async function getOrgDefaultRequirementTemplatesWithClient(
+  supabase: SupabaseClient,
+  orgId: string
+): Promise<ComplianceRequirementTemplateItem[]> {
+  const { data, error } = await supabase
+    .from("orgs")
+    .select("default_compliance_requirements")
+    .eq("id", orgId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load compliance defaults: ${error.message}`)
+  }
+
+  return normalizeComplianceRequirementDefaults((data as any)?.default_compliance_requirements)
+}
+
 function buildComplianceStatus({
   companyId,
   requirements,
@@ -605,10 +868,15 @@ function buildComplianceStatus({
   })
 
   const missing: ComplianceDocumentType[] = []
+  const waived: ComplianceRequirement[] = []
   const deficiencies: ComplianceRequirementDeficiency[] = []
 
   for (const requirement of requirements) {
     if (!requirement.is_required) continue
+    if (requirement.waiver && isActiveWaiver(requirement.waiver, now)) {
+      waived.push(requirement)
+      continue
+    }
 
     const approvedForType = approvedDocs.filter(
       (document) => document.document_type_id === requirement.document_type_id
@@ -661,6 +929,7 @@ function buildComplianceStatus({
     requirements,
     documents,
     missing,
+    waived,
     deficiencies,
     expiring_soon: expiringSoon,
     expired,
@@ -684,8 +953,13 @@ export async function getCompanyComplianceStatusWithClient(
   orgId: string,
   companyId: string
 ): Promise<ComplianceStatusSummary> {
-  // Fetch requirements and documents in parallel
-  const [requirementsResult, documentsResult] = await Promise.all([
+  const [
+    requirementsResult,
+    documentsResult,
+    defaults,
+    documentTypesResult,
+    waiversResult,
+  ] = await Promise.all([
     supabase
       .from("company_compliance_requirements")
       .select(
@@ -708,6 +982,17 @@ export async function getCompanyComplianceStatusWithClient(
       .eq("org_id", orgId)
       .eq("company_id", companyId)
       .order("created_at", { ascending: false }),
+    getOrgDefaultRequirementTemplatesWithClient(supabase, orgId),
+    supabase
+      .from("compliance_document_types")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("is_active", true),
+    supabase
+      .from("company_compliance_requirement_waivers")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("company_id", companyId),
   ])
 
   if (requirementsResult.error) {
@@ -720,9 +1005,29 @@ export async function getCompanyComplianceStatusWithClient(
       `Failed to get compliance documents: ${documentsResult.error.message}`
     )
   }
+  if (documentTypesResult.error) {
+    throw new Error(
+      `Failed to get compliance document types: ${documentTypesResult.error.message}`
+    )
+  }
+  if (waiversResult.error) {
+    throw new Error(
+      `Failed to get compliance waivers: ${waiversResult.error.message}`
+    )
+  }
 
-  const requirements = (requirementsResult.data ?? []).map(mapRequirement)
+  const companyRequirements = (requirementsResult.data ?? []).map(mapRequirement)
   const documents = (documentsResult.data ?? []).map(mapDocument)
+  const documentTypes = (documentTypesResult.data ?? []).map(mapDocumentType)
+  const waivers = (waiversResult.data ?? []).map(mapWaiver)
+  const requirements = resolveEffectiveRequirements({
+    orgId,
+    companyId,
+    defaultRequirements: defaults,
+    companyRequirements,
+    documentTypes,
+    waivers,
+  })
 
   return buildComplianceStatus({
     companyId,
@@ -741,7 +1046,13 @@ export async function getCompaniesComplianceStatus(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
-  const [requirementsResult, documentsResult] = await Promise.all([
+  const [
+    requirementsResult,
+    documentsResult,
+    defaults,
+    documentTypesResult,
+    waiversResult,
+  ] = await Promise.all([
     supabase
       .from("company_compliance_requirements")
       .select(
@@ -763,6 +1074,17 @@ export async function getCompaniesComplianceStatus(
       .eq("org_id", resolvedOrgId)
       .in("company_id", uniqueCompanyIds)
       .order("created_at", { ascending: false }),
+    getOrgDefaultRequirementTemplatesWithClient(supabase, resolvedOrgId),
+    supabase
+      .from("compliance_document_types")
+      .select("*")
+      .eq("org_id", resolvedOrgId)
+      .eq("is_active", true),
+    supabase
+      .from("company_compliance_requirement_waivers")
+      .select("*")
+      .eq("org_id", resolvedOrgId)
+      .in("company_id", uniqueCompanyIds),
   ])
 
   if (requirementsResult.error) {
@@ -775,9 +1097,21 @@ export async function getCompaniesComplianceStatus(
       `Failed to get compliance documents: ${documentsResult.error.message}`
     )
   }
+  if (documentTypesResult.error) {
+    throw new Error(
+      `Failed to get compliance document types: ${documentTypesResult.error.message}`
+    )
+  }
+  if (waiversResult.error) {
+    throw new Error(
+      `Failed to get compliance waivers: ${waiversResult.error.message}`
+    )
+  }
 
   const requirements = (requirementsResult.data ?? []).map(mapRequirement)
   const documents = (documentsResult.data ?? []).map(mapDocument)
+  const documentTypes = (documentTypesResult.data ?? []).map(mapDocumentType)
+  const waivers = (waiversResult.data ?? []).map(mapWaiver)
 
   const requirementsByCompanyId = new Map<string, ComplianceRequirement[]>()
   for (const req of requirements) {
@@ -793,9 +1127,23 @@ export async function getCompaniesComplianceStatus(
     documentsByCompanyId.set(doc.company_id, list)
   }
 
+  const waiversByCompanyId = new Map<string, ComplianceRequirementWaiver[]>()
+  for (const waiver of waivers) {
+    const list = waiversByCompanyId.get(waiver.company_id) ?? []
+    list.push(waiver)
+    waiversByCompanyId.set(waiver.company_id, list)
+  }
+
   const result: Record<string, ComplianceStatusSummary> = {}
   for (const companyId of uniqueCompanyIds) {
-    const companyRequirements = requirementsByCompanyId.get(companyId) ?? []
+    const companyRequirements = resolveEffectiveRequirements({
+      orgId: resolvedOrgId,
+      companyId,
+      defaultRequirements: defaults,
+      companyRequirements: requirementsByCompanyId.get(companyId) ?? [],
+      documentTypes,
+      waivers: waiversByCompanyId.get(companyId) ?? [],
+    })
     const companyDocuments = documentsByCompanyId.get(companyId) ?? []
 
     result[companyId] = buildComplianceStatus({

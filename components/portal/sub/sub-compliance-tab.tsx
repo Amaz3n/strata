@@ -401,6 +401,7 @@ export function SubComplianceTab({
   const missingCount = complianceStatus.missing.length
   const expiredCount = complianceStatus.expired.length
   const deficiencyCount = complianceStatus.deficiencies.length
+  const visibleRequirements = complianceStatus.requirements.filter((req) => !req.waiver)
   const deficienciesByRequirementId = complianceStatus.deficiencies.reduce((acc, deficiency) => {
     const current = acc.get(deficiency.requirement_id) ?? []
     current.push(deficiency.message)
@@ -453,7 +454,7 @@ export function SubComplianceTab({
       </div>
 
       {/* Required Documents */}
-      {complianceStatus.requirements.length > 0 && (
+      {visibleRequirements.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Required Documents</CardTitle>
@@ -461,7 +462,7 @@ export function SubComplianceTab({
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {complianceStatus.requirements.map((req) => {
+              {visibleRequirements.map((req) => {
                 const approvedDoc = complianceStatus.documents.find(
                   (d) =>
                     d.document_type_id === req.document_type_id &&
@@ -594,7 +595,7 @@ export function SubComplianceTab({
         </Card>
       )}
 
-      {complianceStatus.requirements.length === 0 &&
+      {visibleRequirements.length === 0 &&
         complianceStatus.documents.length === 0 && (
           <Card>
             <CardContent className="py-10 text-center text-muted-foreground">
@@ -610,7 +611,7 @@ export function SubComplianceTab({
         onOpenChange={setUploadOpen}
         token={token}
         documentTypes={documentTypes}
-        requirements={complianceStatus.requirements}
+        requirements={visibleRequirements}
         onUploaded={onRefresh}
       />
     </div>

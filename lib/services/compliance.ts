@@ -65,7 +65,7 @@ export async function updateComplianceRules({
   return mergeRules((data?.compliance_rules ?? {}) as ComplianceRules)
 }
 
-function normalizeDefaults(
+export function normalizeComplianceRequirementDefaults(
   raw?: unknown
 ): ComplianceRequirementTemplateItem[] {
   const list = Array.isArray(raw) ? raw : []
@@ -100,7 +100,7 @@ export async function getDefaultComplianceRequirements(orgId?: string): Promise<
     throw new Error(`Failed to load compliance defaults: ${error.message}`)
   }
 
-  return normalizeDefaults((data as any)?.default_compliance_requirements)
+  return normalizeComplianceRequirementDefaults((data as any)?.default_compliance_requirements)
 }
 
 export async function updateDefaultComplianceRequirements({
@@ -113,7 +113,7 @@ export async function updateDefaultComplianceRequirements({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.admin", "billing.manage", "org.member"], { supabase, orgId: resolvedOrgId, userId })
 
-  const payload = normalizeDefaults(requirements)
+  const payload = normalizeComplianceRequirementDefaults(requirements)
   const { data, error } = await supabase
     .from("orgs")
     .update({ default_compliance_requirements: payload })
@@ -125,5 +125,5 @@ export async function updateDefaultComplianceRequirements({
     throw new Error(`Failed to update compliance defaults: ${error.message}`)
   }
 
-  return normalizeDefaults((data as any)?.default_compliance_requirements)
+  return normalizeComplianceRequirementDefaults((data as any)?.default_compliance_requirements)
 }
