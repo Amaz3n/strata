@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 
 import {
   importQboRecords,
+  linkExistingQboImportRecord,
   listImportableQboRecords,
   listQboCustomersForImport,
   type QboImportCustomerListing,
@@ -51,5 +52,16 @@ export async function importQboRecordsAction(params: {
     }
   }
 
+  return result
+}
+
+export async function linkExistingQboImportRecordAction(params: {
+  qboId: string
+  entityType: "invoice" | "expense" | "bill"
+  existingEntityId: string
+}): Promise<{ linked: true }> {
+  const result = await linkExistingQboImportRecord(params)
+  revalidatePath("/projects")
+  revalidatePath("/invoices")
   return result
 }

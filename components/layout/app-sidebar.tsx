@@ -54,6 +54,7 @@ interface AppSidebarProps {
   pipelineBadgeCount?: number
   canAccessPlatform?: boolean
   permissions?: string[]
+  whatsNewUnreadCount?: number
 }
 
 type SidebarNavSubItem = {
@@ -291,7 +292,13 @@ function buildProjectGroups(projectId: string, section: string, project?: Projec
   ]
 }
 
-export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permissions = [] }: AppSidebarProps) {
+export function AppSidebar({
+  user,
+  pipelineBadgeCount,
+  canAccessPlatform,
+  permissions = [],
+  whatsNewUnreadCount = 0,
+}: AppSidebarProps) {
   const pathname = useOptimisticPathname()
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -444,7 +451,11 @@ export function AppSidebar({ user, pipelineBadgeCount, canAccessPlatform, permis
         )}
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={user} canAccessPlatform={canAccessPlatform} />
+        <NavUser
+          user={user}
+          canAccessPlatform={canAccessPlatform}
+          whatsNewUnreadCount={whatsNewUnreadCount}
+        />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

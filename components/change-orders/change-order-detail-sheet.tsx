@@ -19,20 +19,22 @@ import { Separator } from "@/components/ui/separator"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Clock, Ban } from "@/components/icons"
-import { Link2, Loader2, Receipt, Unlink } from "lucide-react"
+import { FileText, Link2, Loader2, Receipt, Send, Unlink } from "lucide-react"
 import {
   approveChangeOrderAction,
+  publishChangeOrderAction,
   voidChangeOrderAction,
   unlinkInvoiceFromChangeOrderAction,
   getChangeOrderLinkedInvoicesAction,
   linkInvoiceToChangeOrderAction,
   listLinkableInvoicesForChangeOrderAction,
+  updateChangeOrderFollowupAction,
   type LinkableChangeOrderInvoice,
 } from "@/app/(app)/change-orders/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
-import { EnvelopeWizard } from "@/components/esign/envelope-wizard"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
@@ -55,9 +57,17 @@ const statusStyles: Record<string, string> = {
   pending: "bg-warning/20 text-warning border-warning/40",
   sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   approved: "bg-success/20 text-success border-success/30",
-  requested_changes: "bg-amber-100 text-amber-800 border-amber-200",
+  requested_changes: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
   cancelled: "bg-destructive/15 text-destructive border-destructive/30",
   void: "bg-muted text-muted-foreground border-muted",
+}
+
+const vendorImpactLabels: Record<string, string> = {
+  not_reviewed: "Not reviewed",
+  no_vendor_impact: "No vendor impact",
+  needs_vendor_pricing: "Needs vendor pricing",
+  create_vendor_change: "Create vendor change",
+  linked_commitment: "Linked to commitment",
 }
 
 type LinkedInvoice = {
@@ -76,6 +86,7 @@ interface ChangeOrderDetailSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onUpdate?: (changeOrder: ChangeOrder) => void
+  onEdit?: (changeOrder: ChangeOrder) => void
   onPrepareInvoice?: (changeOrder: ChangeOrder) => void
 }
 
@@ -107,15 +118,17 @@ export function ChangeOrderDetailSheet({
   open,
   onOpenChange,
   onUpdate,
+  onEdit,
   onPrepareInvoice,
 }: ChangeOrderDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
-  const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
+  const [sendingToClient, setSendingToClient] = useState(false)
   const [voidDialogOpen, setVoidDialogOpen] = useState(false)
   const [voidReason, setVoidReason] = useState("")
   const [voiding, setVoiding] = useState(false)
+  const [savingFollowup, setSavingFollowup] = useState(false)
 
   const [linkedInvoices, setLinkedInvoices] = useState<LinkedInvoice[]>([])
   const [linkedInvoicesLoading, setLinkedInvoicesLoading] = useState(false)
@@ -229,9 +242,7 @@ export function ChangeOrderDetailSheet({
   }, [open, changeOrder, loadAttachments])
 
   useEffect(() => {
-    if (!open) {
-      setSignatureWizardOpen(false)
-    }
+    if (!open) setSendingToClient(false)
   }, [open])
 
   const handleAttach = useCallback(
@@ -267,12 +278,86 @@ export function ChangeOrderDetailSheet({
     if (!date) return null
     return format(new Date(date), "MMM d, yyyy")
   }
+  const formatDateTime = (date?: string | null) => {
+    if (!date) return null
+    return format(new Date(date), "MMM d, yyyy h:mm a")
+  }
 
   const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
   const isVoided = changeOrder.status === "cancelled"
   const isGmpProject = project ? resolveProjectBillingModel(project) === "cost_plus_gmp" : false
   const canApprove = changeOrder.status !== "approved" && !isVoided
   const canVoid = changeOrder.status === "approved"
+  const metadata = changeOrder.metadata ?? {}
+  const vendorImpactStatus =
+    typeof metadata.vendor_impact_status === "string" ? metadata.vendor_impact_status : "not_reviewed"
+  const billingStatus =
+    changeOrder.status !== "approved"
+      ? "Not approved"
+      : linkedInvoices.length > 0 || changeOrder.linked_invoice
+        ? "Billed"
+        : "Ready to bill"
+  const signatureData = (metadata.signature_data as Record<string, any> | undefined)?.client ?? null
+  const portalChangeRequests = Array.isArray(metadata.portal_change_requests) ? metadata.portal_change_requests : []
+  const latestChangeRequest =
+    portalChangeRequests.length > 0
+      ? portalChangeRequests[portalChangeRequests.length - 1]
+      : typeof metadata.portal_change_request_note === "string"
+        ? {
+            note: metadata.portal_change_request_note,
+            requested_at: metadata.portal_change_requested_at,
+            name: metadata.portal_change_requested_by_name,
+            email: metadata.portal_change_requested_by_email,
+          }
+        : null
+  const hasActiveClientChangeRequest =
+    metadata.portal_change_request_active === false
+      ? false
+      : changeOrder.status === "requested_changes" || metadata.portal_change_request_active === true
+  const resolvedStatus = changeOrder.status !== "approved" && hasActiveClientChangeRequest ? "requested_changes" : changeOrder.status
+  const canEdit = !["approved", "cancelled", "void"].includes(resolvedStatus)
+  const canSendToClient = resolvedStatus === "draft" || resolvedStatus === "requested_changes"
+  const activityItems = [
+    { label: "Created", value: formatDateTime(changeOrder.created_at), detail: "Change order was drafted in Arc." },
+    metadata.email_sent_at || metadata.published_at
+      ? {
+          label: metadata.email_sent ? "Sent to client" : "Published to portal",
+          value: formatDateTime((metadata.email_sent_at as string | undefined) ?? (metadata.published_at as string | undefined)),
+          detail: metadata.sent_to ? `Recipient: ${metadata.sent_to}` : "Client portal access was enabled.",
+        }
+      : null,
+    metadata.portal_last_viewed_at
+      ? {
+          label: "Opened by client",
+          value: formatDateTime(metadata.portal_last_viewed_at as string),
+          detail: "Client viewed the change order portal.",
+        }
+      : null,
+    latestChangeRequest
+      ? {
+          label: "Changes requested",
+          value: formatDateTime(latestChangeRequest.requested_at ?? metadata.portal_change_requested_at as string | undefined),
+          detail: latestChangeRequest.note ?? "Client requested revisions.",
+        }
+      : null,
+    changeOrder.approved_at
+      ? {
+          label: "Signed and approved",
+          value: formatDateTime(signatureData?.signed_at ?? changeOrder.approved_at),
+          detail:
+            metadata.approved_signer_email || metadata.approved_signer_name
+              ? [metadata.approved_signer_name, metadata.approved_signer_email].filter(Boolean).join(" · ")
+              : "Approval was recorded.",
+        }
+      : null,
+    linkedInvoices.length > 0
+      ? {
+          label: linkedInvoices.length > 1 ? "Invoices linked" : "Invoice linked",
+          value: formatDateTime(linkedInvoices[0]?.issue_date),
+          detail: linkedInvoices.map((invoice) => `Invoice ${invoice.invoice_number}`).join(", "),
+        }
+      : null,
+  ].filter(Boolean) as Array<{ label: string; value: string | null; detail: string }>
 
   const handleApprove = async () => {
     if (!canApprove) return
@@ -311,6 +396,38 @@ export function ChangeOrderDetailSheet({
       toast.error("Could not void change order", { description: error?.message ?? "Please try again." })
     } finally {
       setVoiding(false)
+    }
+  }
+
+  const handleSendToClient = async () => {
+    if (!changeOrder.project_id) return
+    setSendingToClient(true)
+    try {
+      const result = await publishChangeOrderAction(changeOrder.id)
+      onUpdate?.(result.changeOrder)
+      toast.success(result.email_sent ? "Change order emailed to client" : "Change order published to client portal", {
+        description: result.email_sent
+          ? `Sent to ${result.sent_to}.`
+          : "Email was not sent, but the client portal link is ready.",
+      })
+    } catch (error: any) {
+      toast.error("Could not send change order", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSendingToClient(false)
+    }
+  }
+
+  const handleVendorImpactChange = async (value: string) => {
+    if (!changeOrder) return
+    setSavingFollowup(true)
+    try {
+      const updated = await updateChangeOrderFollowupAction(changeOrder.id, { vendor_impact_status: value })
+      onUpdate?.({ ...changeOrder, ...updated })
+      toast.success("Vendor impact updated")
+    } catch (error: any) {
+      toast.error("Could not update vendor impact", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSavingFollowup(false)
     }
   }
 
@@ -383,6 +500,24 @@ export function ChangeOrderDetailSheet({
               </div>
             </div>
           )}
+
+          {hasActiveClientChangeRequest && latestChangeRequest ? (
+            <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-foreground">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-semibold">Client requested changes</h4>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {[latestChangeRequest.name, latestChangeRequest.email].filter(Boolean).join(" · ") || "Client"}
+                    {latestChangeRequest.requested_at ? ` · ${formatDateTime(latestChangeRequest.requested_at)}` : ""}
+                  </p>
+                </div>
+                <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                  Needs changes
+                </Badge>
+              </div>
+              <p className="whitespace-pre-line text-sm leading-6">{latestChangeRequest.note}</p>
+            </div>
+          ) : null}
 
           {/* Pricing */}
           {((changeOrder.lines?.length ?? 0) > 0 || changeOrder.totals) && (
@@ -460,6 +595,43 @@ export function ChangeOrderDetailSheet({
           )}
 
           {/* Linked receivable invoices */}
+          {changeOrder.status === "approved" ? (
+            <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-semibold">Post-approval follow-up</h4>
+                  <p className="text-xs text-muted-foreground">Close the vendor and billing loop for this approved change.</p>
+                </div>
+                <Badge variant={billingStatus === "Ready to bill" ? "secondary" : "outline"} className="shrink-0">
+                  {billingStatus}
+                </Badge>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Vendor impact</label>
+                  <Select value={vendorImpactStatus} onValueChange={handleVendorImpactChange} disabled={savingFollowup}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(vendorImpactLabels).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {linkedInvoices.length === 0 ? (
+                  <Button type="button" onClick={() => onPrepareInvoice?.(changeOrder)} disabled={!project}>
+                    <Receipt className="mr-2 h-4 w-4" />
+                    Prepare invoice
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-semibold">Linked invoices</h4>
@@ -540,17 +712,27 @@ export function ChangeOrderDetailSheet({
                 Activity
               </AccordionTrigger>
               <AccordionContent>
-                <div className="text-xs text-muted-foreground space-y-2 pt-2">
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-3 w-3" />
-                    <span>Created {formatDate(changeOrder.created_at)}</span>
-                  </div>
-                  {changeOrder.updated_at && changeOrder.updated_at !== changeOrder.created_at && (
-                    <div className="flex items-center gap-2">
-                      <Clock className="h-3 w-3" />
-                      <span>Updated {formatDate(changeOrder.updated_at)}</span>
-                    </div>
-                  )}
+                  <div className="space-y-3 pt-2">
+                    {activityItems.map((item) => (
+                      <div key={`${item.label}-${item.value ?? item.detail}`} className="flex gap-3 text-sm">
+                        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background">
+                          {item.label.includes("Sent") || item.label.includes("Published") ? (
+                            <Send className="h-3 w-3 text-muted-foreground" />
+                          ) : item.label.includes("Invoice") ? (
+                            <Receipt className="h-3 w-3 text-muted-foreground" />
+                          ) : (
+                            <Clock className="h-3 w-3 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                            <p className="font-medium text-foreground">{item.label}</p>
+                            {item.value ? <p className="text-xs text-muted-foreground">{item.value}</p> : null}
+                          </div>
+                          <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{item.detail}</p>
+                        </div>
+                      </div>
+                    ))}
                 </div>
               </AccordionContent>
             </AccordionItem>
@@ -579,47 +761,59 @@ export function ChangeOrderDetailSheet({
                 </Button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
-                {canVoid ? (
-                  <>
-                    <Button
-                      type="button"
-                      onClick={() => onPrepareInvoice?.(changeOrder)}
-                      disabled={!project || linkedInvoicesLoading || linkedInvoices.length > 0}
-                      className="flex-1"
-                    >
-                      <Receipt className="mr-2 h-4 w-4" />
-                      {linkedInvoices.length > 0 ? "Invoice prepared" : "Prepare invoice"}
-                    </Button>
-                    <Button
-                      onClick={() => setVoidDialogOpen(true)}
-                      variant="outline"
-                      className="text-destructive hover:text-destructive"
-                    >
-                      <Ban className="mr-2 h-4 w-4" />
-                      Void
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button
-                      type="button"
-                      onClick={() => setSignatureWizardOpen(true)}
-                      className="flex-1"
-                      disabled={!changeOrder.project_id}
-                    >
-                      Send for signature
-                    </Button>
-                    {canApprove ? (
-                      <Button onClick={handleApprove} disabled={approving} variant="outline">
-                        {approving ? "Recording..." : "Record offline approval"}
-                      </Button>
-                    ) : null}
-                  </>
-                )}
-                <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Button variant="outline" onClick={() => onOpenChange(false)} className="sm:w-auto">
                   Close
                 </Button>
+                <Button variant="outline" asChild className="sm:w-auto">
+                  <a href={`/change-orders/${changeOrder.id}/export`} target="_blank" rel="noopener noreferrer">
+                    <FileText className="mr-2 h-4 w-4" />
+                    PDF
+                  </a>
+                </Button>
+                <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:justify-end">
+                  {canEdit ? (
+                    <Button type="button" variant="outline" onClick={() => onEdit?.(changeOrder)}>
+                      Edit
+                    </Button>
+                  ) : null}
+                  {resolvedStatus === "approved" ? (
+                    <>
+                      <Button
+                        type="button"
+                        onClick={() => onPrepareInvoice?.(changeOrder)}
+                        disabled={!project || linkedInvoicesLoading || linkedInvoices.length > 0}
+                      >
+                        <Receipt className="mr-2 h-4 w-4" />
+                        {linkedInvoices.length > 0 ? "Invoice prepared" : "Prepare invoice"}
+                      </Button>
+                      <Button
+                        onClick={() => setVoidDialogOpen(true)}
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Ban className="mr-2 h-4 w-4" />
+                        Void
+                      </Button>
+                    </>
+                  ) : canSendToClient ? (
+                    <Button
+                      type="button"
+                      onClick={handleSendToClient}
+                      disabled={!changeOrder.project_id || sendingToClient}
+                    >
+                      {sendingToClient
+                        ? "Sending..."
+                        : resolvedStatus === "requested_changes"
+                          ? "Resend to client portal"
+                          : "Send to client portal"}
+                    </Button>
+                  ) : (
+                    <Button type="button" disabled>
+                      Sent to client
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -740,22 +934,6 @@ export function ChangeOrderDetailSheet({
         </DialogContent>
       </Dialog>
 
-      <EnvelopeWizard
-        open={signatureWizardOpen}
-        onOpenChange={setSignatureWizardOpen}
-        sourceEntity={{
-          type: "change_order",
-          id: changeOrder.id,
-          project_id: changeOrder.project_id,
-          title: changeOrder.title,
-          document_type: "change_order",
-        }}
-        sourceLabel="Change order"
-        sheetTitle="Send change order for signature"
-        onEnvelopeSent={({ documentId }) => {
-          onUpdate?.({ ...changeOrder, esign_status: "sent", esign_document_id: documentId })
-        }}
-      />
     </>
   )
 }

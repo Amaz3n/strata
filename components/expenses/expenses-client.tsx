@@ -46,6 +46,7 @@ import {
   formatDate,
   needsQboReview,
   readyForQboSync,
+  signedExpenseAmountCents,
   statusLabels,
   statusStyles,
   vendorOf,
@@ -955,7 +956,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                         </Badge>
                       </div>
                       <p className="font-semibold mt-1 truncate">{vendorOf(expense)}</p>
-                      <p className="text-xs text-muted-foreground mt-1 tabular-nums">{formatCurrency((expense.amount_cents ?? 0) + (expense.tax_cents ?? 0))}</p>
+                      <p className="text-xs text-muted-foreground mt-1 tabular-nums">{formatCurrency(signedExpenseAmountCents(expense))}</p>
                       {costCodesEnabled && expense.cost_code?.code ? (
                         <p className="text-xs text-muted-foreground mt-1 truncate">
                           {expense.cost_code.code} {expense.cost_code.name}
@@ -1026,7 +1027,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
               <TableBody>
                 {filtered.map((expense) => {
                   const vendor = vendorOf(expense)
-                  const amount = (expense.amount_cents ?? 0) + (expense.tax_cents ?? 0)
+                  const amount = signedExpenseAmountCents(expense)
                   return (
                     <TableRow key={expense.id} data-state={selectedIds.includes(expense.id) ? "selected" : undefined} className="divide-x align-middle">
                       <TableCell className="relative w-[72px] min-w-[72px] py-2 text-center align-middle">

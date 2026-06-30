@@ -37,6 +37,8 @@ import {
   needsQboReview,
   qboDeepLink,
   readyForQboSync,
+  isExpenseCredit,
+  signedExpenseAmountCents,
   statusLabels,
   statusStyles,
   vendorOf,
@@ -280,6 +282,8 @@ export function ExpenseWorkspace({
   if (!selectedExpense) return <WorkspaceShell open={false} onClose={() => onSelect(null)} listPanel={null} documentPane={null}>{null}</WorkspaceShell>
 
   const totalCents = (selectedExpense.amount_cents ?? 0) + (selectedExpense.tax_cents ?? 0)
+  const displayTotalCents = signedExpenseAmountCents(selectedExpense)
+  const selectedIsCredit = isExpenseCredit(selectedExpense)
   const isSubmitted = selectedExpense.status === "submitted"
   const canSync = selectedExpense.status === "approved" && selectedExpense.qbo_sync_status !== "synced"
 
@@ -415,7 +419,7 @@ export function ExpenseWorkspace({
       onSelect={(expense) => onSelect(expense.id)}
       emptyLabel="No expenses match."
       renderRow={(expense) => {
-        const amount = (expense.amount_cents ?? 0) + (expense.tax_cents ?? 0)
+        const amount = signedExpenseAmountCents(expense)
         return (
           <>
             <div className="flex items-center justify-between gap-2">
@@ -454,7 +458,7 @@ export function ExpenseWorkspace({
           </Button>
           <div className="min-w-0">
             <h2 className="truncate text-lg font-semibold leading-tight">{vendorOf(selectedExpense)}</h2>
-            <p className="truncate text-xs text-muted-foreground">{formatCurrency(totalCents)} expense</p>
+            <p className="truncate text-xs text-muted-foreground">{formatCurrency(displayTotalCents)} {selectedIsCredit ? "credit" : "expense"}</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -471,7 +475,7 @@ export function ExpenseWorkspace({
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total amount</p>
-              <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight">{formatMoneyFromCents(totalCents)}</p>
+              <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight">{formatMoneyFromCents(displayTotalCents)}</p>
             </div>
             <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-right">
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Subtotal</span>

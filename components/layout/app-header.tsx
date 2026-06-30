@@ -95,7 +95,8 @@ interface AppHeaderProps {
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
   className?: string
-  platformSessionControl?: React.ReactNode
+  platformSessionControlDesktop?: React.ReactNode
+  platformSessionControlMobile?: React.ReactNode
 }
 
 const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
@@ -128,6 +129,7 @@ const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
   admin: "Admin",
   platform: "Platform",
   sharing: "Sharing",
+  "whats-new": "What's New",
 }
 
 function labelFromPathname(pathname: string): string {
@@ -135,7 +137,7 @@ function labelFromPathname(pathname: string): string {
   return PATHNAME_FALLBACK_LABELS[segment] ?? "Home"
 }
 
-export function AppHeader({ title, breadcrumbs, className, platformSessionControl }: AppHeaderProps) {
+export function AppHeader({ title, breadcrumbs, className, platformSessionControlDesktop, platformSessionControlMobile }: AppHeaderProps) {
   const pathname = usePathname()
   const { title: contextTitle, breadcrumbs: contextBreadcrumbs, projectContext } = usePageTitle()
   const effectiveTitle = title || contextTitle
@@ -224,7 +226,7 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
 
         {/* Right section - Actions */}
         <div className="flex items-center gap-2 px-4 flex-1 justify-end">
-          {platformSessionControl}
+          {platformSessionControlDesktop}
           <GlobalTasksSheet />
         </div>
       </div>
@@ -253,7 +255,7 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
-          {platformSessionControl}
+          {platformSessionControlMobile}
           <CommandSearch />
           <GlobalTasksSheet />
         </div>

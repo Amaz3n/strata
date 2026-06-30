@@ -19,6 +19,7 @@ import {
   MoreHorizontal,
   Plus,
   Settings,
+  Sparkles,
   Wallet,
   X,
 } from "@/components/icons"
@@ -36,6 +37,7 @@ interface MobileBottomNavProps {
   pipelineBadgeCount?: number
   canAccessPlatform?: boolean
   permissions?: string[]
+  whatsNewUnreadCount?: number
 }
 
 type NavSubItem = {
@@ -152,6 +154,7 @@ export function MobileBottomNav({
   pipelineBadgeCount,
   canAccessPlatform,
   permissions = [],
+  whatsNewUnreadCount = 0,
 }: MobileBottomNavProps) {
   const pathname = useOptimisticPathname()
   const searchParams = useSearchParams()
@@ -159,6 +162,7 @@ export function MobileBottomNav({
   const permissionSet = useMemo(() => new Set(permissions), [permissions])
   const [menuOpen, setMenuOpen] = useState(false)
   const [immersive, setImmersive] = useState(false)
+  const [effectiveUnreadCount, setEffectiveUnreadCount] = useState(whatsNewUnreadCount)
   const [signingOut, startSignOut] = useTransition()
   const { projects } = useSidebarProjects()
 
@@ -199,6 +203,21 @@ export function MobileBottomNav({
 
   const currentUrl = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
   const settingsHref = `/settings?tab=profile&returnTo=${encodeURIComponent(currentUrl)}`
+
+  useEffect(() => {
+    setEffectiveUnreadCount(whatsNewUnreadCount)
+  }, [whatsNewUnreadCount])
+
+  useEffect(() => {
+    const handleUnreadChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ unreadCount?: number }>).detail
+      if (typeof detail?.unreadCount === "number") {
+        setEffectiveUnreadCount(detail.unreadCount)
+      }
+    }
+    window.addEventListener("arc-release-notes-unread-change", handleUnreadChange)
+    return () => window.removeEventListener("arc-release-notes-unread-change", handleUnreadChange)
+  }, [])
 
   const { primary, menuSections } = useMemo<{ primary: NavItem[]; menuSections: MenuSection[] }>(() => {
     if (isProject && projectId) {
@@ -433,6 +452,13 @@ export function MobileBottomNav({
                     href={settingsHref}
                     icon={Settings}
                     label="Settings"
+                    onClick={() => setMenuOpen(false)}
+                  />
+                  <MenuActionLink
+                    href="/whats-new"
+                    icon={Sparkles}
+                    label="What's New"
+                    badge={effectiveUnreadCount}
                     onClick={() => setMenuOpen(false)}
                   />
                   <MenuActionLink
@@ -710,12 +736,14 @@ function MenuActionLink({
   label,
   onClick,
   accent,
+  badge,
 }: {
   href: string
   icon: LucideIcon
   label: string
   onClick: () => void
   accent?: boolean
+  badge?: number
 }) {
   return (
     <OptimisticLink
@@ -727,7 +755,12 @@ function MenuActionLink({
       )}
     >
       <Icon className="size-4" />
-      {label}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {badge && badge > 0 ? (
+        <span className="flex h-5 min-w-5 items-center justify-center bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+          {badge > 9 ? "9+" : badge}
+        </span>
+      ) : null}
     </OptimisticLink>
   )
 }

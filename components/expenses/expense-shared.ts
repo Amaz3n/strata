@@ -30,6 +30,7 @@ export interface ProjectExpense {
   qbo_sync_status?: "pending" | "synced" | "error" | "skipped" | "needs_review" | null
   qbo_sync_error?: string | null
   qbo_transaction_type?: "purchase" | "bill" | null
+  metadata?: Record<string, any> | null
   qbo_expense_account_id?: string | null
   qbo_expense_account_name?: string | null
   qbo_payment_account_id?: string | null
@@ -65,6 +66,15 @@ export const statusStyles: Record<string, string> = {
 
 export function formatCurrency(cents: number | null | undefined) {
   return ((cents ?? 0) / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
+}
+
+export function isExpenseCredit(expense: Pick<ProjectExpense, "metadata">) {
+  return String(expense.metadata?.source ?? "").startsWith("expense_credit")
+}
+
+export function signedExpenseAmountCents(expense: Pick<ProjectExpense, "amount_cents" | "tax_cents" | "metadata">) {
+  const amount = (expense.amount_cents ?? 0) + (expense.tax_cents ?? 0)
+  return isExpenseCredit(expense) ? -Math.abs(amount) : amount
 }
 
 export function formatDate(value: string | null | undefined) {

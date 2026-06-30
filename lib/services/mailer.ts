@@ -64,9 +64,11 @@ export function renderStandardEmailLayout(args: {
   orgName?: string | null
   orgLogoUrl?: string | null
   appUrl?: string
+  showManageSettings?: boolean
 }): string {
   const orgName = args.orgName || "Arc"
   const appUrl = (args.appUrl || process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
+  const showManageSettings = args.showManageSettings !== false
   
   return `<!DOCTYPE html>
 <html>
@@ -123,9 +125,11 @@ export function renderStandardEmailLayout(args: {
       <tr>
         <td style="padding: 18px 40px 22px 40px; background-color: #ffffff; border-top: 1px solid #ebebeb; text-align: center;">
           <div style="margin: 0 0 8px 0; color: #777777; font-size: 12px; line-height: 1.5;">Sent via Arc</div>
-          <div style="margin: 0; color: #999999; font-size: 11px; line-height: 1.5;">
-            <a href="${appUrl}/settings" style="color: #777777; text-decoration: underline;">Manage Notification Settings</a>
-          </div>
+          ${showManageSettings ? `
+            <div style="margin: 0; color: #999999; font-size: 11px; line-height: 1.5;">
+              <a href="${appUrl}/settings" style="color: #777777; text-decoration: underline;">Manage Notification Settings</a>
+            </div>
+          ` : ""}
         </td>
       </tr>
     </table>

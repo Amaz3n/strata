@@ -9,6 +9,8 @@ const {
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
   qboImportProviderPaymentId,
+  qboPurchaseCreditCents,
+  qboPurchaseIsCredit,
   qboVendorCreditCents,
 } = require("../lib/integrations/accounting/qbo-import-rules")
 const {
@@ -131,6 +133,17 @@ test("vendor credits are negative exactly once regardless of QBO amount sign", (
   assert.equal(qboVendorCreditCents("7.21"), -721)
 })
 
+test("credit-card purchase credits are detected and signed exactly once", () => {
+  assert.equal(qboPurchaseIsCredit({ Credit: true, TotalAmt: 7.21, Line: [] }), true)
+  assert.equal(qboPurchaseIsCredit({ Credit: "true", TotalAmt: 7.21, Line: [] }), true)
+  assert.equal(qboPurchaseIsCredit({ TotalAmt: -7.21, Line: [] }), true)
+  assert.equal(qboPurchaseIsCredit({ TotalAmt: 7.21, Line: [{ Amount: -7.21 }] }), true)
+  assert.equal(qboPurchaseIsCredit({ TotalAmt: 7.21, Line: [{ Amount: 10 }, { Amount: -2.79 }] }), false)
+  assert.equal(qboPurchaseIsCredit({ Credit: false, TotalAmt: 7.21, Line: [{ Amount: 7.21 }] }), false)
+  assert.equal(qboPurchaseCreditCents(7.21), -721)
+  assert.equal(qboPurchaseCreditCents(-7.21), -721)
+})
+
 test("vendor credits never enter outstanding payables or payment balances", () => {
   const credit = {
     payable_type: "vendor_credit",
@@ -161,6 +174,19 @@ test("vendor-credit payables are blocked from outbound bill sync at both guard l
 
   assert.match(syncSource, /isSyncPushBlocked\(supabase, orgId, "vendor_credit", billId\)/)
   assert.match(syncSource, /metadata[\s\S]*source === "vendor_credit"/)
+})
+
+test("QBO purchase credits import as inbound-only expense credits with negative actuals", () => {
+  const importSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/qbo-import.ts"),
+    "utf8",
+  )
+
+  assert.match(importSource, /expense_credit: "Purchase"/)
+  assert.match(importSource, /qboPurchaseIsCredit\(row\)/)
+  assert.match(importSource, /entityType: "project_expense"[\s\S]*pushable: false[\s\S]*metadata: \{ source: "expense_credit" \}/)
+  assert.match(importSource, /source_label: isExpenseCredit \? "project_expense_credit" : "project_expense"/)
+  assert.match(importSource, /costCents[\s\S]*\* \(isExpenseCredit \? -1 : 1\)/)
 })
 
 test("outbound vendor bills preserve job costing without creating billable customer charges", () => {

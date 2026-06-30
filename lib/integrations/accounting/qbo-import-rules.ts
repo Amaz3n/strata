@@ -32,6 +32,20 @@ export function qboVendorCreditCents(value: unknown): number {
   return -Math.abs(qboImportCents(value))
 }
 
+export function qboPurchaseIsCredit(purchase: any): boolean {
+  if (purchase?.Credit === true) return true
+  if (String(purchase?.Credit ?? "").toLowerCase() === "true") return true
+  if (qboImportCents(purchase?.TotalAmt) < 0) return true
+  const lineAmounts = ((purchase?.Line ?? []) as any[])
+    .map((line) => qboImportCents(line?.Amount))
+    .filter((amount) => amount !== 0)
+  return lineAmounts.length > 0 && lineAmounts.every((amount) => amount < 0)
+}
+
+export function qboPurchaseCreditCents(value: unknown): number {
+  return -Math.abs(qboImportCents(value))
+}
+
 export function extractLinkedQboIds(transaction: any, txnType: "invoice" | "bill"): string[] {
   const ids = new Set<string>()
   for (const line of (transaction?.Line ?? []) as any[]) {

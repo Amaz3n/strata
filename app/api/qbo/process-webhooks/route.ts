@@ -4,6 +4,7 @@ import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { logQBO } from "@/lib/services/qbo-logger"
 import { rememberQBOInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
+import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo-import-rules"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const BATCH_SIZE = 50
@@ -353,7 +354,7 @@ async function reconcileProjectExpenseFromQbo(params: {
   }
   const { data: localExpense } = await params.supabase
     .from("project_expenses")
-    .select("amount_cents, tax_cents, status")
+    .select("amount_cents, tax_cents, status, metadata")
     .eq("org_id", params.orgId)
     .eq("id", expenseId)
     .maybeSingle()
@@ -385,7 +386,9 @@ async function reconcileProjectExpenseFromQbo(params: {
   const firstAccountLine = (qboTxn.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
   const accountRef = firstAccountLine?.AccountBasedExpenseLineDetail?.AccountRef
   const vendorRef = qboTxn.VendorRef ?? qboTxn.EntityRef
-  const totalCents = toCents(qboTxn.TotalAmt)
+  const rawTotalCents = toCents(qboTxn.TotalAmt)
+  const isExpenseCredit = params.entityName === "purchase" && qboPurchaseIsCredit(qboTxn)
+  const totalCents = rawTotalCents == null ? null : isExpenseCredit ? Math.abs(rawTotalCents) : rawTotalCents
   const txnDate = normalizeDate(qboTxn.TxnDate)
 
   const localTotalCents = Number((localExpense as any)?.amount_cents ?? 0) + Number((localExpense as any)?.tax_cents ?? 0)
@@ -416,6 +419,15 @@ async function reconcileProjectExpenseFromQbo(params: {
   if (totalCents !== null) {
     update.amount_cents = Math.max(totalCents, 0)
     update.tax_cents = 0
+  }
+  if (isExpenseCredit) {
+    update.metadata = {
+      ...(((localExpense as any)?.metadata as Record<string, unknown> | null) ?? {}),
+      source: "expense_credit",
+      imported_from_qbo: true,
+      qbo_purchase_credit: true,
+      qbo_credit_total_cents: totalCents == null ? null : -Math.abs(totalCents),
+    }
   }
   if (txnDate) update.expense_date = txnDate
   if (typeof qboTxn.PrivateNote === "string") update.description = qboTxn.PrivateNote

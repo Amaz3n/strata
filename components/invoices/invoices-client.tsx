@@ -247,6 +247,9 @@ export function InvoicesClient({
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
   const lastAutoOpenedInvoiceId = useRef<string | undefined>(undefined)
+  const invoiceReleaseDescription = enableApprovedCostsSource
+    ? "linked draws, billable costs, or retainage"
+    : "linked draws, change orders, or retainage"
 
   const handleOpenDetail = useCallback(async (invoiceId: string) => {
     setDetailOpen(true)
@@ -1147,7 +1150,7 @@ export function InvoicesClient({
           <AlertDialogHeader>
             <AlertDialogTitle>Void invoice?</AlertDialogTitle>
             <AlertDialogDescription>
-              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases linked draws or billable costs so they can be invoiced again.
+              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases {invoiceReleaseDescription} so they can be invoiced again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1211,8 +1214,8 @@ export function InvoicesClient({
           <DialogHeader>
             <DialogTitle>Move invoice to another project</DialogTitle>
             <DialogDescription>
-              Move {movingInvoice?.invoice_number ?? "this invoice"} to a different project. Any draws, billable costs, or
-              retainage linked to the current project will be released so they can be billed again.
+              Move {movingInvoice?.invoice_number ?? "this invoice"} to a different project. Any {invoiceReleaseDescription}
+              linked to the current project will be released so they can be billed again.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

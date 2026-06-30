@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import type { FormEvent } from "react"
 import Link from "next/link"
 import { usePathname, useSearchParams } from "next/navigation"
@@ -15,6 +15,7 @@ import {
   Mail,
   Send,
   Settings,
+  Sparkles,
 } from "@/components/icons"
 import {
   Avatar,
@@ -71,18 +72,36 @@ type SupportTopic = (typeof supportTopics)[number]["value"]
 export function NavUser({
   user,
   canAccessPlatform,
+  whatsNewUnreadCount = 0,
 }: {
   user?: User | null
   canAccessPlatform?: boolean
+  whatsNewUnreadCount?: number
 }) {
   const { isMobile, state } = useSidebar()
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [signingOut, startSignOut] = useTransition()
   const [supportOpen, setSupportOpen] = useState(false)
+  const [effectiveUnreadCount, setEffectiveUnreadCount] = useState(whatsNewUnreadCount)
   const hydrated = useHydrated()
   const currentUrl = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
   const settingsHref = `/settings?tab=profile&returnTo=${encodeURIComponent(currentUrl)}`
+
+  useEffect(() => {
+    setEffectiveUnreadCount(whatsNewUnreadCount)
+  }, [whatsNewUnreadCount])
+
+  useEffect(() => {
+    const handleUnreadChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ unreadCount?: number }>).detail
+      if (typeof detail?.unreadCount === "number") {
+        setEffectiveUnreadCount(detail.unreadCount)
+      }
+    }
+    window.addEventListener("arc-release-notes-unread-change", handleUnreadChange)
+    return () => window.removeEventListener("arc-release-notes-unread-change", handleUnreadChange)
+  }, [])
 
   const initials =
     user?.full_name
@@ -173,6 +192,17 @@ export function NavUser({
                 <Link href={settingsHref}>
                   <Settings />
                   Settings
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>
+                <Link href="/whats-new" className="relative">
+                  <Sparkles />
+                  <span className="flex-1">What&apos;s New</span>
+                  {effectiveUnreadCount > 0 && (
+                    <span className="ml-auto inline-flex min-w-5 items-center justify-center border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-semibold text-primary">
+                      {effectiveUnreadCount > 9 ? "9+" : effectiveUnreadCount}
+                    </span>
+                  )}
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuItem className="rounded-none px-2.5 py-2.5" asChild>

@@ -1,10 +1,13 @@
+"use client"
+
+import { useState, useEffect } from "react"
 import { clearOrgContextAction, endImpersonationAction } from "@/app/(app)/platform/actions"
 import { AlertTriangle } from "@/components/icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
-import { getPlatformSessionState } from "@/lib/services/platform-session"
+import type { PlatformAccessState } from "@/lib/services/platform-access"
+import type { PlatformSessionState } from "@/lib/services/platform-session"
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-"
@@ -13,8 +16,20 @@ function formatDateTime(value?: string | null) {
   return d.toLocaleString()
 }
 
-export async function PlatformSessionControl() {
-  const [access, state] = await Promise.all([getCurrentPlatformAccess(), getPlatformSessionState()])
+export function PlatformSessionControl({
+  access,
+  state,
+}: {
+  access: PlatformAccessState
+  state: PlatformSessionState
+}) {
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  if (!mounted) return null
   if (!access.canAccessPlatform) return null
 
   const showContext = state.platformContext.active

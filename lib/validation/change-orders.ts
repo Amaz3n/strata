@@ -24,6 +24,9 @@ export const changeOrderInputSchema = z.object({
     .max(2000, "Description is too long")
     .optional()
     .transform((val) => (val && val.trim().length > 0 ? val : undefined)),
+  intro: z.string().max(4000, "Cover note is too long").optional(),
+  terms: z.string().max(8000, "Terms are too long").optional(),
+  pricing_display: z.enum(["itemized", "subtotals", "lump_sum"]).optional().default("itemized"),
   days_impact: z.number().int().min(0).max(365).nullable().optional(),
   requires_signature: z.boolean().default(true),
   tax_rate: z.number().min(0).max(20).default(0),
@@ -35,7 +38,6 @@ export const changeOrderInputSchema = z.object({
 
 export type ChangeOrderLineInput = z.infer<typeof changeOrderLineInputSchema>
 export type ChangeOrderInput = z.infer<typeof changeOrderInputSchema>
-
 
 
 

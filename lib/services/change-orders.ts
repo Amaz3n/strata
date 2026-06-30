@@ -9,11 +9,13 @@ import { recordAudit } from "@/lib/services/audit"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { calculateGmpDeltaCents, normalizeGmpImpact } from "@/lib/services/gmp-control"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 
 type ChangeOrderRow = {
   id: string
   org_id: string
   project_id: string
+  co_number?: number | null
   title: string
   description?: string | null
   status: string
@@ -47,6 +49,15 @@ function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
 
 function calculateLineBudgetRevisionCents(line: ChangeOrderLine) {
   return Math.round((line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0))
+}
+
+function escapeEmailHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
 }
 
 function calculateTotals(lines: ChangeOrderLineInput[], taxRate = 0, markupPercent = 0): ChangeOrderTotals {
@@ -262,6 +273,7 @@ function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
     id: row.id,
     org_id: row.org_id,
     project_id: row.project_id,
+    co_number: row.co_number ?? undefined,
     title: row.title,
     description: row.description ?? undefined,
     status: row.status,
@@ -283,14 +295,14 @@ function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
   }
 }
 
-async function fetchChangeOrder(
+export async function fetchChangeOrder(
   supabase: SupabaseClient,
   { id, orgId, projectId }: { id: string; orgId?: string; projectId?: string },
 ) {
   let query = supabase
     .from("change_orders")
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .eq("id", id)
 
@@ -329,7 +341,7 @@ export async function listChangeOrders({
   let query = supabase
     .from("change_orders")
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
@@ -455,12 +467,17 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     requires_signature: input.requires_signature ?? true,
     client_visible: input.client_visible ?? false,
     metadata: {
-      execution_method: "byo_document",
+      execution_method: "native_portal",
       worksheet_source: "arc_native",
       lines: normalizedLines,
       totals,
       tax_rate: input.tax_rate,
       markup_percent: input.markup_percent,
+      intro: input.intro ?? null,
+      terms: input.terms ?? null,
+      display: {
+        pricing: input.pricing_display ?? "itemized",
+      },
       created_by: userId,
     },
   }
@@ -469,7 +486,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     .from("change_orders")
     .insert(payload)
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .single()
 
@@ -546,6 +563,11 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
     throw new Error("Change order not found")
   }
 
+  const nowIso = new Date().toISOString()
+  const resolvingChangeRequest =
+    existing.status === "requested_changes" ||
+    existing.metadata?.portal_change_request_active === true
+
   const { data, error } = await supabase
     .from("change_orders")
     .update({
@@ -554,13 +576,23 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
       metadata: {
         ...(existing.metadata ?? {}),
         published_by: userId,
-        published_at: new Date().toISOString(),
+        published_at: nowIso,
+        portal_change_request_active: resolvingChangeRequest ? false : existing.metadata?.portal_change_request_active ?? false,
+        portal_change_request_resolved_at: resolvingChangeRequest
+          ? nowIso
+          : existing.metadata?.portal_change_request_resolved_at ?? null,
+        portal_change_request_resolved_by: resolvingChangeRequest
+          ? userId
+          : existing.metadata?.portal_change_request_resolved_by ?? null,
+        portal_change_request_resolved_via: resolvingChangeRequest
+          ? "resend_to_client"
+          : existing.metadata?.portal_change_request_resolved_via ?? null,
       },
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .single()
 
@@ -741,6 +773,213 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
   return { success: true, idempotent: false }
 }
 
+export async function approveChangeOrderFromPortalSignature(input: {
+  orgId: string
+  projectId: string
+  changeOrderId: string
+  portalTokenId?: string | null
+  contactId?: string | null
+  signerName: string
+  signerEmail?: string | null
+  signatureText?: string | null
+  signatureImage: string
+  signerIp?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+
+  const existing = await fetchChangeOrder(supabase, {
+    id: input.changeOrderId,
+    orgId: input.orgId,
+    projectId: input.projectId,
+  }).catch(() => null)
+  if (!existing) throw new Error("Change order not found")
+
+  if (existing.status === "approved" && existing.metadata?.approved_via_portal_signature) {
+    return { success: true, idempotent: true }
+  }
+
+  const nowIso = new Date().toISOString()
+  const financialImpact = buildApprovedChangeOrderFinancialMetadata(existing, null)
+  const signatureData = {
+    signer_name: input.signerName,
+    signer_email: input.signerEmail ?? null,
+    signature_text: input.signatureText ?? input.signerName,
+    signature_image: input.signatureImage,
+    signed_at: nowIso,
+    signer_ip: input.signerIp ?? null,
+    contact_id: input.contactId ?? null,
+    portal_token_id: input.portalTokenId ?? null,
+  }
+
+  const metadataPatch = {
+    ...(existing.metadata ?? {}),
+    approval_method: "portal_native_signature",
+    approved_via_portal_signature: true,
+    approved_signer_name: input.signerName,
+    approved_signer_email: input.signerEmail ?? null,
+    approved_signer_ip: input.signerIp ?? null,
+    approved_at: existing.approved_at ?? nowIso,
+    signature_data: {
+      ...((existing.metadata?.signature_data as Record<string, any> | undefined) ?? {}),
+      client: signatureData,
+    },
+    financial_impact: {
+      ...(existing.metadata?.financial_impact ?? {}),
+      ...financialImpact,
+      posted_at: nowIso,
+    },
+  }
+
+  const needsApprovalTransition = existing.status !== "approved"
+
+  if (needsApprovalTransition) {
+    const { error: approvalError } = await supabase.from("approvals").insert({
+      org_id: existing.org_id,
+      entity_type: "change_order",
+      entity_id: input.changeOrderId,
+      approver_id: null,
+      status: "approved",
+      decision_at: nowIso,
+      decision_notes: "Approved via client portal signature",
+      payload: {
+        source: "portal_native_signature",
+        signer_name: input.signerName,
+        signer_email: input.signerEmail ?? null,
+        portal_token_id: input.portalTokenId ?? null,
+        contact_id: input.contactId ?? null,
+      },
+      signature_data: JSON.stringify(signatureData),
+      signature_ip: input.signerIp ?? null,
+      signed_at: nowIso,
+    })
+
+    if (approvalError) {
+      throw new Error(`Failed to record portal approval: ${approvalError.message}`)
+    }
+  }
+
+  const updatePayload: Record<string, any> = {
+    metadata: metadataPatch,
+  }
+
+  if (needsApprovalTransition) {
+    updatePayload.status = "approved"
+    updatePayload.approved_at = nowIso
+    updatePayload.approved_by = null
+  }
+
+  const { error: updateError } = await supabase
+    .from("change_orders")
+    .update(updatePayload)
+    .eq("org_id", input.orgId)
+    .eq("project_id", input.projectId)
+    .eq("id", input.changeOrderId)
+
+  if (updateError) {
+    throw new Error(`Failed to approve change order: ${updateError.message}`)
+  }
+
+  if (needsApprovalTransition && hasBudgetDistributions(financialImpact)) {
+    await postBudgetRevisionForChangeOrder({
+      supabase,
+      changeOrder: {
+        ...existing,
+        status: "approved",
+        approved_at: existing.approved_at ?? nowIso,
+        metadata: metadataPatch,
+      },
+      actorId: null,
+    })
+  }
+
+  if (needsApprovalTransition) {
+    await applyChangeOrderFinancialImpact({
+      supabase,
+      orgId: existing.org_id,
+      projectId: existing.project_id,
+    })
+  }
+
+  await recordEvent({
+    orgId: existing.org_id,
+    eventType: "change_order_approved",
+    entityType: "change_order",
+    entityId: input.changeOrderId,
+    payload: {
+      source: "portal_native_signature",
+      project_id: existing.project_id,
+      signer_name: input.signerName,
+      signer_email: input.signerEmail ?? null,
+      transitioned: needsApprovalTransition,
+    },
+  })
+
+  if (needsApprovalTransition && typeof existing.metadata?.published_by === "string") {
+    try {
+      const [builderResult, orgResult, projectResult] = await Promise.all([
+        supabase
+          .from("app_users")
+          .select("email, full_name")
+          .eq("id", existing.metadata.published_by)
+          .maybeSingle(),
+        supabase
+          .from("orgs")
+          .select("name, logo_url, slug")
+          .eq("id", existing.org_id)
+          .maybeSingle(),
+        supabase
+          .from("projects")
+          .select("name")
+          .eq("id", existing.project_id)
+          .maybeSingle(),
+      ])
+      const builderEmail = builderResult.data?.email
+      if (builderEmail) {
+        const appUrl = (process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")).replace(/\/$/, "")
+        const total = ((existing.total_cents ?? 0) / 100).toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        })
+        const html = renderStandardEmailLayout({
+          title: "Change order approved",
+          orgName: orgResult.data?.name ?? "Arc",
+          orgLogoUrl: orgResult.data?.logo_url ?? null,
+          buttonText: "Open change orders",
+          buttonUrl: appUrl ? `${appUrl}/change-orders` : undefined,
+          messageHtml: `
+            <p style="margin: 0 0 12px 0;">${escapeEmailHtml(input.signerName)} approved and signed "${escapeEmailHtml(existing.title)}".</p>
+            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="border: 1px solid #e5e5e5; border-collapse: collapse; margin: 18px 0;">
+              <tr>
+                <td style="padding: 12px 14px; color: #666666; font-size: 12px; width: 34%;">Project</td>
+                <td style="padding: 12px 14px; color: #111111; font-size: 13px;">${escapeEmailHtml(projectResult.data?.name ?? "Project")}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 14px; color: #666666; font-size: 12px; border-top: 1px solid #eeeeee;">Total change</td>
+                <td style="padding: 12px 14px; color: #111111; font-size: 13px; font-weight: 700; border-top: 1px solid #eeeeee;">${escapeEmailHtml(total)}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 14px; color: #666666; font-size: 12px; border-top: 1px solid #eeeeee;">Signer</td>
+                <td style="padding: 12px 14px; color: #111111; font-size: 13px; border-top: 1px solid #eeeeee;">${escapeEmailHtml(input.signerEmail ? `${input.signerName} <${input.signerEmail}>` : input.signerName)}</td>
+              </tr>
+            </table>
+            <p style="margin: 0;">You can now prepare the client invoice from the change order.</p>
+          `,
+        })
+        await sendEmail({
+          to: [builderEmail],
+          subject: `Approved: ${existing.title}`,
+          html,
+          from: getOrgSenderEmail(orgResult.data?.slug ?? null, orgResult.data?.name ?? null),
+        })
+      }
+    } catch (error) {
+      console.error("[change-orders] Failed to send approval notification email:", error)
+    }
+  }
+
+  return { success: true, idempotent: false }
+}
+
 export async function approveChangeOrder({
   changeOrderId,
   orgId,
@@ -786,7 +1025,7 @@ export async function approveChangeOrder({
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .single()
 
@@ -922,7 +1161,7 @@ export async function voidChangeOrder({
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .single()
 
@@ -1386,7 +1625,11 @@ export async function updateChangeOrder({
 
   const normalizedLines = normalizeLines(input.lines)
   const totals = calculateTotals(input.lines, input.tax_rate, input.markup_percent)
-  const status = input.client_visible ? "pending" : input.status ?? "draft"
+  const nowIso = new Date().toISOString()
+  const activeChangeRequest =
+    existing.status === "requested_changes" ||
+    existing.metadata?.portal_change_request_active === true
+  const status = activeChangeRequest ? "requested_changes" : input.client_visible ? "pending" : input.status ?? "draft"
 
   const payload = {
     title: input.title,
@@ -1403,7 +1646,15 @@ export async function updateChangeOrder({
       totals,
       tax_rate: input.tax_rate,
       markup_percent: input.markup_percent,
+      intro: input.intro ?? null,
+      terms: input.terms ?? null,
+      display: {
+        ...((existing.metadata?.display as Record<string, any> | undefined) ?? {}),
+        pricing: input.pricing_display ?? "itemized",
+      },
       updated_by: userId,
+      portal_change_request_addressed_at: activeChangeRequest ? nowIso : existing.metadata?.portal_change_request_addressed_at ?? null,
+      portal_change_request_addressed_by: activeChangeRequest ? userId : existing.metadata?.portal_change_request_addressed_by ?? null,
     },
   }
 
@@ -1413,7 +1664,7 @@ export async function updateChangeOrder({
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
+      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
     )
     .single()
 

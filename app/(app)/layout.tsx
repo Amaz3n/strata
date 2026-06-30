@@ -9,6 +9,7 @@ import { PageTitleProvider } from "@/components/layout/page-title-context"
 import { MobileActionProvider } from "@/components/layout/mobile-action-context"
 import { AppPageContent } from "@/components/layout/app-page-content"
 import { PlatformSessionControl } from "@/components/layout/platform-session-control"
+import { ReleaseNotesAnnouncement } from "@/components/layout/release-notes-announcement"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
 import { DemoUsageTracker } from "@/components/layout/demo-usage-tracker"
 import { OptimisticPathProvider } from "@/lib/navigation/optimistic-pathname"
@@ -17,6 +18,8 @@ import { getCrmDashboardStats } from "@/lib/services/crm"
 import { getOrgAccessState } from "@/lib/services/access"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getPlatformSessionState } from "@/lib/services/platform-session"
+import { getReleaseNotesSummary } from "@/lib/services/release-notes"
 
 export const dynamic = "force-dynamic"
 
@@ -26,12 +29,17 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess, permissionResult] = await Promise.all([
+  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch(() => ({ status: "unknown", locked: false })),
     getCurrentPlatformAccess().catch(() => ({ canAccessPlatform: false, roles: [], isEnvSuperadmin: false })),
     getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
+    getPlatformSessionState().catch(() => ({
+      platformContext: { active: false, orgId: null, orgName: null, startedAt: null },
+      impersonation: { active: false, targetUserId: null, targetName: null, targetEmail: null, expiresAt: null }
+    })),
+    getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
   ])
 
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
@@ -44,16 +52,21 @@ export default async function AppLayout({
     <SidebarProvider className="h-svh max-h-svh overflow-hidden">
       <OptimisticPathProvider>
         <DemoUsageTracker />
+        <ReleaseNotesAnnouncement announcement={releaseNotesSummary.announcement} />
         <AppSidebar
           user={currentUser}
           pipelineBadgeCount={pipelineBadgeCount}
           canAccessPlatform={platformAccess.canAccessPlatform}
           permissions={permissionResult.permissions}
+          whatsNewUnreadCount={releaseNotesSummary.unreadCount}
         />
         <MobileActionProvider>
           <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
             <PageTitleProvider>
-              <AppHeader platformSessionControl={<PlatformSessionControl />} />
+              <AppHeader
+                platformSessionControlDesktop={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
+                platformSessionControlMobile={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
+              />
               <AppPageContent>{children}</AppPageContent>
             </PageTitleProvider>
           </SidebarInset>
@@ -62,6 +75,7 @@ export default async function AppLayout({
             pipelineBadgeCount={pipelineBadgeCount}
             canAccessPlatform={platformAccess.canAccessPlatform}
             permissions={permissionResult.permissions}
+            whatsNewUnreadCount={releaseNotesSummary.unreadCount}
           />
         </MobileActionProvider>
       </OptimisticPathProvider>

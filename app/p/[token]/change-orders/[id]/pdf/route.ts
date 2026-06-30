@@ -1,0 +1,48 @@
+import { NextResponse } from "next/server"
+
+import { validatePortalToken } from "@/lib/services/portal-access"
+import { getChangeOrderForPortal } from "@/lib/services/change-orders"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { renderChangeOrderPdf } from "@/lib/pdfs/change-order"
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ token: string; id: string }> },
+) {
+  const { token, id } = await params
+  const access = await validatePortalToken(token)
+  if (!access || !access.permissions.can_approve_change_orders) {
+    return NextResponse.json({ error: "Change order not found" }, { status: 404 })
+  }
+
+  const changeOrder = await getChangeOrderForPortal(id, access.org_id, access.project_id)
+  if (!changeOrder || !changeOrder.client_visible) {
+    return NextResponse.json({ error: "Change order not found" }, { status: 404 })
+  }
+
+  const supabase = createServiceSupabaseClient()
+  const [orgResult, projectResult, contactResult] = await Promise.all([
+    supabase.from("orgs").select("name, logo_url").eq("id", access.org_id).maybeSingle(),
+    supabase.from("projects").select("name").eq("id", access.project_id).maybeSingle(),
+    access.contact_id
+      ? supabase.from("contacts").select("full_name, email").eq("org_id", access.org_id).eq("id", access.contact_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
+
+  const pdf = await renderChangeOrderPdf({
+    orgName: orgResult.data?.name ?? "Arc",
+    orgLogoUrl: orgResult.data?.logo_url ?? null,
+    projectName: projectResult.data?.name ?? null,
+    recipientName: contactResult.data?.full_name ?? null,
+    recipientEmail: contactResult.data?.email ?? null,
+    changeOrder,
+  })
+
+  return new NextResponse(new Uint8Array(pdf), {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="change-order-${changeOrder.id}.pdf"`,
+      "Cache-Control": "no-store",
+    },
+  })
+}

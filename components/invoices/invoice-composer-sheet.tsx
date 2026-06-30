@@ -46,6 +46,7 @@ type Props = {
   projects: Project[]
   defaultProjectId?: string
   initialSourceChangeOrderId?: string
+  initialSourceChangeOrder?: ChangeOrder | null
   onSubmit: (values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) => Promise<Invoice>
   isSubmitting?: boolean
   mode?: "create" | "edit"
@@ -241,6 +242,36 @@ function AnimatedCurrency({ cents, className }: { cents: number; className?: str
   )
 }
 
+function linesFromChangeOrder(changeOrder: ChangeOrder): ComposerLine[] {
+  if (Array.isArray(changeOrder.lines) && changeOrder.lines.length > 0) {
+    return changeOrder.lines.map((line) => ({
+      id: crypto.randomUUID(),
+      description: line.description ?? "",
+      quantity: String(line.quantity ?? 1),
+      unit: String(line.unit ?? "ea"),
+      unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
+      taxable: line.taxable !== false,
+      cost_code_id: line.cost_code_id ?? null,
+      qbo_income_account_id: (line as Record<string, any>).qbo_income_account_id ?? null,
+      qbo_income_account_name: (line as Record<string, any>).qbo_income_account_name ?? null,
+    }))
+  }
+
+  return [
+    {
+      id: crypto.randomUUID(),
+      description: changeOrder.title,
+      quantity: "1",
+      unit: "co",
+      unit_cost: (((changeOrder.total_cents ?? 0) / 100) || 0).toFixed(2),
+      taxable: true,
+      cost_code_id: null,
+      qbo_income_account_id: null,
+      qbo_income_account_name: null,
+    },
+  ]
+}
+
 function formatQboAccountLabel(account?: QBOIncomeAccountOption | null) {
   if (!account) return ""
   return account.fullyQualifiedName ?? account.name
@@ -413,6 +444,7 @@ export function InvoiceComposerSheet({
   projects,
   defaultProjectId,
   initialSourceChangeOrderId,
+  initialSourceChangeOrder,
   onSubmit,
   isSubmitting,
   mode = "create",
@@ -596,7 +628,7 @@ export function InvoiceComposerSheet({
 
   const resetForCreate = useCallback(() => {
     setSourceDrawId("none")
-    setSourceChangeOrderId("none")
+    setSourceChangeOrderId(initialSourceChangeOrder?.id ?? "none")
     setTitle(selectedProjectName)
     setIssueDate(format(new Date(), "yyyy-MM-dd"))
     setDueDate(format(addDays(new Date(), composerSettings.defaultPaymentTermsDays), "yyyy-MM-dd"))
@@ -613,20 +645,25 @@ export function InvoiceComposerSheet({
     setNotes(composerSettings.defaultInvoiceNote)
     setTaxRate(0)
     setPaymentTermsDays(composerSettings.defaultPaymentTermsDays)
-    setLines([
-      {
-        id: crypto.randomUUID(),
-        description: "",
-        quantity: "1",
-        unit: "ea",
-        unit_cost: "",
-        taxable: true,
-        cost_code_id: null,
-        qbo_income_account_id: null,
-        qbo_income_account_name: null,
-      },
-    ])
-  }, [builderInfo?.address, builderInfo?.email, builderInfo?.name, composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays, selectedProjectName])
+    if (initialSourceChangeOrder) {
+      initialSourceAppliedRef.current = true
+      setLines(linesFromChangeOrder(initialSourceChangeOrder))
+    } else {
+      setLines([
+        {
+          id: crypto.randomUUID(),
+          description: "",
+          quantity: "1",
+          unit: "ea",
+          unit_cost: "",
+          taxable: true,
+          cost_code_id: null,
+          qbo_income_account_id: null,
+          qbo_income_account_name: null,
+        },
+      ])
+    }
+  }, [builderInfo?.address, builderInfo?.email, builderInfo?.name, composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays, initialSourceChangeOrder, selectedProjectName])
 
   // Append generated lines, dropping any leading blank placeholder rows so sources stack cleanly.
   const appendLines = (incoming: ComposerLine[]) => {
@@ -662,36 +699,7 @@ export function InvoiceComposerSheet({
     if (!changeOrder) return
 
     setSourceChangeOrderId(changeOrderId)
-
-    if (Array.isArray(changeOrder.lines) && changeOrder.lines.length > 0) {
-      appendLines(
-        changeOrder.lines.map((line) => ({
-          id: crypto.randomUUID(),
-          description: line.description ?? "",
-          quantity: String(line.quantity ?? 1),
-          unit: String(line.unit ?? "ea"),
-          unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
-          taxable: line.taxable !== false,
-          cost_code_id: line.cost_code_id ?? null,
-          qbo_income_account_id: (line as Record<string, any>).qbo_income_account_id ?? null,
-          qbo_income_account_name: (line as Record<string, any>).qbo_income_account_name ?? null,
-        })),
-      )
-    } else {
-      appendLines([
-        {
-          id: crypto.randomUUID(),
-          description: changeOrder.title,
-          quantity: "1",
-          unit: "co",
-          unit_cost: (((changeOrder.total_cents ?? 0) / 100) || 0).toFixed(2),
-          taxable: true,
-          cost_code_id: null,
-          qbo_income_account_id: null,
-          qbo_income_account_name: null,
-        },
-      ])
-    }
+    appendLines(linesFromChangeOrder(changeOrder))
   }
 
   // Insert grouped cost lines for the costs chosen in the picker. Lines carry billable_cost_ids,
@@ -748,7 +756,7 @@ export function InvoiceComposerSheet({
     if (!open) return
 
     if (mode === "create") {
-      initialSourceAppliedRef.current = false
+      initialSourceAppliedRef.current = Boolean(initialSourceChangeOrder)
       resetForCreate()
       setProjectId(defaultProjectId ?? projects[0]?.id)
       void loadInvoiceNumber()
@@ -793,7 +801,7 @@ export function InvoiceComposerSheet({
     setTaxRate(invoice?.totals?.tax_rate ?? ((invoice?.metadata?.tax_rate as number) ?? 0))
     setPaymentTermsDays((invoice?.metadata?.payment_terms_days as number) ?? 15)
     setLines(toLineState(invoice))
-  }, [open, mode, invoice, defaultProjectId, projects, loadInvoiceNumber, resetForCreate, builderInfo?.address, builderInfo?.email, builderInfo?.name])
+  }, [open, mode, invoice, defaultProjectId, projects, loadInvoiceNumber, resetForCreate, builderInfo?.address, builderInfo?.email, builderInfo?.name, initialSourceChangeOrder])
 
   useEffect(() => {
     if (customerDetails.trim().length === 0) {
@@ -831,31 +839,7 @@ export function InvoiceComposerSheet({
           if (initialChangeOrder) {
             initialSourceAppliedRef.current = true
             setSourceChangeOrderId(initialChangeOrder.id)
-            setLines(
-              Array.isArray(initialChangeOrder.lines) && initialChangeOrder.lines.length > 0
-                ? initialChangeOrder.lines.map((line) => ({
-                    id: crypto.randomUUID(),
-                    description: line.description ?? "",
-                    quantity: String(line.quantity ?? 1),
-                    unit: String(line.unit ?? "ea"),
-                    unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
-                    taxable: line.taxable !== false,
-                    cost_code_id: line.cost_code_id ?? null,
-                    qbo_income_account_id: (line as Record<string, any>).qbo_income_account_id ?? null,
-                    qbo_income_account_name: (line as Record<string, any>).qbo_income_account_name ?? null,
-                  }))
-                : [{
-                    id: crypto.randomUUID(),
-                    description: initialChangeOrder.title,
-                    quantity: "1",
-                    unit: "co",
-                    unit_cost: (((initialChangeOrder.total_cents ?? 0) / 100) || 0).toFixed(2),
-                    taxable: true,
-                    cost_code_id: null,
-                    qbo_income_account_id: null,
-                    qbo_income_account_name: null,
-                  }],
-            )
+            setLines(linesFromChangeOrder(initialChangeOrder))
           }
         }
         setQboConnected(Boolean(result.qboConnected))

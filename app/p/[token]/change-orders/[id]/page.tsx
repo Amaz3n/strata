@@ -11,27 +11,6 @@ interface Params {
 
 export const revalidate = 0
 
-function pickNextRequiredRequest(
-  requests: Array<{
-    id: string
-    status?: string | null
-    required?: boolean | null
-    sequence?: number | null
-    sent_to_email?: string | null
-  }>,
-) {
-  const ordered = [...requests].sort((a, b) => (a.sequence ?? 1) - (b.sequence ?? 1))
-  return (
-    ordered.find(
-      (request) =>
-        request.required !== false &&
-        request.status !== "signed" &&
-        request.status !== "voided" &&
-        request.status !== "expired",
-    ) ?? null
-  )
-}
-
 export default async function ChangeOrderApprovalPage({ params }: Params) {
   const { token, id } = await params
   const access = await validatePortalToken(token)
@@ -44,67 +23,38 @@ export default async function ChangeOrderApprovalPage({ params }: Params) {
     notFound()
   }
 
-  let canContinueSigning = false
   const supabase = createServiceSupabaseClient()
-
-  const { data: sourcedDocument } = await supabase
-    .from("documents")
-    .select("id, status")
+  const viewedAt = new Date().toISOString()
+  const viewedMetadata = {
+    ...(changeOrder.metadata ?? {}),
+    portal_last_viewed_at: viewedAt,
+    portal_last_viewed_by_contact_id: access.contact_id ?? null,
+  }
+  await supabase
+    .from("change_orders")
+    .update({ metadata: viewedMetadata })
     .eq("org_id", access.org_id)
-    .eq("source_entity_type", "change_order")
-    .eq("source_entity_id", changeOrder.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+    .eq("project_id", access.project_id)
+    .eq("id", changeOrder.id)
 
-  let documentId = sourcedDocument?.id ?? null
-  let documentStatus = sourcedDocument?.status ?? null
-
-  if (!documentId) {
-    const { data: metadataDocument } = await supabase
-      .from("documents")
-      .select("id, status")
-      .eq("org_id", access.org_id)
-      .contains("metadata", { change_order_id: changeOrder.id })
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    documentId = metadataDocument?.id ?? null
-    documentStatus = metadataDocument?.status ?? null
-  }
-
-  if (documentId && documentStatus !== "signed") {
-    const { data: signingRequests } = await supabase
-      .from("document_signing_requests")
-      .select("id, status, required, sequence, sent_to_email")
-      .eq("org_id", access.org_id)
-      .eq("document_id", documentId)
-      .order("sequence", { ascending: true })
-      .order("created_at", { ascending: true })
-
-    const nextRequired = pickNextRequiredRequest(signingRequests ?? [])
-
-    let contactEmail: string | null = null
-    if (access.contact_id) {
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("email")
-        .eq("org_id", access.org_id)
-        .eq("id", access.contact_id)
-        .maybeSingle()
-      contactEmail = contact?.email?.trim()?.toLowerCase() ?? null
-    }
-
-    const nextSignerEmail = nextRequired?.sent_to_email?.trim()?.toLowerCase() ?? null
-    const emailMatches = !contactEmail || !nextSignerEmail || contactEmail === nextSignerEmail
-    canContinueSigning = !!nextRequired?.id && emailMatches
-  }
+  const [orgResult, projectResult] = await Promise.all([
+    supabase.from("orgs").select("name, logo_url, address").eq("id", access.org_id).maybeSingle(),
+    supabase.from("projects").select("name, location").eq("id", access.project_id).maybeSingle(),
+  ])
 
   return (
     <ChangeOrderApprovalClient
-      changeOrder={changeOrder}
-      continueSigningUrl={canContinueSigning ? `/p/${token}/change-orders/${id}/continue` : null}
+      token={token}
+      changeOrder={{ ...changeOrder, metadata: viewedMetadata }}
+      org={{
+        name: orgResult.data?.name ?? null,
+        logoUrl: orgResult.data?.logo_url ?? null,
+        address: orgResult.data?.address ?? null,
+      }}
+      project={{
+        name: projectResult.data?.name ?? null,
+        location: projectResult.data?.location ?? null,
+      }}
     />
   )
 }

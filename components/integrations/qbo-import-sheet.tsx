@@ -2,11 +2,12 @@
 
 import Link from "next/link"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Check, ChevronRight, ChevronsUpDown, Download, ExternalLink, Link2, Plug, Search, X } from "lucide-react"
+import { AlertTriangle, Check, ChevronRight, ChevronsUpDown, Download, ExternalLink, Info, Link2, Plug, Search, X } from "lucide-react"
 import { toast } from "sonner"
 
 import {
   importQboRecordsAction,
+  linkExistingQboImportRecordAction,
   listProjectsForImportAction,
   listQboCustomersForImportAction,
   listQboImportRecordsAction,
@@ -55,6 +56,7 @@ type QboImportPanelProps = {
 const SECTIONS: { key: QboImportEntityType; label: string }[] = [
   { key: "invoice", label: "Invoices" },
   { key: "expense", label: "Expenses" },
+  { key: "expense_credit", label: "Credit card credits" },
   { key: "bill", label: "Bills" },
   { key: "vendor_credit", label: "Vendor credits" },
   { key: "payment", label: "Invoice payments" },
@@ -81,6 +83,7 @@ const LOOKBACK_OPTIONS: { value: string; label: string; days: number | null }[] 
 const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
   invoice: 0,
   expense: 0,
+  expense_credit: 0,
   bill: 0,
   vendor_credit: 0,
   payment: 0,
@@ -90,6 +93,15 @@ const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
 }
 
 type TypeFilter = "all" | QboImportEntityType
+
+type ImportSummary = {
+  imported: number
+  skipped: number
+  failed: number
+  errors: { qboId: string; entityType: QboImportEntityType; message: string }[]
+  counts: Record<QboImportEntityType, number>
+  items: { key: string; label: string; typeLabel: string; amountCents: number; projectLabel: string | null }[]
+}
 
 // cmdk's default matcher is a loose subsequence fuzzy match — typing "abc" matches any item with an
 // a, b and c in order, which surfaces results that don't actually contain the typed text. Require a
@@ -104,6 +116,50 @@ function rowKey(record: { entityType: QboImportEntityType; qboId: string }) {
 
 function isPaymentType(type: QboImportEntityType) {
   return type === "payment" || type === "bill_payment"
+}
+
+function isCostImpactType(type: QboImportEntityType) {
+  return type === "expense" || type === "expense_credit" || type === "bill" || type === "vendor_credit" || type === "journal_entry"
+}
+
+function signedImpactCents(record: QboImportRecord) {
+  if (record.entityType === "expense_credit" || record.entityType === "vendor_credit") return -Math.abs(record.amountCents)
+  return record.amountCents
+}
+
+function importConsequence(record: QboImportRecord) {
+  switch (record.entityType) {
+    case "expense_credit":
+      return "Reduces project cost; inbound only"
+    case "vendor_credit":
+      return "Reduces payable cost; inbound only"
+    case "journal_entry":
+      return "Posts signed cost actuals; inbound only"
+    case "client_deposit":
+      return "Creates paid historical revenue"
+    case "payment":
+      return "Settles linked invoice"
+    case "bill_payment":
+      return "Settles linked bill"
+    case "expense":
+      return "Creates credit card/bank expense"
+    case "bill":
+      return "Creates vendor bill"
+    case "invoice":
+      return "Creates customer invoice"
+  }
+}
+
+function recordLabel(record: QboImportRecord) {
+  return record.docNumber ? `#${record.docNumber}` : record.counterparty ?? "Untitled"
+}
+
+function matchActionEntity(record: QboImportRecord): "invoice" | "expense" | "bill" | null {
+  if (!record.possibleMatchId) return null
+  if (record.possibleMatchEntityType === "invoice") return "invoice"
+  if (record.possibleMatchEntityType === "project_expense") return "expense"
+  if (record.possibleMatchEntityType === "bill") return "bill"
+  return null
 }
 
 function hasAllocatableLines(record: QboImportRecord) {
@@ -156,6 +212,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [lastImport, setLastImport] = useState<Record<QboImportEntityType, number> | null>(null)
+  const [lastImportSummary, setLastImportSummary] = useState<ImportSummary | null>(null)
   const [projectFilter, setProjectFilter] = useState<string>("all")
   const [projectFilterOpen, setProjectFilterOpen] = useState(false)
   const [qboLink, setQboLink] = useState<ProjectQboLink | null>(null)
@@ -169,6 +226,8 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
   const [allocations, setAllocations] = useState<Record<string, Record<string, string>>>({})
   const [destinations, setDestinations] = useState<Record<string, string>>({})
+  const [ignoredKeys, setIgnoredKeys] = useState<Set<string>>(new Set())
+  const [linkingKey, setLinkingKey] = useState<string | null>(null)
 
   const load = useCallback(async (lookbackValue: string) => {
     const requestId = ++loadRequestId.current
@@ -180,6 +239,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
       setAlreadyImportedCounts(listing.alreadyImportedCounts ?? {})
       setConnected(listing.connected)
       setSelected(new Set())
+      setIgnoredKeys(new Set())
       // A QBO query for one entity type can fail while the rest succeed. Warn rather than silently
       // showing zero of that type (e.g. vendor credits "disappearing" when their query 400s).
       if (listing.loadErrors && listing.loadErrors.length > 0) {
@@ -334,6 +394,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     const query = search.trim().toLowerCase()
     return records
       .filter((record) => {
+        if (ignoredKeys.has(rowKey(record))) return false
         if (typeFilter !== "all" && record.entityType !== typeFilter) return false
         if (projectFilter !== "all" && !recordProjectIds(record).includes(projectFilter)) return false
         if (!query) return true
@@ -347,7 +408,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
           a.entityType.localeCompare(b.entityType) ||
           a.qboId.localeCompare(b.qboId),
       )
-  }, [records, typeFilter, projectFilter, search])
+  }, [records, typeFilter, projectFilter, search, ignoredKeys])
 
   // The project filter's options. Sourced from the full live QBO customer/project list so every
   // project shows — even ones with no un-imported transactions in the current window. Any customer
@@ -459,6 +520,87 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     () => selectedItems.filter(needsAssignment),
     [selectedItems, needsAssignment],
   )
+  const selectedImpact = useMemo(() => {
+    const projectName = (id: string | undefined | null) => (id ? projects.find((project) => project.id === id)?.name ?? id : "Unassigned")
+    const byProject = new Map<string, { projectName: string; costCents: number; revenueCents: number; paymentCents: number }>()
+    const totals = { costCents: 0, revenueCents: 0, paymentCents: 0, count: selectedItems.length }
+
+    const touch = (projectId: string | undefined | null) => {
+      const key = projectId || "unassigned"
+      const existing = byProject.get(key)
+      if (existing) return existing
+      const next = { projectName: projectName(projectId), costCents: 0, revenueCents: 0, paymentCents: 0 }
+      byProject.set(key, next)
+      return next
+    }
+
+    for (const item of selectedItems) {
+      if (hasAllocatableLines(item)) {
+        const effective = recordAllocations(item)
+        for (const line of item.lines ?? []) {
+          const bucket = touch(effective[line.lineId] ?? line.suggestedProjectId ?? importProjectIdFor(item))
+          const amount = item.entityType === "expense_credit" || item.entityType === "vendor_credit"
+            ? -Math.abs(line.amountCents)
+            : line.amountCents
+          if (isCostImpactType(item.entityType)) {
+            bucket.costCents += amount
+            totals.costCents += amount
+          }
+        }
+        continue
+      }
+
+      const bucket = touch(importProjectIdFor(item))
+      const amount = signedImpactCents(item)
+      if (isCostImpactType(item.entityType)) {
+        bucket.costCents += amount
+        totals.costCents += amount
+      } else if (item.entityType === "invoice" || item.entityType === "client_deposit") {
+        bucket.revenueCents += amount
+        totals.revenueCents += amount
+      } else if (isPaymentType(item.entityType)) {
+        bucket.paymentCents += amount
+        totals.paymentCents += amount
+      }
+    }
+
+    return { totals, byProject: Array.from(byProject.values()).filter((row) => row.costCents || row.revenueCents || row.paymentCents) }
+  }, [selectedItems, projects, recordAllocations, importProjectIdFor])
+
+  const skipRecord = (record: QboImportRecord) => {
+    const key = rowKey(record)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      next.delete(key)
+      return next
+    })
+    setIgnoredKeys((prev) => new Set(prev).add(key))
+  }
+
+  const linkExisting = async (record: QboImportRecord) => {
+    const entity = matchActionEntity(record)
+    if (!record.possibleMatchId || !entity) return
+    const key = rowKey(record)
+    setLinkingKey(key)
+    try {
+      await linkExistingQboImportRecordAction({
+        qboId: record.qboId,
+        entityType: entity,
+        existingEntityId: record.possibleMatchId,
+      })
+      toast.success("Linked existing Arc record", { description: record.possibleMatch ?? recordLabel(record) })
+      setSelected((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+      await load(lookback)
+    } catch (error: any) {
+      toast.error("Couldn't link existing record", { description: error?.message ?? "Try again." })
+    } finally {
+      setLinkingKey(null)
+    }
+  }
 
   // Bulk-assign: drop every selected record into one project at once. Single-doc records get the
   // destination; multi-line records get every line set to that project. Payments are skipped (their
@@ -488,6 +630,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
 
   const handleImport = async () => {
     if (importing || selectedItems.length === 0 || selectedNeedingAssignment.length > 0) return
+    const importingItems = [...selectedItems]
     setImporting(true)
     try {
       const result = await importQboRecordsAction({
@@ -516,15 +659,30 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
         )
       }
       if (result.imported > 0) {
-        setLastImport(
-          selectedItems.reduce<Record<QboImportEntityType, number>>(
+        const counts = importingItems.reduce<Record<QboImportEntityType, number>>(
             (acc, item) => {
               acc[item.entityType] += 1
               return acc
             },
             { ...EMPTY_COUNTS },
-          ),
-        )
+          )
+        setLastImport(counts)
+        setLastImportSummary({
+          imported: result.imported,
+          skipped: result.skipped,
+          failed: result.failed,
+          errors: result.errors,
+          counts,
+          items: importingItems.map((item) => ({
+            key: rowKey(item),
+            label: recordLabel(item),
+            typeLabel: SECTION_LABEL[item.entityType],
+            amountCents: signedImpactCents(item),
+            projectLabel: importProjectIdFor(item)
+              ? projects.find((project) => project.id === importProjectIdFor(item))?.name ?? importProjectIdFor(item)!
+              : null,
+          })),
+        })
       }
       await load(lookback)
     } catch (error: any) {
@@ -654,18 +812,32 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
             ) : null}
           </div>
 
-          {lastImport && (
-            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-emerald-500/10 px-4 py-2.5 text-xs">
-              <span className="font-medium text-emerald-700 dark:text-emerald-400">Imported successfully.</span>
+          {selectedItems.length > 0 ? <ImportPreview impact={selectedImpact} selectedCount={selectedItems.length} /> : null}
+
+          {lastImport && lastImportSummary && (
+            <div className="shrink-0 border-b bg-emerald-500/10 px-4 py-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                  Imported {lastImportSummary.imported} · skipped {lastImportSummary.skipped} · failed {lastImportSummary.failed}
+                </span>
               {(lastImport.invoice > 0 || lastImport.payment > 0 || lastImport.client_deposit > 0) && (
                 <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />
               )}
               {(lastImport.bill > 0 || lastImport.bill_payment > 0 || lastImport.vendor_credit > 0) && (
                 <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />
               )}
-              {(lastImport.expense > 0 || lastImport.journal_entry > 0) && (
+              {(lastImport.expense > 0 || lastImport.expense_credit > 0 || lastImport.journal_entry > 0) && (
                 <ImportLink href={`/projects/${projectId}/expenses`} label="Open Expenses" />
               )}
+                <button
+                  type="button"
+                  className="ml-auto text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  onClick={() => setLastImportSummary(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+              <ImportSummaryDetails summary={lastImportSummary} />
             </div>
           )}
 
@@ -755,10 +927,16 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
                                   invoiceDestination={invoiceDestination(item)}
                                   lineValues={allocations[key] ?? {}}
                                   recordAllocations={recordAllocations(item)}
+                                  linking={linkingKey === key}
                                   onToggleSelect={() => toggle(key)}
                                   onToggleExpand={() => toggleExpand(key)}
                                   onSetInvoiceDestination={(target) => setInvoiceDestination(item, target)}
                                   onSetLine={(lineId, target) => setLineAllocation(item, lineId, target)}
+                                  onSkip={() => skipRecord(item)}
+                                  onImportAnyway={() => {
+                                    if (!selected.has(key) && canImportRecord(item)) toggle(key)
+                                  }}
+                                  onLinkExisting={() => void linkExisting(item)}
                                 />
                               </li>
                             )
@@ -842,10 +1020,14 @@ function ImportGridRow({
   invoiceDestination,
   lineValues,
   recordAllocations,
+  linking,
   onToggleSelect,
   onToggleExpand,
   onSetInvoiceDestination,
   onSetLine,
+  onSkip,
+  onImportAnyway,
+  onLinkExisting,
 }: {
   record: QboImportRecord
   projects: { id: string; name: string }[]
@@ -857,14 +1039,19 @@ function ImportGridRow({
   invoiceDestination: string
   lineValues: Record<string, string>
   recordAllocations: Record<string, string>
+  linking: boolean
   onToggleSelect: () => void
   onToggleExpand: () => void
   onSetInvoiceDestination: (projectId: string) => void
   onSetLine: (lineId: string, projectId: string) => void
+  onSkip: () => void
+  onImportAnyway: () => void
+  onLinkExisting: () => void
 }) {
   const isPayment = isPaymentType(record.entityType)
   const hasLines = hasAllocatableLines(record)
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name
+  const canLinkExisting = Boolean(matchActionEntity(record) && record.possibleMatchId)
 
   return (
     <div className={cn("border-t", selected && "bg-primary/5", blocked && "opacity-60")}>
@@ -877,10 +1064,18 @@ function ImportGridRow({
         />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">
-            {record.docNumber ? `#${record.docNumber}` : record.counterparty ?? "Untitled"}
+            {recordLabel(record)}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
             {record.docNumber && record.counterparty ? <span className="truncate">{record.counterparty}</span> : null}
+            <ImportBadge tone={record.entityType === "expense_credit" || record.entityType === "vendor_credit" ? "credit" : "default"}>
+              {importConsequence(record)}
+            </ImportBadge>
+            {hasLines ? <ImportBadge tone="info">{record.lines!.length} lines</ImportBadge> : null}
+            {hasLines && new Set(Object.values(recordAllocations)).size > 1 ? <ImportBadge tone="info">Split</ImportBadge> : null}
+            {(record.entityType === "expense_credit" || record.entityType === "vendor_credit" || record.entityType === "journal_entry" || record.entityType === "client_deposit") ? (
+              <ImportBadge tone="muted">Inbound only</ImportBadge>
+            ) : null}
             {record.balanceCents != null && record.balanceCents > 0 && (
               <span className="shrink-0">{formatMoney(record.balanceCents)} open</span>
             )}
@@ -898,8 +1093,22 @@ function ImportGridRow({
               </span>
             )}
             {record.possibleMatch ? (
-              <span className="shrink-0 text-amber-700 dark:text-amber-400">Possible match: {record.possibleMatch}</span>
+              <span className="inline-flex shrink-0 items-center gap-1 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="size-3" />
+                Possible match: {record.possibleMatch}
+                {canLinkExisting ? (
+                  <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={onLinkExisting} disabled={linking}>
+                    {linking ? "Linking..." : "Link existing"}
+                  </button>
+                ) : null}
+                <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={onSkip}>Skip</button>
+                <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={onImportAnyway}>Import anyway</button>
+              </span>
             ) : null}
+            <button type="button" onClick={onToggleExpand} className="inline-flex shrink-0 items-center gap-1 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+              <Info className="size-3" />
+              Details
+            </button>
           </div>
         </div>
         <span className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">
@@ -953,6 +1162,138 @@ function ImportGridRow({
       {expanded && isPayment && record.linkedDocs && record.linkedDocs.length > 0 ? (
         <div className="border-t bg-muted/20 px-4 py-3 pl-11">
           <LinkedDocsBreakdown record={record} />
+        </div>
+      ) : null}
+      {expanded ? (
+        <div className="border-t bg-muted/10 px-4 py-3 pl-11">
+          <ImportRecordDebug record={record} recordAllocations={recordAllocations} projectName={projectName} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ImportBadge({ children, tone = "default" }: { children: ReactNode; tone?: "default" | "credit" | "info" | "muted" }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-[10px] font-medium",
+        tone === "default" && "border-border bg-background text-muted-foreground",
+        tone === "credit" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        tone === "info" && "border-primary/20 bg-primary/10 text-primary",
+        tone === "muted" && "border-muted bg-muted text-muted-foreground",
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
+function ImportPreview({
+  impact,
+  selectedCount,
+}: {
+  impact: {
+    totals: { costCents: number; revenueCents: number; paymentCents: number; count: number }
+    byProject: { projectName: string; costCents: number; revenueCents: number; paymentCents: number }[]
+  }
+  selectedCount: number
+}) {
+  return (
+    <div className="shrink-0 border-b bg-muted/20 px-4 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="font-medium text-foreground">Preview {selectedCount} selected</span>
+        <span className="text-muted-foreground">Cost impact: <span className="font-medium text-foreground">{formatMoney(impact.totals.costCents)}</span></span>
+        <span className="text-muted-foreground">Revenue: <span className="font-medium text-foreground">{formatMoney(impact.totals.revenueCents)}</span></span>
+        <span className="text-muted-foreground">Payments: <span className="font-medium text-foreground">{formatMoney(impact.totals.paymentCents)}</span></span>
+      </div>
+      {impact.byProject.length > 0 ? (
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {impact.byProject.slice(0, 6).map((row) => (
+            <span key={row.projectName} className="rounded border bg-background px-2 py-1 text-[11px] text-muted-foreground">
+              <span className="font-medium text-foreground">{row.projectName}</span>
+              {row.costCents ? ` · cost ${formatMoney(row.costCents)}` : ""}
+              {row.revenueCents ? ` · revenue ${formatMoney(row.revenueCents)}` : ""}
+              {row.paymentCents ? ` · payments ${formatMoney(row.paymentCents)}` : ""}
+            </span>
+          ))}
+          {impact.byProject.length > 6 ? (
+            <span className="rounded border bg-background px-2 py-1 text-[11px] text-muted-foreground">+{impact.byProject.length - 6} more</span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ImportSummaryDetails({ summary }: { summary: ImportSummary }) {
+  const visibleItems = summary.items.slice(0, 6)
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {visibleItems.map((item) => (
+          <span key={item.key} className="rounded border border-emerald-500/20 bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground">{item.label}</span>
+            {" · "}{item.typeLabel}
+            {" · "}{formatMoney(item.amountCents)}
+            {item.projectLabel ? ` · ${item.projectLabel}` : ""}
+          </span>
+        ))}
+        {summary.items.length > visibleItems.length ? (
+          <span className="rounded border border-emerald-500/20 bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">+{summary.items.length - visibleItems.length} more</span>
+        ) : null}
+      </div>
+      {summary.errors.length > 0 ? (
+        <div className="text-[11px] text-destructive">
+          {summary.errors.slice(0, 2).map((error) => `${SECTION_LABEL[error.entityType]} ${error.qboId}: ${error.message}`).join(" · ")}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ImportRecordDebug({
+  record,
+  recordAllocations,
+  projectName,
+}: {
+  record: QboImportRecord
+  recordAllocations: Record<string, string>
+  projectName: (id: string) => string | undefined
+}) {
+  const facts = [
+    ["QBO type", SECTION_LABEL[record.entityType]],
+    ["QBO id", record.qboId],
+    ["QBO project", record.qboCustomerName ?? record.qboCustomerId ?? "None"],
+    ["Date", formatDate(record.date)],
+    ["Signed amount", formatMoney(signedImpactCents(record))],
+    ["Handling", importConsequence(record)],
+  ]
+
+  return (
+    <div className="space-y-2">
+      <div className="grid gap-2 text-xs sm:grid-cols-3">
+        {facts.map(([label, value]) => (
+          <div key={label} className="min-w-0 rounded border bg-background px-2 py-1.5">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+            <div className="truncate font-medium text-foreground" title={value}>{value}</div>
+          </div>
+        ))}
+      </div>
+      {record.lines && record.lines.length > 0 ? (
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Line mapping</div>
+          {record.lines.map((line) => {
+            const target = recordAllocations[line.lineId] ?? line.suggestedProjectId ?? ""
+            return (
+              <div key={line.lineId} className="flex flex-wrap items-center gap-2 rounded border bg-background px-2 py-1 text-[11px]">
+                <span className="font-medium">Line {line.lineId}</span>
+                <span className="text-muted-foreground">{formatMoney(line.amountCents)}</span>
+                <span className="truncate text-muted-foreground">{line.qboCustomerName ?? line.qboCustomerId ?? "No QBO project"}</span>
+                <span className="truncate text-foreground">{target ? projectName(target) ?? target : "Unassigned"}</span>
+              </div>
+            )
+          })}
         </div>
       ) : null}
     </div>

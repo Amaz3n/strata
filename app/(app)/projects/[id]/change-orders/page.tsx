@@ -5,6 +5,8 @@ import { getProjectAction } from "../actions"
 import { listChangeOrdersAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrdersClient } from "@/components/change-orders/change-orders-client"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getOrgBilling } from "@/lib/services/orgs"
+import type { Address } from "@/lib/types"
 
 interface ProjectChangeOrdersPageProps {
   params: Promise<{ id: string }>
@@ -43,6 +45,7 @@ async function ProjectChangeOrdersData({ id }: { id: string }) {
   }
 
   const changeOrders = await listChangeOrdersAction(id)
+  const orgBilling = await getOrgBilling().catch(() => null)
 
   return (
     <div className="space-y-6">
@@ -50,7 +53,24 @@ async function ProjectChangeOrdersData({ id }: { id: string }) {
         changeOrders={changeOrders}
         projects={[project]}
         hideProjectFilter
+        builderInfo={{
+          name: orgBilling?.org?.name,
+          email: orgBilling?.org?.billing_email,
+          address: formatAddress(orgBilling?.org?.address as Address | undefined),
+        }}
       />
     </div>
   )
+}
+
+function formatAddress(address?: Address) {
+  if (!address) return undefined
+  const structured = [
+    [address.street1, address.street2].filter(Boolean).join(" ").trim(),
+    [address.city, address.state, address.postal_code].filter(Boolean).join(" ").trim(),
+    (address.country ?? "").trim(),
+  ].filter(Boolean)
+
+  if (structured.length > 0) return structured.join("\n")
+  return address.formatted?.trim() || undefined
 }
