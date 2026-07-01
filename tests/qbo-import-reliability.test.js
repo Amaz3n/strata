@@ -181,9 +181,15 @@ test("QBO purchase credits import as inbound-only expense credits with negative 
     require("node:path").join(__dirname, "../lib/services/qbo-import.ts"),
     "utf8",
   )
+  const importExpenseCreditBlock = importSource.slice(
+    importSource.indexOf("async function importExpenseCredit"),
+    importSource.indexOf("async function importBill"),
+  )
 
   assert.match(importSource, /expense_credit: "Purchase"/)
   assert.match(importSource, /qboPurchaseIsCredit\(row\)/)
+  assert.match(importSource, /repairExistingExpenseCreditRows/)
+  assert.doesNotMatch(importExpenseCreditBlock, /if \(existing\?\.id\) return \{ skipped: true as const \}/)
   assert.match(importSource, /entityType: "project_expense"[\s\S]*pushable: false[\s\S]*metadata: \{ source: "expense_credit" \}/)
   assert.match(importSource, /source_label: isExpenseCredit \? "project_expense_credit" : "project_expense"/)
   assert.match(importSource, /costCents[\s\S]*\* \(isExpenseCredit \? -1 : 1\)/)

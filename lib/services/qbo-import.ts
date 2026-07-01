@@ -1580,6 +1580,121 @@ async function importExpense(
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
+async function repairExistingExpenseCreditRows(params: {
+  ctx: ResolvedContext
+  connectionId: string
+  qboId: string
+  qbo: any
+  existingRows: Array<{ id: string; metadata: any }>
+}) {
+  const { ctx, connectionId, qboId, qbo, existingRows } = params
+  const { supabase, orgId } = ctx
+  const rowsToRepair = existingRows.filter(
+    (row) => !String((row.metadata as { source?: string } | null)?.source ?? "").startsWith("expense_credit"),
+  )
+  if (rowsToRepair.length === 0) return { skipped: true as const, entityId: existingRows[0]?.id }
+
+  const totalCents = Math.abs(toCents(qbo.TotalAmt))
+  const expenseDate = normalizeDate(qbo.TxnDate) ?? new Date().toISOString().split("T")[0]
+  const vendorRef = qbo.EntityRef ?? qbo.VendorRef
+  const nowIso = new Date().toISOString()
+  const expenseLines = ((qbo.Line ?? []) as any[]).filter(
+    (line) => line?.AccountBasedExpenseLineDetail || line?.ItemBasedExpenseLineDetail,
+  )
+  const lineById = new Map(expenseLines.map((line) => [String(line.Id), line]))
+  const lineAccountRef = (line: any) =>
+    line?.AccountBasedExpenseLineDetail?.AccountRef ?? line?.ItemBasedExpenseLineDetail?.ItemRef ?? null
+  const lineClassRef = (line: any) =>
+    line?.AccountBasedExpenseLineDetail?.ClassRef ?? line?.ItemBasedExpenseLineDetail?.ClassRef ?? null
+
+  let repaired = 0
+  let firstEntityId: string | undefined
+  for (const row of rowsToRepair) {
+    const oldMetadata = (row.metadata as Record<string, unknown> | null) ?? {}
+    const qboLineId = typeof oldMetadata.qbo_purchase_line_id === "string" ? oldMetadata.qbo_purchase_line_id : null
+    const line = (qboLineId ? lineById.get(qboLineId) : null) ?? (expenseLines.length === 1 ? expenseLines[0] : null)
+    const amountCents = Math.abs(toCents(line?.Amount ?? qbo.TotalAmt))
+    const accountRef = lineAccountRef(line)
+    const classRef = lineClassRef(line)
+    const description = String(
+      line?.Description ?? (qbo.Line ?? []).find((candidate: any) => candidate?.Description)?.Description ?? qbo.PrivateNote ?? refName(accountRef) ?? "Imported QuickBooks expense credit",
+    )
+    const isSplitRow = Boolean(qboLineId)
+    const metadata = {
+      ...oldMetadata,
+      source: isSplitRow ? "expense_credit_split" : "expense_credit",
+      imported_from_qbo: true,
+      qbo_imported_at: oldMetadata.qbo_imported_at ?? nowIso,
+      qbo_repaired_at: nowIso,
+      qbo_purchase_credit: true,
+      qbo_credit_total_cents: -totalCents,
+      ...(isSplitRow
+        ? {
+            qbo_purchase_id: qboId,
+            qbo_purchase_line_id: qboLineId,
+            qbo_credit_line_cents: -amountCents,
+          }
+        : {}),
+    }
+
+    const { error } = await supabase
+      .from("project_expenses")
+      .update({
+        expense_date: expenseDate,
+        description,
+        amount_cents: amountCents,
+        tax_cents: 0,
+        is_billable: false,
+        status: "approved",
+        vendor_name_text: refName(vendorRef),
+        payment_method: mapQboPaymentMethod(qbo.PaymentType),
+        metadata,
+        qbo_transaction_type: "purchase",
+        qbo_synced_at: nowIso,
+        qbo_sync_status: "synced",
+        qbo_vendor_id: refValue(vendorRef),
+        qbo_vendor_name: refName(vendorRef),
+        qbo_expense_account_id: refValue(accountRef),
+        qbo_expense_account_name: refName(accountRef),
+        qbo_class_id: refValue(classRef),
+        qbo_class_name: refName(classRef),
+      })
+      .eq("org_id", orgId)
+      .eq("id", row.id)
+    if (error) throw new Error(`Failed to repair imported expense credit: ${error.message}`)
+
+    await postJobCostActualsForImportedExpense(ctx, row.id)
+    await linkSyncRecord({
+      supabase,
+      orgId,
+      connectionId,
+      entityType: "project_expense",
+      entityId: row.id,
+      qboId,
+      pushable: false,
+      metadata: { source: isSplitRow ? "expense_credit_split" : "expense_credit", repaired_from: "project_expense" },
+    })
+    await recordEvent({
+      orgId,
+      actorId: ctx.userId,
+      eventType: "expense_credit_imported_from_qbo",
+      entityType: "project_expense",
+      entityId: row.id,
+      payload: {
+        qbo_id: qboId,
+        repaired_existing: true,
+        source: isSplitRow ? "expense_credit_split" : "expense_credit",
+        amount_cents: -amountCents,
+      },
+    })
+    firstEntityId ??= row.id
+    repaired += 1
+  }
+
+  await markEventsResolved(supabase, qboId)
+  return { skipped: repaired === 0, entityId: firstEntityId }
+}
+
 async function importExpenseCredit(
   ctx: ResolvedContext,
   client: QBOClient,
@@ -1590,18 +1705,25 @@ async function importExpenseCredit(
 ) {
   const { supabase, orgId } = ctx
 
-  const { data: existing } = await supabase
-    .from("project_expenses")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("qbo_id", qboId)
-    .limit(1)
-    .maybeSingle()
-  if (existing?.id) return { skipped: true as const }
-
   const qbo = await client.getPurchaseById(qboId)
   if (!qbo) throw new Error("Expense credit not found in QuickBooks")
   if (!qboPurchaseIsCredit(qbo)) throw new Error("QuickBooks purchase is not an expense credit")
+
+  const { data: existingRows } = await supabase
+    .from("project_expenses")
+    .select("id, metadata")
+    .eq("org_id", orgId)
+    .eq("qbo_id", qboId)
+    .order("created_at", { ascending: true })
+  if ((existingRows ?? []).length > 0) {
+    return repairExistingExpenseCreditRows({
+      ctx,
+      connectionId,
+      qboId,
+      qbo,
+      existingRows: (existingRows ?? []) as Array<{ id: string; metadata: any }>,
+    })
+  }
 
   const totalCents = Math.abs(toCents(qbo.TotalAmt))
   const expenseDate = normalizeDate(qbo.TxnDate) ?? new Date().toISOString().split("T")[0]
