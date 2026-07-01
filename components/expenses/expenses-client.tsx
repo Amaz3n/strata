@@ -17,19 +17,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Check, CheckCircle2, ChevronsUpDown, Clock, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
+import { Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsUpDown, Clock, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
 
 import {
   approveProjectExpenseFormAction,
   createMyExpenseAction,
   extractExpenseReceiptAction,
   getExpenseAccountingContextAction,
-  listProjectExpensesAction,
+  listProjectExpensesPageAction,
   rejectProjectExpenseFormAction,
   syncProjectExpenseToQBOAction,
   updateProjectExpenseAccountingAction,
   updateProjectExpenseDetailsAction,
   type CreateMyExpenseInput,
+  type ExpenseQueueFilter,
   type ReceiptExtractionResult,
 } from "@/app/(app)/projects/[id]/expenses/actions"
 import { getFileAction, getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
@@ -44,8 +45,6 @@ import {
   costCodeLabel,
   formatCurrency,
   formatDate,
-  needsQboReview,
-  readyForQboSync,
   signedExpenseAmountCents,
   statusLabels,
   statusStyles,
@@ -56,12 +55,20 @@ import { cn } from "@/lib/utils"
 
 interface ExpensesClientProps {
   projectId: string
-  initialExpenses: ProjectExpense[]
+  initialPage: ExpensePage
 }
 
 type ExpenseAccountingContext = Awaited<ReturnType<typeof getExpenseAccountingContextAction>>
 
-type QueueFilter = "all" | "needs_review" | "ready" | "synced"
+type QueueFilter = ExpenseQueueFilter
+
+type ExpensePage = {
+  items: ProjectExpense[]
+  page: number
+  pageSize: number
+  total: number
+  pageCount: number
+}
 
 const qboStatusStyles: Record<string, string> = {
   pending: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
@@ -368,11 +375,17 @@ interface PendingReceipt {
   file: File
 }
 
-export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientProps) {
+export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) {
   const isMobile = useIsMobile()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [items, setItems] = useState<ProjectExpense[]>(initialExpenses)
+  const [items, setItems] = useState<ProjectExpense[]>(initialPage.items)
+  const [pagination, setPagination] = useState({
+    page: initialPage.page,
+    pageSize: initialPage.pageSize,
+    total: initialPage.total,
+    pageCount: initialPage.pageCount,
+  })
   const [search, setSearch] = useState("")
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -411,50 +424,52 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname)
   }
 
-  const filtered = useMemo(() => {
-    const term = search.toLowerCase().trim()
-    return items.filter((expense) => {
-      const matchesQueue =
-        queueFilter === "all" ||
-        (queueFilter === "needs_review" && needsQboReview(expense)) ||
-        (queueFilter === "ready" && readyForQboSync(expense)) ||
-        (queueFilter === "synced" && expense.qbo_sync_status === "synced")
-      if (!matchesQueue) return false
-      if (!term) return true
-      return [
-        vendorOf(expense),
-        expense.description ?? "",
-        costCodesEnabled ? expense.cost_code?.code ?? "" : "",
-        costCodesEnabled ? expense.cost_code?.name ?? "" : "",
-        expense.qbo_expense_account_name ?? "",
-        expense.qbo_payment_account_name ?? "",
-        expense.qbo_ap_account_name ?? "",
-        expense.qbo_vendor_name ?? "",
-        expense.expense_date ?? "",
-      ].some((value) => String(value).toLowerCase().includes(term))
-    })
-  }, [items, search, queueFilter, costCodesEnabled])
+  const filtered = items
+  const pageStart = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1
+  const pageEnd = Math.min(pagination.page * pagination.pageSize, pagination.total)
 
-  const filterCounts = useMemo(
-    () => ({
-      all: items.length,
-      needs_review: items.filter(needsQboReview).length,
-      ready: items.filter(readyForQboSync).length,
-      synced: items.filter((expense) => expense.qbo_sync_status === "synced").length,
-    }),
-    [items],
+  const loadExpensesPage = useCallback(
+    async (page: number) => {
+      const next = await listProjectExpensesPageAction(projectId, {
+        page,
+        pageSize: pagination.pageSize,
+        search,
+        queueFilter,
+      })
+      setItems(next.items as ProjectExpense[])
+      setPagination({
+        page: next.page,
+        pageSize: next.pageSize,
+        total: next.total,
+        pageCount: next.pageCount,
+      })
+      setSelectedIds([])
+    },
+    [projectId, pagination.pageSize, search, queueFilter],
   )
 
   const refresh = useCallback(() => {
     startTransition(async () => {
       try {
-        const next = await listProjectExpensesAction(projectId)
-        setItems(next as ProjectExpense[])
+        await loadExpensesPage(pagination.page)
       } catch (error) {
         console.error("Failed to refresh expenses", error)
       }
     })
-  }, [projectId])
+  }, [loadExpensesPage, pagination.page])
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      startTransition(async () => {
+        try {
+          await loadExpensesPage(1)
+        } catch (error) {
+          console.error("Failed to load expenses", error)
+        }
+      })
+    }, 250)
+    return () => window.clearTimeout(timeout)
+  }, [loadExpensesPage])
 
   const visibleIds = useMemo(() => filtered.map((expense) => expense.id), [filtered])
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
@@ -498,8 +513,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     return new Promise<void>((resolve, reject) => {
       startTransition(async () => {
         try {
-          const next = await createMyExpenseAction(projectId, formData)
-          setItems((next as ProjectExpense[]) ?? [])
+          await createMyExpenseAction(projectId, formData)
+          await loadExpensesPage(1)
           setSheetOpen(false)
           toast.success("Receipt submitted for review")
           resolve()
@@ -666,7 +681,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
       ),
     )
     try {
-      const next = await updateProjectExpenseAccountingAction(projectId, expense.id, {
+      await updateProjectExpenseAccountingAction(projectId, expense.id, {
         qboTransactionType: "purchase",
         qboExpenseAccountId: account.id,
         qboExpenseAccountName: accountLabel(account),
@@ -677,7 +692,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         qboVendorId: qboVendor?.id ?? expense.qbo_vendor_id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : (expense.qbo_vendor_name ?? null),
       })
-      setItems((next as ProjectExpense[]) ?? [])
+      await loadExpensesPage(pagination.page)
       toast.success("QuickBooks account saved")
     } catch (error: any) {
       toast.error("Could not save QuickBooks account", {
@@ -706,7 +721,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
       ),
     )
     try {
-      const next = await updateProjectExpenseAccountingAction(projectId, expense.id, {
+      await updateProjectExpenseAccountingAction(projectId, expense.id, {
         qboTransactionType: "purchase",
         qboExpenseAccountId: expense.qbo_expense_account_id ?? null,
         qboExpenseAccountName: expense.qbo_expense_account_name ?? null,
@@ -717,7 +732,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         qboVendorId: qboVendor?.id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
       })
-      setItems((next as ProjectExpense[]) ?? [])
+      await loadExpensesPage(pagination.page)
       toast.success("QuickBooks vendor saved")
     } catch (error: any) {
       toast.error("Could not save QuickBooks vendor", {
@@ -733,8 +748,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     setSavingMemoExpenseId(expense.id)
     setItems((current) => current.map((item) => (item.id === expense.id ? { ...item, description } : item)))
     try {
-      const next = await updateProjectExpenseDetailsAction(projectId, expense.id, { description })
-      setItems((next as ProjectExpense[]) ?? [])
+      await updateProjectExpenseDetailsAction(projectId, expense.id, { description })
+      await loadExpensesPage(pagination.page)
     } catch (error: any) {
       toast.error("Could not save memo", { description: error?.message ?? "Please try again." })
       refresh()
@@ -759,8 +774,8 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
       ),
     )
     try {
-      const next = await updateProjectExpenseDetailsAction(projectId, expense.id, { costCodeId })
-      setItems((next as ProjectExpense[]) ?? [])
+      await updateProjectExpenseDetailsAction(projectId, expense.id, { costCodeId })
+      await loadExpensesPage(pagination.page)
       toast.success("Cost code saved")
     } catch (error: any) {
       toast.error("Could not save cost code", { description: error?.message ?? "Please try again." })
@@ -834,6 +849,74 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
     )
   }
 
+  function goToPage(page: number) {
+    const nextPage = Math.min(Math.max(page, 1), pagination.pageCount)
+    if (nextPage === pagination.page || isPending) return
+    startTransition(async () => {
+      try {
+        await loadExpensesPage(nextPage)
+      } catch (error: any) {
+        toast.error("Could not load expenses", { description: error?.message ?? "Try again." })
+      }
+    })
+  }
+
+  const pageButtons = useMemo(() => {
+    const total = pagination.pageCount
+    const current = pagination.page
+    const pages = new Set<number>([1, total, current - 1, current, current + 1])
+    if (current <= 3) {
+      pages.add(2)
+      pages.add(3)
+    }
+    if (current >= total - 2) {
+      pages.add(total - 2)
+      pages.add(total - 1)
+    }
+    return Array.from(pages)
+      .filter((page) => page >= 1 && page <= total)
+      .sort((a, b) => a - b)
+  }, [pagination.page, pagination.pageCount])
+
+  function PaginationFooter() {
+    return (
+      <div className="flex shrink-0 flex-col gap-3 border-t bg-background px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground">
+          {pagination.total === 0 ? "No expenses found" : `Showing ${pageStart}-${pageEnd} of ${pagination.total}`}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button type="button" variant="outline" size="sm" className="h-9 px-2" disabled={isPending || pagination.page <= 1} onClick={() => goToPage(pagination.page - 1)}>
+            <ChevronLeft className="h-4 w-4" />
+            <span className="sr-only">Previous page</span>
+          </Button>
+          {pageButtons.map((page, index) => {
+            const previous = pageButtons[index - 1]
+            const showGap = previous != null && page - previous > 1
+            return (
+              <div key={page} className="flex items-center gap-1">
+                {showGap ? <span className="px-1 text-sm text-muted-foreground">...</span> : null}
+                <Button
+                  type="button"
+                  variant={page === pagination.page ? "default" : "outline"}
+                  size="sm"
+                  className="h-9 min-w-9 px-2 tabular-nums"
+                  disabled={isPending || page === pagination.page}
+                  onClick={() => goToPage(page)}
+                >
+                  {page}
+                </Button>
+              </div>
+            )
+          })}
+          <Button type="button" variant="outline" size="sm" className="h-9 px-2" disabled={isPending || pagination.page >= pagination.pageCount} onClick={() => goToPage(pagination.page + 1)}>
+            <ChevronRight className="h-4 w-4" />
+            <span className="sr-only">Next page</span>
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <TooltipProvider>
       <ExpenseForm
@@ -894,7 +977,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
         ) : null}
         <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
-            <Input placeholder="Search vendor, code..." className="h-[42px] w-full sm:w-72" value={search} onChange={(event) => setSearch(event.target.value)} />
+            <Input placeholder="Search expenses..." className="h-[42px] w-full sm:w-72" value={search} onChange={(event) => setSearch(event.target.value)} />
             <div className="flex w-full overflow-x-auto border bg-muted/20 p-1 sm:w-auto">
               {([
                 { key: "all", label: "All" },
@@ -914,12 +997,6 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
                   )}
                 >
                   <span>{filter.label}</span>
-                  <span className={cn(
-                    "px-1.5 py-0.5 text-[10px] tabular-nums",
-                    queueFilter === filter.key ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground",
-                  )}>
-                    {filterCounts[filter.key]}
-                  </span>
                 </button>
               ))}
             </div>
@@ -1150,6 +1227,7 @@ export function ExpensesClient({ projectId, initialExpenses }: ExpensesClientPro
             </Table>
           </div>
         )}
+        <PaginationFooter />
       </div>
     </TooltipProvider>
   )

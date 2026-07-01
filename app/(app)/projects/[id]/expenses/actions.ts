@@ -58,6 +58,15 @@ export interface UpdateExpenseDetailsInput {
   paymentMethod?: string | null
 }
 
+export type ExpenseQueueFilter = "all" | "needs_review" | "ready" | "synced"
+
+export interface ExpensePageInput {
+  page?: number
+  pageSize?: number
+  search?: string
+  queueFilter?: ExpenseQueueFilter
+}
+
 export type ReceiptExtractionResult =
   | { ok: true; data: ExtractedExpenseReceipt }
   | { ok: false; error: string }
@@ -65,6 +74,67 @@ export type ReceiptExtractionResult =
 function moneyToCents(value: number | undefined | null) {
   if (!value || !Number.isFinite(value)) return 0
   return Math.round(value * 100)
+}
+
+function escapePostgrestPattern(value: string) {
+  return value.replace(/[%_]/g, "\\$&")
+}
+
+function normalizePostgrestSearchText(value: string) {
+  return value.replace(/[(),]/g, " ").replace(/\s+/g, " ").trim()
+}
+
+function parseExpenseSearchCents(value: string) {
+  const cleaned = value.replace(/[,$]/g, "").trim()
+  if (!/^-?\d+(\.\d{1,2})?$/.test(cleaned)) return null
+  return Math.abs(Math.round(Number(cleaned) * 100))
+}
+
+function parseExpenseSearchDate(value: string) {
+  const trimmed = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed
+  const slashMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/)
+  if (!slashMatch) return null
+  const [, month, day, year] = slashMatch
+  const fullYear = year.length === 2 ? `20${year}` : year
+  return `${fullYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
+}
+
+function matchingExpenseStatuses(value: string) {
+  const term = value.toLowerCase()
+  return ["draft", "submitted", "approved", "rejected", "locked"].filter((status) =>
+    status.replaceAll("_", " ").includes(term),
+  )
+}
+
+function matchingExpensePaymentMethods(value: string) {
+  const term = value.toLowerCase()
+  const labels: Record<string, string[]> = {
+    cash: ["cash"],
+    credit_card: ["credit card", "card", "cc"],
+    check: ["check", "cheque"],
+    ach: ["ach", "bank transfer"],
+    company_card: ["company card", "corporate card"],
+    reimbursable_personal: ["reimbursable", "personal", "personal card"],
+    other: ["other"],
+  }
+  return Object.entries(labels)
+    .filter(([method, aliases]) => method.includes(term) || aliases.some((alias) => alias.includes(term)))
+    .map(([method]) => method)
+}
+
+function matchingExpenseQboStatuses(value: string) {
+  const term = value.toLowerCase()
+  const labels: Record<string, string[]> = {
+    pending: ["pending", "pending sync"],
+    synced: ["synced", "quickbooks", "qbo"],
+    error: ["error", "sync error"],
+    needs_review: ["needs review", "requires review", "needs coding", "review"],
+    skipped: ["skipped", "disabled"],
+  }
+  return Object.entries(labels)
+    .filter(([status, aliases]) => status.includes(term) || aliases.some((alias) => alias.includes(term)))
+    .map(([status]) => status)
 }
 
 function revalidate(projectId: string) {
@@ -179,6 +249,212 @@ export async function extractExpenseReceiptAction(_projectId: string, formData: 
 export async function listProjectExpensesAction(projectId: string) {
   const data = await listCostPlusTabData(projectId).catch(() => ({ expenses: [] as any[] }))
   return data.expenses ?? []
+}
+
+export async function listProjectExpensesPageAction(projectId: string, input: ExpensePageInput = {}) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAuthorization({
+    permission: "invoice.read",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+  })
+
+  const pageSize = Math.min(Math.max(Math.trunc(input.pageSize ?? 50), 10), 100)
+  const page = Math.max(Math.trunc(input.page ?? 1), 1)
+  const from = (page - 1) * pageSize
+  const to = from + pageSize - 1
+  const search = input.search?.trim() ?? ""
+  const queueFilter = input.queueFilter ?? "all"
+
+  let query = supabase
+    .from("project_expenses")
+    .select("*, cost_code:cost_codes(code, name), vendor_company:companies(name)", { count: "exact" })
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+
+  if (search) {
+    const searchText = normalizePostgrestSearchText(search)
+    const escaped = escapePostgrestPattern(searchText)
+    const hasTextSearch = searchText.length > 0
+    const lowerSearch = search.toLowerCase()
+    const searchFilters = hasTextSearch
+      ? [
+          `vendor_name_text.ilike.%${escaped}%`,
+          `description.ilike.%${escaped}%`,
+          `status.ilike.%${escaped}%`,
+          `payment_method.ilike.%${escaped}%`,
+          `qbo_id.ilike.%${escaped}%`,
+          `qbo_sync_status.ilike.%${escaped}%`,
+          `qbo_transaction_type.ilike.%${escaped}%`,
+          `qbo_expense_account_name.ilike.%${escaped}%`,
+          `qbo_expense_account_id.ilike.%${escaped}%`,
+          `qbo_payment_account_name.ilike.%${escaped}%`,
+          `qbo_payment_account_id.ilike.%${escaped}%`,
+          `qbo_ap_account_name.ilike.%${escaped}%`,
+          `qbo_ap_account_id.ilike.%${escaped}%`,
+          `qbo_vendor_name.ilike.%${escaped}%`,
+          `qbo_vendor_id.ilike.%${escaped}%`,
+          `qbo_sync_error.ilike.%${escaped}%`,
+        ]
+      : []
+
+    const cents = parseExpenseSearchCents(search)
+    if (cents != null) {
+      searchFilters.push(`amount_cents.eq.${cents}`, `tax_cents.eq.${cents}`)
+    }
+
+    const date = parseExpenseSearchDate(search)
+    if (date) searchFilters.push(`expense_date.eq.${date}`)
+
+    const statuses = matchingExpenseStatuses(search)
+    if (statuses.length > 0) searchFilters.push(`status.in.(${statuses.join(",")})`)
+
+    const paymentMethods = matchingExpensePaymentMethods(search)
+    if (paymentMethods.length > 0) searchFilters.push(`payment_method.in.(${paymentMethods.join(",")})`)
+
+    const qboStatuses = matchingExpenseQboStatuses(search)
+    if (qboStatuses.length > 0) searchFilters.push(`qbo_sync_status.in.(${qboStatuses.join(",")})`)
+
+    if (lowerSearch.includes("not billable") || lowerSearch.includes("non billable")) {
+      searchFilters.push("is_billable.eq.false")
+    } else if (lowerSearch.includes("billable")) {
+      searchFilters.push("is_billable.eq.true")
+    }
+    const shouldMatchCredits = lowerSearch.includes("credit") || lowerSearch.includes("refund") || search.startsWith("-")
+
+    const [matchingCostCodes, matchingCompanies, matchingReceipts, matchingLines, matchingCredits] = await Promise.all([
+      hasTextSearch
+        ? supabase
+            .from("cost_codes")
+            .select("id")
+            .eq("org_id", orgId)
+            .or(`code.ilike.%${escaped}%,name.ilike.%${escaped}%`)
+            .limit(100)
+        : Promise.resolve({ data: [] }),
+      hasTextSearch
+        ? supabase
+            .from("companies")
+            .select("id")
+            .eq("org_id", orgId)
+            .ilike("name", `%${escaped}%`)
+            .limit(100)
+        : Promise.resolve({ data: [] }),
+      hasTextSearch
+        ? supabase
+            .from("files")
+            .select("id")
+            .eq("org_id", orgId)
+            .ilike("file_name", `%${escaped}%`)
+            .limit(100)
+        : Promise.resolve({ data: [] }),
+      hasTextSearch || cents != null
+        ? supabase
+            .from("project_expense_lines")
+            .select("expense_id")
+            .eq("org_id", orgId)
+            .or(
+              [
+                ...(hasTextSearch
+                  ? [
+                      `description.ilike.%${escaped}%`,
+                      `qbo_expense_account_name.ilike.%${escaped}%`,
+                      `qbo_expense_account_id.ilike.%${escaped}%`,
+                    ]
+                  : []),
+                ...(cents != null ? [`amount_cents.eq.${cents}`] : []),
+              ].join(","),
+            )
+            .limit(500)
+        : Promise.resolve({ data: [] }),
+      shouldMatchCredits
+        ? supabase
+            .from("project_expenses")
+            .select("id")
+            .eq("org_id", orgId)
+            .eq("project_id", projectId)
+            .ilike("metadata->>source", "expense_credit%")
+            .limit(500)
+        : Promise.resolve({ data: [] }),
+    ])
+
+    const costCodeIds = (matchingCostCodes.data ?? []).map((row) => row.id).filter(Boolean)
+    if (costCodeIds.length > 0) {
+      searchFilters.push(`cost_code_id.in.(${costCodeIds.join(",")})`)
+      const { data: matchingLineCostCodes } = await supabase
+        .from("project_expense_lines")
+        .select("expense_id")
+        .eq("org_id", orgId)
+        .in("cost_code_id", costCodeIds)
+        .limit(500)
+      const lineCostCodeExpenseIds = Array.from(new Set((matchingLineCostCodes ?? []).map((row) => row.expense_id).filter(Boolean)))
+      if (lineCostCodeExpenseIds.length > 0) searchFilters.push(`id.in.(${lineCostCodeExpenseIds.join(",")})`)
+    }
+    const companyIds = (matchingCompanies.data ?? []).map((row) => row.id).filter(Boolean)
+    if (companyIds.length > 0) searchFilters.push(`vendor_company_id.in.(${companyIds.join(",")})`)
+    const receiptIds = (matchingReceipts.data ?? []).map((row) => row.id).filter(Boolean)
+    if (receiptIds.length > 0) searchFilters.push(`receipt_file_id.in.(${receiptIds.join(",")})`)
+    const lineExpenseIds = Array.from(new Set((matchingLines.data ?? []).map((row) => row.expense_id).filter(Boolean)))
+    if (lineExpenseIds.length > 0) searchFilters.push(`id.in.(${lineExpenseIds.join(",")})`)
+    const creditExpenseIds = (matchingCredits.data ?? []).map((row) => row.id).filter(Boolean)
+    if (creditExpenseIds.length > 0) searchFilters.push(`id.in.(${creditExpenseIds.join(",")})`)
+
+    if (searchFilters.length > 0) query = query.or(searchFilters.join(","))
+  }
+
+  if (queueFilter === "synced") {
+    query = query.eq("qbo_sync_status", "synced")
+  } else if (queueFilter === "needs_review") {
+    query = query.or(
+      [
+        "qbo_sync_status.eq.needs_review",
+        "qbo_sync_status.eq.error",
+        "and(status.eq.approved,qbo_expense_account_id.is.null)",
+        "and(status.eq.approved,qbo_payment_account_id.is.null)",
+      ].join(","),
+    )
+  } else if (queueFilter === "ready") {
+    query = query
+      .eq("status", "approved")
+      .or("qbo_sync_status.is.null,qbo_sync_status.neq.synced")
+      .not("qbo_expense_account_id", "is", null)
+      .not("qbo_payment_account_id", "is", null)
+  }
+
+  const { data, error, count } = await query
+    .order("expense_date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .range(from, to)
+  if (error) throw new Error(`Failed to load expenses: ${error.message}`)
+
+  const expenseRows = data ?? []
+  const expenseIds = expenseRows.map((expense) => expense.id).filter(Boolean)
+  const linesByExpense = new Map<string, any[]>()
+  if (expenseIds.length > 0) {
+    const { data: lineRows, error: lineError } = await supabase
+      .from("project_expense_lines")
+      .select("*, cost_code:cost_codes(code, name)")
+      .eq("org_id", orgId)
+      .in("expense_id", expenseIds)
+      .order("sort_order", { ascending: true })
+    if (lineError) throw new Error(`Failed to load expense lines: ${lineError.message}`)
+    for (const line of lineRows ?? []) {
+      const existing = linesByExpense.get(line.expense_id)
+      if (existing) existing.push(line)
+      else linesByExpense.set(line.expense_id, [line])
+    }
+  }
+
+  const total = count ?? 0
+  return {
+    items: expenseRows.map((expense) => ({ ...expense, lines: linesByExpense.get(expense.id) ?? [] })),
+    page,
+    pageSize,
+    total,
+    pageCount: Math.max(1, Math.ceil(total / pageSize)),
+  }
 }
 
 export async function getExpenseAccountingContextAction(projectId?: string) {
