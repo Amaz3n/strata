@@ -3,10 +3,8 @@
 import { z } from "zod"
 
 import { requireOrgMembership } from "@/lib/auth/context"
-import { sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
+import { createPlatformSupportIssue } from "@/lib/services/platform-bugs"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-
-const SUPPORT_RECIPIENTS = ["agustin@arcnaples.com", "gabi@arcnaples.com"]
 
 const supportRequestSchema = z.object({
   topic: z.enum(["account", "billing", "project", "technical", "feedback", "other"]),
@@ -50,66 +48,24 @@ export async function sendSupportRequestAction(input: z.input<typeof supportRequ
   const orgName = org?.name ?? "Unknown organization"
   const currentPage = parsed.data.pageUrl || "Not provided"
 
-  const rows = [
-    ["Topic", topicLabel],
-    ["Organization", `${orgName} (${orgId})`],
-    ["Requester", `${requesterName}${requesterEmail ? ` <${requesterEmail}>` : ""}`],
-    ["Page", currentPage],
-  ]
+  try {
+    const issue = await createPlatformSupportIssue({
+      userId: user.id,
+      orgId,
+      orgName,
+      requesterName,
+      requesterEmail,
+      topicKey: parsed.data.topic,
+      topicLabel,
+      message: parsed.data.message,
+      pageUrl: currentPage,
+    })
 
-  const html = `
-    <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#111827">
-      <h2 style="margin:0 0 16px;font-size:18px">New Arc support request</h2>
-      <table style="border-collapse:collapse;margin-bottom:20px">
-        <tbody>
-          ${rows
-            .map(
-              ([label, value]) => `
-                <tr>
-                  <td style="padding:4px 16px 4px 0;color:#6b7280;font-size:13px">${escapeHtml(label)}</td>
-                  <td style="padding:4px 0;font-size:13px">${escapeHtml(value)}</td>
-                </tr>
-              `,
-            )
-            .join("")}
-        </tbody>
-      </table>
-      <div style="white-space:pre-wrap;border-left:3px solid #111827;padding-left:12px">${escapeHtml(parsed.data.message)}</div>
-    </div>
-  `
-
-  const sent = await sendEmail({
-    to: SUPPORT_RECIPIENTS,
-    subject: `[Arc Support] ${topicLabel} - ${orgName}`,
-    html,
-    text: [
-      "New Arc support request",
-      `Topic: ${topicLabel}`,
-      `Organization: ${orgName} (${orgId})`,
-      `Requester: ${requesterName}${requesterEmail ? ` <${requesterEmail}>` : ""}`,
-      `Page: ${currentPage}`,
-      "",
-      parsed.data.message,
-    ].join("\n"),
-    replyTo: requesterEmail,
-    from: getOrgSenderEmail(org?.slug, org?.name),
-  })
-
-  if (!sent) {
+    return { success: true, issueKey: issue.issueKey }
+  } catch (error) {
     return {
       success: false,
-      error: "We couldn't send the message. Please email agustin@arcnaples.com or gabi@arcnaples.com.",
+      error: error instanceof Error ? error.message : "We couldn't create the support issue.",
     }
   }
-
-  return { success: true }
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;")
 }

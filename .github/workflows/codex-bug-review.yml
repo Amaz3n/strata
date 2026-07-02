@@ -1,0 +1,101 @@
+name: Codex bug review
+
+on:
+  workflow_dispatch:
+    inputs:
+      bug_id:
+        required: true
+        type: string
+      review_id:
+        required: true
+        type: string
+      bug_payload:
+        required: true
+        type: string
+      callback_url:
+        required: true
+        type: string
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Codex review
+        id: codex
+        uses: openai/codex-action@v1
+        continue-on-error: true
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-5
+          effort: medium
+          sandbox: read-only
+          output-file: codex-review-output.md
+          prompt: |
+            You are reviewing an Arc platform issue. Inspect the repository, identify the likely product area and relevant files, and propose a solution.
+
+            Do not edit files. Do not run destructive commands. Prefer repository evidence over guesses.
+
+            Issue payload:
+            ${{ inputs.bug_payload }}
+
+            Return only JSON matching this shape:
+            {
+              "summary": "Short plain-English summary of the likely issue and recommended fix.",
+              "classification": "bug | feature | support | question",
+              "confidence": 0.0,
+              "likely_affected_files": ["path/to/file.ts"],
+              "root_cause_hypothesis": "What is probably happening and why.",
+              "implementation_plan": ["Step 1", "Step 2"],
+              "risks": ["Risk or edge case"],
+              "tests_to_run": ["pnpm lint", "specific focused test command"],
+              "questions": ["Optional missing information"]
+            }
+
+      - name: Send review back to Arc
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.ARC_CODEX_REVIEW_CALLBACK_SECRET }}
+          BUG_ID: ${{ inputs.bug_id }}
+          REVIEW_ID: ${{ inputs.review_id }}
+          CODEX_OUTCOME: ${{ steps.codex.outcome }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const fs = require("fs")
+
+            const output = fs.existsSync("codex-review-output.md")
+              ? fs.readFileSync("codex-review-output.md", "utf8")
+              : ""
+
+            const ok = process.env.CODEX_OUTCOME === "success"
+            const response = await fetch(process.env.CALLBACK_URL, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${process.env.CALLBACK_SECRET}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                bug_id: process.env.BUG_ID,
+                review_id: process.env.REVIEW_ID,
+                status: ok ? "proposal_ready" : "failed",
+                output,
+                error: ok ? null : `Codex review workflow finished with outcome: ${process.env.CODEX_OUTCOME}`,
+                github_run_id: String(context.runId),
+                github_run_url: process.env.GITHUB_RUN_URL,
+              }),
+            })
+
+            if (!response.ok) {
+              const body = await response.text()
+              core.setFailed(`Arc callback failed: ${response.status} ${body}`)
+            }
