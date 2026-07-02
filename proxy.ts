@@ -16,6 +16,9 @@ const PUBLIC_API_ROUTES = [
   "/api/qbo/process-webhooks",
   "/api/qbo/process-outbox",
   "/api/qbo/payment-webhook",
+  // Codex review callback — no user session cookie; it self-authenticates via
+  // CODEX_REVIEW_CALLBACK_SECRET. Without this, GitHub receives a 307 to sign-in.
+  "/api/platform/bugs/ai-review-callback",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",
