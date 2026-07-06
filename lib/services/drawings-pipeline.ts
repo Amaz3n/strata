@@ -429,40 +429,47 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
   const usedSheetNumbers = new Set<string>()
   const pageJobs: Array<Record<string, any>> = []
 
-  for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
-    const page = doc.loadPage(pageIndex)
-    const textLines = extractPageTextLines(page)
-    const pageText = textLines.join("\n")
-    const pageNumber = pageIndex + 1
+  // Split pages in chunks: grafting is synchronous CPU, but the per-page PDF
+  // uploads run in parallel within each chunk (bounded so a huge set doesn't
+  // hold every page buffer in memory at once).
+  const SPLIT_UPLOAD_CONCURRENCY = 8
+  for (let chunkStart = 0; chunkStart < pageCount; chunkStart += SPLIT_UPLOAD_CONCURRENCY) {
+    const chunkEnd = Math.min(chunkStart + SPLIT_UPLOAD_CONCURRENCY, pageCount)
+    const uploads: Promise<void>[] = []
 
-    const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
+    for (let pageIndex = chunkStart; pageIndex < chunkEnd; pageIndex++) {
+      const page = doc.loadPage(pageIndex)
+      const textLines = extractPageTextLines(page)
+      const pageText = textLines.join("\n")
+      const pageNumber = pageIndex + 1
 
-    // Assign a tentative sheet number that is unique within this upload. Page
-    // jobs run in parallel, so cross-page uniqueness has to be decided here.
-    const isTargetPage = Boolean(targetSheet && pageIndex === 0)
-    const tentativeSheetNumber = isTargetPage
-      ? truncateValue(targetSheet!.sheet_number || detected.sheetNumber, SHEET_NUMBER_MAX_LENGTH)
-      : ensureUniqueSheetNumber(detected.sheetNumber, pageNumber, usedSheetNumbers)
-    if (isTargetPage) usedSheetNumbers.add(tentativeSheetNumber.toUpperCase())
+      const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
 
-    // One single-page PDF per page so page jobs don't re-download the full set.
-    const pagePdfPath = `${orgId}/${sourceHash}/temp/page-${pageIndex}.pdf`
-    const single = new mupdf.PDFDocument()
-    single.graftPage(0, doc as any, pageIndex)
-    const singleBytes = single.saveToBuffer("compress").asUint8Array()
-    single.destroy?.()
-    await uploadTilesObject({
-      supabase,
-      path: pagePdfPath,
-      bytes: Buffer.from(singleBytes),
-      contentType: "application/pdf",
-      cacheControl: "private, max-age=3600",
-    })
+      // Assign a tentative sheet number that is unique within this upload. Page
+      // jobs run in parallel, so cross-page uniqueness has to be decided here.
+      const isTargetPage = Boolean(targetSheet && pageIndex === 0)
+      const tentativeSheetNumber = isTargetPage
+        ? truncateValue(targetSheet!.sheet_number || detected.sheetNumber, SHEET_NUMBER_MAX_LENGTH)
+        : ensureUniqueSheetNumber(detected.sheetNumber, pageNumber, usedSheetNumbers)
+      if (isTargetPage) usedSheetNumbers.add(tentativeSheetNumber.toUpperCase())
 
-    pageJobs.push({
-      org_id: orgId,
-      job_type: "process_drawing_page",
-      payload: {
+      // One single-page PDF per page so page jobs don't re-download the full set.
+      const pagePdfPath = `${orgId}/${sourceHash}/temp/page-${pageIndex}.pdf`
+      const single = new mupdf.PDFDocument()
+      single.graftPage(0, doc as any, pageIndex)
+      const singleBytes = single.saveToBuffer("compress").asUint8Array()
+      single.destroy?.()
+      uploads.push(
+        uploadTilesObject({
+          supabase,
+          path: pagePdfPath,
+          bytes: Buffer.from(singleBytes),
+          contentType: "application/pdf",
+          cacheControl: "private, max-age=3600",
+        }),
+      )
+
+      pageJobs.push(buildPageJob({
         orgId,
         projectId,
         drawingSetId,
@@ -473,22 +480,16 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
         pageCount,
         setTitle,
         pagePdfPath,
-        pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
+        pageText,
         detected,
         tentativeSheetNumber,
         isTargetPage,
-        targetSheet: isTargetPage
-          ? {
-              id: targetSheet!.id,
-              sheet_number: targetSheet!.sheet_number,
-              sheet_title: targetSheet!.sheet_title ?? null,
-              discipline: targetSheet!.discipline ?? null,
-            }
-          : null,
+        targetSheet,
         aiVision: payload.aiVision ?? null,
-      },
-      run_at: new Date().toISOString(),
-    })
+      }))
+    }
+
+    await Promise.all(uploads)
   }
 
   const { error: fanoutError } = await supabase.from("outbox").insert(pageJobs)
@@ -507,10 +508,60 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
   // Fan out extra pipeline invocations so page jobs render in parallel across
   // function instances instead of one long sequential drain.
   if (pageCount > 3) {
-    const extraRunners = Math.min(3, Math.ceil(pageCount / 10))
+    const extraRunners = Math.min(6, Math.ceil(pageCount / 4))
     await Promise.allSettled(
       Array.from({ length: extraRunners }, () => triggerDrawingsPipeline()),
     )
+  }
+}
+
+function buildPageJob(input: {
+  orgId: string
+  projectId: string
+  drawingSetId: string
+  draftRevisionId: string
+  sourceFileId: string
+  sourceHash: string
+  pageIndex: number
+  pageCount: number
+  setTitle: string
+  pagePdfPath: string
+  pageText: string
+  detected: DetectedSheetMetadata
+  tentativeSheetNumber: string
+  isTargetPage: boolean
+  targetSheet: { id: string; sheet_number: string; sheet_title?: string | null; discipline?: string | null } | null
+  aiVision: unknown
+}) {
+  return {
+    org_id: input.orgId,
+    job_type: "process_drawing_page",
+    payload: {
+      orgId: input.orgId,
+      projectId: input.projectId,
+      drawingSetId: input.drawingSetId,
+      draftRevisionId: input.draftRevisionId,
+      sourceFileId: input.sourceFileId,
+      sourceHash: input.sourceHash,
+      pageIndex: input.pageIndex,
+      pageCount: input.pageCount,
+      setTitle: input.setTitle,
+      pagePdfPath: input.pagePdfPath,
+      pageText: input.pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
+      detected: input.detected,
+      tentativeSheetNumber: input.tentativeSheetNumber,
+      isTargetPage: input.isTargetPage,
+      targetSheet: input.isTargetPage && input.targetSheet
+        ? {
+            id: input.targetSheet.id,
+            sheet_number: input.targetSheet.sheet_number,
+            sheet_title: input.targetSheet.sheet_title ?? null,
+            discipline: input.targetSheet.discipline ?? null,
+          }
+        : null,
+      aiVision: input.aiVision ?? null,
+    },
+    run_at: new Date().toISOString(),
   }
 }
 
@@ -633,10 +684,22 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     vision_notes: visionSheet?.notes ?? [],
   }
 
+  // Persist the rendered PNG so tile generation can run as a background job.
+  // Review readiness only needs the thumbnail; the pyramid trails behind.
+  const tempPngPath = `${orgId}/${sourceHash}/temp/page-${pageIndex}.png`
+  await uploadTilesObject({
+    supabase,
+    path: tempPngPath,
+    bytes: png,
+    contentType: "image/png",
+    cacheControl: "private, max-age=3600",
+  })
+
   const versionMetadata = (isNewSheet: boolean) => ({
     source_hash: sourceHash,
     page_index: pageIndex,
     is_new_sheet: isNewSheet,
+    temp_png_path: tempPngPath,
     proposed: {
       sheet_number: proposedSheetNumber,
       sheet_title: proposedSheetTitle,
@@ -726,15 +789,32 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     throw new Error(`Failed to create version for page ${pageNumber}: ${versionError?.message}`)
   }
 
-  // ---- Tiles (inline, from the rendered PNG) ----
-  await generateTilesForVersion(supabase, {
-    versionId: version.id as string,
-    orgId,
-    sourceHash,
-    pageIndex,
-    pngBuffer: png,
-    width,
-    height,
+  // ---- Thumbnail now (review works off it), tile pyramid in the background ----
+  const basePath = `${orgId}/${sourceHash}/page-${pageIndex}`
+  const tileBaseUrl = buildDrawingsTilesBaseUrl(basePath)
+  const thumbBuffer = await sharp(png, { limitInputPixels: false })
+    .resize(256, 256, { fit: "inside" })
+    .png({ compressionLevel: 9 })
+    .toBuffer()
+  const thumbPath = `${basePath}/thumbnail.${TILE_FORMAT}`
+  await uploadTilesObject({ supabase, path: thumbPath, bytes: thumbBuffer, contentType: "image/png" })
+  // Note: thumbnail_url (not thumb_path) — thumb_path is resolved against the
+  // images base URL by the mappers, but this thumbnail lives in tiles storage.
+  await supabase
+    .from("drawing_sheet_versions")
+    .update({
+      thumbnail_url: tileBaseUrl ? `${tileBaseUrl}/thumbnail.${TILE_FORMAT}` : null,
+      image_width: width,
+      image_height: height,
+      tiles_base_path: basePath,
+    })
+    .eq("id", version.id)
+
+  await supabase.from("outbox").insert({
+    org_id: orgId,
+    job_type: "generate_drawing_tiles",
+    payload: { sheetVersionId: version.id },
+    run_at: new Date().toISOString(),
   })
 
   // ---- Cleanup + progress ----
@@ -877,6 +957,21 @@ async function handleGenerateDrawingTiles(supabase: SupabaseClient, job: Claimed
       await deleteTilesObjects({ supabase, paths: [tempPngPath] })
     } catch (error) {
       console.warn("[drawings-pipeline] Failed to delete temp PNG:", error)
+    }
+  }
+
+  // When the tile queue drains, refresh the register view so freshly published
+  // sheets pick up their tile URLs (drafts are hidden by the MV either way).
+  const { count: pendingTiles } = await supabase
+    .from("outbox")
+    .select("id", { count: "exact", head: true })
+    .eq("job_type", "generate_drawing_tiles")
+    .in("status", ["pending", "processing"])
+  if ((pendingTiles ?? 0) <= 1) {
+    try {
+      await supabase.rpc("refresh_drawing_sheets_list")
+    } catch (error) {
+      console.warn("[drawings-pipeline] MV refresh after tiles failed:", error)
     }
   }
 }
